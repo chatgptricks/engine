@@ -33,7 +33,7 @@ export function getAdminSupabase(): SupabaseClient | null {
     },
     global: {
       headers: {
-        "x-application": "grateful-future",
+        "x-application": "engine",
       },
     },
   });

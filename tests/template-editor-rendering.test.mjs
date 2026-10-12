@@ -23,7 +23,16 @@ function loadModule(relative, dependencies = {}) {
   }).outputText;
   const compiled = vm.runInThisContext(`(function(require,module,exports){${source}\n})`, { filename });
   const unit = { exports: {} };
-  compiled(name => name.endsWith(".css") ? {} : Object.hasOwn(dependencies, name) ? dependencies[name] : requireModule(name), unit, unit.exports);
+  compiled(name => {
+    if(name.endsWith(".css")) return {};
+    if(Object.hasOwn(dependencies,name)) return dependencies[name];
+    if(name.startsWith("@/") || name.startsWith("./") || name.startsWith("../")) {
+      const base=name.startsWith("@/") ? path.join(root,name.slice(2)) : path.resolve(path.dirname(filename),name);
+      const resolved=[base,`${base}.ts`,`${base}.tsx`].find(file=>fs.existsSync(file)&&fs.statSync(file).isFile());
+      if(resolved) return loadModule(path.relative(root,resolved));
+    }
+    return requireModule(name);
+  }, unit, unit.exports);
   return unit.exports;
 }
 
@@ -32,13 +41,13 @@ const geometry = loadModule("lib/template-editor/canvas-geometry.ts");
 const continuous = loadModule("lib/template-editor/continuous-carousel.ts", { "./model": model, "./canvas-geometry": geometry });
 const canvas = loadModule("components/template-editor/canvas.tsx", {
   "@/lib/template-editor/canvas-geometry": geometry,
-  "@/lib/grateful-future/util": loadModule("lib/grateful-future/util.ts"),
+  "@/lib/engine/util": loadModule("lib/engine/util.ts"),
 });
 const { DesignFrame, DesignPreview } = loadModule("components/template-editor/preview.tsx", {
   "@/lib/template-editor/model": model,
   "@/lib/template-editor/continuous-carousel": continuous,
   "./canvas": canvas,
-  "@/components/grateful-future/slide-templates": {
+  "@/components/engine/slide-templates": {
     SlideFrame() { throw new Error("Canvas artwork unexpectedly used the legacy renderer."); },
   },
 });
@@ -128,7 +137,7 @@ test("onion artwork is clipped and noninteractive while parked current layers re
   const html = render(canvas.CanvasEditor, props);
   assert.equal((html.match(/data-onion-skin="true"/g) ?? []).length, 1);
   assert.match(html, /data-onion-skin="true" aria-hidden="true" style="opacity:0.5"/);
-  assert.match(html, /style="width:360px;height:450px;background:#fffafa"/);
+  assert.match(html, /style="width:360px;height:450px;background:#fffafa(?:;|")/);
   assert.match(html, /te-canvas-editor-scene" style="background:transparent"/);
   assert.doesNotMatch(html, /#cc22ff/);
   assert.equal((html.match(/data-element-id="ghost"/g) ?? []).length, 1);

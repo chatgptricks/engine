@@ -1,7 +1,8 @@
 import {
   createBlankDesign,
   createCanvasElement,
-  FORMATS,
+  formatDimensions,
+  duplicateCanvasScene,
   sceneForPage,
   type CanvasElement,
   type CanvasScene,
@@ -13,10 +14,10 @@ import { elementIntersectsCanvas } from "./canvas-geometry";
 export const CONTINUOUS_PAGE_WIDTH = 360;
 const MAX_CONTINUOUS_LAYERS = 100;
 const MAX_CAROUSEL_PAGES = 20;
-type SliceSource = Pick<DesignDocument, "format" | "pages" | "continuousCanvas">;
+type SliceSource = Pick<DesignDocument, "format" | "pages" | "continuousCanvas" | "customSize">;
 
 function pageHeight(design: SliceSource): number {
-  const format = FORMATS[design.format];
+  const format = formatDimensions(design);
   return CONTINUOUS_PAGE_WIDTH * format.height / format.width;
 }
 
@@ -40,7 +41,7 @@ function colorAlpha(color: string): number {
 }
 
 function shifted(element: CanvasElement, offset: number): CanvasElement {
-  return { ...element, x: element.x + offset };
+  return { ...element, x: element.x + offset, ...(element.clipBounds ? { clipBounds: { ...element.clipBounds, x: element.clipBounds.x + offset } } : {}) };
 }
 
 function assertPersistablePosition(element: CanvasElement): void {
@@ -78,10 +79,20 @@ export function enableContinuousCarousel(design: DesignDocument): DesignDocument
   const extraBackgrounds = scenes.filter(needsBackground).length;
   assertLayerCount(scenes.reduce((count, scene) => count + scene.elements.length, extraBackgrounds));
   const usedIds = new Set<string>();
+  const usedGroupIds = new Set<string>();
+  const groups: NonNullable<CanvasScene["groups"]> = [];
+  const guides: NonNullable<NonNullable<CanvasScene["layout"]>["guides"]> = [];
   const backgrounds: CanvasElement[] = [];
   const artwork: CanvasElement[] = [];
   const height = pageHeight(design);
   scenes.forEach((scene, index) => {
+    const groupIds = new Map((scene.groups ?? []).map(group => {
+      let id = group.id;
+      while (usedGroupIds.has(id)) id = crypto.randomUUID();
+      usedGroupIds.add(id); return [group.id, id];
+    }));
+    groups.push(...(scene.groups ?? []).map(group => ({ ...structuredClone(group), id: groupIds.get(group.id)!, ...(group.parentId ? { parentId: groupIds.get(group.parentId) } : {}) })));
+    for (const guide of scene.layout?.guides ?? []) guides.push({ ...guide, id: crypto.randomUUID(), position: guide.position + (guide.axis === "x" ? index * CONTINUOUS_PAGE_WIDTH : 0) });
     if (needsBackground(scene)) {
       const element = createCanvasElement("shape", {
         name: `Slide ${index + 1} background`, x: index * CONTINUOUS_PAGE_WIDTH, y: 0,
@@ -94,6 +105,7 @@ export function enableContinuousCarousel(design: DesignDocument): DesignDocument
     }
     for (const element of scene.elements) {
       const copy = shifted(element, index * CONTINUOUS_PAGE_WIDTH);
+      if (copy.groupId) copy.groupId = groupIds.get(copy.groupId);
       assertPersistablePosition(copy);
       while (usedIds.has(copy.id)) copy.id = crypto.randomUUID();
       usedIds.add(copy.id);
@@ -104,9 +116,9 @@ export function enableContinuousCarousel(design: DesignDocument): DesignDocument
     ...design,
     pages: sourcePages.map((page, index) => ({
       ...page, image: { ...page.image }, style: { ...page.style },
-      canvas: { background: scenes[index].background, elements: [] },
+      canvas: { ...scenes[index], background: scenes[index].background, elements: [], groups: [] },
     })),
-    continuousCanvas: { background, elements: [...backgrounds, ...artwork] },
+    continuousCanvas: { ...firstScene, background, elements: [...backgrounds, ...artwork], ...(groups.length ? { groups } : {}), ...(firstScene.layout || guides.length ? { layout: { ...firstScene.layout, guides } } : {}) },
   };
 }
 
@@ -118,8 +130,10 @@ export function sliceSceneForPage(design: SliceSource, page: DesignPage | number
   if (!Number.isInteger(index) || index < 0 || index >= design.pages.length) throw new Error("This slide is not part of the carousel.");
   if (!design.continuousCanvas) return sceneForPage(design.pages[index], design.format);
   return {
+    ...design.continuousCanvas,
     background: design.continuousCanvas.background,
     elements: design.continuousCanvas.elements.map(element => shifted(element, -index * CONTINUOUS_PAGE_WIDTH)),
+    ...(design.continuousCanvas.layout ? { layout: { ...design.continuousCanvas.layout, guides: design.continuousCanvas.layout.guides?.map(guide => ({ ...guide, position: guide.position - (guide.axis === "x" ? index * CONTINUOUS_PAGE_WIDTH : 0) })) } } : {}),
   };
 }
 
@@ -144,7 +158,12 @@ export function splitContinuousCarousel(design: DesignDocument): DesignDocument 
       copy.id = crypto.randomUUID();
       elements.push(copy);
     }
-    return { ...page, image: { ...page.image }, style: { ...page.style }, canvas: { background: source.background, elements } };
+    const used = new Set(elements.map(element => element.groupId).filter(Boolean));
+    let added = true;
+    while (added) { added = false; for (const group of source.groups ?? []) if (used.has(group.id) && group.parentId && !used.has(group.parentId)) { used.add(group.parentId); added = true; } }
+    const layout = source.layout ? { ...source.layout, guides: source.layout.guides?.filter(guide => guide.axis === "y" || (guide.position >= index * CONTINUOUS_PAGE_WIDTH && guide.position <= (index + 1) * CONTINUOUS_PAGE_WIDTH)).map(guide => ({ ...guide, id: crypto.randomUUID(), position: guide.position - (guide.axis === "x" ? index * CONTINUOUS_PAGE_WIDTH : 0) })) } : undefined;
+    const canvas = duplicateCanvasScene({ background: source.background, elements, ...(source.groups ? { groups: source.groups.filter(group => used.has(group.id)) } : {}), ...(layout ? { layout } : {}) });
+    return { ...page, image: { ...page.image }, style: { ...page.style }, canvas };
   });
   const result = { ...design, pages };
   delete result.continuousCanvas;

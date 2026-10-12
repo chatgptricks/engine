@@ -64,7 +64,7 @@ export async function GET(request: Request) {
     );
   }
 
-  return NextResponse.redirect(new URL("/admin/grateful-future", request.url));
+  return NextResponse.redirect(new URL("/admin/engine", request.url));
 }
 
 /**
@@ -121,7 +121,7 @@ const IMPLICIT_HANDLER_HTML = `<!doctype html>
             const body = await res.json().catch(() => ({}));
             return fail(body.error || "link-expired");
           }
-          window.location.replace("/admin/grateful-future");
+          window.location.replace("/admin/engine");
         } catch (e) {
           fail("link-expired");
         }

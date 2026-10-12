@@ -6,4 +6,4 @@ Put your own licensed copies of these fonts here (they are not in git):
 - Century Gothic.otf, Century Gothic Bold.otf
 
 Without them the app still works; those font options fall back to system fonts.
-The file names are wired up in app/admin/(tool)/grateful-future/licensed-fonts.css.
+The file names are wired up in app/admin/(tool)/engine/licensed-fonts.css.

@@ -1512,3 +1512,27 @@
     max-width: 31px;
   }
 }
+
+.te-library-tools { display:flex; gap:12px; align-items:end; flex-wrap:wrap; margin:0 0 28px; padding:14px; background:#ffffff08; border-radius:12px; }
+.te-library-tools label {display:flex; flex-direction:column; gap:6px; font-size:12px; color:#aaa;}
+.te-library-tools input,.te-library-tools select,.te-folder-list input {padding:8px 10px; border:1px solid #ffffff20; border-radius:6px; background:#1b1b1d; color:#eee; min-height:36px;}
+.te-library-tools .te-library-favorite {flex-direction:row; align-items:center; align-self:center;}
+.te-library-tools .te-library-favorite input {min-height:auto;}
+.te-folder-list {list-style:none; padding:0; display:grid; gap:10px; max-height:320px; overflow:auto;}
+.te-folder-list li,.te-version-list article,.te-library-trash article {display:flex; align-items:center; gap:12px; padding:12px 0; border-bottom:1px solid #ffffff12;}
+.te-folder-list input,.te-version-list article>div,.te-library-trash article>div {flex:1; min-width:0;}
+.te-version-list {max-height:450px; overflow:auto;}
+.te-version-list p,.te-library-trash article p {font-size:12px; color:#aaa; margin:5px 0;}
+.te-review-viewer {max-width:1100px; margin:0 auto; padding:48px 24px; color:#eee;}
+.te-review-viewer h1 {font-size:32px; margin:12px 0;}
+.te-review-viewer h2 {font-size:20px; margin:30px 0 16px;}
+.te-review-viewer>header p {color:#aaa;}
+.te-review-pages {display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:20px; margin-top:32px; align-items:start;}
+.te-review-pages figure {margin:0; min-width:0;}
+.te-review-pages figcaption {font-size:12px; color:#aaa; padding:8px 0;}
+.te-review-caption,.te-review-comment p {white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6;}
+.te-review-comment {padding:16px; margin:12px 0; background:#ffffff08; border-radius:10px;}
+.te-review-comment time,.te-review-comment>span {display:block; font-size:12px; color:#aaa; margin-top:5px;}
+.te-review-viewer form {max-width:640px; display:grid; gap:12px; margin-top:24px;}
+.te-review-viewer textarea {min-height:120px;}
+@media(max-width:600px) {.te-library-trash article,.te-version-list article {flex-wrap:wrap;}.te-library-trash article>div,.te-version-list article>div {flex-basis:100%;}.te-review-viewer {padding:24px 16px;}}

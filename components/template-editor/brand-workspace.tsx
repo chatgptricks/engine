@@ -1,9 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
-import { PlusIcon, TrashIcon, ImageIcon, LayoutIcon } from "@/components/grateful-future/icons";
+import { PlusIcon, TrashIcon, ImageIcon, LayoutIcon } from "@/components/engine/icons";
 import { activeBrandKit, libraryBrandKits, withBrandKits, createBrandKit, type BrandAsset, type SavedBrandKit, type EditorLibrary } from "@/lib/template-editor/model";
-import { proxied } from "@/lib/grateful-future/util";
+import { proxied } from "@/lib/engine/util";
 import { ColorField, FontSelect, Modal } from "./controls";
 import { useContextMenu, type ContextMenuDefinition } from "./context-menu";
 import "./brand-workspace.css";

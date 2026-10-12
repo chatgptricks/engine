@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
-import { resolveGFAccess } from "@/lib/grateful-future/member";
-import { saveIgCredential } from "@/lib/grateful-future/ig-store";
+import { resolveEngineAccess } from "@/lib/engine/member";
+import { saveIgCredential } from "@/lib/engine/ig-store";
 
 export const runtime = "nodejs";
 
@@ -10,7 +10,7 @@ export const runtime = "nodejs";
  * Verifies the CSRF nonce, exchanges the authorize code for a short-lived
  * token, upgrades it to a long-lived (~60-day) token, fetches the account's
  * username, and stores the credential SERVER-SIDE for (owner, channel) —
- * see lib/grateful-future/ig-store.ts. The browser only ever learns the
+ * see lib/engine/ig-store.ts. The browser only ever learns the
  * public bits (handle + user id) via redirect params so the Channels screen
  * can mark the channel connected instantly; the token itself never leaves
  * the server.
@@ -20,7 +20,7 @@ export async function GET(request: Request) {
   const code = url.searchParams.get("code");
   const state = url.searchParams.get("state") ?? "";
   const back = (extra: string) =>
-    NextResponse.redirect(new URL(`/admin/grateful-future${extra}`, url.origin));
+    NextResponse.redirect(new URL(`/admin/engine${extra}`, url.origin));
 
   // Instagram reports an explicit denial with error params.
   if (url.searchParams.get("error")) return back("?ig_error=denied");
@@ -40,7 +40,7 @@ export async function GET(request: Request) {
   }
 
   // Who is connecting? The credential is stored in their partition.
-  const access = await resolveGFAccess();
+  const access = await resolveEngineAccess();
   if (!access) return back("?ig_error=auth");
 
   const origin = (process.env.NEXT_PUBLIC_SITE_URL ?? url.origin).replace(/\/$/, "");

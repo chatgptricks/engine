@@ -1,6 +1,20 @@
-import type { SlideStyle, Story, StoryImage } from "../grateful-future/types";
+import type { SlideStyle, Story, StoryImage } from "../engine/types";
 
 export type DesignFormat = "portrait" | "square" | "story";
+
+export type CanvasInsets = { enabled: boolean; top: number; right: number; bottom: number; left: number };
+export type CanvasGuide = { id: string; axis: "x" | "y"; position: number; locked?: boolean };
+export type CanvasLayout = {
+  rulers?: boolean; showGuides?: boolean; guides?: CanvasGuide[];
+  margins?: CanvasInsets; safeArea?: CanvasInsets;
+  grid?: { enabled: boolean; size: number; columns: number; rows: number; gutter: number };
+  snapping?: { enabled: boolean; objects: boolean; page: boolean; guides: boolean; grid: boolean; spacing: boolean; tolerance: number };
+};
+export type CanvasGroup = { id: string; name: string; parentId?: string; locked?: boolean; hidden?: boolean };
+export type CanvasGradient = { type: "linear" | "radial"; angle: number; stops: { color: string; position: number }[] };
+export type CanvasShadow = { color: string; offsetX: number; offsetY: number; blur: number; spread: number };
+export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten" | "color-dodge" | "color-burn" | "hard-light" | "soft-light" | "difference" | "exclusion" | "hue" | "saturation" | "color" | "luminosity";
+export type ProtectedProperty = "content" | "position" | "style" | "delete";
 
 export const FORMATS: Record<
   DesignFormat,
@@ -24,6 +38,22 @@ export type CanvasElementBase = {
   locked: boolean;
   /** Hidden layers remain editable in the layer list but are omitted from artwork. */
   hidden?: boolean;
+  groupId?: string;
+  master?: boolean;
+  gradient?: CanvasGradient;
+  shadow?: CanvasShadow;
+  blur?: number;
+  blendMode?: BlendMode;
+  strokeDash?: number[];
+  anchors?: { horizontal: "left" | "center" | "right" | "stretch"; vertical: "top" | "middle" | "bottom" | "stretch" };
+  slot?: string;
+  protected?: ProtectedProperty[];
+  componentId?: string;
+  componentInstanceId?: string;
+  componentSourceId?: string;
+  colorRoleId?: string;
+  /** Axis-aligned crop in scene coordinates, independent of layer rotation. */
+  clipBounds?: { x: number; y: number; width: number; height: number };
 };
 export type TextElement = CanvasElementBase & {
   type: "text";
@@ -37,8 +67,36 @@ export type TextElement = CanvasElementBase & {
   align: "left" | "center" | "right";
   lineHeight: number;
   letterSpacing: number;
+  richText?: string;
+  textMode?: "fixed" | "auto-height" | "auto-fit";
+  verticalAlign?: "top" | "middle" | "bottom";
+  padding?: number;
+  paragraphSpacing?: number;
+  strikethrough?: boolean;
+  listStyle?: "none" | "bullet" | "number";
+  textStyleId?: string;
+  textureFill?: ShapeImageFill;
+  wordTextures?: (ShapeImageFill & { id: string })[];
 };
-export type ImageElement = CanvasElementBase & {
+export type PhotoMetadata = {
+  directive?: string;
+  rightsNote?: string;
+  sourceUrl?: string;
+  provenance?: { source?: string; imageId?: string; description?: string; cosmosManual?: boolean };
+};
+export type ShapeImageFill = PhotoMetadata & {
+  src: string;
+  alt?: string;
+  objectFit: "cover" | "contain";
+  cropX: number;
+  cropY: number;
+  cropScale?: number;
+  flipX?: boolean;
+  flipY?: boolean;
+  intrinsicWidth?: number;
+  intrinsicHeight?: number;
+};
+export type ImageElement = CanvasElementBase & PhotoMetadata & {
   type: "image";
   src: string;
   fit: "cover" | "contain";
@@ -46,25 +104,47 @@ export type ImageElement = CanvasElementBase & {
   cropX: number;
   cropY: number;
   radius: number;
+  cropScale?: number;
+  flipX?: boolean;
+  flipY?: boolean;
+  mask?: "none" | "ellipse" | "triangle" | "diamond";
+  intrinsicWidth?: number;
+  intrinsicHeight?: number;
 };
 export type ShapeElement = CanvasElementBase & {
   type: "shape";
-  shape: "rectangle" | "ellipse";
+  shape: "rectangle" | "ellipse" | "triangle" | "diamond" | "polygon" | "star" | "arrow" | "path";
   fill: string;
   stroke: string;
   strokeWidth: number;
   radius: number;
+  sides?: number;
+  starPoints?: number;
+  innerRadius?: number;
+  path?: string;
+  viewBox?: string;
+  fillRule?: "nonzero" | "evenodd";
+  imageFill?: ShapeImageFill;
+  strokeAlign?: "inside" | "center" | "outside";
 };
 export type CanvasElement = TextElement | ImageElement | ShapeElement;
-export type CanvasScene = { background: string; elements: CanvasElement[] };
+export type CanvasScene = { background: string; elements: CanvasElement[]; groups?: CanvasGroup[]; layout?: CanvasLayout };
+export type TextStyle = Omit<TextElement, keyof CanvasElementBase | "type" | "text" | "richText" | "textStyleId" | "textMode" | "wordTextures"> & { id: string; name: string };
+export type ReusableComponent = { id: string; name: string; scene: CanvasScene; width: number; height: number };
+export type TemplateParameter = { id: string; name: string; type: "text" | "image" | "color"; defaultValue?: string; required?: boolean; maxLength?: number };
+export type DesignComment = { id: string; pageId?: string; elementId?: string; text: string; createdAt: string; resolved?: boolean };
+export type DesignVersion = Pick<DocumentResources, "styles" | "components" | "colorRoles" | "parameters"> & { id: string; name: string; createdAt: string; format: DesignFormat; pages: DesignPage[]; continuousCanvas?: CanvasScene; caption: string; masterScene?: CanvasScene; customSize?: { width: number; height: number } };
+export type DocumentResources = { styles?: TextStyle[]; colorRoles?: { id: string; name: string; color: string }[]; components?: ReusableComponent[]; parameters?: TemplateParameter[]; masterScene?: CanvasScene; customSize?: { width: number; height: number }; tags?: string[]; folderId?: string; favorite?: boolean; deletedAt?: string };
 export type DesignPage = {
   id: string;
   image: StoryImage;
   style: SlideStyle;
   /** Absent on legacy pages until the editor explicitly adopts a scene. */
   canvas?: CanvasScene;
+  label?: string;
+  useMaster?: boolean;
 };
-export type DesignDocument = {
+export type DesignDocument = DocumentResources & {
   id: string;
   name: string;
   templateId: string;
@@ -79,8 +159,12 @@ export type DesignDocument = {
   purpose?: "template";
   /** The reusable template this draft edits; ordinary designs never carry it. */
   editingTemplateId?: string;
+  reviewStatus?: "draft" | "review" | "approved";
+  comments?: DesignComment[];
+  versions?: DesignVersion[];
+  reviewLinks?: { id: string; url: string; expiresAt: string }[];
 };
-export type DesignTemplate = {
+export type DesignTemplate = DocumentResources & {
   id: string;
   name: string;
   description: string;
@@ -115,13 +199,14 @@ export const MAX_BRAND_COLORS = 20;
 export const MAX_BRAND_ASSET_CHARS = 2_000_000;
 export const DEFAULT_BRAND_KIT_ID = "brand-default";
 export type EditorLibrary = {
-  version: 1;
+  version: 2;
   designs: DesignDocument[];
   templates: DesignTemplate[];
   /** Compatibility projection of the active kit. Update kits via withBrandKits. */
   brand: BrandKit;
   brandKits: SavedBrandKit[];
   activeBrandKitId: string;
+  folders?: { id: string; name: string }[];
 };
 
 export const DEFAULT_BRAND: BrandKit = {
@@ -131,7 +216,7 @@ export const DEFAULT_BRAND: BrandKit = {
   text: "#263e35",
 };
 export const EMPTY_LIBRARY: EditorLibrary = {
-  version: 1,
+  version: 2,
   designs: [],
   templates: [],
   brand: { ...DEFAULT_BRAND },
@@ -196,7 +281,7 @@ function page(key: string, artwork: string, style: SlideStyle): DesignPage {
       directive: "",
       width: 1080,
       height: 1350,
-      rightsNote: "Original Greatful template artwork",
+      rightsNote: "Original Engine template artwork",
       cosmosManual: false,
       description: "Abstract editorial artwork. Replace with your own image.",
       mediaType: "image",
@@ -500,12 +585,29 @@ export function createCanvasElement(
   } as CanvasElement;
 }
 
-function duplicateCanvasScene(source: CanvasScene): CanvasScene {
-  return { background: source.background, elements: source.elements.map(element => ({ ...element, id: crypto.randomUUID() })) };
+export function duplicateCanvasScene(source: CanvasScene): CanvasScene {
+  const copy = structuredClone(source);
+  const groupIds = new Map(copy.groups?.map(group => [group.id, crypto.randomUUID()]) ?? []);
+  const instanceIds = new Map<string, string>();
+  copy.groups = copy.groups?.map(group => ({ ...group, id: groupIds.get(group.id)!, ...(group.parentId ? { parentId: groupIds.get(group.parentId) } : {}) }));
+  if (!source.groups) delete copy.groups;
+  copy.elements = copy.elements.map(element => {
+    if (element.componentInstanceId && !instanceIds.has(element.componentInstanceId)) instanceIds.set(element.componentInstanceId, crypto.randomUUID());
+    return { ...duplicateTextTextureIds(element), id: crypto.randomUUID(), ...(element.groupId ? { groupId: groupIds.get(element.groupId) } : {}), ...(element.componentInstanceId ? { componentInstanceId: instanceIds.get(element.componentInstanceId) } : {}) };
+  });
+  return copy;
+}
+
+/** Word texture IDs identify local runs, so copied layers receive their own resources. */
+export function duplicateTextTextureIds<T extends CanvasElement>(element: T): T {
+  if (element.type !== "text" || !element.wordTextures?.length) return element;
+  const ids = new Map(element.wordTextures.map(texture => [texture.id, crypto.randomUUID()]));
+  return { ...element, wordTextures: element.wordTextures.map(texture => ({ ...structuredClone(texture), id: ids.get(texture.id)! })), ...(element.richText !== undefined ? { richText: element.richText.replace(/data-texture-id=(?:"([a-zA-Z0-9_-]+)"|'([a-zA-Z0-9_-]+)')/g, (attribute, doubleId: string, singleId: string) => ids.has(doubleId ?? singleId) ? `data-texture-id="${ids.get(doubleId ?? singleId)}"` : attribute) } : {}) };
 }
 
 export function duplicatePage(source: DesignPage): DesignPage {
   return {
+    ...structuredClone(source),
     id: crypto.randomUUID(),
     image: { ...source.image, id: crypto.randomUUID() },
     style: { ...source.style },
@@ -588,6 +690,14 @@ export function sceneForPage(
       opacity,
       cropX: limit(50 - (style.mediaInX ?? 0), 0, 100),
       cropY: limit(50 - (style.mediaInY ?? 0), 0, 100),
+      ...(style.mediaScale !== undefined ? { cropScale: limit(style.mediaScale, .1, 20) } : {}),
+      ...(part === "backdrop" ? { blur: 18 } : {}),
+      intrinsicWidth: page.image.width,
+      intrinsicHeight: page.image.height,
+      directive: page.image.directive,
+      rightsNote: page.image.rightsNote,
+      ...(page.image.sourceUrl ? { sourceUrl: page.image.sourceUrl } : {}),
+      provenance: { source: page.image.source, imageId: page.image.id, ...(page.image.description ? { description: page.image.description } : {}), cosmosManual: page.image.cosmosManual },
     });
     element.id = id(part);
     scene.elements.push(element);
@@ -759,6 +869,7 @@ export function sceneForPage(
             ? "Body"
             : "Quote mark",
       text: content,
+      ...(part === "heading" && style.headingHtml ? { richText: sanitizeRichText(style.headingHtml) } : part === "body" && style.bodyHtml ? { richText: sanitizeRichText(style.bodyHtml) } : {}),
       x,
       y: limit(y, -10_000, 10_000),
       width: textWidth,
@@ -797,12 +908,17 @@ export function sceneForPage(
       (style.textOpacity ?? 1) * (isQuote ? 0.68 : 0.92),
     );
   }
+  if (style.credit) {
+    const credit = [page.image.description, page.image.sourceUrl].filter(Boolean).join("\n");
+    if (credit) text("credit", credit, height - 32, 24, 8, 1.3, .8);
+  }
   return scene;
 }
 
 export function createDesign(template: DesignTemplate): DesignDocument {
   const now = new Date().toISOString();
-  return {
+  const design: DesignDocument = {
+    ...copyResources(template),
     id: crypto.randomUUID(),
     name: template.name,
     templateId: template.id,
@@ -813,6 +929,7 @@ export function createDesign(template: DesignTemplate): DesignDocument {
     createdAt: now,
     updatedAt: now,
   };
+  return remapCopiedComponentReferences(design, template);
 }
 
 export function createBlankDesign(
@@ -866,7 +983,8 @@ export function editTemplateDesign(template: DesignTemplate): DesignDocument {
 export function cloneDesign(design: DesignDocument): DesignDocument {
   const now = new Date().toISOString();
   const copy: DesignDocument = {
-    ...design,
+    ...structuredClone(design),
+    ...copyResources(design),
     id: crypto.randomUUID(),
     name: `${design.name} copy`,
     pages: design.pages.map(duplicatePage),
@@ -874,16 +992,27 @@ export function cloneDesign(design: DesignDocument): DesignDocument {
     createdAt: now,
     updatedAt: now,
   };
+  if (design.versions) copy.versions = design.versions.map(version => remapCopiedComponentReferences({ ...structuredClone(version), ...copyResources(version), pages: version.pages.map(duplicatePage), ...(version.continuousCanvas ? { continuousCanvas: duplicateCanvasScene(version.continuousCanvas) } : {}) }, version));
   delete copy.purpose;
   delete copy.editingTemplateId;
-  return copy;
+  delete copy.deletedAt;
+  delete copy.reviewLinks;
+  if (copy.comments) {
+    const pageIds = new Map(design.pages.map((page, index) => [page.id, copy.pages[index].id]));
+    const elementIds = new Map(design.pages.flatMap((page, index) => page.canvas?.elements.map((element, position) => [element.id, copy.pages[index].canvas!.elements[position].id] as const) ?? []));
+    design.continuousCanvas?.elements.forEach((element, index) => elementIds.set(element.id, copy.continuousCanvas!.elements[index].id));
+    design.masterScene?.elements.forEach((element, index) => elementIds.set(element.id, copy.masterScene!.elements[index].id));
+    copy.comments = copy.comments.map(comment => ({ ...comment, id: crypto.randomUUID(), ...(comment.pageId ? { pageId: pageIds.get(comment.pageId) ?? comment.pageId } : {}), ...(comment.elementId ? { elementId: elementIds.get(comment.elementId) ?? comment.elementId } : {}) }));
+  }
+  return remapCopiedComponentReferences(copy, design);
 }
 
 export function designAsTemplate(
   design: DesignDocument,
   name: string,
 ): DesignTemplate {
-  return {
+  const template: DesignTemplate = {
+    ...copyResources(design),
     id: crypto.randomUUID(),
     name: name.trim() || design.name,
     description: `Your reusable ${design.pages.length}-page template.`,
@@ -893,6 +1022,34 @@ export function designAsTemplate(
     ...(design.continuousCanvas ? { continuousCanvas: duplicateCanvasScene(design.continuousCanvas) } : {}),
     custom: true,
   };
+  return remapCopiedComponentReferences(template, design);
+}
+
+function copyResources(source: DocumentResources): DocumentResources {
+  const result: DocumentResources = {};
+  for (const key of ["styles", "colorRoles", "components", "parameters", "masterScene", "customSize", "tags", "folderId", "favorite"] as const) {
+    if (source[key] !== undefined) Object.assign(result, { [key]: structuredClone(source[key]) });
+  }
+  if (source.masterScene) result.masterScene = duplicateCanvasScene(source.masterScene);
+  if (source.components) result.components = source.components.map(component => ({ ...structuredClone(component), scene: duplicateCanvasScene(component.scene) }));
+  return result;
+}
+
+function remapCopiedComponentReferences<T extends DocumentResources & { pages: DesignPage[]; continuousCanvas?: CanvasScene; versions?: DesignVersion[] }>(copy: T, source: DocumentResources): T {
+  const references = new Map<string, string>();
+  for (const original of source.components ?? []) {
+    const duplicated = copy.components?.find(component => component.id === original.id);
+    original.scene.elements.forEach((element, index) => { if (duplicated?.scene.elements[index]) references.set(`${original.id}:${element.id}`, duplicated.scene.elements[index].id); });
+  }
+  const remap = (scene?: CanvasScene) => { if (!scene) return; for (const element of scene.elements) if (element.componentId && element.componentSourceId) element.componentSourceId = references.get(`${element.componentId}:${element.componentSourceId}`) ?? element.componentSourceId; };
+  copy.pages.forEach(page => remap(page.canvas)); remap(copy.continuousCanvas); remap(copy.masterScene);
+  copy.components?.forEach(component => remap(component.scene));
+  copy.versions?.forEach(version => { version.pages.forEach(page => remap(page.canvas)); remap(version.continuousCanvas); remap(version.masterScene); });
+  return copy;
+}
+
+export function formatDimensions(design: Pick<DesignDocument, "format" | "customSize">): { width: number; height: number } {
+  return design.customSize ?? FORMATS[design.format];
 }
 
 /** Adapts a design to the established slide renderer and export contract. */
@@ -981,7 +1138,7 @@ const color = (value: unknown): value is string =>
 /** Retain only a small, balanced inline grammar. Unsafe HTML is discarded;
  * its existing plain-text mirror remains available to the renderer. This
  * works identically during server validation and in the browser. */
-function safeRichHtml(value: unknown): string | undefined {
+export function sanitizeRichText(value: unknown): string | undefined {
   if (!string(value, 20_000)) return undefined;
   const stack: string[] = [];
   const chunks = value.split(/(<[^>]*>)/g);
@@ -1011,33 +1168,39 @@ function safeRichHtml(value: unknown): string | undefined {
       continue;
     }
     const span = chunk.match(
-      /^<span((?:\s+(?:class|style)="[^"]*"){0,2})\s*>$/i,
+      /^<span((?:\s+(?:class|style|data-texture-id)=(?:"[^"]*"|'[^']*')){0,3})\s*>$/i,
     );
     if (!span) return undefined;
     const attrs: string[] = [];
     const seen = new Set<string>();
-    for (const match of span[1].matchAll(/\s+(class|style)="([^"]*)"/gi)) {
+    for (const match of span[1].matchAll(/\s+(class|style|data-texture-id)=(?:"([^"]*)"|'([^']*)')/gi)) {
       const key = match[1].toLowerCase();
+      const attributeValue = match[2] ?? match[3];
       if (seen.has(key)) return undefined;
       seen.add(key);
       if (key === "class") {
         if (
-          !match[2].startsWith("gf-font-") ||
-          !FONT_IDS.has(match[2].slice(8))
+          !attributeValue.startsWith("gf-font-") ||
+          !FONT_IDS.has(attributeValue.slice(8))
         )
           return undefined;
-        attrs.push(`class="${match[2]}"`);
+        attrs.push(`class="${attributeValue}"`);
+      } else if (key === "data-texture-id") {
+        if (!identity(attributeValue)) return undefined;
+        attrs.push(`data-texture-id="${attributeValue}"`);
       } else {
-        const declarations = match[2]
+        const declarations = attributeValue
           .split(";")
           .map((v) => v.trim())
           .filter(Boolean);
         if (
-          !declarations.every((v) =>
-            /^(?:font-weight\s*:\s*(?:[1-9]00|normal|bold)|font-style\s*:\s*(?:normal|italic)|text-decoration(?:-line)?\s*:\s*(?:none|underline|line-through|underline line-through|line-through underline))$/i.test(
-              v,
-            ),
-          )
+          !declarations.every((v) => {
+            const fontSize = v.match(/^font-size\s*:\s*(\d+(?:\.\d+)?)px$/i);
+            if (fontSize) return numberIn(Number(fontSize[1]), 1, 500);
+            const textColor = v.match(/^color\s*:\s*(\S+)$/i);
+            if (textColor) return color(textColor[1]);
+            return /^(?:font-weight\s*:\s*(?:[1-9]00|normal|bold)|font-style\s*:\s*(?:normal|italic)|text-decoration(?:-line)?\s*:\s*(?:none|underline|line-through|underline line-through|line-through underline))$/i.test(v);
+          })
         )
           return undefined;
         attrs.push(`style="${declarations.join("; ")}"`);
@@ -1047,6 +1210,226 @@ function safeRichHtml(value: unknown): string | undefined {
     result.push(`<span${attrs.length ? ` ${attrs.join(" ")}` : ""}>`);
   }
   return stack.length ? undefined : result.join("");
+}
+const safeRichHtml = sanitizeRichText;
+
+export function richTextToPlain(value: string): string {
+  const safe = sanitizeRichText(value);
+  if (safe === undefined) return "";
+  return safe.replace(/<br>/g, "\n").replace(/<[^>]*>/g, "").replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (entity, code: string) => {
+    const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+    if (named[code.toLowerCase()]) return named[code.toLowerCase()];
+    const point = code.toLowerCase().startsWith("#x") ? parseInt(code.slice(2), 16) : Number(code.slice(1));
+    return Number.isInteger(point) && point > 0 && point <= 0x10ffff && (point < 0xd800 || point > 0xdfff) ? String.fromCodePoint(point) : entity;
+  });
+}
+
+const BLEND_MODES = new Set(["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"]);
+const optional = (value: Record<string, unknown>, key: string, check: (candidate: unknown) => boolean) => value[key] === undefined || check(value[key]);
+const boolean = (value: unknown): value is boolean => typeof value === "boolean";
+const choice = (values: string[]) => (value: unknown) => typeof value === "string" && values.includes(value);
+const uniqueIds = (values: { id: string }[]) => new Set(values.map(value => value.id)).size === values.length;
+
+export function isSafeVectorPath(value: unknown): value is string {
+  if (!string(value, 20_000) || !/^[Mm][MmLlHhVvCcSsQqTtAaZz\d\s.,+\-eE]*$/.test(value)) return false;
+  const grammar = /[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d*\.)?\d+(?:[eE][-+]?\d+)?/g;
+  if (value.replace(grammar, "").replace(/[\s,]+/g, "")) return false;
+  const tokens = value.match(grammar) ?? [], counts: Record<string, number> = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7 };
+  let index = 0, command = "";
+  while (index < tokens.length) {
+    if (/^[a-z]$/i.test(tokens[index])) {
+      command = tokens[index++].toUpperCase();
+      if (command === "Z") { command = ""; continue; }
+    }
+    const count = counts[command];
+    if (!count || index + count > tokens.length) return false;
+    for (let position = 0; position < count; position++) {
+      const token = tokens[index + position], number = Number(token);
+      if (/^[a-z]$/i.test(token) || !Number.isFinite(number) || Math.abs(number) > 100_000 || (command === "A" && [3, 4].includes(position) && number !== 0 && number !== 1)) return false;
+    }
+    index += count;
+    if (command === "M") command = "L";
+  }
+  return tokens.length >= 3 && tokens[0]?.toUpperCase() === "M";
+}
+
+function parseLayout(value: unknown): CanvasLayout | null {
+  if (!object(value)) return null;
+  const result: CanvasLayout = {};
+  for (const key of ["rulers", "showGuides"] as const) {
+    if (!optional(value, key, boolean)) return null;
+    if (value[key] !== undefined) result[key] = value[key] as boolean;
+  }
+  if (value.guides !== undefined) {
+    if (!Array.isArray(value.guides) || value.guides.length > 200) return null;
+    const guides: CanvasGuide[] = [];
+    for (const guide of value.guides) {
+      if (!object(guide) || !identity(guide.id) || !choice(["x", "y"])(guide.axis) || !numberIn(guide.position, -10_000, 10_000) || !optional(guide, "locked", boolean)) return null;
+      guides.push({ id: guide.id, axis: guide.axis as "x" | "y", position: guide.position, ...(guide.locked !== undefined ? { locked: guide.locked as boolean } : {}) });
+    }
+    if (!uniqueIds(guides)) return null;
+    result.guides = guides;
+  }
+  for (const key of ["margins", "safeArea"] as const) {
+    const inset = value[key];
+    if (inset !== undefined) {
+      if (!object(inset) || !boolean(inset.enabled) || !["top", "right", "bottom", "left"].every(side => numberIn(inset[side], 0, 10_000))) return null;
+      result[key] = { enabled: inset.enabled, top: inset.top as number, right: inset.right as number, bottom: inset.bottom as number, left: inset.left as number };
+    }
+  }
+  if (value.grid !== undefined) {
+    const grid = value.grid;
+    if (!object(grid) || !boolean(grid.enabled) || !numberIn(grid.size, 1, 10_000) || !numberIn(grid.columns, 1, 100) || !Number.isInteger(grid.columns) || !numberIn(grid.rows, 1, 100) || !Number.isInteger(grid.rows) || !numberIn(grid.gutter, 0, 10_000)) return null;
+    result.grid = { enabled: grid.enabled, size: grid.size, columns: grid.columns, rows: grid.rows, gutter: grid.gutter };
+  }
+  if (value.snapping !== undefined) {
+    const snap = value.snapping;
+    if (!object(snap) || !["enabled", "objects", "page", "guides", "grid", "spacing"].every(key => boolean(snap[key])) || !numberIn(snap.tolerance, 0, 100)) return null;
+    result.snapping = { enabled: snap.enabled as boolean, objects: snap.objects as boolean, page: snap.page as boolean, guides: snap.guides as boolean, grid: snap.grid as boolean, spacing: snap.spacing as boolean, tolerance: snap.tolerance };
+  }
+  return result;
+}
+
+function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElementBase> | null {
+  const result: Partial<CanvasElementBase> = {};
+  for (const key of ["groupId", "componentId", "componentInstanceId", "componentSourceId", "colorRoleId"] as const) {
+    if (!optional(value, key, identity)) return null;
+    if (value[key] !== undefined) result[key] = value[key] as string;
+  }
+  if (!optional(value, "slot", candidate => string(candidate, 200)) || !optional(value, "master", boolean) || !optional(value, "blur", candidate => numberIn(candidate, 0, 500)) || !optional(value, "blendMode", candidate => typeof candidate === "string" && BLEND_MODES.has(candidate))) return null;
+  for (const key of ["slot", "master", "blur", "blendMode"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  if (value.clipBounds !== undefined) {
+    const bounds = value.clipBounds;
+    if (!object(bounds) || !numberIn(bounds.x, -10_000, 10_000) || !numberIn(bounds.y, -10_000, 10_000) || !numberIn(bounds.width, .0001, 10_000) || !numberIn(bounds.height, .0001, 10_000)) return null;
+    result.clipBounds = { x: bounds.x, y: bounds.y, width: bounds.width, height: bounds.height };
+  }
+  if (value.protected !== undefined) {
+    if (!Array.isArray(value.protected) || value.protected.length > 4 || !value.protected.every(choice(["content", "position", "style", "delete"]))) return null;
+    result.protected = Array.from(new Set(value.protected)) as ProtectedProperty[];
+  }
+  if (value.strokeDash !== undefined) {
+    if (!Array.isArray(value.strokeDash) || value.strokeDash.length > 20 || !value.strokeDash.every(candidate => numberIn(candidate, 0, 1000))) return null;
+    result.strokeDash = [...value.strokeDash];
+  }
+  if (value.anchors !== undefined) {
+    const anchors = value.anchors;
+    if (!object(anchors) || !choice(["left", "center", "right", "stretch"])(anchors.horizontal) || !choice(["top", "middle", "bottom", "stretch"])(anchors.vertical)) return null;
+    result.anchors = { horizontal: anchors.horizontal as NonNullable<CanvasElementBase["anchors"]>["horizontal"], vertical: anchors.vertical as NonNullable<CanvasElementBase["anchors"]>["vertical"] };
+  }
+  if (value.gradient !== undefined) {
+    const gradient = value.gradient;
+    if (!object(gradient) || !choice(["linear", "radial"])(gradient.type) || !numberIn(gradient.angle, -3600, 3600) || !Array.isArray(gradient.stops) || gradient.stops.length < 2 || gradient.stops.length > 20) return null;
+    const stops: CanvasGradient["stops"] = [];
+    for (const stop of gradient.stops) {
+      if (!object(stop) || !color(stop.color) || !numberIn(stop.position, 0, 100)) return null;
+      stops.push({ color: stop.color, position: stop.position });
+    }
+    result.gradient = { type: gradient.type as CanvasGradient["type"], angle: gradient.angle, stops };
+  }
+  if (value.shadow !== undefined) {
+    const shadow = value.shadow;
+    if (!object(shadow) || !color(shadow.color) || !numberIn(shadow.offsetX, -1000, 1000) || !numberIn(shadow.offsetY, -1000, 1000) || !numberIn(shadow.blur, 0, 1000) || !numberIn(shadow.spread, -1000, 1000)) return null;
+    result.shadow = { color: shadow.color, offsetX: shadow.offsetX, offsetY: shadow.offsetY, blur: shadow.blur, spread: shadow.spread };
+  }
+  return result;
+}
+
+function parseTextExtensions(value: Record<string, unknown>): Partial<TextElement> | null {
+  if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "textStyleId", identity)) return null;
+  const result: Partial<TextElement> = {};
+  for (const key of ["textMode", "verticalAlign", "listStyle", "padding", "paragraphSpacing", "strikethrough", "textStyleId"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  if (value.richText !== undefined) {
+    const sanitized = sanitizeRichText(value.richText);
+    if (sanitized !== undefined) result.richText = sanitized;
+  }
+  if (value.textureFill !== undefined) {
+    const texture = parseShapeImageFill(value.textureFill);
+    if (!texture) return null;
+    result.textureFill = texture;
+  }
+  if (value.wordTextures !== undefined) {
+    if (!Array.isArray(value.wordTextures) || value.wordTextures.length > 30) return null;
+    const textures: NonNullable<TextElement["wordTextures"]> = [];
+    for (const texture of value.wordTextures) {
+      if (!object(texture) || !identity(texture.id)) return null;
+      const fill = parseShapeImageFill(texture);
+      if (!fill) return null;
+      textures.push({ ...fill, id: texture.id });
+    }
+    if (!uniqueIds(textures)) return null;
+    result.wordTextures = textures;
+  }
+  const textureIds = new Set(result.wordTextures?.map(texture => texture.id));
+  for (const reference of result.richText?.matchAll(/<span\b[^>]*\bdata-texture-id="([a-zA-Z0-9_-]+)"/g) ?? []) if (!textureIds.has(reference[1])) return null;
+  return result;
+}
+
+function parseResources(value: Record<string, unknown>): DocumentResources | null {
+  const resources: DocumentResources = {};
+  if (!optional(value, "folderId", identity) || !optional(value, "favorite", boolean) || !optional(value, "deletedAt", candidate => string(candidate, 40) && Number.isFinite(Date.parse(candidate)))) return null;
+  for (const key of ["folderId", "favorite", "deletedAt"] as const) if (value[key] !== undefined) Object.assign(resources, { [key]: value[key] });
+  if (value.tags !== undefined) {
+    if (!Array.isArray(value.tags) || value.tags.length > 40 || !value.tags.every(tag => string(tag, 100))) return null;
+    resources.tags = Array.from(new Set(value.tags));
+  }
+  if (value.customSize !== undefined) {
+    if (!object(value.customSize) || !numberIn(value.customSize.width, 100, 8192) || !numberIn(value.customSize.height, 100, 8192)) return null;
+    resources.customSize = { width: value.customSize.width, height: value.customSize.height };
+  }
+  if (value.masterScene !== undefined) {
+    const master = parseCanvas(value.masterScene);
+    if (!master) return null;
+    resources.masterScene = master;
+  }
+  if (value.styles !== undefined) {
+    if (!Array.isArray(value.styles) || value.styles.length > 80) return null;
+    const styles: TextStyle[] = [];
+    for (const style of value.styles) {
+      if (!object(style) || !identity(style.id) || !string(style.name, 200)) return null;
+      const parsed = parseCanvas({ background: "transparent", elements: [{ ...createCanvasElement("text"), ...style, type: "text", text: "", x: 0, y: 0, width: 1, height: 1, rotation: 0, opacity: 1, locked: false }] });
+      const element = parsed?.elements[0];
+      if (!element || element.type !== "text") return null;
+      const textStyle: Record<string, unknown> = { id: style.id, name: style.name };
+      for (const key of ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill"] as const) if (element[key] !== undefined) textStyle[key] = element[key];
+      styles.push(textStyle as TextStyle);
+    }
+    if (!uniqueIds(styles)) return null;
+    resources.styles = styles;
+  }
+  if (value.colorRoles !== undefined) {
+    if (!Array.isArray(value.colorRoles) || value.colorRoles.length > 40) return null;
+    const roles: NonNullable<DocumentResources["colorRoles"]> = [];
+    for (const role of value.colorRoles) {
+      if (!object(role) || !identity(role.id) || !string(role.name, 200) || !color(role.color)) return null;
+      roles.push({ id: role.id, name: role.name, color: role.color });
+    }
+    if (!uniqueIds(roles)) return null;
+    resources.colorRoles = roles;
+  }
+  if (value.components !== undefined) {
+    if (!Array.isArray(value.components) || value.components.length > 40) return null;
+    const components: ReusableComponent[] = [];
+    for (const component of value.components) {
+      if (!object(component) || !identity(component.id) || !string(component.name, 200) || !numberIn(component.width, 1, 10_000) || !numberIn(component.height, 1, 10_000)) return null;
+      const scene = parseCanvas(component.scene);
+      if (!scene) return null;
+      components.push({ id: component.id, name: component.name, width: component.width, height: component.height, scene });
+    }
+    if (!uniqueIds(components)) return null;
+    resources.components = components;
+  }
+  if (value.parameters !== undefined) {
+    if (!Array.isArray(value.parameters) || value.parameters.length > 100) return null;
+    const parameters: TemplateParameter[] = [];
+    for (const parameter of value.parameters) {
+      if (!object(parameter) || !identity(parameter.id) || !string(parameter.name, 200) || !choice(["text", "image", "color"])(parameter.type) || !optional(parameter, "defaultValue", candidate => string(candidate, 20_000)) || !optional(parameter, "required", boolean) || !optional(parameter, "maxLength", candidate => numberIn(candidate, 1, 20_000) && Number.isInteger(candidate))) return null;
+      if (parameter.defaultValue !== undefined && parameter.defaultValue !== "" && (parameter.type === "color" ? !color(parameter.defaultValue) : parameter.type === "image" ? !safeImageUrl(parameter.defaultValue) : false)) return null;
+      parameters.push({ id: parameter.id, name: parameter.name, type: parameter.type as TemplateParameter["type"], ...(parameter.defaultValue !== undefined ? { defaultValue: parameter.defaultValue as string } : {}), ...(parameter.required !== undefined ? { required: parameter.required as boolean } : {}), ...(parameter.maxLength !== undefined ? { maxLength: parameter.maxLength as number } : {}) });
+    }
+    if (!uniqueIds(parameters)) return null;
+    resources.parameters = parameters;
+  }
+  return resources;
 }
 
 const NUMERIC_STYLE: Partial<Record<keyof SlideStyle, [number, number]>> = {
@@ -1197,6 +1580,34 @@ const numberIn = (value: unknown, min: number, max: number): value is number =>
   value >= min &&
   value <= max;
 
+function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | null {
+  if (!optional(value, "directive", candidate => string(candidate, 2000)) || !optional(value, "rightsNote", candidate => string(candidate, 2000))) return null;
+  const result: PhotoMetadata = {};
+  for (const key of ["directive", "rightsNote"] as const) if (value[key] !== undefined) result[key] = value[key] as string;
+  if (value.sourceUrl !== undefined) {
+    if (!string(value.sourceUrl, 4000)) return null;
+    try { const url = new URL(value.sourceUrl); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null; } catch { return null; }
+    result.sourceUrl = value.sourceUrl;
+  }
+  if (value.provenance !== undefined) {
+    const provenance = value.provenance;
+    if (!object(provenance) || !optional(provenance, "source", candidate => string(candidate, 200)) || !optional(provenance, "imageId", identity) || !optional(provenance, "description", candidate => string(candidate, 10_000)) || !optional(provenance, "cosmosManual", boolean)) return null;
+    result.provenance = {};
+    for (const key of ["source", "imageId", "description", "cosmosManual"] as const) if (provenance[key] !== undefined) Object.assign(result.provenance, { [key]: provenance[key] });
+  }
+  return result;
+}
+
+/** Validate nested photo fills with the same URL and crop constraints as image layers. */
+export function parseShapeImageFill(value: unknown): ShapeImageFill | null {
+  if (!object(value) || !safeImageUrl(value.src) || !choice(["cover", "contain"])(value.objectFit) || !numberIn(value.cropX, 0, 100) || !numberIn(value.cropY, 0, 100) || !optional(value, "alt", candidate => string(candidate, 10_000)) || !optional(value, "cropScale", candidate => numberIn(candidate, .1, 20)) || !optional(value, "flipX", boolean) || !optional(value, "flipY", boolean) || !optional(value, "intrinsicWidth", candidate => numberIn(candidate, 1, 100_000)) || !optional(value, "intrinsicHeight", candidate => numberIn(candidate, 1, 100_000))) return null;
+  const metadata = parsePhotoMetadata(value);
+  if (!metadata) return null;
+  const result: ShapeImageFill = { ...metadata, src: value.src, objectFit: value.objectFit as ShapeImageFill["objectFit"], cropX: value.cropX, cropY: value.cropY };
+  for (const key of ["alt", "cropScale", "flipX", "flipY", "intrinsicWidth", "intrinsicHeight"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  return result;
+}
+
 function parseCanvas(value: unknown): CanvasScene | null {
   if (
     !object(value) ||
@@ -1206,6 +1617,30 @@ function parseCanvas(value: unknown): CanvasScene | null {
   )
     return null;
   const scene: CanvasScene = { background: value.background, elements: [] };
+  if (value.layout !== undefined) {
+    const layout = parseLayout(value.layout);
+    if (!layout) return null;
+    scene.layout = layout;
+  }
+  if (value.groups !== undefined) {
+    if (!Array.isArray(value.groups) || value.groups.length > 100) return null;
+    const groups: CanvasGroup[] = [];
+    for (const group of value.groups) {
+      if (!object(group) || !identity(group.id) || !string(group.name, 200) || !optional(group, "parentId", identity) || !optional(group, "locked", boolean) || !optional(group, "hidden", boolean)) return null;
+      groups.push({ id: group.id, name: group.name, ...(group.parentId !== undefined ? { parentId: group.parentId as string } : {}), ...(group.locked !== undefined ? { locked: group.locked as boolean } : {}), ...(group.hidden !== undefined ? { hidden: group.hidden as boolean } : {}) });
+    }
+    if (!uniqueIds(groups)) return null;
+    const map = new Map(groups.map(group => [group.id, group]));
+    for (const group of groups) {
+      const seen = new Set([group.id]);
+      let parentId = group.parentId;
+      while (parentId) {
+        if (seen.has(parentId) || !map.has(parentId)) return null;
+        seen.add(parentId); parentId = map.get(parentId)!.parentId;
+      }
+    }
+    scene.groups = groups;
+  }
   const ids = new Set<string>();
   for (const element of value.elements) {
     if (
@@ -1223,7 +1658,10 @@ function parseCanvas(value: unknown): CanvasScene | null {
       (element.hidden !== undefined && typeof element.hidden !== "boolean")
     )
       return null;
+    const extensions = parseBaseExtensions(element);
+    if (!extensions || (extensions.groupId && !scene.groups?.some(group => group.id === extensions.groupId))) return null;
     const base: CanvasElementBase = {
+      ...extensions,
       id: element.id,
       name: element.name,
       x: element.x,
@@ -1252,7 +1690,10 @@ function parseCanvas(value: unknown): CanvasScene | null {
           element.align !== "right")
       )
         return null;
+      const textExtensions = parseTextExtensions(element);
+      if (!textExtensions) return null;
       scene.elements.push({
+        ...textExtensions,
         ...base,
         type: "text",
         text: element.text,
@@ -1275,7 +1716,14 @@ function parseCanvas(value: unknown): CanvasScene | null {
         !numberIn(element.radius, 0, 5000)
       )
         return null;
+      if (!optional(element, "cropScale", candidate => numberIn(candidate, 0.1, 20)) || !optional(element, "flipX", boolean) || !optional(element, "flipY", boolean) || !optional(element, "mask", choice(["none", "ellipse", "triangle", "diamond"])) || !optional(element, "intrinsicWidth", candidate => numberIn(candidate, 1, 100_000)) || !optional(element, "intrinsicHeight", candidate => numberIn(candidate, 1, 100_000))) return null;
+      const imageExtensions: Partial<ImageElement> = {};
+      const photoMetadata = parsePhotoMetadata(element);
+      if (!photoMetadata) return null;
+      for (const key of ["cropScale", "flipX", "flipY", "mask", "intrinsicWidth", "intrinsicHeight"] as const) if (element[key] !== undefined) Object.assign(imageExtensions, { [key]: element[key] });
       scene.elements.push({
+        ...photoMetadata,
+        ...imageExtensions,
         ...base,
         type: "image",
         src: element.src,
@@ -1286,17 +1734,27 @@ function parseCanvas(value: unknown): CanvasScene | null {
       });
     } else if (element.type === "shape") {
       if (
-        (element.shape !== "rectangle" && element.shape !== "ellipse") ||
+        !choice(["rectangle", "ellipse", "triangle", "diamond", "polygon", "star", "arrow", "path"])(element.shape) ||
         !color(element.fill) ||
         !color(element.stroke) ||
         !numberIn(element.strokeWidth, 0, 200) ||
         !numberIn(element.radius, 0, 5000)
       )
         return null;
+      if (!optional(element, "sides", candidate => numberIn(candidate, 3, 30) && Number.isInteger(candidate)) || !optional(element, "starPoints", candidate => numberIn(candidate, 3, 30) && Number.isInteger(candidate)) || !optional(element, "innerRadius", candidate => numberIn(candidate, 0.05, 0.95)) || !optional(element, "path", isSafeVectorPath) || (element.shape === "path" && !isSafeVectorPath(element.path)) || !optional(element, "viewBox", candidate => typeof candidate === "string" && candidate.trim().split(/[\s,]+/).length === 4 && candidate.trim().split(/[\s,]+/).every(part => Number.isFinite(Number(part)) && Math.abs(Number(part)) <= 100_000) && Number(candidate.trim().split(/[\s,]+/)[2]) > 0 && Number(candidate.trim().split(/[\s,]+/)[3]) > 0)) return null;
+      const shapeExtensions: Partial<ShapeElement> = {};
+      if (!optional(element, "fillRule", choice(["nonzero", "evenodd"])) || !optional(element, "strokeAlign", choice(["inside", "center", "outside"]))) return null;
+      for (const key of ["sides", "starPoints", "innerRadius", "path", "viewBox", "fillRule", "strokeAlign"] as const) if (element[key] !== undefined) Object.assign(shapeExtensions, { [key]: element[key] });
+      if (element.imageFill !== undefined) {
+        const fill = parseShapeImageFill(element.imageFill);
+        if (!fill) return null;
+        shapeExtensions.imageFill = fill;
+      }
       scene.elements.push({
+        ...shapeExtensions,
         ...base,
         type: "shape",
-        shape: element.shape,
+        shape: element.shape as ShapeElement["shape"],
         fill: element.fill,
         stroke: element.stroke,
         strokeWidth: element.strokeWidth,
@@ -1306,6 +1764,10 @@ function parseCanvas(value: unknown): CanvasScene | null {
     ids.add(element.id);
   }
   return scene;
+}
+
+export function parseCanvasScene(value: unknown): CanvasScene | null {
+  return parseCanvas(value);
 }
 
 function parsePages(value: unknown): DesignPage[] | null {
@@ -1340,6 +1802,7 @@ function parsePages(value: unknown): DesignPage[] | null {
     if (!style) return null;
     const canvas = p.canvas === undefined ? undefined : parseCanvas(p.canvas);
     if (canvas === null) return null;
+    if (!optional(p, "label", candidate => string(candidate, 200)) || !optional(p, "useMaster", boolean)) return null;
     const source: StoryImage["source"] = [
       "google",
       "pinterest",
@@ -1354,6 +1817,8 @@ function parsePages(value: unknown): DesignPage[] | null {
     pages.push({
       id: p.id,
       style,
+      ...(p.label !== undefined ? { label: p.label as string } : {}),
+      ...(p.useMaster !== undefined ? { useMaster: p.useMaster as boolean } : {}),
       ...(canvas ? { canvas } : {}),
       image: {
         id: image.id,
@@ -1392,7 +1857,7 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
     } else if (JSON.stringify(input)?.length > MAX_LIBRARY_CHARS) return null;
     if (
       !object(input) ||
-      input.version !== 1 ||
+      (input.version !== 1 && input.version !== 2) ||
       !Array.isArray(input.designs) ||
       input.designs.length > 150 ||
       !Array.isArray(input.templates) ||
@@ -1409,13 +1874,23 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
     if (!kits || (activeId !== undefined && (!identity(activeId) || !kits.some(kit => kit.id === activeId)))) return null;
     const active = kits.find(kit => kit.id === activeId) ?? kits[0];
     const library: EditorLibrary = {
-      version: 1,
+      version: 2,
       designs: [],
       templates: [],
       brand: brandProjection(active),
       brandKits: kits,
       activeBrandKitId: active.id,
     };
+    if (input.folders !== undefined) {
+      if (!Array.isArray(input.folders) || input.folders.length > 80) return null;
+      const folders: { id: string; name: string }[] = [];
+      for (const folder of input.folders) {
+        if (!object(folder) || !identity(folder.id) || !string(folder.name, 200)) return null;
+        folders.push({ id: folder.id, name: folder.name });
+      }
+      if (!uniqueIds(folders)) return null;
+      library.folders = folders;
+    }
     const designIds = new Set<string>();
     const templateIds = new Set<string>();
     for (const d of input.designs) {
@@ -1438,9 +1913,54 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
         return null;
       const pages = parsePages(d.pages);
       if (!pages) return null;
+      const resources = parseResources(d);
+      if (!resources || !optional(d, "reviewStatus", choice(["draft", "review", "approved"]))) return null;
+      const metadata: Pick<DesignDocument, "reviewStatus" | "comments" | "versions"> = {};
+      const reviewLinks: NonNullable<DesignDocument["reviewLinks"]> = [];
+      if (d.reviewLinks !== undefined) {
+        if (!Array.isArray(d.reviewLinks) || d.reviewLinks.length > 20) return null;
+        for (const link of d.reviewLinks) {
+          if (!object(link) || !identity(link.id) || !string(link.url, 4000) || !string(link.expiresAt, 40) || !Number.isFinite(Date.parse(link.expiresAt)) || /[\s\\]/.test(link.url)) return null;
+          if (link.url.startsWith("/") ? link.url.startsWith("//") : !/^https:\/\//i.test(link.url)) return null;
+          if (link.url.startsWith("https://")) { const url = new URL(link.url); if (!url.hostname || url.username || url.password) return null; }
+          reviewLinks.push({ id: link.id, url: link.url, expiresAt: link.expiresAt });
+        }
+        if (!uniqueIds(reviewLinks)) return null;
+      }
+      if (d.reviewStatus !== undefined) metadata.reviewStatus = d.reviewStatus as DesignDocument["reviewStatus"];
+      if (d.comments !== undefined) {
+        if (!Array.isArray(d.comments) || d.comments.length > 500) return null;
+        const comments: DesignComment[] = [];
+        for (const comment of d.comments) {
+          if (!object(comment) || !identity(comment.id) || !string(comment.text, 5000) || !string(comment.createdAt, 40) || !Number.isFinite(Date.parse(comment.createdAt)) || !optional(comment, "pageId", identity) || !optional(comment, "elementId", identity) || !optional(comment, "resolved", boolean)) return null;
+          comments.push({ id: comment.id, text: comment.text, createdAt: comment.createdAt, ...(comment.pageId !== undefined ? { pageId: comment.pageId as string } : {}), ...(comment.elementId !== undefined ? { elementId: comment.elementId as string } : {}), ...(comment.resolved !== undefined ? { resolved: comment.resolved as boolean } : {}) });
+        }
+        if (!uniqueIds(comments)) return null;
+        metadata.comments = comments;
+      }
+      if (d.versions !== undefined) {
+        if (!Array.isArray(d.versions) || d.versions.length > 20) return null;
+        const versions: DesignVersion[] = [];
+        for (const version of d.versions) {
+          if (!object(version) || !identity(version.id) || !string(version.name, 200) || !string(version.createdAt, 40) || !Number.isFinite(Date.parse(version.createdAt)) || !format(version.format) || !string(version.caption, 20_000)) return null;
+          const versionPages = parsePages(version.pages);
+          const versionCanvas = version.continuousCanvas === undefined ? undefined : parseCanvas(version.continuousCanvas);
+          const versionMaster = version.masterScene === undefined ? undefined : parseCanvas(version.masterScene);
+          if (!versionPages || versionCanvas === null || versionMaster === null || (versionCanvas && versionPages.length < 2)) return null;
+          if (version.customSize !== undefined && (!object(version.customSize) || !numberIn(version.customSize.width, 100, 8192) || !numberIn(version.customSize.height, 100, 8192))) return null;
+          const versionResources = parseResources(version);
+          if (!versionResources) return null;
+          versions.push({ id: version.id, name: version.name, createdAt: version.createdAt, format: version.format, pages: versionPages, caption: version.caption, ...(versionCanvas ? { continuousCanvas: versionCanvas } : {}), ...(versionMaster ? { masterScene: versionMaster } : {}), ...(version.customSize ? { customSize: { width: (version.customSize as {width:number}).width, height: (version.customSize as {height:number}).height } } : {}), ...(versionResources.styles !== undefined ? { styles: versionResources.styles } : {}), ...(versionResources.components !== undefined ? { components: versionResources.components } : {}), ...(versionResources.colorRoles !== undefined ? { colorRoles: versionResources.colorRoles } : {}), ...(versionResources.parameters !== undefined ? { parameters: versionResources.parameters } : {}) });
+        }
+        if (!uniqueIds(versions)) return null;
+        metadata.versions = versions;
+      }
       const continuousCanvas = d.continuousCanvas === undefined ? undefined : parseCanvas(d.continuousCanvas);
       if (d.continuousCanvas !== undefined && (!continuousCanvas || pages.length < 2)) return null;
       library.designs.push({
+        ...resources,
+        ...metadata,
+        ...(d.reviewLinks !== undefined ? { reviewLinks } : {}),
         id: d.id,
         name: d.name,
         templateId: d.templateId,
@@ -1470,9 +1990,12 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
         return null;
       const pages = parsePages(t.pages);
       if (!pages) return null;
+      const resources = parseResources(t);
+      if (!resources) return null;
       const continuousCanvas = t.continuousCanvas === undefined ? undefined : parseCanvas(t.continuousCanvas);
       if (t.continuousCanvas !== undefined && (!continuousCanvas || pages.length < 2)) return null;
       library.templates.push({
+        ...resources,
         id: t.id,
         name: t.name,
         description: t.description,

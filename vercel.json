@@ -2,7 +2,7 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "crons": [
     {
-      "path": "/api/grateful-future/cron",
+      "path": "/api/engine/cron",
       "schedule": "0 * * * *"
     }
   ]
