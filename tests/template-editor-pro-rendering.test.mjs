@@ -28,6 +28,7 @@ function load(relative) {
   },unit,unit.exports);
   return unit.exports;
 }
+const quick=load("components/template-editor/quick-toolbar.tsx"),inspector=load("components/template-editor/element-inspector.tsx");
 const photoFrames=load("lib/template-editor/photo-frames.ts"), textures=load("lib/template-editor/text-textures.ts");
 const geometry=load("lib/template-editor/canvas-geometry.ts");
 const model=load("lib/template-editor/model.ts"), canvas=load("components/template-editor/canvas.tsx"), rich=load("lib/template-editor/rich-text-editing.ts"), appearance=load("lib/template-editor/appearance.ts");
@@ -354,4 +355,35 @@ test("non-square paths apply stroke masks and inside clips in the untransformed 
   const strokes=[...html.matchAll(/<path[^>]+stroke-width="8"[^>]*>/g)].map(match=>match[0]);
   assert.equal(strokes.length,2);strokes.forEach(stroke=>assert.ok(!/\s(?:mask|clip-path)=/.test(stroke)));
   assert.match(html,/<mask[^>]+width="256" height="116"/);
+});
+
+
+function findReactElement(node,predicate){
+  if(!node||typeof node!=="object")return undefined;
+  if(predicate(node))return node;
+  for(const child of React.Children.toArray(node.props?.children)){const found=findReactElement(child,predicate);if(found)return found;}
+}
+const quickDefaults={disabled:false,onDuplicate(){},onDelete(){},onMore(){},onAddText(){},onUpload(){}};
+test("choosing a quick border adds a visible outline and revives transparent fills without losing partial alpha",()=>{
+  const outline=shape({id:"outlined",stroke:"transparent",strokeWidth:0,strokeAlign:"outside"});
+  let changed;
+  const toolbar=quick.QuickToolbar({...quickDefaults,scene:{background:"#fff",elements:[outline]},selectedIds:[outline.id],onChange:scene=>changed=scene});
+  findReactElement(toolbar,node=>node.props?.label==="Quick shape border").props.onChange("#123456");
+  assert.equal(changed.elements[0].stroke,"#123456");assert.equal(changed.elements[0].strokeWidth,1);assert.equal(changed.elements[0].strokeAlign,"outside");
+  const items=[shape({id:"transparent",fill:"#ff000000"}),shape({id:"alpha",fill:"#ff000080"}),shape({id:"protected",fill:"#aabbcc",protected:["style"]})];
+  const colors=quick.QuickToolbar({...quickDefaults,scene:{background:"#fff",elements:items},selectedIds:items.map(item=>item.id),onChange:scene=>changed=scene});
+  findReactElement(colors,node=>node.props?.label==="Quick shape fill").props.onChange("#123456");
+  assert.equal(changed.elements[0].fill,"#123456");assert.equal(changed.elements[1].fill,"#12345680");assert.equal(changed.elements[2],items[2]);
+});
+test("quick photo fit preserves shape geometry, texture source and inherited protection",()=>{
+  const frame=shape({id:"frame",imageFill:photo}),locked=shape({id:"locked",imageFill:photo,groupId:"g"});let changed;
+  const toolbar=quick.QuickToolbar({...quickDefaults,scene:{background:"#fff",elements:[frame,locked],groups:[{id:"g",name:"Locked",locked:true}]},selectedIds:[frame.id,locked.id],onChange:scene=>changed=scene});
+  findReactElement(toolbar,node=>node.props?.["aria-label"]==="Quick photo fit").props.onChange({target:{value:"contain"}});
+  assert.equal(changed.elements[0].imageFill.objectFit,"contain");assert.equal(changed.elements[0].width,frame.width);assert.equal(changed.elements[0].imageFill.src,photo.src);assert.equal(changed.elements[1],locked);
+});
+test("advanced case conversion preserves word textures, inline font styling and literal entities",()=>{
+  const item=text({text:"Engine & design",richText:'<span class="gf-font-sans" data-texture-id="word-1" style="color:#abc8; font-weight:700">Engine &amp; design</span>',wordTextures:[{...photo,id:"word-1"}]});
+  const upper=inspector.changeTextCase(item,true);
+  assert.equal(upper.text,"ENGINE & DESIGN");assert.match(upper.richText,/data-texture-id="word-1"/);assert.match(upper.richText,/class="gf-font-sans"/);assert.match(upper.richText,/ENGINE &amp; DESIGN/);assert.equal(upper.wordTextures,item.wordTextures);
+  assert.equal(model.richTextToPlain(upper.richText),upper.text);
 });

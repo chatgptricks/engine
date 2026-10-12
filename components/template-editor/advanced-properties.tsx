@@ -7,7 +7,9 @@ import { updatePhotoContent } from "@/lib/template-editor/photo-frames";
 import { ColorField, NumberField } from "./controls";
 
 export type ColorRoleOption = { id: string; name: string; color: string };
+export type AdvancedPropertySection = "text"|"texture"|"photo"|"shape"|"effects"|"brand"|"constraints";
 export type AdvancedPropertiesProps = {
+  sections?: readonly AdvancedPropertySection[];
   elements: CanvasElement[];
   outputScale?: number;
   update: (group: string, transform: (element: CanvasElement) => CanvasElement) => void;
@@ -44,7 +46,8 @@ export function ColorRolesPanel({ roles, onSave, onDelete, onApply }: { roles: C
   return <Section title="Brand color roles"><div className="te-color-roles">{roles.map(role => <div className="te-color-role" key={role.id}><button type="button" disabled={!onApply} onClick={() => onApply?.(role)} aria-label={`Apply color role ${role.name}`}><span style={{ background: role.color }} />{role.name}</button>{onSave && <button type="button" aria-label={`Edit color role ${role.name}`} onClick={() => setDraft(role)}>Edit</button>}{onDelete && <button type="button" aria-label={`Remove color role ${role.name}`} onClick={() => { if (confirmDelete === role.id) { onDelete(role.id); setConfirmDelete(""); } else setConfirmDelete(role.id); }}>{confirmDelete === role.id ? "Remove?" : "×"}</button>}</div>)}</div>{onSave && <><label className="te-field">Role name<input aria-label="Color role name" value={draft.name} maxLength={100} placeholder="Primary, accent, surface…" onChange={event => setDraft({ ...draft, name: event.target.value })} /></label><ColorField label="Role color" value={draft.color} onChange={color => setDraft({ ...draft, color })} /><div className="te-element-grid te-element-actions"><button type="button" disabled={!draft.name.trim()} onClick={() => { onSave({ ...draft, id: draft.id || crypto.randomUUID(), name: draft.name.trim() }); setDraft({ id: "", name: "", color: "#ffffff" }); }}>{draft.id ? "Update role" : "Save role"}</button>{draft.id && <button type="button" onClick={() => setDraft({ id: "", name: "", color: "#ffffff" })}>New role</button>}</div></>}</Section>;
 }
 
-export function AdvancedProperties({ elements, update, textStyles = [], onSaveTextStyle, onDeleteTextStyle, colorRoles = [], onSaveColorRole, onDeleteColorRole, onUploadTextTexture, onClearTextTexture, onUploadFramePhoto, outputScale = 3 }: AdvancedPropertiesProps) {
+export function AdvancedProperties({ elements, update, textStyles = [], onSaveTextStyle, onDeleteTextStyle, colorRoles = [], onSaveColorRole, onDeleteColorRole, onUploadTextTexture, onClearTextTexture, onUploadFramePhoto, sections, outputScale = 3 }: AdvancedPropertiesProps) {
+  const show=(section:AdvancedPropertySection)=>!sections||sections.includes(section);
   const px = (value: number | undefined) => value === undefined ? undefined : Number((value * outputScale).toFixed(2));
   const [styleName, setStyleName] = useState("");
   const [uploading,setUploading]=useState(false),[uploadError,setUploadError]=useState("");
@@ -65,7 +68,7 @@ export function AdvancedProperties({ elements, update, textStyles = [], onSaveTe
   const blendModes = ["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"] as const;
   const styleId = common(texts, item => item.textStyleId ?? "") as string | undefined;
   return <>
-    {texts.length > 0 && <Section title="Text layout & styles">
+    {show("text") && texts.length > 0 && <Section title="Text layout & styles">
       <Select label="Text sizing" value={common(texts, item => item.textMode ?? "fixed") as string | undefined} options={[["fixed", "Fixed box"], ["auto-height", "Auto height"], ["auto-fit", "Fit text to box"]]} onChange={value => patchText({ textMode: value as TextElement["textMode"] })} />
       <Select label="Vertical text alignment" value={common(texts, item => item.verticalAlign ?? "top") as string | undefined} options={[["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]]} onChange={value => patchText({ verticalAlign: value as TextElement["verticalAlign"] })} />
       <div className="te-element-grid"><NumberField label="Text padding" unit="px" min={0} max={1080} value={px(common(texts, item => item.padding ?? 0) as number | undefined)} onChange={value => patchText({ padding: value / outputScale })} />
@@ -84,13 +87,13 @@ export function AdvancedProperties({ elements, update, textStyles = [], onSaveTe
         }}>Save style</button>{onDeleteTextStyle && <button type="button" disabled={!styleId} onClick={() => styleId && onDeleteTextStyle(styleId)}>Remove style</button>}</div>
       </>}
     </Section>}
-    {texts.length>0 && (onUploadTextTexture || texts.some(item=>item.textureFill||item.wordTextures?.length)) && <Section title="Text image texture">
+    {show("texture") && texts.length>0 && (onUploadTextTexture || texts.some(item=>item.textureFill||item.wordTextures?.length)) && <Section title="Text image texture">
       <p className="te-element-hint">Select words on the canvas to texture those words, or apply a photo to the entire text.</p>
       {onUploadTextTexture && <label className="te-property-action">{uploading?"Loading texture…":"Choose texture photo"}<input type="file" aria-label="Choose text texture photo" accept="image/png,image/jpeg,image/webp" disabled={uploading} onChange={event=>{const file=event.target.files?.[0];event.target.value="";if(file)void uploadPhoto(file);}} /></label>}
       {onClearTextTexture && <button className="te-property-action" type="button" onClick={onClearTextTexture}>Remove text texture</button>}
       {uploadError&&<p className="te-element-hint" role="alert">{uploadError}</p>}
     </Section>}
-    {images.length > 0 && <Section title="Crop, flip & mask">
+    {show("photo") && images.length > 0 && <Section title="Crop, flip & mask">
       <Select label="Photo fit" value={commonValue(images,"fit")} options={[["cover","Fill frame"],["contain","Fit entire photo"]]} onChange={fit=>patchImage({fit:fit as ImageElement["fit"]})} />
       <div className="te-element-grid"><NumberField label="Crop X" unit="%" min={0} max={100} value={commonValue(images, "cropX")} onChange={cropX => patchImage({ cropX })} /><NumberField label="Crop Y" unit="%" min={0} max={100} value={commonValue(images, "cropY")} onChange={cropY => patchImage({ cropY })} /></div>
       <NumberField label="Image zoom" unit="%" min={100} max={1000} value={(common(images, item => item.cropScale ?? 1) as number | undefined) === undefined ? undefined : Number(common(images, item => item.cropScale ?? 1)) * 100} onChange={value => patchImage({ cropScale: value / 100 })} />
@@ -101,18 +104,15 @@ export function AdvancedProperties({ elements, update, textStyles = [], onSaveTe
       {photoFrames.length>0 && <button className="te-property-action" type="button" onClick={()=>update("image-fill",item=>item.type==="shape"?{...item,imageFill:undefined}:item)}>Remove photo from frame</button>}
       {images.length === 1 && images[0].intrinsicWidth && <p className="te-element-hint">Source {images[0].intrinsicWidth} × {images[0].intrinsicHeight} px{imageResolution(images[0], outputScale)?.low ? " · Below export resolution at this size" : " · Enough detail for export"}</p>}
     </Section>}
-    {shapes.length > 0 && <Section title="Shape geometry">
-      {onUploadFramePhoto&&shapes.length===1&&<label className="te-property-action">{uploading?"Loading photo…":shapes[0].imageFill?"Replace frame photo":"Choose frame photo"}<input type="file" aria-label="Choose shape frame photo" accept="image/png,image/jpeg,image/webp" disabled={uploading} onChange={event=>{const file=event.target.files?.[0];event.target.value="";if(file)void uploadPhoto(file,shapes[0].id);}} /></label>}
-      {uploadError&&shapes.length>0&&<p className="te-element-hint" role="alert">{uploadError}</p>}
+    {show("shape") && shapes.length > 0 && <Section title="Shape geometry">
       <Select label="Shape geometry" value={commonValue(shapes, "shape")} options={[["rectangle", "Rectangle"], ["ellipse", "Ellipse"], ["triangle", "Triangle"], ["diamond", "Diamond"], ["polygon", "Polygon"], ["star", "Star"], ["arrow", "Arrow"], ["path", "Custom SVG path"]]} onChange={shape => patchShape({ shape: shape as ShapeElement["shape"], ...(shape === "path" ? { path: "M 0 0 L 100 0 L 100 100 L 0 100 Z", viewBox: "0 0 100 100" } : {}) })} />
       {shapes.some(item => item.shape === "polygon") && <NumberField label="Polygon sides" min={3} max={32} value={common(shapes, item => item.sides ?? 6) as number | undefined} onChange={sides => patchShape({ sides: Math.round(sides) })} />}
       {shapes.some(item => item.shape === "star") && <div className="te-element-grid"><NumberField label="Star points" min={3} max={24} value={common(shapes, item => item.starPoints ?? 5) as number | undefined} onChange={starPoints => patchShape({ starPoints: Math.round(starPoints) })} /><NumberField label="Inner radius" unit="%" min={5} max={95} value={common(shapes, item => item.innerRadius ?? .5) === undefined ? undefined : Number(common(shapes, item => item.innerRadius ?? .5)) * 100} onChange={innerRadius => patchShape({ innerRadius: innerRadius / 100 })} /></div>}
       {shapes.length === 1 && shapes[0].shape === "path" && <><label className="te-field">SVG path<textarea aria-label="SVG path data" rows={3} value={shapes[0].path ?? ""} maxLength={20000} onChange={event => patchShape({ path: event.target.value })} /></label><label className="te-field">View box<input aria-label="SVG path view box" value={shapes[0].viewBox ?? "0 0 100 100"} onChange={event => { if (/^\s*-?\d+(?:\.\d+)?\s+-?\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s+\d+(?:\.\d+)?\s*$/.test(event.target.value)) patchShape({ viewBox: event.target.value }); }} /></label></>}
       <button className="te-property-action" type="button" onClick={() => update("square-shape", item => item.type === "shape" ? { ...item, height: item.width } : item)}>Make square / circle</button>
-      <Select label="Outline alignment" value={common(shapes,item=>item.strokeAlign??"center") as string|undefined} options={[["inside","Inside"],["center","Center"],["outside","Outside"]]} onChange={strokeAlign=>patchShape({strokeAlign:strokeAlign as ShapeElement["strokeAlign"]})} />
       <Select label="Border dash" value={common(shapes, item => item.strokeDash?.length ? item.strokeDash.join(",") : "") as string | undefined} options={[["", "Solid"], ["4,4", "Dashed"], ["1,3", "Dotted"], ["8,3,2,3", "Dash dot"]]} onChange={value => patchShape({ strokeDash: value ? value.split(",").map(Number) : undefined })} />
     </Section>}
-    <Section title="Effects & appearance">
+    {show("effects") && <Section title="Effects & appearance">
       <Select label="Blend mode" value={common(elements, item => item.blendMode ?? "normal") as string | undefined} options={blendModes.map(item => [item, item.replaceAll("-", " ")] as const)} onChange={blendMode => update("blend-mode", item => ({ ...item, blendMode: blendMode as CanvasElement["blendMode"] }))} />
       <NumberField label="Blur" unit="px" min={0} max={300} value={px(common(elements, item => item.blur ?? 0) as number | undefined)} onChange={value => update("blur", item => ({ ...item, blur: value / outputScale }))} />
       <Check label="Gradient fill" checked={allGradient} onChange={checked => update("gradient", item => ({ ...item, gradient: checked ? item.gradient ?? gradient : undefined }))} />
@@ -125,14 +125,14 @@ export function AdvancedProperties({ elements, update, textStyles = [], onSaveTe
       <Check label="Drop shadow" checked={allShadow} onChange={checked => update("shadow", item => ({ ...item, shadow: checked ? item.shadow ?? shadow : undefined }))} />
       {elements.some(item => item.shadow) && <><ColorField label="Shadow color" value={common(elements, item => item.shadow?.color ?? "#000000") as string | undefined ?? "Mixed"} onChange={color => patchShadow({ color })} /><div className="te-element-grid">{(["offsetX", "offsetY", "blur", "spread"] as const).map(key => <NumberField key={key} label={`Shadow ${key === "offsetX" ? "X" : key === "offsetY" ? "Y" : key}`} unit="px" min={key === "blur" ? 0 : -600} max={600} value={px(common(elements, item => item.shadow?.[key] ?? shadow[key]) as number | undefined)} onChange={value => patchShadow({ [key]: value / outputScale })} />)}</div></>}
       <button className="te-property-action" type="button" onClick={() => update("reset-effects", item => ({ ...item, gradient: undefined, shadow: undefined, blur: 0, blendMode: "normal" }))}>Reset effects</button>
-    </Section>
-    <ColorRolesPanel roles={colorRoles} onSave={onSaveColorRole} onDelete={onDeleteColorRole} onApply={role => update("brand-color-role", item => item.type === "text" ? { ...item, color: role.color, colorRoleId: role.id } : item.type === "shape" ? { ...item, fill: role.color, colorRoleId: role.id } : item)} />
-    <Section title="Template slots & constraints">
+    </Section>}
+    {show("brand") && <ColorRolesPanel roles={colorRoles} onSave={onSaveColorRole} onDelete={onDeleteColorRole} onApply={role => update("brand-color-role", item => item.type === "text" ? { ...item, color: role.color, colorRoleId: role.id } : item.type === "shape" ? { ...item, fill: role.color, colorRoleId: role.id } : item)} />}
+    {show("constraints") && <Section title="Template slots & constraints">
       <label className="te-field">Content slot<input aria-label="Content slot" value={commonValue(elements, "slot") ?? ""} placeholder="headline, hero-image…" maxLength={100} onChange={event => update("slot", item => ({ ...item, slot: event.target.value.trim().slice(0, 100) }))} /></label>
       <Check label="Master element across slides" checked={elements.every(item => item.master)} onChange={master => update("master", item => ({ ...item, master }))} />
       <Select label="Horizontal anchor" value={common(elements, item => item.anchors?.horizontal ?? "left") as string | undefined} options={[["left", "Left"], ["center", "Center"], ["right", "Right"], ["stretch", "Stretch"]]} onChange={horizontal => update("anchor", item => ({ ...item, anchors: { horizontal: horizontal as NonNullable<CanvasElement["anchors"]>["horizontal"], vertical: item.anchors?.vertical ?? "top" } }))} />
       <Select label="Vertical anchor" value={common(elements, item => item.anchors?.vertical ?? "top") as string | undefined} options={[["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"], ["stretch", "Stretch"]]} onChange={vertical => update("anchor", item => ({ ...item, anchors: { horizontal: item.anchors?.horizontal ?? "left", vertical: vertical as NonNullable<CanvasElement["anchors"]>["vertical"] } }))} />
       <span className="te-element-label">Protect properties</span>{(["content", "position", "style", "delete"] as const).map(key => <Check key={key} label={key === "delete" ? "Prevent deletion" : `Protect ${key}`} checked={elements.every(item => item.protected?.includes(key))} onChange={checked => update("protection", item => ({ ...item, protected: checked ? [...new Set([...(item.protected ?? []), key])] : item.protected?.filter(value => value !== key) }))} />)}
-    </Section>
+    </Section>}
   </>;
 }

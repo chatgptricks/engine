@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeftIcon,
-  ArrowRightIcon,
   CheckIcon,
   CopyIcon,
   DownloadIcon,
@@ -12,7 +11,6 @@ import {
   PlusIcon,
   StarIcon,
   TextIcon,
-  TrashIcon,
 } from "@/components/engine/icons";
 import {
   FORMATS,
@@ -62,6 +60,7 @@ import { translateElements } from "@/lib/template-editor/snapping";
 import { ElementInspector } from "./element-inspector";
 import "./wysiwyg.css";
 import "./pro-tools.css";
+import "./editor-shell.css";
 import { DesignFrame, DesignPreview, FRAME_WIDTH } from "./preview";
 
 type Tab =
@@ -72,7 +71,9 @@ type Tab =
   | "media"
   | "layers"
   | "caption"
-  | "style";
+  | "style"
+  | "page"
+  | "view";
 type Props = {
   design: DesignDocument;
   templates: DesignTemplate[];
@@ -126,17 +127,37 @@ export function DesignEditor({
   useEffect(() => {
     activePage.current = pageId;
   }, [pageId]);
-  const [tab, setTab] = useState<Tab>("text");
+  const [tab, setTab] = useState<Tab | null>(null);
+  const [inspectorSection, setInspectorSection] = useState<"edit" | "position">("edit");
+  const [templateSearch, setTemplateSearch] = useState("");
+  const [pagesOpen, setPagesOpen] = useState(initial.pages.length > 1);
+  const drawerTrigger = useRef<HTMLElement | null>(null);
+  const drawerScrollRef = useRef<HTMLFieldSetElement>(null);
+  useLayoutEffect(()=>{if(drawerScrollRef.current)drawerScrollRef.current.scrollTop=0;},[tab,inspectorSection]);
+  const drawerTitles: Record<Tab, string> = {templates:"Templates", text:"Text", elements:"Elements", media:"Uploads", brand:"Brand", layers:"Layers", caption:"Caption", style:"Edit selection", page:"Page settings", view:"View"};
+  function openPanel(next: Tab, toggle = false) {
+    if (toggle && tab === next) { closePanel(); return; }
+    if (document.activeElement instanceof HTMLElement) drawerTrigger.current = document.activeElement;
+    setTab(next);
+  }
+  function closePanel() {
+    setTab(null);
+    drawerTrigger.current?.focus({preventScroll:true});
+  }
+  function openInspector(section: "edit" | "position" = "edit") {
+    setInspectorSection(section);
+    openPanel("style");
+  }
   const [selection, setSelected] = useState<string[]>([]);
   const copied = useRef<CanvasElement[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [notice, setNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
-  const [exportMenu, setExportMenu] = useState(false);
   const [exportDialog,setExportDialog]=useState(false);
   const [preflightIssues,setPreflightIssues]=useState<PreflightIssue[]>([]);
   const [layoutOpen,setLayoutOpen]=useState(false);
   const [workflowOpen,setWorkflowOpen]=useState(false);
+  const [workflowTab,setWorkflowTab]=useState("resources");
   const [editingMaster,setEditingMaster]=useState(false);
   const [requestedIsolationGroupId,setIsolatedGroupId]=useState<string|null>(null);
   const [cropImageId,setCropImageId]=useState<string|null>(null);
@@ -180,7 +201,7 @@ export function DesignEditor({
   const [spanFrom, setSpanFrom] = useState(1);
   const [spanThrough, setSpanThrough] = useState(4);
   const [centerRequest, setCenterRequest] = useState(0);
-  const previousWorkspace = useRef<{pageId: string; scale: number; left: number; top: number; height: number; centerRequest: number; viewportWidth: number; viewportHeight: number} | null>(null);
+  const previousWorkspace = useRef<{pageId: string; scale: number; fit: number; left: number; top: number; height: number; centerRequest: number; viewportWidth: number; viewportHeight: number} | null>(null);
   const zoomAnchor=useRef<{x:number;y:number;screenX:number;screenY:number}|null>(null);
   const [dragged, setDragged] = useState<string | null>(null);
   const workspaceRef = useRef<HTMLDivElement>(null);
@@ -202,6 +223,7 @@ export function DesignEditor({
   const selected = scopeSelection(scene, selection, isolatedGroupId ?? undefined);
   const previousPage = !continuous && index > 0 ? design.pages[index - 1] : undefined;
   const onionScene = onionSkin && page.canvas && previousPage ? previousPage.canvas ?? sceneForPage(previousPage, design.format) : undefined;
+  const selectedPhoto = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && (element.type === "image" || (element.type === "shape" && element.imageFill))) : undefined;
   const selectedImage = selected.length === 1 ? scene.elements.find((element) => element.id === selected[0] && element.type === "image") : undefined;
   const scale = Math.max(0.005, fit) * zoom;
   // Only committed geometry changes the scrollable area; dragging never moves
@@ -219,6 +241,11 @@ export function DesignEditor({
   const selectable=scene.elements.filter(e=>(!isolatedIds||isolatedIds.has(e.id))&&!isElementLocked(scene,e)&&!isElementHidden(scene,e));
   const outsideCount = scene.elements.filter((element) => !element.hidden && !elementIntersectsCanvas(element, canvasWidth, canvasHeight)).length;
 
+  function selectPage(id: string) {
+    setEditingRequest(undefined);
+    setCropImageId(null);
+    setPageId(id);
+  }
   function fitPage() {
     zoomAnchor.current=null;
     setZoom(1);
@@ -254,7 +281,7 @@ export function DesignEditor({
     const previous = previousWorkspace.current;
     const anchor=zoomAnchor.current;
     if(anchor){node.scrollLeft=(anchor.x+workspaceLeft)*scale-anchor.screenX;node.scrollTop=(anchor.y+workspaceTop)*scale-anchor.screenY;zoomAnchor.current=null;}
-    else if (!previous || previous.pageId !== page.id || previous.height !== canvasHeight || previous.centerRequest !== centerRequest || previous.viewportWidth !== node.clientWidth || previous.viewportHeight !== node.clientHeight) {
+    else if (!previous || previous.fit !== fit || previous.pageId !== page.id || previous.height !== canvasHeight || previous.centerRequest !== centerRequest || previous.viewportWidth !== node.clientWidth || previous.viewportHeight !== node.clientHeight) {
       node.scrollLeft = (workspaceLeft + (continuous && previous && previous.pageId !== page.id ? index * FRAME_WIDTH + FRAME_WIDTH / 2 : canvasWidth / 2)) * scale - node.clientWidth / 2;
       node.scrollTop = (workspaceTop + canvasHeight / 2) * scale - node.clientHeight / 2;
     } else {
@@ -264,8 +291,8 @@ export function DesignEditor({
       node.scrollLeft = (centerX + workspaceLeft) * scale - node.clientWidth / 2;
       node.scrollTop = (centerY + workspaceTop) * scale - node.clientHeight / 2;
     }
-    previousWorkspace.current = {pageId: page.id, scale, left: workspaceLeft, top: workspaceTop, height: canvasHeight, centerRequest, viewportWidth: node.clientWidth, viewportHeight: node.clientHeight};
-  }, [page.id, canvasHeight, canvasWidth, continuous, index, scale, workspaceLeft, workspaceTop, centerRequest]);
+    previousWorkspace.current = {pageId: page.id, scale, fit, left: workspaceLeft, top: workspaceTop, height: canvasHeight, centerRequest, viewportWidth: node.clientWidth, viewportHeight: node.clientHeight};
+  }, [page.id, canvasHeight, canvasWidth, continuous, index, scale, fit, workspaceLeft, workspaceTop, centerRequest]);
   const isTemplateDraft = design.purpose === "template";
   const saveTemplateLabel = isTemplateDraft
     ? design.editingTemplateId
@@ -396,7 +423,7 @@ export function DesignEditor({
         if (onSaveBrandAsset({id:crypto.randomUUID(),name:single.name,src:single.src,width:single.width,height:single.height,kind:"image"}, activeBrandKitId) === false) return;
         setNotice("Image saved to your brand kit. Reuse it from the Brand tab.");
       }}] : []),
-      {id: "properties", label: "Show properties", onSelect: () => setTab("style")},
+      {id: "properties", label: "Show properties", onSelect: () => openInspector()},
       {id: "delete", label: "Delete", shortcut: "⌫", separator: true, danger: true, disabled: disabled || !deletable.length, onSelect: () => applyCommand((live) => removeSelection(live, ids))},
     ];
   }
@@ -413,7 +440,7 @@ export function DesignEditor({
         {id: "shape", label: "Add rectangle", shortcut: "R", disabled, onSelect: () => addShape("rectangle")},
         {id: "image", label: "Upload image", disabled: disabled || uploading, onSelect: () => fileRef.current?.click()},
         {id: "select", label: "Select all unlocked elements", shortcut: "⌘/Ctrl A", separator: true, disabled: !scene.elements.some((e) => !e.locked && !e.hidden), onSelect: () => setSelected(selectable.map(e=>e.id))},
-        {id: "background", label: "Page background & properties", onSelect: () => setTab("style")},
+        {id: "background", label: "Page background", onSelect: () => openPanel("page")},
         {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", separator: true, disabled: disabled || !historyState.undo, onSelect: () => travel("undo")},
         {id: "redo", label: "Redo", shortcut: "⌘/Ctrl ⇧ Z", disabled: disabled || !historyState.redo, onSelect: () => travel("redo")},
       ],
@@ -422,7 +449,7 @@ export function DesignEditor({
   function pageMenu(event: React.MouseEvent, target: DesignPage) {
     const targetIndex = design.pages.findIndex((p) => p.id === target.id);
     openMenu(event, {label: `Page ${targetIndex + 1}`, items: [
-      {id: "open-page", label: "Go to page", onSelect: () => {setPageId(target.id); setSelected([]);}},
+      {id: "open-page", label: "Go to page", onSelect: () => {selectPage(target.id); setSelected([]);}},
       {id: "duplicate-page", label: "Duplicate page", disabled: disabled || continuous || design.pages.length >= 20, onSelect: () => addPage(true, target)},
       {id: "add-page", label: continuous ? "Add slide at end" : "Add blank page after", disabled: disabled || design.pages.length >= 20, onSelect: () => addPage(false, target)},
       {id: "left", label: "Move page left", separator: true, disabled: disabled || continuous || targetIndex === 0, onSelect: () => movePage(targetIndex, targetIndex - 1)},
@@ -454,6 +481,8 @@ export function DesignEditor({
     }
     if (!changeScene({ ...live, elements: [...live.elements, element] })) return;
     setSelected([element.id]);
+    if (window.matchMedia("(max-width: 760px)").matches) setTab(null);
+    if (element.type === "text") setEditingRequest(previous=>({id:element.id,serial:(previous?.serial??0)+1}));
   }
   const addText = (size = 28, text = "Add your text") =>
     addElement(
@@ -548,7 +577,6 @@ export function DesignEditor({
       }
       if (key === "escape") {
         setSelected([]);
-        setExportMenu(false);
         setCropImageId(null);setIsolatedGroupId(null);setPathTool(false);setImageDropTargetId(null);paletteDrag.current?.();
         return;
       }
@@ -625,6 +653,7 @@ export function DesignEditor({
 
   function addPage(duplicate = false, source: DesignPage = page) {
     if (disabled || current.current.pages.length >= 20 || (continuous && duplicate)) return;
+    setPagesOpen(true);
     if (current.current.continuousCanvas) {
       const next = duplicatePage(current.current.pages.at(-1)!);
       next.canvas = {background: scene.background, elements: []};
@@ -646,7 +675,7 @@ export function DesignEditor({
       ],
     }));
     if (!accepted) return;
-    setPageId(next.id);
+    selectPage(next.id);
     setSelected([]);
   }
   function movePage(from: number, to: number) {
@@ -846,7 +875,7 @@ export function DesignEditor({
       const converted = next === "continuous" ? enableContinuousCarousel(current.current) : splitContinuousCarousel(current.current);
       if (!commit(() => converted)) return;
       setSelected([]);
-      setPageId(converted.pages[0].id);
+      selectPage(converted.pages[0].id);
       fitPage();
       setNotice(next === "continuous" ? "One continuous canvas. Images and text can span slides; exports remain separate PNGs." : "Separate slides restored. Each slide can now be edited independently.");
     } catch (reason) { setNotice(reason instanceof Error ? reason.message : "Could not change layout."); }
@@ -870,7 +899,7 @@ export function DesignEditor({
       width={canvasWidth}
       height={canvasHeight}
       disabled={disabled}
-      slideBounds={{x:continuous?index*FRAME_WIDTH:0,y:0,width:FRAME_WIDTH,height:canvasHeight}}
+      slideBounds={continuous?{x:index*FRAME_WIDTH,y:0,width:FRAME_WIDTH,height:canvasHeight}:undefined}
       textStyles={design.styles}
       outputScale={format.width/FRAME_WIDTH}
       onSaveTextStyle={style=>commit(d=>{const next=updateTextStyle(d,style);const content=editingMaster?next.masterScene??scene:next.continuousCanvas??next.pages.find(p=>p.id===page.id)?.canvas??scene;const applied=applyTextStyle(content,selected,style).scene;return editingMaster?{...next,masterScene:applied}:next.continuousCanvas?{...next,continuousCanvas:applied}:{...next,pages:next.pages.map(p=>p.id===page.id?{...p,canvas:applied}:p)};})}
@@ -879,13 +908,14 @@ export function DesignEditor({
       onSaveColorRole={role=>commit(d=>updateColorRole(d,role))}
       onDeleteColorRole={id=>commit(d=>removeColorRole(d,id))}
       onFormatText={formatText}
+      initialSection={inspectorSection}
       onUploadTextTexture={uploadTextTexture}
       onUploadFramePhoto={(file:File,id:string)=>upload(file,id)}
     />
   );
 
   return (
-    <div className="te-editor te-wysiwyg" onContextMenu={workspaceMenu} onDragEnd={()=>setImageDropTargetId(null)}>
+    <div className={`te-editor te-wysiwyg te-simple-editor${tab ? " has-panel" : ""}`} onContextMenu={workspaceMenu} onDragEnd={()=>setImageDropTargetId(null)}>
                 <input
                   ref={fileRef}
                   hidden
@@ -961,72 +991,20 @@ export function DesignEditor({
           </button>
         </div>
         <div className="te-editor-header-actions">
-          <button className="te-button" disabled={disabled} onClick={()=>setWorkflowOpen(true)}>Design tools</button>
-          <button
-            className={`te-button te-save-template ${isTemplateDraft ? "te-primary te-draft-save" : ""}`}
-            disabled={disabled}
-            onClick={() => setTemplateName(design.name)}
-          >
-            <LayoutIcon />
-            {saveTemplateLabel}
+          <button className="te-button te-header-menu" aria-haspopup="menu" onClick={event=>openMenu(event,{label:"File",items:[
+            {id:"save-template",label:saveTemplateLabel,disabled,onSelect:()=>setTemplateName(design.name)},
+            {id:"caption",label:"Post caption",onSelect:()=>openPanel("caption")},
+            {id:"caption-download",label:"Download caption",disabled:!design.caption.trim(),onSelect:()=>saveBlob(new Blob([design.caption],{type:"text/plain"}),`${fileName(design.name)}-caption.txt`)},
+            {id:"review",label:"Review & version history",separator:true,onSelect:()=>{setWorkflowTab("review");setWorkflowOpen(true);}},
+            {id:"advanced",label:"Advanced design tools",onSelect:()=>{setWorkflowTab("resources");setWorkflowOpen(true);}},
+            {id:"shortcuts",label:"Keyboard shortcuts",separator:true,onSelect:()=>setShowShortcuts(true)},
+          ]})}>File <span aria-hidden="true">⌄</span></button>
+          <button className="te-button te-header-menu" aria-pressed={tab==="page"} aria-controls="te-editor-panel" onClick={()=>openPanel("page",true)}>Resize</button>
+          <button className="te-button te-header-menu" aria-pressed={tab==="view"} aria-controls="te-editor-panel" onClick={()=>openPanel("view",true)}>View</button>
+          {isTemplateDraft&&<button className="te-button te-draft-save" disabled={disabled} onClick={()=>setTemplateName(design.name)}>{saveTemplateLabel}</button>}
+          <button className="te-button te-primary" disabled={Boolean(job)||uploading} onClick={openExportSettings}>
+            <DownloadIcon /> {job ? `Exporting ${progress}%` : "Download"}
           </button>
-          <div className="te-export-anchor">
-            <button
-              className={`te-button ${isTemplateDraft ? "" : "te-primary"}`}
-              disabled={Boolean(job) || uploading}
-              onClick={() => setExportMenu((v) => !v)}
-            >
-              <DownloadIcon />
-              {job ? `Exporting ${progress}%` : "Export"}
-            </button>
-            {exportMenu && (
-              <>
-                <button
-                  className="te-menu-dismiss"
-                  aria-label="Close export menu"
-                  onClick={() => setExportMenu(false)}
-                />
-                <div className="te-export-menu">
-                  <span className="te-eyebrow">
-                    {format.width} × {format.height} PX
-                  </span>
-                  <button onClick={()=>{setExportMenu(false);openExportSettings();}}>Export settings <span>PNG · JPG · PDF</span></button>
-                  <button
-                    onClick={() => {
-                      setExportMenu(false);
-                      setJob({
-                        design: structuredClone(design),
-                        pageId: page.id,
-                      });
-                    }}
-                  >
-                    Current page <span>PNG</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      setExportMenu(false);
-                      setJob({ design: structuredClone(design) });
-                    }}
-                  >
-                    All {design.pages.length} pages{" "}
-                    <span>{design.pages.length > 1 ? "ZIP" : "PNG"}</span>
-                  </button>
-                  <button
-                    onClick={() => {
-                      saveBlob(
-                        new Blob([design.caption], { type: "text/plain" }),
-                        `${fileName(design.name)}-caption.txt`,
-                      );
-                      setExportMenu(false);
-                    }}
-                    disabled={!design.caption.trim()}
-                  >
-                    Caption <span>TXT</span>
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
         </div>
       </header>
       {notice && (
@@ -1051,14 +1029,14 @@ export function DesignEditor({
                 ["media", ImageIcon, "Uploads"],
                 ["brand", StarIcon, "Brand"],
                 ["layers", CopyIcon, "Layers"],
-                ["caption", TextIcon, "Caption"],
-                ["style", StarIcon, "Properties"],
               ] as const
             ).map(([id, Icon, label]) => (
               <button
                 key={id}
                 className={tab === id ? "is-active" : ""}
-                onClick={() => setTab(id)}
+                onClick={() => openPanel(id,true)}
+                aria-controls="te-editor-panel"
+                aria-expanded={tab === id}
                 aria-pressed={tab === id}
               >
                 <Icon size={20} />
@@ -1066,13 +1044,13 @@ export function DesignEditor({
               </button>
             ))}
           </nav>
-          <fieldset disabled={disabled} className="te-panel-scroll">
+          {tab&&<section id="te-editor-panel" className="te-editor-drawer" aria-label={drawerTitles[tab]} onKeyDown={event=>{
+            if(event.key==="Escape"&&!event.defaultPrevented){event.preventDefault();event.stopPropagation();closePanel();}
+          }}>
+          <div className="te-drawer-heading"><h2>{drawerTitles[tab]}</h2><button className="te-icon" aria-label="Close tool panel" onClick={closePanel}>×</button></div>
+          <fieldset ref={drawerScrollRef} disabled={disabled && tab !== "view"} className="te-panel-scroll">
             {tab === "text" && (
               <>
-                <div className="te-panel-heading">
-                  <h2>Add text</h2>
-                  <span>T</span>
-                </div>
                 <button
                   className="te-add-text te-add-heading"
                   onClick={() => addText(30, "Add a heading")}
@@ -1095,19 +1073,10 @@ export function DesignEditor({
                   Double-click any text on the canvas to type. Select it to
                   change its font, alignment, case, color, and spacing.
                 </p>
-                <div className="te-panel-heading">
-                  <h2>Your brand</h2>
-                </div>
-                <button className="te-button te-full" onClick={() => applyBrand()}>
-                  <StarIcon /> {continuous ? "Apply brand to carousel" : "Apply brand to all pages"}
-                </button>
               </>
             )}
             {tab === "elements" && (
               <>
-                <div className="te-panel-heading">
-                  <h2>Shapes & lines</h2>
-                </div>
                 <div className="te-shape-picker">
                   <button onClick={() => addShape("rectangle")}>
                     <span className="te-shape-rect" />
@@ -1123,55 +1092,28 @@ export function DesignEditor({
                   </button>
                 </div>
                 <p className="te-help">
-                  Drag, resize, and rotate shapes on the canvas. Use Properties
-                  for fill, borders, and rounded corners.
+                  Drag, resize, and rotate shapes on the canvas. Choose Edit in the toolbar
+                  for photos, fill, and borders.
                 </p>
-                <div className="te-shape-picker">{(['triangle','diamond','polygon','star','arrow'] as const).map(shape=><button key={shape} onClick={()=>addShape(shape)}>{shape[0].toUpperCase()+shape.slice(1)}</button>)}<button aria-pressed={pathTool} onClick={()=>setPathTool(p=>!p)}>Pen / path</button></div>
-                <div className="te-pro-actions">{(['union','intersect','subtract','xor'] as const).map(operation=><button key={operation} className="te-text-button" disabled={selected.length<2||scene.elements.filter(e=>selected.includes(e.id)).some(e=>e.type!=='shape')} onClick={()=>applyCommand(live=>combineShapes(live,selected,operation))}>{operation==='xor'?'Exclude overlap':operation[0].toUpperCase()+operation.slice(1)}</button>)}</div>
-                <button className="te-button te-full" onClick={()=>fileRef.current?.click()}>Import editable SVG</button>
-                <div className="te-panel-heading">
-                  <h2>Page background</h2>
-                </div>
-                <ColorField
-                  label="Background color"
-                  value={scene.background}
-                  onChange={(background) =>
-                    changeScene({ ...scene, background }, "background")
-                  }
-                />
-                <div className="te-swatches">
-                  {[
-                    "#ffffff",
-                    "#f3efe6",
-                    "#dce5d8",
-                    "#263e35",
-                    "#0c0c0c",
-                    "#a78bfa",
-                    "#ff7547",
-                    "#2767ff",
-                  ].map((color) => (
-                    <button
-                      key={color}
-                      aria-label={`Background ${color}`}
-                      style={{ background: color }}
-                      onClick={() =>
-                        changeScene({ ...scene, background: color })
-                      }
-                    />
-                  ))}
-                </div>
+                <div className="te-shape-picker">{([
+                  ['triangle','M12 3 22 21H2Z'],['diamond','M12 2 22 12 12 22 2 12Z'],
+                  ['polygon','M7 3H17L23 12 17 21H7L1 12Z'],['star','M12 2 15 9 23 10 17 15 19 23 12 18 5 23 7 15 1 10 9 9Z'],
+                  ['arrow','M2 8H14V3L23 12 14 21V16H2Z'],
+                ] as const).map(([shape,path])=><button key={shape} onClick={()=>addShape(shape)}><svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path d={path} fill="currentColor"/></svg>{shape[0].toUpperCase()+shape.slice(1)}</button>)}</div>
+                <details className="te-drawer-details"><summary>Drawing & shape tools</summary><button className="te-button te-full" aria-pressed={pathTool} onClick={()=>setPathTool(p=>!p)}>Pen / path</button>                <div className="te-pro-actions">{(['union','intersect','subtract','xor'] as const).map(operation=><button key={operation} className="te-text-button" disabled={selected.length<2||scene.elements.filter(e=>selected.includes(e.id)).some(e=>e.type!=='shape')} onClick={()=>applyCommand(live=>combineShapes(live,selected,operation))}>{operation==='xor'?'Exclude overlap':operation[0].toUpperCase()+operation.slice(1)}</button>)}</div>
+                <button className="te-button te-full" onClick={()=>fileRef.current?.click()}>Import editable SVG</button></details>
+
               </>
             )}
             {tab === "templates" && (
               <>
-                <div className="te-panel-heading">
-                  <h2>Page templates</h2>
-                </div>
                 <p className="te-help">
                   {continuous ? "Add a template's first slide to the selected part of your panorama. Undo restores it." : "Apply a template to this page, then edit every element. Undo restores the previous page."}
                 </p>
+                <input className="te-drawer-search" aria-label="Search page templates" placeholder="Search templates" value={templateSearch} onChange={event=>setTemplateSearch(event.target.value)}/>
+                {!templates.some(t=>t.name.toLowerCase().includes(templateSearch.toLowerCase()))&&<p className="te-help">{templates.length?"No matching templates. Try another name.":"Your templates will appear here. Save this design as a template from File."}</p>}
                 <div className="te-canvas-templates">
-                  {templates.map((t) => (
+                  {templates.filter(t=>t.name.toLowerCase().includes(templateSearch.toLowerCase())).map((t) => (
                     <button
                       key={t.id}
                       onClick={() => setApplyingTemplateId(t.id)}
@@ -1188,9 +1130,6 @@ export function DesignEditor({
             )}
             {tab === "media" && (
               <>
-                <div className="te-panel-heading">
-                  <h2>Images</h2>
-                </div>
                 <button
                   className="te-upload"
                   disabled={uploading || scene.elements.length >= 100}
@@ -1287,9 +1226,6 @@ export function DesignEditor({
               onDelete={() => applyCommand((live) => removeSelection(live, selected))} />}
             {tab === "caption" && (
               <>
-                <div className="te-panel-heading">
-                  <h2>Post caption</h2>
-                </div>
                 <label className="te-field">
                   Caption
                   <textarea
@@ -1311,27 +1247,8 @@ export function DesignEditor({
                 </label>
               </>
             )}
-            {tab === "style" && inspector}
-            <button
-              className="te-shortcuts-link"
-              onClick={() => setShowShortcuts(true)}
-            >
-              Keyboard shortcuts <span>⌘</span>
-            </button>
-          </fieldset>
-        </aside>
-        <main className="te-canvas-column">
-          <QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
-            outputScale={format.width/FRAME_WIDTH}
-            onFormatText={formatText}
-            onDuplicate={() => applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined))}
-            onDelete={() => applyCommand((live) => removeSelection(live, selected))}
-            onMore={(event) => selected.length ? openMenu(event, {label: "Selected elements", items: elementMenu(selected)}) : canvasMenu(event, null)}
-            onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />
-          <div className="te-canvas-toolbar">
-            <button className="te-clip-toggle" disabled={disabled} onClick={()=>setLayoutOpen(true)}>Rulers & guides</button>
-            {selected.length>1&&<button className="te-text-button" disabled={disabled} onClick={()=>applyCommand(live=>groupSelection(live,selected,"Group",isolatedGroupId??undefined))}>Group</button>}
-            {selectedImage&&<button className="te-clip-toggle" aria-pressed={cropImageId===selectedImage.id} onClick={()=>setCropImageId(cropImageId===selectedImage.id?null:selectedImage.id)}>{cropImageId===selectedImage.id?'Done crop':'Crop image'}</button>}
+            {tab === "page" && <div className="te-drawer-settings">
+              <p className="te-help">{format.width} × {format.height} px · {design.pages.length} {design.pages.length===1?"page":"pages"}</p>
             <label>
               Layout
               <select aria-label="Canvas layout" value={continuous ? "continuous" : "separate"} disabled={disabled || uploading} onChange={(event) => changeLayout(event.target.value)}>
@@ -1344,13 +1261,14 @@ export function DesignEditor({
               <select
                 aria-label="Design format"
                 disabled={disabled}
-                value={design.format}
+                value={design.customSize ? "custom" : design.format}
                 onChange={(e) => {
                   const nextFormat = e.target.value as DesignFormat;
                   commit(d=>({...resizeDesignDocument(d,FORMATS[nextFormat],'contain'),format:nextFormat,customSize:undefined}));
                   setZoom(1);
                 }}
               >
+                {design.customSize&&<option value="custom">Custom · {format.width} × {format.height}</option>}
                 {Object.entries(FORMATS).map(([id, f]) => (
                   <option key={id} value={id}>
                     {f.label} · {f.width} × {f.height}
@@ -1358,6 +1276,49 @@ export function DesignEditor({
                 ))}
               </select>
             </label>
+              <button className="te-button te-full" onClick={()=>{setWorkflowTab("resize");setWorkflowOpen(true);}}>Custom size & resize options</button>
+                <div className="te-panel-heading">
+                  <h2>Page background</h2>
+                </div>
+                <ColorField
+                  label="Background color"
+                  value={scene.background}
+                  onChange={(background) =>
+                    changeScene({ ...scene, background }, "background")
+                  }
+                />
+                <div className="te-swatches">
+                  {[
+                    "#ffffff",
+                    "#f3efe6",
+                    "#dce5d8",
+                    "#263e35",
+                    "#0c0c0c",
+                    "#a78bfa",
+                    "#ff7547",
+                    "#2767ff",
+                  ].map((color) => (
+                    <button
+                      key={color}
+                      aria-label={`Background ${color}`}
+                      style={{ background: color }}
+                      onClick={() =>
+                        changeScene({ ...scene, background: color })
+                      }
+                    />
+                  ))}
+                </div>          {continuous && <div className="te-continuous-tools">
+            <span><strong>{design.pages.length} connected slides</strong> · Exported as separate PNGs</span>
+            {selectedImage && <div className="te-span-tools">
+              <label>From <select aria-label="Image start slide" value={Math.min(spanFrom, design.pages.length)} onChange={(event) => setSpanFrom(Number(event.target.value))}>{design.pages.map((item, i) => <option key={item.id} value={i + 1}>{i + 1}</option>)}</select></label>
+              <label>Through <select aria-label="Image end slide" value={Math.max(Math.min(spanFrom, design.pages.length), Math.min(spanThrough, design.pages.length))} onChange={(event) => setSpanThrough(Number(event.target.value))}>{design.pages.map((item, i) => <option key={item.id} value={i + 1} disabled={i + 1 < Math.min(spanFrom, design.pages.length)}>{i + 1}</option>)}</select></label>
+              <button className="te-text-button" disabled={disabled || selectedImage.locked} onClick={fillImageAcrossSlides}>Fill slides</button>
+            </div>}
+          </div>}
+            </div>}
+            {tab === "view" && <div className="te-drawer-settings">
+              <p className="te-help">Set up your workspace. Guides stay out of downloads.</p>
+              <button className="te-button te-full" onClick={()=>setLayoutOpen(true)}>Rulers, guides & margins</button>
             <button className="te-clip-toggle" aria-pressed={clipToCanvas} disabled={!page.canvas && !continuous}
               title="Clip overlapping elements to the page. Fully outside elements stay visible in the workspace. Exports always use the page edges."
               onClick={() => setClipToCanvas((value) => !value)}>
@@ -1370,27 +1331,29 @@ export function DesignEditor({
               <CopyIcon size={14} /> Onion skin
             </button>}
             {onionScene && <label className="te-onion-opacity">Guide {Math.round(onionOpacity * 100)}%<input aria-label="Onion skin opacity" type="range" min="5" max="50" step="5" value={onionOpacity * 100} onChange={(event) => setOnionOpacity(Number(event.target.value) / 100)} /></label>}
-            <span className="te-selection-hint">
-              {selected.length
-                ? `${selected.length} selected · Shift-click for more`
-                : "Drag to select · Double-click text to edit"}
-            </span>
-            <button
-              className="te-text-button te-properties-trigger"
-              onClick={() => setTab("style")}
-            >
-              Properties
-            </button>
-          </div>
-          {(editingMaster||isolatedGroupId||cropImageId)&&<div className="te-isolation-bar"><span>{editingMaster?'Editing shared master':isolatedGroupId?`Inside ${scene.groups?.find(g=>g.id===isolatedGroupId)?.name??'group'}`:'Drag image to crop · Scroll to zoom image'}</span><button className="te-text-button" onClick={()=>{setEditingMaster(false);setIsolatedGroupId(null);setCropImageId(null);setSelected([]);}}>Done</button></div>}
-          {continuous && <div className="te-continuous-tools">
-            <span><strong>{design.pages.length} connected slides</strong> · Exported as separate PNGs</span>
-            {selectedImage && <div className="te-span-tools">
-              <label>From <select aria-label="Image start slide" value={Math.min(spanFrom, design.pages.length)} onChange={(event) => setSpanFrom(Number(event.target.value))}>{design.pages.map((item, i) => <option key={item.id} value={i + 1}>{i + 1}</option>)}</select></label>
-              <label>Through <select aria-label="Image end slide" value={Math.max(Math.min(spanFrom, design.pages.length), Math.min(spanThrough, design.pages.length))} onChange={(event) => setSpanThrough(Number(event.target.value))}>{design.pages.map((item, i) => <option key={item.id} value={i + 1} disabled={i + 1 < Math.min(spanFrom, design.pages.length)}>{i + 1}</option>)}</select></label>
-              <button className="te-text-button" disabled={disabled || selectedImage.locked} onClick={fillImageAcrossSlides}>Fill slides</button>
+              <button className="te-button te-full" onClick={fitPage}>Fit design to screen</button>
+              <button className="te-text-button" disabled={!selected.length} onClick={()=>{const bounds=sceneVisualBounds({background:'transparent',elements:scene.elements.filter(e=>selected.includes(e.id))});const node=workspaceRef.current;if(bounds&&node){setZoom(Math.max(.05,Math.min(32,Math.min(node.clientWidth/(bounds.width+80),node.clientHeight/(bounds.height+80))/fit)));zoomAnchor.current={x:bounds.x+bounds.width/2,y:bounds.y+bounds.height/2,screenX:node.clientWidth/2,screenY:node.clientHeight/2};}}}>Fit selected elements</button>
+              <button className="te-text-button" onClick={()=>setShowShortcuts(true)}>Keyboard shortcuts</button>
             </div>}
-          </div>}
+            {tab === "style" && inspector}
+          </fieldset>
+          </section>}
+        </aside>
+        <main className="te-canvas-column">
+          <QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
+            outputScale={format.width/FRAME_WIDTH}
+            onFormatText={formatText}
+            onBackground={()=>openPanel("page")}
+            onEdit={()=>openInspector()}
+            onPosition={()=>openInspector("position")}
+            onCrop={selectedPhoto&&!disabled&&canEditElement(scene,selectedPhoto,"style")?()=>setCropImageId(cropImageId===selectedPhoto.id?null:selectedPhoto.id):undefined}
+            cropping={Boolean(cropImageId)}
+            onGroup={selected.length>1?()=>applyCommand(live=>groupSelection(live,selected,"Group",isolatedGroupId??undefined)):undefined}
+            onDuplicate={() => applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined))}
+            onDelete={() => applyCommand((live) => removeSelection(live, selected))}
+            onMore={(event) => selected.length ? openMenu(event, {label: "Selected elements", items: elementMenu(selected)}) : canvasMenu(event, null)}
+            onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />
+          {(editingMaster||isolatedGroupId||cropImageId)&&<div className="te-isolation-bar"><span>{editingMaster?'Editing shared master':isolatedGroupId?`Inside ${scene.groups?.find(g=>g.id===isolatedGroupId)?.name??'group'}`:'Drag image to crop · Scroll to zoom image'}</span><button className="te-text-button" onClick={()=>{setEditingMaster(false);setIsolatedGroupId(null);setCropImageId(null);setSelected([]);}}>Done</button></div>}
           <div
             className={`te-canvas-space${spacePanning?' is-panning':''}`}
             ref={workspaceRef}
@@ -1494,10 +1457,12 @@ export function DesignEditor({
             </div>
           </div>
           <div className="te-canvas-bottom">
-            <span>
-              {continuous ? `${design.pages.length}-slide panorama` : `Page ${index + 1}`} · {scene.elements.length} layers
-              {outsideCount > 0 && <button className="te-text-button te-parked-count" onClick={() => setTab("layers")}>{outsideCount} off canvas</button>}
-            </span>
+            <div className="te-page-navigation">
+              <button className="te-text-button" aria-label="Show pages" aria-expanded={pagesOpen} aria-controls="te-editor-pages" onClick={()=>setPagesOpen(open=>!open)}><LayoutIcon size={16}/> Page {index+1} of {design.pages.length} <span aria-hidden="true">{pagesOpen?"⌄":"⌃"}</span></button>
+              <button className="te-icon" aria-label="Add page" title="Add page" disabled={disabled||design.pages.length>=20} onClick={()=>addPage()}><PlusIcon size={17}/></button>
+              <button className="te-text-button te-caption-trigger" onClick={()=>openPanel("caption",true)}>Caption</button>
+              {outsideCount>0&&<button className="te-text-button te-parked-count" onClick={()=>openPanel("layers")}>{outsideCount} off canvas</button>}
+            </div>
             <div>
               <button
                 className="te-icon"
@@ -1516,7 +1481,7 @@ export function DesignEditor({
                 Fit
               </button>
               <label><input className="te-zoom-input" aria-label="Zoom percentage" type="number" min="1" max="3200" defaultValue={Math.round(fit*zoom*100)} key={`${fit}-${zoom}`} onBlur={e=>{const value=Number(e.target.value);if(Number.isFinite(value)&&value>0)setZoom(Math.max(.05,Math.min(32,value/100/fit)));}} onKeyDown={e=>{if(e.key==='Enter')e.currentTarget.blur();}}/>%</label>
-              <button className="te-text-button" disabled={!selected.length} onClick={()=>{const bounds=sceneVisualBounds({background:'transparent',elements:scene.elements.filter(e=>selected.includes(e.id))});const node=workspaceRef.current;if(bounds&&node){setZoom(Math.max(.05,Math.min(32,Math.min(node.clientWidth/(bounds.width+80),node.clientHeight/(bounds.height+80))/fit)));zoomAnchor.current={x:bounds.x+bounds.width/2,y:bounds.y+bounds.height/2,screenX:node.clientWidth/2,screenY:node.clientHeight/2};}}}>Selection</button>
+
               <button
                 className="te-icon"
                 aria-label="Zoom in"
@@ -1527,50 +1492,7 @@ export function DesignEditor({
               </button>
             </div>
           </div>
-          <section className="te-pages" aria-label="Carousel pages">
-            <div className="te-pages-heading">
-              <span>
-                PAGES <small>{design.pages.length}/20</small>
-              </span>
-              <div>
-                <button
-                  className="te-icon"
-                  title="Move page left"
-                  aria-label="Move page left"
-                  disabled={disabled || continuous || index === 0}
-                  onClick={() => movePage(index, index - 1)}
-                >
-                  <ArrowLeftIcon />
-                </button>
-                <button
-                  className="te-icon"
-                  title="Move page right"
-                  aria-label="Move page right"
-                  disabled={disabled || continuous || index === design.pages.length - 1}
-                  onClick={() => movePage(index, index + 1)}
-                >
-                  <ArrowRightIcon />
-                </button>
-                <button
-                  className="te-icon"
-                  title="Duplicate page"
-                  aria-label="Duplicate page"
-                  disabled={disabled || continuous || design.pages.length >= 20}
-                  onClick={() => addPage(true)}
-                >
-                  <CopyIcon />
-                </button>
-                <button
-                  className="te-icon"
-                  title={continuous ? "Remove last slide (minimum 2)" : "Delete page"}
-                  aria-label={continuous ? "Remove last slide" : "Delete page"}
-                  disabled={disabled || design.pages.length <= (continuous ? 2 : 1)}
-                  onClick={() => setRemovePageId(continuous ? design.pages.at(-1)!.id : page.id)}
-                >
-                  <TrashIcon />
-                </button>
-              </div>
-            </div>
+          {pagesOpen&&<section id="te-editor-pages" className="te-pages" aria-label="Carousel pages">
             <div className="te-page-strip">
               {design.pages.map((p, i) => (
                 <div key={p.id} className="te-page-card" onContextMenu={(event) => pageMenu(event, p)}>
@@ -1593,7 +1515,7 @@ export function DesignEditor({
                   key={p.id}
                   className={`te-page-thumb ${p.id === page.id ? "is-active" : ""}`}
                   onClick={() => {
-                    setPageId(p.id);
+                    selectPage(p.id);
                     setSelected([]);
                   }}
                   aria-label={`Page ${i + 1}`}
@@ -1614,18 +1536,15 @@ export function DesignEditor({
                 <span>{continuous ? "Add slide" : "Add page"}</span>
               </button>
             </div>
-          </section>
+          </section>}
         </main>
-        <aside className="te-inspector">
-          <fieldset disabled={disabled}>{inspector}</fieldset>
-        </aside>
       </div>
       {layoutOpen&&<LayoutPanel scene={scene} width={canvasWidth} slideWidth={FRAME_WIDTH} height={canvasHeight} outputScale={format.width/FRAME_WIDTH} disabled={disabled} onChange={changeScene} onClose={()=>setLayoutOpen(false)}/>}
       {applyingTemplate&&<TemplateApplyDialog template={applyingTemplate} design={design} scene={scene} pageId={page.id} disabled={disabled} onChangeDesign={next=>{
         if(!currentTemplates.current.some(template=>template.id===applyingTemplate.id&&!template.deletedAt))throw new Error("This template was deleted. Restore it from Trash before applying it.");
         return commit(live=>applyDesignPatch(design,next,live));
       }} onChangeScene={changeScene} onClose={()=>setApplyingTemplateId(null)}/>}
-      {workflowOpen&&<WorkflowPanel design={design} scene={scene} selected={selected} pageId={page.id} disabled={disabled} onChange={next=>commit(live=>applyDesignPatch(design,next,live))} onSceneChange={changeScene} onSelect={setSelected} onAddDesigns={onAddDesigns} canShare={saveStatus.startsWith("Saved")} onMakeMaster={()=>{const promotable=selected.filter(id=>{const element=scene.elements.find(e=>e.id===id);return element&&canEditElement(scene,element,'position')&&canEditElement(scene,element,'delete');});if(!promotable.length)return;if(changeScene({...scene,elements:scene.elements.map(e=>promotable.includes(e.id)?{...e,master:true}:e)})){setSelected([]);setIsolatedGroupId(null);setWorkflowOpen(false);setEditingMaster(true);}}} onEditMaster={()=>{setEditingMaster(true);setIsolatedGroupId(null);setSelected([]);setWorkflowOpen(false);}} onClose={()=>setWorkflowOpen(false)}/>}
+      {workflowOpen&&<WorkflowPanel initialTab={workflowTab} design={design} scene={scene} selected={selected} pageId={page.id} disabled={disabled} onChange={next=>commit(live=>applyDesignPatch(design,next,live))} onSceneChange={changeScene} onSelect={setSelected} onAddDesigns={onAddDesigns} canShare={saveStatus.startsWith("Saved")} onMakeMaster={()=>{const promotable=selected.filter(id=>{const element=scene.elements.find(e=>e.id===id);return element&&canEditElement(scene,element,'position')&&canEditElement(scene,element,'delete');});if(!promotable.length)return;if(changeScene({...scene,elements:scene.elements.map(e=>promotable.includes(e.id)?{...e,master:true}:e)})){setSelected([]);setIsolatedGroupId(null);setWorkflowOpen(false);setEditingMaster(true);}}} onEditMaster={()=>{setEditingMaster(true);setIsolatedGroupId(null);setSelected([]);setWorkflowOpen(false);}} onClose={()=>setWorkflowOpen(false)}/>}
       {exportDialog&&<ExportDialog design={design} pageId={page.id} disabled={disabled} issues={preflightIssues} onClose={()=>setExportDialog(false)} onExport={(options,pageIds)=>{setExportDialog(false);setJob({design:structuredClone(design),options,pageIds});}}/>}
       {job&&<button className="te-button te-export-cancel" onClick={()=>exportAbort.current?.abort()}>Cancel export · {progress}%</button>}
       {renameLayer && <Modal title="Rename layer" onClose={() => setRenameLayer(null)}>
@@ -1744,7 +1663,7 @@ export function DesignEditor({
               onClick={() => {
                 if (continuous && (design.pages.length <= 2 || design.pages.at(-1)?.id !== removePageId)) return;
                 if (!commit((d) => ({...d, pages: d.pages.filter((p) => p.id !== removePageId)}))) return;
-                if (page.id === removePageId) setPageId(design.pages.find((p) => p.id !== removePageId)!.id);
+                if (page.id === removePageId) selectPage(design.pages.find((p) => p.id !== removePageId)!.id);
                 setSelected([]);
                 setRemovePageId(null);
               }}

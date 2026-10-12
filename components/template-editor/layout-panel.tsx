@@ -2,6 +2,7 @@
 import {useEffect,useRef} from "react";
 import type { CanvasScene, CanvasLayout } from "@/lib/template-editor/model";
 import { Modal } from "./controls";
+import "./dialog-tools.css";
 
 export const DEFAULT_LAYOUT: CanvasLayout = {
   rulers: false, showGuides: true, guides: [],
@@ -10,24 +11,52 @@ export const DEFAULT_LAYOUT: CanvasLayout = {
   grid: { enabled: false, size: 8, columns: 3, rows: 3, gutter: 8 },
   snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 },
 };
-export function LayoutPanel({scene, width, height, slideWidth=width, outputScale=3, disabled, onChange, onClose}: {scene:CanvasScene;width:number;height:number;slideWidth?:number;outputScale?:number;disabled:boolean;onChange:(scene:CanvasScene)=>void;onClose:()=>void}) {
-  const layout = {...DEFAULT_LAYOUT,...scene.layout};
-  function patch(value:Partial<CanvasLayout>) { if(!disabled) onChange({...scene, layout:{...layout,...value}}); }
-  return <Modal title="Layout, rulers & guides" onClose={onClose}>
-    <fieldset disabled={disabled} className="te-pro-panel">
-      <label><input type="checkbox" checked={layout.rulers} onChange={e=>patch({rulers:e.target.checked})}/> Show rulers</label>
-      <label><input type="checkbox" checked={layout.showGuides!==false} onChange={e=>patch({showGuides:e.target.checked})}/> Show guides</label>
-      {(["margins","safeArea"] as const).map(key=>{const inset={...DEFAULT_LAYOUT[key]!,...layout[key]};return <section key={key}>
-        <label><input type="checkbox" checked={inset.enabled} onChange={e=>patch({[key]:{...inset,enabled:e.target.checked}})}/> {key==='margins'?'Page margins':'Safe area'}</label>
-        <div className="te-pro-grid">{(["top","right","bottom","left"] as const).map(side=><label key={side}>{side} px<input aria-label={`${key} ${side}`} type="number" min="0" max={(side==='left'||side==='right'?slideWidth:height)*outputScale/2} value={Math.round(inset[side]*outputScale)} onChange={e=>patch({[key]:{...inset,[side]:Math.min((side==='left'||side==='right'?slideWidth:height)/2,Math.max(0,Number(e.target.value)/outputScale))}})}/></label>)}</div>
-        {key==='safeArea'&&<button className="te-text-button" onClick={()=>patch({safeArea:{enabled:true,top:height*.12,bottom:height*.18,left:20,right:20}})}>Story safe area preset</button>}
-      </section>})}
-      <section><label><input type="checkbox" checked={layout.grid?.enabled} onChange={e=>patch({grid:{...DEFAULT_LAYOUT.grid!,...layout.grid,enabled:e.target.checked}})}/> Layout grid</label>
-      <div className="te-pro-grid">{(["size","columns","rows","gutter"] as const).map(key=><label key={key}>{key}{key==='size'||key==='gutter'?' px':''}<input aria-label={`Grid ${key}`} type="number" min={key==='gutter'?0:1} max={key==='columns'||key==='rows'?24:600} value={(layout.grid?.[key]??DEFAULT_LAYOUT.grid![key])*(key==='size'||key==='gutter'?outputScale:1)} onChange={e=>patch({grid:{...DEFAULT_LAYOUT.grid!,...layout.grid,[key]:Math.max(key==='gutter'?0:1,Number(e.target.value)/(key==='size'||key==='gutter'?outputScale:1))}})}/></label>)}</div></section>
-      <section><strong>Snapping</strong>{(["enabled","objects","page","guides","grid","spacing"] as const).map(key=><label key={key}><input type="checkbox" checked={layout.snapping?.[key]??DEFAULT_LAYOUT.snapping![key]} onChange={e=>patch({snapping:{...DEFAULT_LAYOUT.snapping!,...layout.snapping,[key]:e.target.checked}})}/>{key==='enabled'?'Enable snapping':key==='page'?'Page, slides & margins':key==='spacing'?'Equal spacing':key}</label>)}<label>Tolerance in screen px<input aria-label="Snap tolerance" type="number" min="1" max="20" value={layout.snapping?.tolerance??6} onChange={e=>patch({snapping:{...DEFAULT_LAYOUT.snapping!,...layout.snapping,tolerance:Number(e.target.value)}})}/></label><p>Hold Alt to bypass snapping. Hold Shift to move along one axis.</p></section>
-      <section><strong>Guides</strong><div className="te-pro-actions">{(['x','y'] as const).map(axis=><button className="te-button" key={axis} onClick={()=>patch({guides:[...(layout.guides??[]),{id:crypto.randomUUID(),axis,position:(axis==='x'?width:height)/2,locked:false}]})}>+ {axis==='x'?'Vertical':'Horizontal'}</button>)}<button className="te-text-button" onClick={()=>patch({guides:[]})}>Clear guides</button></div>
-      {(layout.guides??[]).map(guide=><div className="te-pro-guide-row" key={guide.id}><span>{guide.axis==='x'?'Vertical':'Horizontal'}</span><input aria-label={`Guide ${guide.id} position`} type="number" min="0" max={(guide.axis==='x'?width:height)*outputScale} value={Math.round(guide.position*outputScale)} onChange={e=>patch({guides:layout.guides!.map(g=>g.id===guide.id?{...g,position:Number(e.target.value)/outputScale}:g)})}/><label><input aria-label="Lock guide" type="checkbox" checked={guide.locked} onChange={e=>patch({guides:layout.guides!.map(g=>g.id===guide.id?{...g,locked:e.target.checked}:g)})}/>Lock</label><button className="te-text-button" aria-label="Remove guide" onClick={()=>patch({guides:layout.guides!.filter(g=>g.id!==guide.id)})}>×</button></div>)}</section>
+export function LayoutPanel({scene,width,height,slideWidth=width,outputScale=3,disabled,onChange,onClose}:{scene:CanvasScene;width:number;height:number;slideWidth?:number;outputScale?:number;disabled:boolean;onChange:(scene:CanvasScene)=>void;onClose:()=>void}) {
+  const layout={...DEFAULT_LAYOUT,...scene.layout},margins={...DEFAULT_LAYOUT.margins!,...layout.margins};
+  function patch(value:Partial<CanvasLayout>){if(!disabled)onChange({...scene,layout:{...layout,...value}});}
+  function insetFields(key:"margins"|"safeArea") {
+    const inset={...DEFAULT_LAYOUT[key]!,...layout[key]};
+    return <div className="te-dialog-grid">{(["top","right","bottom","left"] as const).map(side=>{
+      const max=(side==="left"||side==="right"?slideWidth:height)/2;
+      return <label key={side}>{side[0].toUpperCase()+side.slice(1)} (px)<input aria-label={`${key} ${side}`} disabled={!inset.enabled} type="number" min="0" max={max*outputScale} value={Math.round(inset[side]*outputScale)} onChange={event=>patch({[key]:{...inset,[side]:Math.min(max,Math.max(0,Number(event.target.value)/outputScale))}})}/></label>;
+    })}</div>;
+  }
+  return <Modal title="Guides and alignment" onClose={onClose}>
+    <fieldset disabled={disabled} className="te-pro-panel te-tool-dialog">
+      <div className="te-dialog-toggles">
+        <label className="te-dialog-check"><input type="checkbox" checked={layout.snapping?.enabled??true} onChange={event=>patch({snapping:{...DEFAULT_LAYOUT.snapping!,...layout.snapping,enabled:event.target.checked}})}/>Snap objects into place</label>
+        <label className="te-dialog-check"><input type="checkbox" checked={layout.rulers??false} onChange={event=>patch({rulers:event.target.checked})}/>Show rulers</label>
+        <label className="te-dialog-check"><input type="checkbox" checked={layout.showGuides!==false} onChange={event=>patch({showGuides:event.target.checked})}/>Show guides</label>
+      </div>
+      <section><label className="te-dialog-check"><input type="checkbox" checked={margins.enabled} onChange={event=>patch({margins:{...margins,enabled:event.target.checked}})}/>Show page margins</label>{margins.enabled&&insetFields("margins")}</section>
+      <details><summary>Custom guides{layout.guides?.length?` · ${layout.guides.length}`:""}</summary><div className="te-dialog-details-body">
+        <div className="te-pro-actions">{(["x","y"] as const).map(axis=><button type="button" className="te-button" key={axis} disabled={(layout.guides?.length??0)>=100} onClick={()=>patch({showGuides:true,guides:[...(layout.guides??[]),{id:crypto.randomUUID(),axis,position:(axis==="x"?width:height)/2,locked:false}]})}>Add {axis==="x"?"vertical":"horizontal"}</button>)}<button type="button" className="te-text-button" disabled={!layout.guides?.length} onClick={()=>patch({guides:[]})}>Clear all</button></div>
+        {!layout.guides?.length&&<p>Add a guide here, or drag one from a ruler onto your page.</p>}
+        {(layout.guides??[]).map((guide,index)=><div className="te-dialog-guide-row" key={guide.id}>
+          <span>{guide.axis==="x"?"Vertical":"Horizontal"}</span><input aria-label={`Guide ${index+1} position in pixels`} type="number" min="0" max={(guide.axis==="x"?width:height)*outputScale} value={Math.round(guide.position*outputScale)} onChange={event=>patch({guides:layout.guides!.map(item=>item.id===guide.id?{...item,position:Math.min(guide.axis==="x"?width:height,Math.max(0,Number(event.target.value)/outputScale))}:item)})}/>
+          <label className="te-dialog-check"><input aria-label={`Lock guide ${index+1}`} type="checkbox" checked={guide.locked??false} onChange={event=>patch({guides:layout.guides!.map(item=>item.id===guide.id?{...item,locked:event.target.checked}:item)})}/>Lock</label><button type="button" className="te-text-button" aria-label={`Remove guide ${index+1}`} onClick={()=>patch({guides:layout.guides!.filter(item=>item.id!==guide.id)})}>×</button>
+        </div>)}
+      </div></details>
+      <details><summary>Grid</summary><div className="te-dialog-details-body">
+        <label className="te-dialog-check"><input type="checkbox" checked={layout.grid?.enabled??false} onChange={event=>patch({grid:{...DEFAULT_LAYOUT.grid!,...layout.grid,enabled:event.target.checked}})}/>Show layout grid</label>
+        <div className="te-dialog-grid">{(["columns","rows","size","gutter"] as const).map(key=>{
+          const pixel=key==="size"||key==="gutter",min=key==="gutter"?0:1,max=pixel?600/outputScale:24;
+          return <label key={key}>{key==="size"?"Grid spacing":key==="gutter"?"Gap":key[0].toUpperCase()+key.slice(1)}{pixel?" (px)":""}<input aria-label={`Grid ${key}`} type="number" min={pixel?min*outputScale:min} max={pixel?max*outputScale:max} step={pixel?"any":"1"} disabled={!layout.grid?.enabled} value={(layout.grid?.[key]??DEFAULT_LAYOUT.grid![key])*(pixel?outputScale:1)} onChange={event=>{const requested=Number(event.target.value)/(pixel?outputScale:1);patch({grid:{...DEFAULT_LAYOUT.grid!,...layout.grid,[key]:Math.max(min,Math.min(max,pixel?requested:Math.round(requested)))}});}}/></label>;
+        })}</div>
+      </div></details>
+      <details><summary>Safe area</summary><div className="te-dialog-details-body">
+        <label className="te-dialog-check"><input type="checkbox" checked={layout.safeArea?.enabled??false} onChange={event=>patch({safeArea:{...DEFAULT_LAYOUT.safeArea!,...layout.safeArea,enabled:event.target.checked}})}/>Show safe area</label>
+        <p>Keep important text inside this area.</p>{insetFields("safeArea")}
+        <button type="button" className="te-button" onClick={()=>patch({safeArea:{enabled:true,top:height*.12,bottom:height*.18,left:20,right:20}})}>Use Story safe area</button>
+      </div></details>
+      <details><summary>More snapping options</summary><div className="te-dialog-details-body">
+        {(["objects","page","guides","grid","spacing"] as const).map(key=><label className="te-dialog-check" key={key}><input type="checkbox" checked={layout.snapping?.[key]??DEFAULT_LAYOUT.snapping![key]} onChange={event=>patch({snapping:{...DEFAULT_LAYOUT.snapping!,...layout.snapping,[key]:event.target.checked}})}/>{{objects:"Other objects",page:"Page edges and margins",guides:"Guides",grid:"Grid",spacing:"Even spacing"}[key]}</label>)}
+        <label>Snap distance (screen px)<input aria-label="Snap tolerance" type="number" min="1" max="20" value={layout.snapping?.tolerance??6} onChange={event=>patch({snapping:{...DEFAULT_LAYOUT.snapping!,...layout.snapping,tolerance:Math.min(20,Math.max(1,Number(event.target.value)))}})}/></label>
+        <p>Hold Alt to move freely. Hold Shift to move along one axis.</p>
+      </div></details>
+      <p>Changes apply as you adjust. These guides stay out of your downloads.</p>
     </fieldset>
+    <div className="te-dialog-footer"><button type="button" className="te-button te-primary" onClick={onClose}>Done</button></div>
   </Modal>;
 }
 

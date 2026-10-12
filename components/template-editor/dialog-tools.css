@@ -1,0 +1,60 @@
+.te-modal:has(.te-tool-dialog) { max-width:520px; max-height:calc(100dvh - 32px); overflow:auto; padding:24px; }
+.te-modal:has(.te-workflow-dialog) { max-width:650px; }
+.te-modal:has(.te-template-dialog) { max-width:600px; }
+.te-tool-dialog.te-pro-panel { display:grid; gap:18px; max-height:none; overflow:visible; }
+.te-tool-dialog > section,.te-tool-dialog .te-dialog-section { display:grid; gap:12px; padding:0; background:none; border-radius:0; }
+.te-tool-dialog label { display:grid; gap:6px; align-items:start; color:#ffffffe6; font-size:13px; text-transform:none; }
+.te-tool-dialog label.te-dialog-check { display:flex; align-items:center; gap:10px; min-height:36px; }
+.te-tool-dialog input[type=checkbox] { width:16px; height:16px; flex-shrink:0; }
+.te-tool-dialog input:not([type=checkbox]):not([type=color]),.te-tool-dialog select,.te-tool-dialog textarea { min-height:42px; border-color:#ffffff22; padding:10px 11px; font-size:13px; }
+.te-tool-dialog input[type=range] { min-height:30px; padding:0!important; }
+.te-tool-dialog p,.te-tool-dialog .te-dialog-help { margin:0; color:#ffffffaa; font-size:12px; line-height:1.6; }
+.te-tool-dialog strong { color:#fffffff0; font-size:14px; font-weight:600; }
+.te-tool-dialog h3 { margin:0; font-size:14px; font-weight:600; }
+.te-tool-dialog details { border:1px solid #ffffff18; border-radius:10px; padding:0 14px; }
+.te-tool-dialog summary { min-height:46px; padding:13px 0; cursor:pointer; color:#ffffffd9; font-size:13px; font-weight:500; }
+.te-tool-dialog details[open] > summary { border-bottom:1px solid #ffffff10; margin-bottom:14px; }
+.te-dialog-details-body { display:grid; gap:14px; padding-bottom:14px; }
+.te-dialog-grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
+.te-dialog-toggles { display:grid; gap:4px; }
+.te-dialog-summary { display:flex; align-items:center; gap:8px; justify-content:space-between; border-radius:10px; padding:13px 14px; background:#ffffff06; }
+.te-dialog-summary span { color:#ffffffaa; font-size:12px; }
+.te-dialog-footer { display:flex; align-items:center; justify-content:flex-end; gap:10px; margin-top:22px; padding-top:18px; border-top:1px solid #ffffff12; }
+.te-dialog-footer .te-primary { min-width:135px; }
+.te-tool-dialog .te-dialog-error,.te-dialog-error { color:#ffb9b9!important; background:#f0443812; padding:10px 12px; border-radius:8px; font-size:12px; margin:12px 0 0; }
+.te-tool-dialog .te-dialog-status { color:#dedede; background:#ffffff08; padding:10px 12px; border-radius:8px; }
+.te-modal:has(.te-tool-dialog) > .te-dialog-status { color:#dedede; background:#ffffff08; padding:10px 12px; border-radius:8px; margin:0 0 16px; }
+.te-dialog-warning-list { margin:0; padding-left:18px; color:#ffffffb8; font-size:12px; line-height:1.6; display:grid; gap:6px; }
+.te-dialog-preview-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(110px,1fr)); gap:12px; }
+.te-tool-dialog .te-dialog-page { padding:8px; border:2px solid transparent; border-radius:10px; background:#ffffff06; color:#ffffffcc; text-align:center; }
+.te-tool-dialog .te-dialog-page.is-selected { border-color:#e7e7e7; background:#ffffff10; }
+.te-dialog-page > span { display:block; padding-top:8px; font-size:12px; }
+.te-dialog-page .te-preview { border-radius:5px; }
+.te-dialog-tool-picker { margin-bottom:18px; }
+.te-dialog-tool-picker select { font-weight:500; }
+.te-dialog-record { display:grid; gap:10px; padding:12px; background:#ffffff05; border:1px solid #ffffff10; border-radius:10px; }
+.te-dialog-record-head { display:flex; gap:12px; justify-content:space-between; align-items:center; }
+.te-dialog-record-head span { min-width:0; overflow-wrap:anywhere; }
+.te-dialog-record time { color:#ffffff99; font-size:11px; }
+.te-dialog-record.is-resolved { opacity:.65; }
+.te-dialog-link { display:grid; grid-template-columns:minmax(0,1fr) auto; gap:8px; align-items:end; }
+.te-dialog-presets { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+.te-dialog-presets button { display:grid; gap:5px; min-height:68px; padding:10px 6px; border:1px solid #ffffff1d; border-radius:9px; background:#ffffff05; color:#ffffffe5; cursor:pointer; }
+.te-dialog-presets button[aria-pressed=true] { border-color:#ededed; background:#ffffff10; }
+.te-dialog-presets small { font-size:10px; color:#ffffffa6; }
+.te-dialog-empty { padding:14px; border-radius:9px; background:#ffffff04; }
+.te-dialog-record > details { border:0; padding:0; }
+.te-dialog-record > details > summary { min-height:36px; padding:8px 0; font-size:12px; }
+.te-dialog-guide-row { display:grid; grid-template-columns:minmax(0,1fr) 90px auto auto; gap:10px; align-items:center; }
+.te-dialog-guide-row > span { font-size:12px; }
+.te-dialog-guide-row label.te-dialog-check { min-height:0; }
+.te-dialog-guide-row button { min-height:36px; min-width:30px; }
+.te-tool-dialog .te-text-button { min-height:36px; }
+@media(max-width:520px) {
+  .te-modal:has(.te-tool-dialog) { padding:18px; width:calc(100vw - 24px); max-height:calc(100dvh - 24px); }
+  .te-dialog-preview-grid { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
+  .te-dialog-guide-row { grid-template-columns:minmax(0,1fr) 75px auto auto; gap:6px; }
+  .te-dialog-footer { justify-content:stretch; }
+  .te-dialog-footer .te-primary { flex:1; }
+  .te-dialog-link { grid-template-columns:1fr; }
+}
