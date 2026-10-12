@@ -41,6 +41,8 @@ function loadModule(relative, dependencies = {}, environment = process) {
 }
 
 const model = loadModule("lib/template-editor/model.ts");
+const templateCatalog = loadModule("lib/template-editor/template-catalog.ts", {"./model":model});
+const librarySync = loadModule("lib/template-editor/library-sync.ts", {"./model":model,"./template-catalog":templateCatalog});
 const newLibrary = (name) => {
   const library = structuredClone(model.EMPTY_LIBRARY);
   return model.withBrandKits(library, [{ ...model.activeBrandKit(library), name }]);
@@ -56,7 +58,7 @@ function persistence(t, options = {}) {
     {
       "@/lib/supabase/admin": { getAdminSupabase: () => options.db ?? null },
       "./model": model,
-      "./library-sync": loadModule("lib/template-editor/library-sync.ts"),
+      "./library-sync": librarySync,
       "./library-budget": loadModule("lib/template-editor/library-budget.ts"),
       "./development-storage": loadModule("lib/template-editor/development-storage.ts", {}, {cwd:()=>directory,env:{NODE_ENV:options.production?"production":"test"}}),
     },
@@ -354,7 +356,7 @@ test("API ignores malformed or credential-bearing configured origins", async (t)
 });
 
 test("document patches merge concurrent changes to different designs without overwriting either", async t => {
-  const sync = loadModule("lib/template-editor/library-sync.ts"), store = persistence(t);
+  const sync = librarySync, store = persistence(t);
   const library = {...structuredClone(model.EMPTY_LIBRARY), designs: [model.createBlankDesign("One", "portrait"), model.createBlankDesign("Two", "square")]};
   const first = await store.saveEditorLibrary("owner", library, null);
   const tabOne = structuredClone(first.library), tabTwo = structuredClone(first.library);
@@ -368,7 +370,7 @@ test("document patches merge concurrent changes to different designs without ove
 });
 
 test("patch operation retries are idempotent, same-document conflicts preserve server state, and checkpoints remain durable", async t => {
-  const sync = loadModule("lib/template-editor/library-sync.ts"), store = persistence(t);
+  const sync = librarySync, store = persistence(t);
   const first = await store.saveEditorLibrary("owner", {...structuredClone(model.EMPTY_LIBRARY), designs: [model.createBlankDesign("Original", "portrait")]}, null);
   const local = structuredClone(first.library); local.designs[0].name = "Saved";
   const patch = await sync.packAssets(await sync.createLibraryPatch(first.library, local));
@@ -386,7 +388,7 @@ test("patch operation retries are idempotent, same-document conflicts preserve s
 });
 
 test("embedded assets are stored once, restored losslessly, and never accepted with a forged content hash", async t => {
-  const sync = loadModule("lib/template-editor/library-sync.ts"), db = fakeDatabase(), store = persistence(t, {db});
+  const sync = librarySync, db = fakeDatabase(), store = persistence(t, {db});
   const image = "data:image/png;base64,iVBORw0KGgo=";
   const library = structuredClone(model.EMPTY_LIBRARY);
   library.brandKits[0].assets = [0,1].map(index => ({id: `asset-${index}`, name: "Logo", src: image, width: 1, height: 1, kind: "logo"}));
@@ -404,7 +406,7 @@ test("embedded assets are stored once, restored losslessly, and never accepted w
 });
 
 test("shape photos and text textures retain crop, bindings and private provenance through patches and history",async t=>{
-  const db=fakeDatabase(),store=persistence(t,{db}),sync=loadModule("lib/template-editor/library-sync.ts");
+  const db=fakeDatabase(),store=persistence(t,{db}),sync=librarySync;
   const src="data:image/png;base64,iVBORw0KGgo=",design=model.createBlankDesign("Photo frame","portrait"),photo=model.createCanvasElement("shape"),image=model.createCanvasElement("image");
   image.src=src;photo.strokeAlign="outside";photo.imageFill={src,objectFit:"cover",cropX:20,cropY:70,cropScale:1.5,flipY:true,intrinsicWidth:1800,intrinsicHeight:1200,directive:"PRIVATE_PROMPT",rightsNote:"Private usage note",sourceUrl:"https://source.example/photo",provenance:{source:"research",imageId:"image-photo",description:"Private source detail",cosmosManual:true}};
   const title=model.createCanvasElement("text",{text:"Photo title",richText:'<span data-texture-id="title-word">Photo</span> title'});title.textureFill=structuredClone(photo.imageFill);title.wordTextures=[{...structuredClone(photo.imageFill),id:"title-word"}];
@@ -428,7 +430,7 @@ test("shape photos and text textures retain crop, bindings and private provenanc
 });
 
 test("review links freeze artwork, exclude internal metadata, isolate owners and revoke token access", async t => {
-  const db = fakeDatabase(), store = persistence(t, {db}), sync = loadModule("lib/template-editor/library-sync.ts");
+  const db = fakeDatabase(), store = persistence(t, {db}), sync = librarySync;
   const design = model.createBlankDesign("Review snapshot", "portrait");
   design.tags = ["internal"]; design.favorite = true;
   Object.assign(design.pages[0].image,{directive:"PRIVATE_PROMPT",rightsNote:"PRIVATE_NOTE",description:"PRIVATE_DESCRIPTION",sourceUrl:"https://private.example/?token=demo",url:"https://private.example/unpainted-photo.png"});
@@ -520,7 +522,7 @@ test("review snapshot fetches reject private destinations and credential-bearing
 });
 
 test("document save scope prevents a stale owner tab from rebasing its work into another account", async t => {
- const store=persistence(t),sync=loadModule("lib/template-editor/library-sync.ts");
+ const store=persistence(t),sync=librarySync;
  const ownerA=await store.saveEditorLibrary("owner-a",structuredClone(model.EMPTY_LIBRARY),null);
  const local=structuredClone(ownerA.library);local.designs.push(model.createBlankDesign("Private to A","portrait"));
  const packed=await sync.packAssets(await sync.createLibraryPatch(ownerA.library,local));
@@ -542,4 +544,47 @@ test("legacy clients cannot overwrite a schema-two workspace but first legacy im
  const other=route({kind:"owner",ownerKey:"new-owner"},store);
  const migrated=await other.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({library:{...library,version:1},revision:null})}));
  assert.equal(migrated.status,200);assert.equal((await store.getEditorLibrary("new-owner")).library.version,2);
+});
+
+test("built-in template deletion survives older document patches, cloud reloads and operation retries",async t=>{
+  const db=fakeDatabase(),store=persistence(t,{db}),sync=librarySync;
+  const template=model.BUILT_IN_TEMPLATES[0],design=model.createDesign(template);
+  const initial=await store.saveEditorLibrary("owner",{...structuredClone(model.EMPTY_LIBRARY),designs:[design]},null);
+  const removed=structuredClone(initial.library),deletedAt="2026-10-12T10:00:00.000Z";
+  removed.builtInTemplateStates=[{id:template.id,updatedAt:deletedAt,deletedAt}];
+  const deletion=await sync.packAssets(await sync.createLibraryPatch(initial.library,removed)),deleteId=crypto.randomUUID();
+  await store.saveEditorPatch("owner",deletion.value,deletion.assets,initial.revision,deleteId);
+  // An older schema-2 editor knows the document but not catalog decisions.
+  const older=structuredClone(initial.library);older.designs[0].name="Updated in the older tab";
+  const documentPatch=await sync.packAssets(await sync.createLibraryPatch(initial.library,older)),documentId=crypto.randomUUID();
+  assert.equal(documentPatch.value.collections.builtInTemplateStates,undefined);
+  const merged=await store.saveEditorPatch("owner",documentPatch.value,documentPatch.assets,initial.revision,documentId);
+  assert.equal(merged.reconciled,true);assert.deepEqual(merged.library.builtInTemplateStates,removed.builtInTemplateStates);
+  assert.equal(merged.library.designs[0].name,"Updated in the older tab");assert.equal(merged.library.designs[0].id,design.id);assert.equal(merged.library.templates.length,0);
+  const retried=await store.saveEditorPatch("owner",deletion.value,deletion.assets,initial.revision,deleteId);
+  assert.equal(retried.revision,merged.revision);assert.equal(retried.library.designs[0].name,"Updated in the older tab");
+  const purged=structuredClone(merged.library);purged.builtInTemplateStates=[{...purged.builtInTemplateStates[0],updatedAt:"2026-10-12T10:01:00.000Z",permanentlyDeleted:true}];
+  const purge=await sync.packAssets(await sync.createLibraryPatch(merged.library,purged));
+  const saved=await store.saveEditorPatch("owner",purge.value,purge.assets,merged.revision,crypto.randomUUID());
+  const oldRetry=await store.saveEditorPatch("owner",documentPatch.value,documentPatch.assets,initial.revision,documentId);
+  assert.equal(oldRetry.revision,saved.revision);assert.equal(oldRetry.library.builtInTemplateStates[0].permanentlyDeleted,true);
+  assert.deepEqual((await store.getEditorLibrary("owner")).library.builtInTemplateStates,purged.builtInTemplateStates);
+  assert.deepEqual(db.rows.get("template-editor:owner").data.library.builtInTemplateStates,purged.builtInTemplateStates);
+});
+
+test("older schema-two whole-library saves preserve catalog decisions and current clients can restore explicitly",async t=>{
+  const db=fakeDatabase(),store=persistence(t,{db}),template=model.BUILT_IN_TEMPLATES[0],date="2026-10-12T11:00:00.000Z";
+  const initial={...structuredClone(model.EMPTY_LIBRARY),designs:[model.createDesign(template)],builtInTemplateStates:[{id:template.id,updatedAt:date,deletedAt:date,permanentlyDeleted:true}]};
+  assert.equal(model.EMPTY_LIBRARY.builtInTemplateStates,undefined);
+  assert.equal(model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY)}).builtInTemplateStates,undefined);
+  const first=await store.saveEditorLibrary("owner",initial,null),api=route({kind:"owner",ownerKey:"owner"},store);
+  const oldLibrary=structuredClone(first.library);delete oldLibrary.builtInTemplateStates;oldLibrary.designs[0].name="Legacy full save";
+  const operationId=crypto.randomUUID(),body={library:oldLibrary,revision:first.revision,operationId};
+  const request=()=>new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify(body)});
+  const response=await api.PUT(request());assert.equal(response.status,200);
+  const saved=await store.getEditorLibrary("owner");assert.deepEqual(saved.library.builtInTemplateStates,initial.builtInTemplateStates);assert.equal(saved.library.designs[0].name,"Legacy full save");
+  assert.equal(oldLibrary.builtInTemplateStates,undefined);assert.equal((await api.PUT(request())).status,200);
+  assert.equal((await store.getEditorLibrary("owner")).revision,saved.revision);
+  const restored=structuredClone(saved.library);restored.builtInTemplateStates=[{id:template.id,updatedAt:"2026-10-12T11:01:00.000Z"}];
+  const explicit=await store.saveEditorLibrary("owner",restored,saved.revision);assert.deepEqual(explicit.library.builtInTemplateStates,restored.builtInTemplateStates);assert.equal(explicit.library.designs[0].id,initial.designs[0].id);
 });

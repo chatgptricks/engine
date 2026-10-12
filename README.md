@@ -91,7 +91,7 @@ Browser drafts use the `engine-template-editor` recovery database. Existing reco
 
 ## Organize, versions, and review
 
-Use folder, favorite and tag filters in the library. Design/template menus open **Folder and tags**; folder management supports adding, renaming and removal without deleting its contents. Deleting an item moves it to **Trash**, where it can be restored or permanently removed.
+Use folder, favorite and tag filters in the library. Design/template menus open **Folder and tags**; folder management supports adding, renaming and removal without deleting its contents. Deleting an item moves it to **Trash**, where it can be restored or permanently removed. Built-in templates can also be deleted, restored or permanently removed. These choices are saved per workspace and included in backups; deleting a template leaves posts already created from it intact. Built-in template states do not consume the 80-custom-template limit.
 
 **Version history** opens durable server checkpoints. Autosave records a baseline and then checkpoints at most every 30 seconds, up to 30 per design within a shared 20 MiB raw history budget. Named versions remain part of the document, up to 20 per design. Undo/redo remains the working history while a design is open.
 

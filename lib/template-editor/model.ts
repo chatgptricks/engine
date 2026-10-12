@@ -198,6 +198,7 @@ export const MAX_BRAND_ASSETS = 40;
 export const MAX_BRAND_COLORS = 20;
 export const MAX_BRAND_ASSET_CHARS = 2_000_000;
 export const DEFAULT_BRAND_KIT_ID = "brand-default";
+export type BuiltInTemplateState = { id: string; updatedAt: string; deletedAt?: string; permanentlyDeleted?: boolean };
 export type EditorLibrary = {
   version: 2;
   designs: DesignDocument[];
@@ -207,6 +208,8 @@ export type EditorLibrary = {
   brandKits: SavedBrandKit[];
   activeBrandKitId: string;
   folders?: { id: string; name: string }[];
+  /** Workspace decisions for bundled templates; absent in older saved libraries. */
+  builtInTemplateStates?: BuiltInTemplateState[];
 };
 
 export const DEFAULT_BRAND: BrandKit = {
@@ -1770,6 +1773,11 @@ export function parseCanvasScene(value: unknown): CanvasScene | null {
   return parseCanvas(value);
 }
 
+export function parseBuiltInTemplateState(value: unknown): BuiltInTemplateState | null {
+  if (!object(value) || !identity(value.id) || !BUILT_IN_TEMPLATES.some(template => template.id === value.id) || !string(value.updatedAt, 40) || !Number.isFinite(Date.parse(value.updatedAt)) || !optional(value, "deletedAt", candidate => string(candidate, 40) && Number.isFinite(Date.parse(candidate))) || !optional(value, "permanentlyDeleted", boolean)) return null;
+  return { id: value.id, updatedAt: value.updatedAt, ...(value.deletedAt !== undefined ? { deletedAt: value.deletedAt as string } : {}), ...(value.permanentlyDeleted !== undefined ? { permanentlyDeleted: value.permanentlyDeleted as boolean } : {}) };
+}
+
 function parsePages(value: unknown): DesignPage[] | null {
   if (!Array.isArray(value) || !value.length || value.length > 20) return null;
   const pages: DesignPage[] = [];
@@ -1890,6 +1898,17 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
       }
       if (!uniqueIds(folders)) return null;
       library.folders = folders;
+    }
+    if (input.builtInTemplateStates !== undefined) {
+      if (!Array.isArray(input.builtInTemplateStates) || input.builtInTemplateStates.length > BUILT_IN_TEMPLATES.length) return null;
+      const states: BuiltInTemplateState[] = [];
+      for (const candidate of input.builtInTemplateStates) {
+        const state = parseBuiltInTemplateState(candidate);
+        if (!state) return null;
+        states.push(state);
+      }
+      if (!uniqueIds(states)) return null;
+      library.builtInTemplateStates = states;
     }
     const designIds = new Set<string>();
     const templateIds = new Set<string>();

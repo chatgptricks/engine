@@ -460,11 +460,12 @@
 .te-design-actions {
   display: flex;
   position: absolute;
-  right: 7px;
+  right: 47px;
   top: 7px;
   padding: 2px;
   background: #151515c9;
   border-radius: 8px;
+  z-index: 2;
 }
 .te-card-delete {
   position: absolute;

@@ -145,7 +145,10 @@ export function DesignEditor({
   const paletteDrag=useRef<(()=>void)|null>(null);
   const suppressPaletteClick=useRef(false);
   const [photoGhost,setPhotoGhost]=useState<{src:string;x:number;y:number}|null>(null);
-  const [applyingTemplate,setApplyingTemplate]=useState<DesignTemplate|null>(null);
+  const [applyingTemplateId,setApplyingTemplateId]=useState<string|null>(null);
+  const applyingTemplate=templates.find(template=>template.id===applyingTemplateId&&!template.deletedAt)??null;
+  const currentTemplates=useRef(templates);
+  useLayoutEffect(()=>{currentTemplates.current=templates;},[templates]);
   const [spacePanning,setSpacePanning]=useState(false);
   const panGesture=useRef<{x:number;y:number;left:number;top:number;pointer:number}|null>(null);
   const textFormatter=useRef<TextFormatter|null>(null);
@@ -1171,7 +1174,7 @@ export function DesignEditor({
                   {templates.map((t) => (
                     <button
                       key={t.id}
-                      onClick={() => setApplyingTemplate(t)}
+                      onClick={() => setApplyingTemplateId(t.id)}
                     >
                       <DesignPreview
                         design={{ ...design, format: t.format, customSize:t.customSize,masterScene:t.masterScene,pages: t.pages, continuousCanvas: t.continuousCanvas }}
@@ -1618,7 +1621,10 @@ export function DesignEditor({
         </aside>
       </div>
       {layoutOpen&&<LayoutPanel scene={scene} width={canvasWidth} slideWidth={FRAME_WIDTH} height={canvasHeight} outputScale={format.width/FRAME_WIDTH} disabled={disabled} onChange={changeScene} onClose={()=>setLayoutOpen(false)}/>}
-      {applyingTemplate&&<TemplateApplyDialog template={applyingTemplate} design={design} scene={scene} pageId={page.id} disabled={disabled} onChangeDesign={next=>commit(live=>applyDesignPatch(design,next,live))} onChangeScene={changeScene} onClose={()=>setApplyingTemplate(null)}/>}
+      {applyingTemplate&&<TemplateApplyDialog template={applyingTemplate} design={design} scene={scene} pageId={page.id} disabled={disabled} onChangeDesign={next=>{
+        if(!currentTemplates.current.some(template=>template.id===applyingTemplate.id&&!template.deletedAt))throw new Error("This template was deleted. Restore it from Trash before applying it.");
+        return commit(live=>applyDesignPatch(design,next,live));
+      }} onChangeScene={changeScene} onClose={()=>setApplyingTemplateId(null)}/>}
       {workflowOpen&&<WorkflowPanel design={design} scene={scene} selected={selected} pageId={page.id} disabled={disabled} onChange={next=>commit(live=>applyDesignPatch(design,next,live))} onSceneChange={changeScene} onSelect={setSelected} onAddDesigns={onAddDesigns} canShare={saveStatus.startsWith("Saved")} onMakeMaster={()=>{const promotable=selected.filter(id=>{const element=scene.elements.find(e=>e.id===id);return element&&canEditElement(scene,element,'position')&&canEditElement(scene,element,'delete');});if(!promotable.length)return;if(changeScene({...scene,elements:scene.elements.map(e=>promotable.includes(e.id)?{...e,master:true}:e)})){setSelected([]);setIsolatedGroupId(null);setWorkflowOpen(false);setEditingMaster(true);}}} onEditMaster={()=>{setEditingMaster(true);setIsolatedGroupId(null);setSelected([]);setWorkflowOpen(false);}} onClose={()=>setWorkflowOpen(false)}/>}
       {exportDialog&&<ExportDialog design={design} pageId={page.id} disabled={disabled} issues={preflightIssues} onClose={()=>setExportDialog(false)} onExport={(options,pageIds)=>{setExportDialog(false);setJob({design:structuredClone(design),options,pageIds});}}/>}
       {job&&<button className="te-button te-export-cancel" onClick={()=>exportAbort.current?.abort()}>Cancel export · {progress}%</button>}
