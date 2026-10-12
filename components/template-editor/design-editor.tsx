@@ -534,7 +534,7 @@ export function DesignEditor({
         travel(historyDirection);
         return;
       }
-      if(!mod&&target.closest('button,a[href],summary,[role="button"]'))return;
+      if(!mod&&target.closest('button,a[href],summary,[role="button"]')&&!target.closest('.te-canvas-hit'))return;
       if (mod && key === "a") {
         event.preventDefault();
         setSelected(selectable.map(e=>e.id));
