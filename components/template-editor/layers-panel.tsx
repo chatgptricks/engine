@@ -1,11 +1,12 @@
 "use client";
 
 import { useRef, useState, type DragEvent, type MouseEvent } from "react";
-import { CopyIcon, SearchIcon, TrashIcon } from "@/components/grateful-future/icons";
+import { CopyIcon, SearchIcon, TrashIcon } from "@/components/engine/icons";
 import type { CanvasElement, CanvasScene } from "@/lib/template-editor/model";
 import { elementIntersectsCanvas } from "@/lib/template-editor/canvas-geometry";
-import { reorderSelection } from "@/lib/template-editor/commands";
-import { proxied } from "@/lib/grateful-future/util";
+import { reorderSelection, setGroupHidden, setGroupLocked, isElementLocked, isElementHidden } from "@/lib/template-editor/commands";
+import { buildLayerRows } from "@/lib/template-editor/layer-tree";
+import { proxied } from "@/lib/engine/util";
 import "./layers-panel.css";
 
 export type LayersPanelProps = {
@@ -21,10 +22,14 @@ export type LayersPanelProps = {
   onDuplicate?: () => void;
   onDelete?: () => void;
   onLocate?: (element: CanvasElement) => void;
+  onEnterGroup?: (groupId: string) => void;
+  onExitGroup?: () => void;
+  isolatedGroupId?: string;
+  onGroupContextMenu?: (event: MouseEvent, groupId: string) => void;
 };
 
 function typeName(element: CanvasElement) {
-  return element.type === "text" ? "Text" : element.type === "image" ? "Image" : element.shape === "ellipse" ? "Ellipse" : "Rectangle";
+  return element.type === "text" ? "Text" : element.type === "image" ? "Image" : element.shape.charAt(0).toUpperCase() + element.shape.slice(1);
 }
 function layerName(element: CanvasElement) {
   return element.name.trim() || (element.type === "text" ? element.text.trim().slice(0, 40) : "") || typeName(element);
@@ -55,7 +60,7 @@ function Thumbnail({ element }: { element: CanvasElement }) {
   </span>;
 }
 
-export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, height, disabled = false, onContextMenu, onMenuClick, onDuplicate, onDelete, onLocate }: LayersPanelProps) {
+export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, height, disabled = false, onContextMenu, onMenuClick, onDuplicate, onDelete, onLocate, onEnterGroup, onExitGroup, isolatedGroupId, onGroupContextMenu }: LayersPanelProps) {
   const [query, setQuery] = useState("");
   const [rename, setRename] = useState<{ id: string; value: string } | null>(null);
   const [renameError, setRenameError] = useState("");
@@ -64,12 +69,14 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
   const dragIds = useRef<string[]>([]);
   const [dropTarget, setDropTarget] = useState<{ id: string; after: boolean } | null>(null);
   const [announcement, setAnnouncement] = useState("");
+  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [groupRename, setGroupRename] = useState<{ id: string; value: string } | null>(null);
   const selectedSet = new Set(selectedIds);
   const selected = scene.elements.filter((element) => selectedSet.has(element.id));
-  const unlocked = selected.filter((element) => !element.locked);
+  const unlocked = selected.filter((element) => !isElementLocked(scene, element));
   const order = [...scene.elements].reverse();
-  const search = query.trim().toLowerCase();
-  const filtered = order.filter((element) => !search || `${element.name} ${typeName(element)} ${element.type === "text" ? element.text : ""}`.toLowerCase().includes(search));
+  const tree = buildLayerRows(scene, collapsedGroups, isolatedGroupId, query);
+  const resultIds = [...new Set(tree.flatMap(row => row.kind === "element" ? [row.element.id] : row.memberIds))];
   const moveUp = reorderSelection(scene, selectedIds, "forward");
   const moveDown = reorderSelection(scene, selectedIds, "backward");
 
@@ -82,7 +89,7 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
     if (accepted !== false) setAnnouncement(`${layerName(source)} ${key === "locked" ? value ? "locked" : "unlocked" : value ? "hidden" : "shown"}.`);
   }
   function beginRename(element: CanvasElement) {
-    if (disabled || element.locked) return;
+    if (disabled || isElementLocked(scene, element)) return;
     cancelledRename.current = false;
     setRenameError("");
     setRename({ id: element.id, value: element.name });
@@ -91,7 +98,7 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
     if (!rename) return;
     if (cancelledRename.current) { setRename(null); return; }
     const source = scene.elements.find((element) => element.id === rename.id);
-    if (disabled || !source || source.locked) { setRenameError("Unlock the layer before renaming it."); return; }
+    if (disabled || !source || isElementLocked(scene, source)) { setRenameError("Unlock the layer before renaming it."); return; }
     const name = rename.value.trim() || typeName(source);
     if (name === source.name) { setRename(null); return; }
     const accepted = onChange({ ...scene, elements: scene.elements.map((element) => element.id === rename.id ? { ...element, name } : element) }, `rename-layer:${rename.id}`);
@@ -108,12 +115,12 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
     if (result.scene !== scene && onChange(result.scene) !== false) setAnnouncement(`${unlocked.length === 1 ? "Layer" : "Layers"} moved ${direction}.`);
   }
   function startDrag(event: DragEvent, element: CanvasElement) {
-    if (disabled || element.locked || rename) { event.preventDefault(); return; }
+    if (disabled || isElementLocked(scene, element) || rename) { event.preventDefault(); return; }
     const ids = selectedSet.has(element.id) ? unlocked.map((item) => item.id) : [element.id];
     if (!selectedSet.has(element.id)) onSelect(ids);
     dragIds.current = ids; setDragging(ids);
     event.dataTransfer.effectAllowed = "move";
-    event.dataTransfer.setData("application/x-greatful-layers", "move");
+    event.dataTransfer.setData("application/x-engine-layers", "move");
     event.dataTransfer.setData("text/plain", `${ids.length} layer${ids.length === 1 ? "" : "s"}`);
   }
   function endDrag() { dragIds.current = []; setDragging([]); setDropTarget(null); }
@@ -127,7 +134,7 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
   function drop(event: DragEvent<HTMLElement>, element: CanvasElement) {
     event.preventDefault(); event.stopPropagation();
     const ids = new Set(dragIds.current);
-    const moving = order.filter((item) => ids.has(item.id) && !item.locked);
+    const moving = order.filter((item) => ids.has(item.id) && !isElementLocked(scene, item));
     if (disabled || !moving.length || ids.has(element.id)) { endDrag(); return; }
     const remaining = order.filter((item) => !moving.some((layer) => layer.id === item.id));
     const index = remaining.findIndex((item) => item.id === element.id);
@@ -144,10 +151,11 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
 
   return <section className="te-layer-manager" aria-label="Manage layers">
     <header className="te-panel-heading"><h2>Layers</h2><span>{scene.elements.length}/100</span></header>
+    {isolatedGroupId && <div className="te-layer-isolation"><span>Inside {scene.groups?.find(group => group.id === isolatedGroupId)?.name || "group"}</span><button type="button" onClick={onExitGroup}>Exit group</button></div>}
     <label className="te-layer-search"><SearchIcon size={14} /><input aria-label="Search layers" placeholder="Find a layer…" value={query} onChange={(event) => setQuery(event.target.value)} />{query && <button type="button" aria-label="Clear layer search" onClick={() => setQuery("")}>×</button>}</label>
     <div className="te-layer-selection-summary">
-      <span>{selected.length ? `${selected.length} selected` : `${filtered.length} ${filtered.length === 1 ? "layer" : "layers"}`}</span>
-      <button type="button" disabled={disabled || !filtered.length} onClick={() => onSelect(filtered.map((element) => element.id))}>Select {query ? "results" : "all"}</button>
+      <span>{selected.length ? `${selected.length} selected` : `${resultIds.length} ${resultIds.length === 1 ? "layer" : "layers"}`}</span>
+      <button type="button" disabled={disabled || !resultIds.length} onClick={() => onSelect(resultIds)}>Select {query ? "results" : "all"}</button>
       {selected.length > 0 && <button type="button" disabled={disabled} onClick={() => onSelect([])}>Clear</button>}
     </div>
     <div className="te-layer-toolbar" role="group" aria-label="Selected layer actions">
@@ -161,9 +169,23 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
     {renameError && <p className="te-layer-rename-error" role="alert">{renameError}</p>}
     <div className="te-layer-order-caption"><span>FRONT</span><span>Drag to reorder</span></div>
     <ul className="te-layer-list" aria-label="Layers from front to back">
-      {filtered.map((element) => {
-        const name = layerName(element), hidden = Boolean(element.hidden), offCanvas = !elementIntersectsCanvas(element, width, height);
-        return <li key={element.id} data-layer-row-id={element.id} draggable={!disabled && !element.locked && !rename}
+      {tree.map((row) => {
+        if (row.kind === "group") {
+          const { group, memberIds } = row;
+          const members = scene.elements.filter(item => memberIds.includes(item.id));
+          const hidden = Boolean(group.hidden);
+          const locked = Boolean(group.locked);
+          return <li key={`group:${group.id}`} className={`te-layer-group ${memberIds.length && memberIds.every(id => selectedSet.has(id)) ? "is-selected" : ""}`} style={{ marginLeft: row.depth * 12 }} onContextMenu={event => onGroupContextMenu?.(event, group.id)}>
+            <div className="te-layer-row-main"><button type="button" className="te-layer-collapse" aria-label={`${collapsedGroups.has(group.id) ? "Expand" : "Collapse"} group ${group.name}`} aria-expanded={!collapsedGroups.has(group.id)} onClick={() => setCollapsedGroups(previous => { const next = new Set(previous); if (next.has(group.id)) next.delete(group.id); else next.add(group.id); return next; })}>{collapsedGroups.has(group.id) ? "›" : "⌄"}</button>
+              <button type="button" className="te-layer-select" disabled={disabled} aria-label={`Select group ${group.name}`} aria-pressed={members.length > 0 && memberIds.every(id => selectedSet.has(id))} onClick={event => onSelect(event.shiftKey ? [...new Set([...selectedIds, ...memberIds])] : memberIds)} onDoubleClick={() => onEnterGroup?.(group.id)}><span className="te-layer-thumb" aria-hidden>▤</span><span className="te-layer-description"><strong>{group.name}</strong><span>{memberIds.length} layers</span></span></button>
+              <div className="te-layer-row-tools"><button type="button" disabled={disabled} aria-label={`${hidden ? "Show" : "Hide"} group ${group.name}`} onClick={() => { const result = setGroupHidden(scene, group.id, !hidden); onChange(result.scene); }}><Eye hidden={hidden} /></button><button type="button" disabled={disabled} aria-label={`${locked ? "Unlock" : "Lock"} group ${group.name}`} onClick={() => { const result = setGroupLocked(scene, group.id, !locked); onChange(result.scene); }}><Lock locked={locked} /></button><button type="button" disabled={disabled} aria-label={`Rename group ${group.name}`} onClick={() => setGroupRename({ id: group.id, value: group.name })}>✎</button>{onEnterGroup && <button type="button" title="Edit inside group" aria-label={`Enter group ${group.name}`} onClick={() => onEnterGroup(group.id)}>↳</button>}</div>
+            </div>
+            {groupRename?.id === group.id && <input className="te-layer-rename" autoFocus aria-label={`Group name ${group.name}`} value={groupRename.value} maxLength={100} onChange={event => setGroupRename({ ...groupRename, value: event.target.value })} onBlur={() => { const name = groupRename.value.trim(); if (name && name !== group.name && !disabled) onChange({ ...scene, groups: scene.groups?.map(item => item.id === group.id ? { ...item, name } : item) }); setGroupRename(null); }} onKeyDown={event => { event.stopPropagation(); if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") setGroupRename(null); }} />}
+          </li>;
+        }
+        const element = row.element;
+        const name = layerName(element), hidden = isElementHidden(scene, element), effectiveLocked = isElementLocked(scene, element), offCanvas = !elementIntersectsCanvas(element, width, height);
+        return <li key={element.id} style={{ marginLeft: row.depth * 12 }} data-layer-row-id={element.id} draggable={!disabled && !effectiveLocked && !rename}
           className={`${selectedSet.has(element.id) ? "is-selected " : ""}${hidden ? "is-hidden " : ""}${dragging.includes(element.id) ? "is-dragging " : ""}${dropTarget?.id === element.id ? dropTarget.after ? "drop-after" : "drop-before" : ""}`}
           onDragStart={(event) => startDrag(event, element)} onDragEnd={endDrag} onDragOver={(event) => dragOver(event, element)} onDrop={(event) => drop(event, element)}
           onContextMenu={(event) => onContextMenu(event, element)}
@@ -178,13 +200,13 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
             }
           }}>
           <div className="te-layer-row-main">
-            <button type="button" className="te-layer-select" disabled={disabled} aria-pressed={selectedSet.has(element.id)} aria-label={`Select layer ${name}${hidden ? ", hidden" : ""}${element.locked ? ", locked" : ""}`} onClick={(event) => choose(element, event.shiftKey || event.metaKey || event.ctrlKey)} onDoubleClick={() => beginRename(element)}>
+            <button type="button" className="te-layer-select" disabled={disabled} aria-pressed={selectedSet.has(element.id)} aria-label={`Select layer ${name}${hidden ? ", hidden" : ""}${effectiveLocked ? ", locked" : ""}`} onClick={(event) => choose(element, event.shiftKey || event.metaKey || event.ctrlKey)} onDoubleClick={() => beginRename(element)}>
               <Thumbnail element={element} />
-              <span className="te-layer-description"><strong>{name}</strong><span>{typeName(element)}{element.locked ? " · Locked" : ""}{hidden ? " · Hidden" : ""}</span></span>
+              <span className="te-layer-description"><strong>{name}</strong><span>{typeName(element)}{effectiveLocked ? " · Locked" : ""}{hidden ? " · Hidden" : ""}</span></span>
             </button>
             <div className="te-layer-row-tools">
-              <button type="button" disabled={disabled} className={hidden ? "is-on" : ""} aria-label={`${hidden ? "Show" : "Hide"} layer ${name}`} title={hidden ? "Show layer" : "Hide layer"} aria-pressed={!hidden} onClick={() => toggle(element.id, "hidden")}><Eye hidden={hidden} /></button>
-              <button type="button" disabled={disabled} className={element.locked ? "is-on" : ""} aria-label={`${element.locked ? "Unlock" : "Lock"} layer ${name}`} title={element.locked ? "Unlock layer" : "Lock layer"} aria-pressed={element.locked} onClick={() => toggle(element.id, "locked")}><Lock locked={element.locked} /></button>
+              <button type="button" disabled={disabled || (hidden && !element.hidden)} className={hidden ? "is-on" : ""} aria-label={`${hidden ? "Show" : "Hide"} layer ${name}`} title={hidden ? "Show layer" : "Hide layer"} aria-pressed={!hidden} onClick={() => toggle(element.id, "hidden")}><Eye hidden={hidden} /></button>
+              <button type="button" disabled={disabled || (effectiveLocked && !element.locked)} className={effectiveLocked ? "is-on" : ""} aria-label={`${element.locked ? "Unlock" : "Lock"} layer ${name}`} title={element.locked ? "Unlock layer" : "Lock layer"} aria-pressed={effectiveLocked} onClick={() => toggle(element.id, "locked")}><Lock locked={effectiveLocked} /></button>
               <button type="button" aria-label={`Actions for layer ${name}`} title="Layer actions" aria-haspopup="menu" onClick={(event) => (onMenuClick ?? onContextMenu)(event, element)}>⋯</button>
             </div>
           </div>
@@ -197,8 +219,8 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
         </li>;
       })}
     </ul>
-    {!filtered.length && <div className="te-layer-empty"><span aria-hidden>▤</span><strong>{scene.elements.length ? "No matching layers" : "Your canvas is ready"}</strong><p>{scene.elements.length ? "Search for a name, text, or layer type." : "Add text, shapes, or images and manage them here."}</p></div>}
-    {filtered.length > 0 && <div className="te-layer-order-caption te-layer-back-caption"><span>BACK</span></div>}
+    {!tree.length && <div className="te-layer-empty"><span aria-hidden>▤</span><strong>{scene.elements.length ? "No matching layers" : "Your canvas is ready"}</strong><p>{scene.elements.length ? "Search for a name, text, or layer type." : "Add text, shapes, or images and manage them here."}</p></div>}
+    {tree.length > 0 && <div className="te-layer-order-caption te-layer-back-caption"><span>BACK</span></div>}
     <p className="te-layer-help">Shift-click for multiple layers. Double-click a name to rename. Alt + ↑ / ↓ changes the order.</p>
     <span className="te-sr-only" role="status" aria-live="polite">{announcement}</span>
   </section>;

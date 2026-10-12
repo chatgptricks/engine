@@ -62,3 +62,24 @@ test("unserializable changes return a rejection without throwing or changing inp
   assert.equal(circular.name, "Original");
   assert.equal(circular.self, circular);
 });
+
+test("repeated image sources consume one unique asset in the deduplicated wire budget", () => {
+  const src="data:image/webp;base64,"+"A".repeat(1_700_000);
+  const library={pages:Array.from({length:10},()=>({image:{url:src},canvas:{elements:[{type:"image",src}]}}))};
+  const result=checkLibrarySaveBudget(library);
+  // The raw in-memory model still has a separate 30 MB cap.
+  assert.equal(result.ok,false);
+  library.pages=library.pages.slice(0,8);
+  const packed=checkLibrarySaveBudget(library);
+  assert.equal(packed.ok,true);assert.ok(packed.bytes<1_710_000);
+});
+
+test("photo fills deduplicate nested sources without discarding their own crop metadata", () => {
+  const src="data:image/webp;base64,"+"A".repeat(1_700_000);
+  const library={pages:Array.from({length:8},(_,index)=>({canvas:{elements:[{type:"shape",imageFill:{src,objectFit:"cover",cropX:index*10,cropY:50,cropScale:1.2}}]}}))};
+  const result=checkLibrarySaveBudget(library);
+  assert.equal(result.ok,true);assert.ok(result.bytes<1_710_000);
+  assert.equal(library.pages[7].canvas.elements[0].imageFill.cropX,70);
+  library.pages[7].canvas.elements[0].imageFill.src="data:image/webp;base64,"+"B".repeat(1_700_000);
+  assert.ok(checkLibrarySaveBudget(library).bytes>3_400_000);
+});

@@ -1,4 +1,4 @@
--- Instagram connections for Grateful Future channels.
+-- Instagram connections for Engine channels.
 -- One row per (owner, channel): the long-lived Instagram token plus the
 -- account identity, written by /api/instagram/callback after the user logs
 -- in to Instagram and grants access. Server-side so a connection works from

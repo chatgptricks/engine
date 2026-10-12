@@ -4,9 +4,9 @@
 
 /*
  * Color tokens (OKLCH) for the pages outside the studio: sign-in, the
- * public onboarding at /grateful-future/start, and Instagram setup.
+ * public onboarding at /engine/start, and Instagram setup.
  * The studio itself is dark-only and scoped under .gf-root in
- * app/admin/(tool)/grateful-future/grateful-future.css.
+ * app/admin/(tool)/engine/engine.css.
  */
 :root {
   --bg: oklch(0.948 0 0);

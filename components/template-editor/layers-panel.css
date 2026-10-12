@@ -49,3 +49,7 @@
 .te-layer-empty strong { display: block; font-size: 12px; font-weight: 500; color: #a4a4b1; }
 .te-layer-empty p { margin: 10px 0 0; font-size: 10px; line-height: 1.8; }
 .te-layer-rename-error { color: #e9adad; font-size: 10px; line-height: 1.5; margin: -8px 0 12px; }
+.te-layer-collapse { flex: none; border: 0; background: transparent; color: rgba(255,255,255,.58); width: 22px; padding: 0; }
+.te-layer-group { background: rgba(255,255,255,.04); }
+.te-layer-isolation { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; color: rgba(255,255,255,.58); margin-bottom: 14px; }
+.te-layer-isolation button { border: 0; border-radius: 999px; padding: 6px 10px; background: rgba(255,255,255,.1); color: rgba(255,255,255,.92); }

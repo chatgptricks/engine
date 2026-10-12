@@ -10,9 +10,10 @@ import {
   DownloadIcon,
   ArrowRightIcon,
   StarIcon,
-} from "@/components/grateful-future/icons";
+} from "@/components/engine/icons";
 import {
   BUILT_IN_TEMPLATES,
+  EMPTY_LIBRARY,
   FORMATS,
   createDesign,
   createBlankTemplateDesign,
@@ -30,9 +31,13 @@ import {
   type DesignFormat,
 } from "@/lib/template-editor/model";
 import { useEditorLibrary } from "@/lib/template-editor/use-library";
+import {RecoveryPanel} from "./recovery-panel";
+import {reconcileLibraries} from "@/lib/template-editor/library-sync";
+import {LibraryTools, OrganizeDialog, LibraryTrash, DocumentVersions, libraryMatches, type LibraryFilters} from "./library-tools";
+import {consumeResearchTransfer} from "@/lib/template-editor/research-transfer";
 import { saveBlob } from "@/lib/template-editor/export";
 import { enableContinuousCarousel } from "@/lib/template-editor/continuous-carousel";
-import { GF_FONT_VARS } from "@/app/admin/(tool)/grateful-future/fonts";
+import { ENGINE_FONT_VARS } from "@/app/admin/(tool)/engine/fonts";
 import { DesignPreview } from "./preview";
 import { DesignEditor } from "./design-editor";
 import { Modal } from "./controls";
@@ -55,6 +60,7 @@ function WorkspaceMenu({ menu }: { menu: ContextMenuDefinition }) {
 
 export function templatePreview(template: DesignTemplate): DesignDocument {
   return {
+    ...template,
     id: template.id,
     name: template.name,
     templateId: template.id,
@@ -67,7 +73,7 @@ export function templatePreview(template: DesignTemplate): DesignDocument {
   };
 }
 
-export default function TemplateStudio() {
+export default function TemplateStudio({workspaceScope}: {workspaceScope?: string}) {
   const {
     library,
     ready,
@@ -77,11 +83,17 @@ export default function TemplateStudio() {
     retrySave,
     reloadServer,
     canEdit,
-  } = useEditorLibrary();
-  const [view, setView] = useState<"templates" | "designs" | "brand">(
+    documentEpochs,
+    scope: libraryScope,
+  } = useEditorLibrary(workspaceScope);
+  const [view, setView] = useState<"templates" | "designs" | "brand" | "trash">(
     "templates",
   );
   const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState<LibraryFilters>({folder: "", favorites: false, tag: ""});
+  const [organize, setOrganize] = useState<{kind: "design" | "template"; id: string} | null>(null);
+  const [recoveriesOpen, setRecoveriesOpen] = useState(false);
+  const [historyId, setHistoryId] = useState<string | null>(null);
   const [category, setCategory] = useState("All templates");
   const [activeId, setActiveId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
@@ -101,8 +113,9 @@ export default function TemplateStudio() {
   const importRef = useRef<HTMLInputElement>(null);
   const permission = useRef(canEdit);
   useEffect(() => { permission.current = canEdit; }, [canEdit]);
-  const templates = [...BUILT_IN_TEMPLATES, ...library.templates];
-  const active = library.designs.find((d) => d.id === activeId);
+  const templates = [...BUILT_IN_TEMPLATES, ...library.templates].filter(item => !item.deletedAt);
+  const active = library.designs.find((d) => d.id === activeId && !d.deletedAt);
+  const organized = organize ? (organize.kind === "design" ? library.designs : library.templates).find(item => item.id === organize.id) : null;
   const statusText = {
     loading: "Opening workspace…",
     saving: "Saving…",
@@ -110,8 +123,31 @@ export default function TemplateStudio() {
     local: "Saved on this computer",
     error: "Save needs attention",
     conflict: "Newer version available",
+    offline: "Offline · edits kept in this browser",
   }[status];
 
+  useEffect(() => {
+    if (!ready || !canEdit) return;
+    const timer = setTimeout(() => {
+      const transfer = consumeResearchTransfer();
+      if (!transfer) return;
+      if (library.designs.length >= 150) { setMessage("The workspace is full. Remove an older design, then transfer the research again."); return; }
+      const accepted = setLibrary(current => ({...current, designs: [transfer, ...current.designs]}));
+      if (accepted) { setActiveId(transfer.id); setView("designs"); setMessage("Research images and caption are ready to edit as a post."); }
+    }, 0);
+    return () => clearTimeout(timer);
+  }, [ready, canEdit, library.designs.length, setLibrary]);
+
+  function exportItem(item: DesignDocument | DesignTemplate, kind: "design" | "template") {
+    const kit = libraryBrandKits(library).find(value => value.id === library.activeBrandKitId) ?? libraryBrandKits(library)[0];
+    const bundle = {...EMPTY_LIBRARY, brand: library.brand, brandKits: [kit], activeBrandKitId: kit.id, ...(library.folders ? {folders: library.folders.filter(folder => folder.id === item.folderId)} : {}), designs: kind === "design" ? [item] : [], templates: kind === "template" ? [item] : library.templates.filter(template => template.id === (item as DesignDocument).templateId)};
+    saveBlob(new Blob([JSON.stringify(bundle, null, 2)], {type: "application/json"}), `${item.name.replace(/[^a-z0-9]+/gi, "-").slice(0,70)}.engine.json`);
+  }
+  function updateMetadata(kind: "design" | "template", id: string, metadata: Partial<DesignDocument>) {
+    if (!permission.current) return false;
+    const field = kind === "design" ? "designs" : "templates";
+    return setLibrary(current => ({...current, [field]: current[field].map(item => item.id === id ? {...item, ...metadata, ...(kind === "design" ? {updatedAt: new Date().toISOString()} : {})} : item)}));
+  }
   function addDocument(document: DesignDocument) {
     return setLibrary((current) => {
       if (current.designs.length >= 150) throw new Error("Your workspace has reached its 150-design limit.");
@@ -153,12 +189,12 @@ export default function TemplateStudio() {
     event.target.value = "";
     if (!file || !permission.current) return;
     try {
-      if (file.size > 30 * 1024 * 1024)
-        throw new Error("Choose a backup smaller than 30 MB.");
+      if (file.size > 64 * 1024 * 1024)
+        throw new Error("Choose a backup smaller than 64 MB.");
       const imported = parseLibrary(JSON.parse(await file.text()));
       if (!permission.current) return;
       if (!imported)
-        throw new Error("This file is not a valid Greatful workspace backup.");
+        throw new Error("This file is not a valid Engine workspace backup.");
       if (
         library.designs.length + imported.designs.length > 150 ||
         library.templates.length + imported.templates.length > 80 ||
@@ -167,6 +203,8 @@ export default function TemplateStudio() {
         throw new Error(
           "This backup would exceed the workspace limit. Export and remove older designs first.",
         );
+      const folderIds = new Map((imported.folders ?? []).map(folder => [folder.id, crypto.randomUUID()]));
+      const restoredFolders = (imported.folders ?? []).map(folder => ({...folder, id: folderIds.get(folder.id)!}));
       const templateIds = new Map(
         imported.templates.map((template) => [
           template.id,
@@ -177,9 +215,12 @@ export default function TemplateStudio() {
         ...template,
         id: templateIds.get(template.id)!,
         custom: true,
+        deletedAt: undefined,
+        ...(template.folderId ? {folderId: folderIds.get(template.folderId)} : {}),
       }));
       const restoredDesigns = imported.designs.map((design) => ({
         ...cloneDesign(design),
+        ...(design.folderId ? {folderId: folderIds.get(design.folderId)} : {}),
         templateId: templateIds.get(design.templateId) ?? design.templateId,
         ...(design.purpose === "template"
           ? {
@@ -196,7 +237,8 @@ export default function TemplateStudio() {
       const accepted = setLibrary((current) => {
         if (!permission.current) throw new Error("This workspace is not currently editable.");
         if (current.designs.length + restoredDesigns.length > 150 || current.templates.length + restoredTemplates.length > 80 || libraryBrandKits(current).length + restoredKits.length > 20) throw new Error("This backup would exceed the workspace limit. Remove older items and try again.");
-        return withBrandKits({ ...current, designs: [...restoredDesigns, ...current.designs], templates: [...current.templates, ...restoredTemplates] }, [...libraryBrandKits(current), ...restoredKits], kitIds.get(imported.activeBrandKitId) ?? restoredKits[0].id);
+        if ((current.folders?.length ?? 0) + restoredFolders.length > 80) throw new Error("Import would exceed the 80-folder limit.");
+        return withBrandKits({ ...current, folders: [...(current.folders ?? []), ...restoredFolders], designs: [...restoredDesigns, ...current.designs], templates: [...current.templates, ...restoredTemplates] }, [...libraryBrandKits(current), ...restoredKits], kitIds.get(imported.activeBrandKitId) ?? restoredKits[0].id);
       });
       if (accepted === false) return;
       setView("designs");
@@ -216,7 +258,7 @@ export default function TemplateStudio() {
       new Blob([JSON.stringify(library, null, 2)], {
         type: "application/json",
       }),
-      "greatful-workspace.json",
+      "engine-workspace.json",
     );
   }
 
@@ -227,6 +269,10 @@ export default function TemplateStudio() {
   function designMenu(design: DesignDocument): ContextMenuDefinition {
     return { label: design.name, items: [
       { id: "open", label: design.purpose === "template" ? "Continue editing template" : "Open design", onSelect: () => setActiveId(design.id) },
+      { id: "favorite", label: design.favorite ? "Remove favorite" : "Add to favorites", disabled: !canEdit, onSelect: () => updateMetadata("design", design.id, {favorite: !design.favorite}) },
+      { id: "organize", label: "Folder and tags…", disabled: !canEdit, onSelect: () => setOrganize({kind: "design", id: design.id}) },
+      { id: "history", label: "Version history…", onSelect: () => setHistoryId(design.id) },
+      { id: "export-document", label: "Export editable design…", onSelect: () => exportItem(design, "design") },
       { id: "rename", label: "Rename", disabled: !canEdit, onSelect: () => { if (permission.current) setRename({ kind: "design", id: design.id, value: design.name }); } },
       { id: "duplicate", label: "Duplicate design", disabled: !canEdit || library.designs.length >= 150, onSelect: () => duplicateDesign(design) },
       { id: "delete", label: design.purpose === "template" ? "Delete draft…" : "Delete design…", disabled: !canEdit, danger: true, separator: true, onSelect: () => { if (permission.current) setConfirm({ kind: "design", id: design.id, name: design.name }); } },
@@ -234,6 +280,8 @@ export default function TemplateStudio() {
   }
   function templateMenu(template: DesignTemplate): ContextMenuDefinition {
     return { label: template.name, items: [
+      { id: "export-template", label: "Export editable template…", onSelect: () => exportItem(template, "template") },
+      ...(template.custom ? [{id: "favorite", label: template.favorite ? "Remove favorite" : "Add to favorites", disabled: !canEdit, onSelect: () => updateMetadata("template", template.id, {favorite: !template.favorite})}, {id: "organize", label: "Folder and tags…", disabled: !canEdit, onSelect: () => setOrganize({kind: "template", id: template.id})}] : []),
       { id: "use", label: "Use template", disabled: !canEdit || library.designs.length >= 150, onSelect: () => openTemplate(template) },
       ...(template.custom ? [
         { id: "edit", label: "Edit template", disabled: !canEdit || library.designs.length >= 150, onSelect: () => openTemplateEditor(template) },
@@ -258,13 +306,14 @@ export default function TemplateStudio() {
     { id: "templates", label: "Browse templates", separator: true, onSelect: () => { setView("templates"); setQuery(""); } },
     { id: "designs", label: "Your designs", onSelect: () => { setView("designs"); setQuery(""); } },
     { id: "brand", label: "Brand kits", onSelect: () => setView("brand") },
+    { id: "recoveries", label: "Browser recoveries…", disabled: !libraryScope, onSelect: () => setRecoveriesOpen(true) },
     { id: "backup", label: "Download workspace backup", separator: true, onSelect: backup },
     { id: "import", label: "Import workspace backup…", disabled: !canEdit, onSelect: () => { if (permission.current) importRef.current?.click(); } },
   ] };
 
   return (
     <ContextMenuProvider defaultMenu={workspaceMenu}>
-    <div className={`gf-root te-root ${GF_FONT_VARS}`}>
+    <div className={`gf-root te-root ${ENGINE_FONT_VARS}`}>
       <input type="file" ref={importRef} hidden accept="application/json,.json" onChange={importLibrary} />
       {(error || status === "conflict") && (
         <div className="te-save-error" role="alert">
@@ -287,7 +336,7 @@ export default function TemplateStudio() {
         </div>
       ) : active ? (
         <DesignEditor
-          key={active.id}
+          key={`${active.id}:${documentEpochs[active.id] ?? 0}`}
           design={active}
           templates={templates}
           brand={library.brand}
@@ -327,6 +376,7 @@ export default function TemplateStudio() {
               ),
             }))
           }
+          onAddDesigns={(documents) => setLibrary(current => { if (current.designs.length + documents.length > 150) throw new Error("This batch would exceed the 150-design limit."); return {...current, designs: [...documents, ...current.designs]}; })}
           onSaveTemplate={(template) => {
             const existingId =
               active.purpose === "template"
@@ -365,12 +415,12 @@ export default function TemplateStudio() {
       ) : (
         <>
           <header className="te-home-header">
-            <a className="te-wordmark" href="/admin/grateful-future">
+            <a className="te-wordmark" href="/admin/engine">
               <span className="te-logo" aria-hidden>
-                g.
+                e.
               </span>
               <span>
-                greatful<span className="te-wordmark-sub">template studio</span>
+                Engine<span className="te-wordmark-sub">template studio</span>
               </span>
             </a>
             <div className="te-header-right">
@@ -415,6 +465,7 @@ export default function TemplateStudio() {
                     ["templates", "Templates", LayoutIcon],
                     ["designs", "Your designs", CopyIcon],
                     ["brand", "Brand kits", StarIcon],
+                    ["trash", "Trash", TrashIcon],
                   ] as const
                 ).map(([id, label, Icon]) => (
                   <button
@@ -427,12 +478,12 @@ export default function TemplateStudio() {
                   >
                     <Icon size={18} />
                     {label}
-                    {id === "designs" && <span>{library.designs.length}</span>}
+                    {id === "designs" && <span>{library.designs.filter(design => !design.deletedAt).length}</span>}
                   </button>
                 ))}
               </nav>
               <div className="te-sidebar-bottom">
-                <a href="/admin/grateful-future/research">
+                <a href="/admin/engine/research">
                   Research workspace
                   <ArrowRightIcon size={15} />
                 </a>
@@ -455,6 +506,8 @@ export default function TemplateStudio() {
                   </button>
                 </div>
               )}
+              {(view === "templates" || view === "designs") && <LibraryTools library={library} filters={filters} onFilters={setFilters} canEdit={canEdit} onChange={setLibrary}/>}
+              {view === "trash" && <LibraryTrash library={library} canEdit={canEdit} onChange={setLibrary}/>}
               {view === "templates" && (
                 <>
                   <section className="te-hero">
@@ -535,7 +588,7 @@ export default function TemplateStudio() {
                   <div className="te-template-grid">
                     {category === "My templates" &&
                       library.designs
-                        .filter((d) => d.purpose === "template")
+                        .filter((d) => d.purpose === "template" && libraryMatches(d, filters))
                         .map((draft) => (
                           <LibraryCard menu={designMenu(draft)} key={draft.id}>
                             <button
@@ -586,6 +639,7 @@ export default function TemplateStudio() {
                     {templates
                       .filter(
                         (t) =>
+                          libraryMatches(t, filters) &&
                           (category === "All templates" ||
                             (category === "My templates"
                               ? t.custom
@@ -618,7 +672,7 @@ export default function TemplateStudio() {
                               </span>
                             </div>
                             <span className="te-card-name">
-                              {template.name}
+                              {template.favorite ? "★ " : ""}{template.name}
                             </span>
                             <span className="te-card-description">
                               {template.description}
@@ -723,7 +777,7 @@ export default function TemplateStudio() {
                   <div className="te-template-grid">
                     {library.designs
                       .filter((d) =>
-                        d.name.toLowerCase().includes(query.toLowerCase()),
+                        libraryMatches(d, filters) && `${d.name} ${(d.tags ?? []).join(" ")}`.toLowerCase().includes(query.toLowerCase()),
                       )
                       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
                       .map((design) => (
@@ -749,7 +803,7 @@ export default function TemplateStudio() {
                                 <ArrowRightIcon size={15} />
                               </span>
                             </div>
-                            <span className="te-card-name">{design.name}</span>
+                            <span className="te-card-name">{design.favorite ? "★ " : ""}{design.name}</span>
                             <span className="te-card-description">
                               Edited{" "}
                               {new Date(design.updatedAt).toLocaleDateString(
@@ -948,7 +1002,7 @@ export default function TemplateStudio() {
           title={`Delete ${confirm.kind}?`}
           onClose={() => setConfirm(null)}
         >
-          <p>“{confirm.name}” will be removed from your workspace.</p>
+          <p>“{confirm.name}” will move to Trash. You can restore it later.</p>
           <div className="te-modal-actions">
             <button className="te-button" onClick={() => setConfirm(null)}>
               Cancel
@@ -962,15 +1016,11 @@ export default function TemplateStudio() {
                   confirm.kind === "design"
                     ? {
                         ...current,
-                        designs: current.designs.filter(
-                          (d) => d.id !== confirm.id,
-                        ),
+                        designs: current.designs.map(d => d.id === confirm.id ? {...d, deletedAt: new Date().toISOString()} : d),
                       }
                     : {
                         ...current,
-                        templates: current.templates.filter(
-                          (t) => t.id !== confirm.id,
-                        ),
+                        templates: current.templates.map(t => t.id === confirm.id ? {...t, deletedAt: new Date().toISOString()} : t),
                       },
                 );
                 if (accepted === false) return;
@@ -982,6 +1032,9 @@ export default function TemplateStudio() {
           </div>
         </Modal>
       )}
+      {recoveriesOpen && <RecoveryPanel scope={libraryScope} canEdit={canEdit} onClose={() => setRecoveriesOpen(false)} onRestore={draft => {if (!permission.current) return false; const accepted = setLibrary(current => reconcileLibraries(EMPTY_LIBRARY, draft, current).library); if (accepted) {setView("designs");setFilters({folder:"",favorites:false,tag:""});setMessage("Browser recovery restored. Divergent documents are kept as independent conflict copies.");} return accepted;}}/>}
+      {organized && organize && <OrganizeDialog key={organized.id} item={organized} library={library} canEdit={canEdit} onClose={() => setOrganize(null)} onSave={metadata => updateMetadata(organize.kind, organize.id, metadata)}/>}
+      {historyId && library.designs.find(item => item.id === historyId) && <DocumentVersions document={library.designs.find(item => item.id === historyId)!} canEdit={canEdit} onClose={() => setHistoryId(null)} onRestore={document => setLibrary(current => ({...current, designs: current.designs.map(item => item.id === document.id ? document : item)}))}/>}
       {conflictOpen && (
         <Modal
           title="Load the saved version?"

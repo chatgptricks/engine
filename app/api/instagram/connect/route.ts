@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { NextResponse } from "next/server";
-import { resolveGFAccess } from "@/lib/grateful-future/member";
+import { resolveEngineAccess } from "@/lib/engine/member";
 
 export const runtime = "nodejs";
 
@@ -26,7 +26,7 @@ export async function GET(request: Request) {
   const channel = url.searchParams.get("channel") ?? "";
   const probe = url.searchParams.get("probe") === "1";
 
-  const access = await resolveGFAccess();
+  const access = await resolveEngineAccess();
   if (!access) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }
@@ -41,7 +41,7 @@ export async function GET(request: Request) {
         : "Instagram connection isn’t available yet — it’s being set up.";
     return probe
       ? NextResponse.json({ error }, { status: 503 })
-      : NextResponse.redirect(new URL("/admin/grateful-future", url.origin));
+      : NextResponse.redirect(new URL("/admin/engine", url.origin));
   }
   if (!channel || !/^[a-z0-9_-]{1,80}$/i.test(channel)) {
     return NextResponse.json({ error: "Missing channel id." }, { status: 400 });

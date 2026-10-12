@@ -5,7 +5,7 @@ import { getCurrentAdminUser } from "@/lib/supabase/auth-server";
 import { AdminLoginForm } from "./login-form";
 
 export const metadata: Metadata = {
-  title: "Admin",
+  title: "Sign in · Engine",
   robots: { index: false, follow: false },
 };
 
@@ -25,12 +25,12 @@ export default async function AdminLoginPage({
 }) {
   // Local development stays open; a production deployment must have auth.
   if (!process.env.NEXT_PUBLIC_SUPABASE_URL) {
-    if (process.env.NODE_ENV !== "production") redirect("/admin/grateful-future");
+    if (process.env.NODE_ENV !== "production") redirect("/admin/engine");
     return <main className="mx-auto flex min-h-screen max-w-md items-center px-6 text-muted">Sign-in is not configured.</main>;
   }
 
   const user = await getCurrentAdminUser();
-  if (user) redirect("/admin/grateful-future");
+  if (user) redirect("/admin/engine");
 
   const { error } = await searchParams;
 
@@ -39,7 +39,7 @@ export default async function AdminLoginPage({
       <div className="w-full space-y-6">
         <header className="space-y-2 text-center">
           <p className="text-[11px] font-medium uppercase tracking-[0.2em] text-muted">
-            Admin
+            Engine
           </p>
           <h1 className="text-[28px] font-semibold tracking-tight text-fg">
             Sign in

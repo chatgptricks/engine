@@ -1,9 +1,12 @@
-import { resolveGFAccess } from "@/lib/grateful-future/member";
+import { resolveEngineAccess } from "@/lib/engine/member";
 import { parseLibrary } from "@/lib/template-editor/model";
 import {
   getEditorLibrary,
   LibraryConflictError,
   saveEditorLibrary,
+  saveEditorPatch,
+  getDocumentHistory,
+  editorOwnerScope,
 } from "@/lib/template-editor/persistence";
 
 export const runtime = "nodejs";
@@ -45,11 +48,14 @@ function allowedSaveOrigin(request: Request): boolean {
   ].some((value) => httpOrigin(value) === origin);
 }
 
-export async function GET() {
-  const access = await resolveGFAccess();
+export async function GET(request?: Request) {
+  const access = await resolveEngineAccess();
   if (!access)
     return response({ error: "Sign in to open your template library." }, 401);
   try {
+    const url = request ? new URL(request.url) : null;
+    const documentId = url?.searchParams.get("documentId");
+    if (url?.searchParams.get("history") === "1" && documentId) return response({versions: await getDocumentHistory(access.ownerKey, documentId)});
     return response(await getEditorLibrary(access.ownerKey));
   } catch (error) {
     console.error("Template library read failed", error);
@@ -93,7 +99,7 @@ async function readBoundedBody(request: Request): Promise<unknown> {
 }
 
 export async function PUT(request: Request) {
-  const access = await resolveGFAccess();
+  const access = await resolveEngineAccess();
   if (!access)
     return response({ error: "Sign in again to save your library." }, 401);
   if (!allowedSaveOrigin(request)) {
@@ -116,6 +122,27 @@ export async function PUT(request: Request) {
       error instanceof RangeError ? 413 : 400,
     );
   }
+  const operationId = body.operationId;
+  if (operationId !== undefined && (typeof operationId !== "string" || !/^[a-f0-9-]{36}$/i.test(operationId))) return response({error: "Invalid save operation."}, 400);
+  if (body.patch !== undefined) {
+    if (body.clientSchema !== 2) return response({error: "Refresh the editor before saving this workspace."}, 426);
+    if (typeof body.expectedScope !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedScope)) return response({error: "Reload the editor to confirm the signed-in workspace."}, 400);
+    if (body.expectedScope !== editorOwnerScope(access.ownerKey)) return response({error: "The signed-in account changed. Your original workspace edits were kept locally. Download a backup or sign in to the original account before reloading.", code: "workspace_owner_changed"}, 403);
+    if (typeof operationId !== "string" || !(body.revision === null || (typeof body.revision === "string" && /^[a-f0-9-]{36}$/i.test(body.revision)))) return response({error: "Invalid document save revision."}, 400);
+    try {
+      const saved = await saveEditorPatch(access.ownerKey, body.patch as Parameters<typeof saveEditorPatch>[1], (body.assets ?? {}) as Record<string, string>, body.revision, operationId);
+      return response({revision: saved.revision, storage: saved.storage, scope: saved.scope, assetKeys: saved.assetKeys, ...(saved.reconciled ? {library: saved.library} : {})});
+    } catch (error) {
+      if (error instanceof LibraryConflictError) return response({error: error.message, conflicts: error.ids, remote: await getEditorLibrary(access.ownerKey)}, 409);
+      const message = error instanceof Error ? error.message : "Document save failed.";
+      const status = /Cloud|storage.*unavailable|save failed|not configured/i.test(message) ? 503 : /12 MB|30 MB/.test(message) ? 413 : 400;
+      return response({error: status === 503 ? "The server could not save this document. Your browser copy has been kept; retry when the connection is available." : message}, status);
+    }
+  }
+  if (body.library && typeof body.library === "object" && (body.library as {version?: unknown}).version === 1) {
+    const existing = await getEditorLibrary(access.ownerKey);
+    if (existing.revision !== null && existing.library.version === 2) return response({error: "This workspace uses a newer editor version. Refresh before saving; your local edits have been kept."}, 426);
+  }
   const library = parseLibrary(body.library);
   const revision = body.revision;
   if (
@@ -128,7 +155,7 @@ export async function PUT(request: Request) {
     return response({ error: "Invalid library or save revision." }, 400);
   }
   try {
-    const saved = await saveEditorLibrary(access.ownerKey, library, revision);
+    const saved = await saveEditorLibrary(access.ownerKey, library, revision, operationId as string | undefined);
     // Avoid echoing every image on each keystroke autosave.
     return response({
       revision: saved.revision,

@@ -18,7 +18,8 @@ const libreBaskerville = localFont({
 });
 
 export const metadata: Metadata = {
-  title: "Greatful · Template Studio",
+  title: "Engine · Template Studio",
+  applicationName: "Engine",
   description:
     "Create posts and carousels with reusable templates.",
   robots: { index: false, follow: false },

@@ -3,12 +3,12 @@ import Link from "next/link";
 export const dynamic = "force-dynamic";
 
 export const metadata = {
-  title: "Connect Instagram login",
+  title: "Connect Instagram login · Engine",
   robots: { index: false, follow: false },
 };
 
 /**
- * One-time Meta app setup so Grateful Future channels can be connected with a
+ * One-time Meta app setup so Engine channels can be connected with a
  * plain Instagram login (ManyChat-style). After this, every user — you or a
  * subscriber — connects a channel by clicking "Connect Instagram", signing in
  * to Instagram itself, and approving. No keys on their side, ever.
@@ -26,7 +26,7 @@ export default function InstagramSetupPage() {
   return (
     <div className="relative mx-auto flex min-h-svh max-w-[680px] flex-col px-6 pt-12 pb-12 sm:pt-16">
       <Link
-        href="/admin/grateful-future"
+        href="/admin/engine"
         className="text-sm text-muted underline decoration-link-underline decoration-[1.5px] underline-offset-[3px] hover:decoration-fg"
       >
         ← Back to the studio
@@ -40,7 +40,7 @@ export default function InstagramSetupPage() {
           Connect Instagram login
         </h1>
         <p className="mt-3 text-[15px] text-muted">
-          Once-only setup. After this, anyone using Grateful Future connects a
+          Once-only setup. After this, anyone using Engine connects a
           channel by simply <em>logging in to Instagram</em> and granting
           access — the way ManyChat does it. Their tokens are stored
           server-side and refreshed automatically.

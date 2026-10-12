@@ -1,10 +1,10 @@
 import { NextResponse } from "next/server";
-import { resolveGFAccess } from "@/lib/grateful-future/member";
+import { resolveEngineAccess } from "@/lib/engine/member";
 import {
   deleteIgCredential,
   listIgConnections,
   refreshIgCredentialIfStale,
-} from "@/lib/grateful-future/ig-store";
+} from "@/lib/engine/ig-store";
 
 export const runtime = "nodejs";
 
@@ -19,7 +19,7 @@ export const runtime = "nodejs";
  * DELETE ?channel=<id> → disconnect that channel's Instagram login.
  */
 export async function GET() {
-  const access = await resolveGFAccess();
+  const access = await resolveEngineAccess();
   if (!access) return NextResponse.json({ connections: [] });
   const connections = await listIgConnections(access.ownerKey);
   // Keep long-lived tokens alive while the curator is around to trigger it.
@@ -30,7 +30,7 @@ export async function GET() {
 }
 
 export async function DELETE(request: Request) {
-  const access = await resolveGFAccess();
+  const access = await resolveEngineAccess();
   if (!access) {
     return NextResponse.json({ error: "Unauthorized." }, { status: 401 });
   }

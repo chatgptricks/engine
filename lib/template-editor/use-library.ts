@@ -8,7 +8,18 @@ import {
   type SetStateAction,
 } from "react";
 import { EMPTY_LIBRARY, parseLibrary, type EditorLibrary } from "./model";
+import {sameContent, createLibraryPatch, packAssets, reconcileLibraries, type LibraryPatch} from "./library-sync";
 import { checkLibrarySaveBudget } from "./library-budget";
+import {
+  getRecoveryDrafts,
+  cacheWorkspace,
+  getCachedWorkspace,
+  clearCachedWorkspaceSelection,
+  removeExactDraft,
+  saveRecoveryDraft,
+  RecoveryMigrationError,
+  type RecoveryDraft,
+} from "./recovery-storage";
 
 export type LibrarySaveStatus =
   | "loading"
@@ -16,113 +27,18 @@ export type LibrarySaveStatus =
   | "saved"
   | "local"
   | "error"
-  | "conflict";
+  | "conflict"
+  | "offline";
 type Storage = "cloud" | "local";
-interface RecoveryDraft {
-  key: string;
-  scope: string;
-  library: EditorLibrary;
-  revision: string | null;
-  stamp: string;
-  updatedAt: number;
-}
 interface RemoteLibrary {
   library: EditorLibrary;
   revision: string | null;
   storage: Storage;
   scope: string;
+  assetKeys?: string[];
 }
 
 const ENDPOINT = "/api/template-editor";
-let database: Promise<IDBDatabase> | null = null;
-
-function openRecoveryDatabase(): Promise<IDBDatabase> {
-  if (database) return database;
-  database = new Promise((resolve, reject) => {
-    if (!globalThis.indexedDB)
-      return reject(new Error("Browser recovery storage is unavailable."));
-    const request = indexedDB.open("greatful-template-editor", 1);
-    request.onupgradeneeded = () => {
-      const store = request.result.createObjectStore("drafts", {
-        keyPath: "key",
-      });
-      store.createIndex("scope", "scope");
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () =>
-      reject(
-        request.error ?? new Error("Browser recovery storage could not open."),
-      );
-    request.onblocked = () =>
-      reject(new Error("Browser recovery storage is blocked by another tab."));
-  });
-  database.catch(() => {
-    database = null;
-  });
-  return database;
-}
-
-async function recoveryTransaction<T>(
-  mode: IDBTransactionMode,
-  operation: (store: IDBObjectStore) => IDBRequest<T>,
-): Promise<T> {
-  const db = await openRecoveryDatabase();
-  return new Promise((resolve, reject) => {
-    const transaction = db.transaction("drafts", mode);
-    const request = operation(transaction.objectStore("drafts"));
-    transaction.oncomplete = () => resolve(request.result);
-    transaction.onerror = () =>
-      reject(
-        transaction.error ??
-          request.error ??
-          new Error("Browser recovery failed."),
-      );
-    transaction.onabort = () =>
-      reject(
-        transaction.error ?? new Error("Browser recovery was interrupted."),
-      );
-  });
-}
-
-async function getRecoveryDrafts(scope: string): Promise<RecoveryDraft[]> {
-  const values = await recoveryTransaction("readonly", (store) =>
-    store.index("scope").getAll(scope),
-  );
-  return (values as RecoveryDraft[])
-    .flatMap((draft) => {
-      const library = parseLibrary(draft.library);
-      return draft.scope === scope &&
-        library &&
-        typeof draft.key === "string" &&
-        typeof draft.stamp === "string" &&
-        Number.isFinite(draft.updatedAt) &&
-        (draft.revision === null || typeof draft.revision === "string")
-        ? [{ ...draft, library }]
-        : [];
-    })
-    .sort((a, b) => b.updatedAt - a.updatedAt);
-}
-
-// A recovered draft may belong to another tab. Delete it only if its exact
-// snapshot has been saved, never if that tab has added more work since then.
-async function removeExactDraft(
-  draft: Pick<RecoveryDraft, "key" | "stamp">,
-): Promise<void> {
-  const db = await openRecoveryDatabase();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction("drafts", "readwrite");
-    const store = transaction.objectStore("drafts");
-    const request = store.get(draft.key);
-    request.onsuccess = () => {
-      if ((request.result as RecoveryDraft | undefined)?.stamp === draft.stamp)
-        store.delete(draft.key);
-    };
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-    transaction.onabort = () => reject(transaction.error);
-  });
-}
-
 function responseError(value: unknown, fallback: string): string {
   return value &&
     typeof value === "object" &&
@@ -140,7 +56,7 @@ function remoteLibrary(value: unknown): RemoteLibrary | null {
     !library ||
     !(record.revision === null || typeof record.revision === "string") ||
     (record.storage !== "cloud" && record.storage !== "local") ||
-    typeof record.scope !== "string"
+    (typeof record.scope !== "string" || !/^[a-f0-9]{64}$/.test(record.scope))
   )
     return null;
   return {
@@ -148,6 +64,7 @@ function remoteLibrary(value: unknown): RemoteLibrary | null {
     revision: record.revision,
     storage: record.storage,
     scope: record.scope,
+    assetKeys: Array.isArray(record.assetKeys) ? record.assetKeys.filter((key): key is string => typeof key === "string") : [],
   };
 }
 
@@ -157,14 +74,26 @@ function browserTabId(): string {
   return crypto.randomUUID();
 }
 
-export function useEditorLibrary() {
+export function useEditorLibrary(expectedScope?: string) {
+  const trustedScope = useRef(expectedScope ?? "");
   const [library, updateLibrary] = useState<EditorLibrary>(EMPTY_LIBRARY);
+  const [workspaceScope, setWorkspaceScope] = useState(expectedScope ?? "");
   const [ready, setReady] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
   const [status, setStatus] = useState<LibrarySaveStatus>("loading");
   const [error, setError] = useState<string | null>(null);
   const [mutationError, setMutationError] = useState<string | null>(null);
   const current = useRef(library);
+  const baseline = useRef(library);
+  const knownAssets = useRef(new Set<string>());
+  const pendingSave = useRef<{id: string; library: EditorLibrary; stamp: string; revision: string | null; patch: LibraryPatch; assets: Record<string, string>} | null>(null);
+  const [syncEpoch, setSyncEpoch] = useState(0);
+  const [documentEpochs, setDocumentEpochs] = useState<Record<string, number>>({});
+  const bumpChangedDocuments = useCallback((before: EditorLibrary, after: EditorLibrary) => {
+    const old = new Map(before.designs.map(item => [item.id, item]));
+    const ids = after.designs.filter(item => !sameContent(old.get(item.id), item)).map(item => item.id);
+    if (ids.length) setDocumentEpochs(current => ({...current, ...Object.fromEntries(ids.map(id => [id, (current[id] ?? 0) + 1]))}));
+  }, []);
   const revision = useRef<string | null>(null);
   const storage = useRef<Storage>("cloud");
   const scope = useRef("");
@@ -198,7 +127,7 @@ export function useEditorLibrary() {
         // Rapid typing can enqueue several snapshots while IndexedDB is busy.
         // Only the newest queued edit needs a write, especially with big images.
         if (draft.stamp !== stamp.current) return true;
-        await recoveryTransaction("readwrite", (store) => store.put(draft));
+        await saveRecoveryDraft(draft);
         backedUpStamp.current = draft.stamp;
         backupFailure.current = false;
         return true;
@@ -234,9 +163,10 @@ export function useEditorLibrary() {
   const save = useCallback(async () => {
     if (!loaded.current || !dirty.current || conflict.current) return;
     if (inFlight.current) return inFlight.current;
-    const sentLibrary = current.current;
-    const sentStamp = stamp.current;
-    const expectedRevision = revision.current;
+    if (typeof navigator !== "undefined" && !navigator.onLine) { setStatus("offline"); return; }
+    const sentLibrary = pendingSave.current?.library ?? current.current;
+    const sentStamp = pendingSave.current?.stamp ?? stamp.current;
+    const expectedRevision = pendingSave.current?.revision ?? revision.current;
     const operation = (async () => {
       if (mounted.current) {
         setStatus("saving");
@@ -244,12 +174,22 @@ export function useEditorLibrary() {
       }
       await persistRecovery();
       try {
+        if (!pendingSave.current) {
+          const packed = await packAssets(await createLibraryPatch(baseline.current, sentLibrary), knownAssets.current);
+          pendingSave.current = {id: crypto.randomUUID(), library: sentLibrary, stamp: sentStamp, revision: expectedRevision, patch: packed.value, assets: packed.assets};
+        }
+        const request = pendingSave.current;
         const result = await fetch(ENDPOINT, {
+          signal: AbortSignal.timeout(30_000),
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            library: sentLibrary,
-            revision: expectedRevision,
+            patch: request.patch,
+            assets: request.assets,
+            revision: request.revision,
+            operationId: request.id,
+            expectedScope: scope.current,
+            clientSchema: 2,
           }),
         });
         const data = (await result.json().catch(() => null)) as Record<
@@ -257,26 +197,55 @@ export function useEditorLibrary() {
           unknown
         > | null;
         if (!result.ok) {
+          if (result.status === 403 && data?.code === "workspace_owner_changed") { conflict.current = true; if (mounted.current) setCanEdit(false); clearCachedWorkspaceSelection(); }
           if (result.status === 409) {
+            const remote = remoteLibrary(data?.remote);
+            if (remote && remote.scope === scope.current) {
+              const merged = reconcileLibraries(baseline.current, current.current, remote.library);
+              if (!parseLibrary(merged.library) || !checkLibrarySaveBudget(merged.library).ok) {
+                conflict.current = true; if (mounted.current) setCanEdit(false);
+                throw new Error("Concurrent edits need more workspace space. Download a backup, then load the saved workspace and remove older items before importing your local work.");
+              }
+              const beforeMerge = current.current;
+              baseline.current = remote.library; current.current = merged.library;
+              if (mounted.current) bumpChangedDocuments(beforeMerge, merged.library);
+              revision.current = remote.revision; storage.current = remote.storage;
+              knownAssets.current = new Set(remote.assetKeys); pendingSave.current = null;
+              stamp.current = crypto.randomUUID(); dirty.current = !sameContent(merged.library, remote.library);
+              conflict.current = false; await persistRecovery();
+              if (mounted.current) { updateLibrary(merged.library); setSyncEpoch(value => value + 1); setCanEdit(true); setStatus(dirty.current ? "saving" : "saved"); setMutationError(merged.copies ? `Concurrent edits were kept as ${merged.copies} independent conflict ${merged.copies === 1 ? "copy" : "copies"} in your workspace. You can continue editing.` : "Changes from another tab were merged into your workspace."); }
+              await cacheWorkspace(remote).catch(() => undefined);
+              return;
+            }
             conflict.current = true;
             if (mounted.current) setCanEdit(false);
           }
+          if (result.status === 400 || result.status === 413 || result.status === 426) pendingSave.current = null;
           throw new Error(
             responseError(data, "The server could not save this library."),
           );
         }
         if (
           !data ||
+          data.scope !== scope.current ||
           typeof data.revision !== "string" ||
           (data.storage !== "cloud" && data.storage !== "local")
         ) {
+          if (data?.scope && data.scope !== scope.current) {conflict.current = true; if (mounted.current) setCanEdit(false);}
           throw new Error(
             "The server did not confirm the save. Retry before closing this tab.",
           );
         }
-        revision.current = data.revision;
-        storage.current = data.storage;
-        dirty.current = stamp.current !== sentStamp;
+        const remote = parseLibrary(data.library) ?? sentLibrary;
+        const merged = reconcileLibraries(sentLibrary, current.current, remote).library;
+        const changedByServer = !sameContent(merged, current.current);
+        const beforeMerge = current.current;
+        baseline.current = remote; current.current = merged; pendingSave.current = null;
+        revision.current = data.revision; storage.current = data.storage;
+        if (Array.isArray(data.assetKeys)) knownAssets.current = new Set(data.assetKeys.filter((key): key is string => typeof key === "string"));
+        if (changedByServer) { stamp.current = crypto.randomUUID(); if (mounted.current) { updateLibrary(merged); bumpChangedDocuments(beforeMerge, merged); setSyncEpoch(value => value + 1); } }
+        dirty.current = !sameContent(current.current, baseline.current);
+        await cacheWorkspace({library: remote, revision: revision.current, storage: storage.current, scope: scope.current, assetKeys: [...knownAssets.current]}).catch(() => undefined);
         if (dirty.current) await persistRecovery();
         else await clearSavedRecovery(sentStamp);
         if (mounted.current) {
@@ -291,7 +260,7 @@ export function useEditorLibrary() {
         }
       } catch (cause) {
         if (mounted.current) {
-          setStatus(conflict.current ? "conflict" : "error");
+          setStatus(typeof navigator !== "undefined" && !navigator.onLine ? "offline" : conflict.current ? "conflict" : "error");
           const message =
             cause instanceof Error ? cause.message : "Save failed.";
           const recoveryMessage = backupFailure.current
@@ -317,13 +286,14 @@ export function useEditorLibrary() {
         void saveRef.current();
       }, 600);
     }
-  }, [clearSavedRecovery, persistRecovery]);
+  }, [clearSavedRecovery, persistRecovery, bumpChangedDocuments]);
 
   useEffect(() => {
     saveRef.current = save;
   }, [save]);
 
   const load = useCallback(async (discardPending = false) => {
+    const previousLibrary = current.current;
     loadController.current?.abort();
     const controller = new AbortController();
     loadController.current = controller;
@@ -343,22 +313,34 @@ export function useEditorLibrary() {
     // A deliberate reload must observe any save already in progress.
     if (inFlight.current) await inFlight.current;
     try {
-      const result = await fetch(ENDPOINT, {
-        cache: "no-store",
-        signal: controller.signal,
-      });
-      const body = await result.json();
-      if (!result.ok)
-        throw new Error(
-          responseError(body, "Your library could not be loaded."),
-        );
-      const remote = remoteLibrary(body);
+      let remote: RemoteLibrary | null = null;
+      let offline = false;
+      try {
+        const result = await fetch(ENDPOINT, {cache: "no-store", signal: controller.signal});
+        const body = await result.json();
+        if (!result.ok) {
+          if (result.status === 401) clearCachedWorkspaceSelection();
+          throw new Error(responseError(body, "Your library could not be loaded."));
+        }
+        remote = remoteLibrary(body);
+      } catch (cause) {
+        if (controller.signal.aborted) return;
+        if (!(cause instanceof TypeError) && navigator.onLine) throw cause;
+        remote = await getCachedWorkspace(trustedScope.current || scope.current); offline = true;
+        if (!remote) throw new Error("No offline copy is available in this browser. Connect once to open your workspace.");
+      }
       if (!remote)
         throw new Error(
           "The server returned an unreadable library. Your saved work has not been changed.",
         );
       if (controller.signal.aborted) return;
+      if (trustedScope.current && remote.scope !== trustedScope.current) { clearCachedWorkspaceSelection(); throw new Error("The signed-in account changed. Reload this page to open the correct workspace. Pending edits remain in the original browser recovery store."); }
+      trustedScope.current = remote.scope;
       scope.current = remote.scope;
+      baseline.current = remote.library;
+      knownAssets.current = new Set(remote.assetKeys);
+      pendingSave.current = null;
+      if (!offline) await cacheWorkspace(remote).catch(() => undefined);
       revision.current = remote.revision;
       storage.current = remote.storage;
       tabId.current ||= browserTabId();
@@ -376,7 +358,8 @@ export function useEditorLibrary() {
             ) ?? drafts[0];
         }
         backupFailure.current = false;
-      } catch {
+      } catch (cause) {
+        if (cause instanceof RecoveryMigrationError) throw cause;
         backupFailure.current = true;
       }
       if (controller.signal.aborted) return;
@@ -384,7 +367,7 @@ export function useEditorLibrary() {
       // matching content proves the pending recovery copy has already landed.
       if (
         draft &&
-        JSON.stringify(draft.library) === JSON.stringify(remote.library)
+        sameContent(draft.library, remote.library)
       ) {
         await removeExactDraft(draft).catch(() => undefined);
         draft = undefined;
@@ -395,14 +378,23 @@ export function useEditorLibrary() {
       stamp.current = draft?.stamp ?? crypto.randomUUID();
       backedUpStamp.current = draft?.stamp ?? "";
       conflict.current = Boolean(draft && draft.revision !== remote.revision);
-      if (draft) revision.current = draft.revision;
+      if (conflict.current && draft) {
+        const merged = reconcileLibraries(EMPTY_LIBRARY, draft.library, remote.library);
+        if (parseLibrary(merged.library) && checkLibrarySaveBudget(merged.library).ok) {current.current = merged.library; conflict.current = false;}
+      }
+      if (draft && conflict.current) revision.current = draft.revision;
+      if (draft && !conflict.current) {dirty.current = !sameContent(current.current, remote.library); await persistRecovery();}
       loaded.current = true;
       if (mounted.current) {
         updateLibrary(current.current);
+        setWorkspaceScope(remote.scope);
+        bumpChangedDocuments(previousLibrary, current.current);
         setCanEdit(!conflict.current);
         setReady(true);
         setStatus(
-          conflict.current
+          offline
+            ? "offline"
+            : conflict.current
             ? "conflict"
             : draft
               ? "saving"
@@ -433,7 +425,7 @@ export function useEditorLibrary() {
           : "Your library could not be loaded. Retry before editing.",
       );
     }
-  }, []);
+  }, [bumpChangedDocuments, persistRecovery]);
 
   useEffect(() => {
     mounted.current = true;
@@ -459,6 +451,9 @@ export function useEditorLibrary() {
         setMutationError(null);
         return true;
       }
+      const parsed = parseLibrary(value);
+      if (!parsed) {setMutationError("This change is not a valid document and was not applied. Check dimensions, layout values, images and document limits."); return false;}
+      value = parsed;
       const budget = checkLibrarySaveBudget(value);
       if (!budget.ok) {
         // A rejected edit never touches the library, history, recovery copy,
@@ -503,20 +498,8 @@ export function useEditorLibrary() {
       if (!loaded.current || !dirty.current) return;
       void persistRecovery();
       if (conflict.current || inFlight.current) return;
-      const body = JSON.stringify({
-        library: current.current,
-        revision: revision.current,
-      });
-      // Fetch keepalive has a shared 64 KiB limit. Large image libraries rely
-      // on their already-persisted IndexedDB draft and resume on the next load.
-      if (new Blob([body]).size < 60_000) {
-        void fetch(ENDPOINT, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body,
-          keepalive: true,
-        }).catch(() => undefined);
-      }
+      // IndexedDB recovery is durable before pagehide; pending document patches
+      // resume on load. Never launch a second unacknowledged writer on unload.
     };
     const warnIfUnprotected = (event: BeforeUnloadEvent) => {
       if (dirty.current && backedUpStamp.current !== stamp.current) {
@@ -529,10 +512,16 @@ export function useEditorLibrary() {
       // cache. Refresh its revision before accepting the next edit.
       if (event.persisted) void load();
     };
+    const online = () => { if (dirty.current) void saveRef.current(); else void load(); };
+    const offline = () => { if (mounted.current) setStatus("offline"); };
+    window.addEventListener("online", online);
+    window.addEventListener("offline", offline);
     window.addEventListener("pagehide", flush);
     window.addEventListener("pageshow", resume);
     window.addEventListener("beforeunload", warnIfUnprotected);
     return () => {
+      window.removeEventListener("online", online);
+      window.removeEventListener("offline", offline);
       window.removeEventListener("pagehide", flush);
       window.removeEventListener("pageshow", resume);
       window.removeEventListener("beforeunload", warnIfUnprotected);
@@ -548,5 +537,8 @@ export function useEditorLibrary() {
     setLibrary,
     retrySave,
     reloadServer,
+    syncEpoch,
+    documentEpochs,
+    scope: workspaceScope,
   };
 }

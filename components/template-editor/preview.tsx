@@ -1,14 +1,14 @@
 "use client";
 
 import { useEffect, useRef, useState, type CSSProperties } from "react";
-import { SlideFrame } from "@/components/grateful-future/slide-templates";
+import { SlideFrame } from "@/components/engine/slide-templates";
 import {
-  FORMATS,
+  formatDimensions,
   storyForDesign,
   type DesignDocument,
   type DesignPage,
 } from "@/lib/template-editor/model";
-import { sliceSceneForPage } from "@/lib/template-editor/continuous-carousel";
+import { composeScene } from "@/lib/template-editor/advanced";
 import { SceneRenderer } from "./canvas";
 
 /** A single canonical layout size makes thumbnails, canvas and exports agree. */
@@ -21,10 +21,8 @@ export function DesignFrame({
   design: DesignDocument;
   page: DesignPage;
 }) {
-  const format = FORMATS[design.format];
-  const scene = design.continuousCanvas
-    ? sliceSceneForPage(design, page)
-    : page.canvas;
+  const format = formatDimensions(design);
+  const scene = design.continuousCanvas||design.masterScene ? composeScene(design,page) : page.canvas;
   return (
     <div
       className="te-frame"
@@ -60,7 +58,7 @@ export function DesignPreview(props: Parameters<typeof DesignFrame>[0]) {
     observer.observe(node);
     return () => observer.disconnect();
   }, []);
-  const format = FORMATS[props.design.format];
+  const format = formatDimensions(props.design);
   return (
     <div
       ref={ref}

@@ -1,11 +1,12 @@
 "use client";
 
 import { useState } from "react";
-import type { BrandAsset, SavedBrandKit, CanvasScene } from "@/lib/template-editor/model";
-import { proxied } from "@/lib/grateful-future/util";
+import type { BrandAsset, SavedBrandKit, CanvasScene, ShapeImageFill } from "@/lib/template-editor/model";
+import { proxied } from "@/lib/engine/util";
 import { useContextMenu } from "./context-menu";
+import { writePhotoDrag } from "@/lib/template-editor/photo-drag";
 
-export function BrandPanel({ kits, activeId, scene, selectedIds, disabled, continuous = false, onSelectKit, onInsert, onSaveAsset, onChange, onApply, onManage }: {
+export function BrandPanel({ kits, activeId, scene, selectedIds, disabled, continuous = false, onSelectKit, onInsert, onSaveAsset, onChange, onApply, onManage, onPhotoPointerDown }: {
   kits: SavedBrandKit[];
   activeId: string;
   scene: CanvasScene;
@@ -14,6 +15,7 @@ export function BrandPanel({ kits, activeId, scene, selectedIds, disabled, conti
   continuous?: boolean;
   onSelectKit: (id: string) => void;
   onInsert: (asset: BrandAsset) => void;
+  onPhotoPointerDown?: (event:import("react").PointerEvent<HTMLButtonElement>,photo:ShapeImageFill)=>void;
   onSaveAsset: (asset: BrandAsset, kitId: string) => boolean | void;
   onChange: (recipe: (scene: CanvasScene) => CanvasScene) => void;
   onApply: (all: boolean) => void;
@@ -47,7 +49,7 @@ export function BrandPanel({ kits, activeId, scene, selectedIds, disabled, conti
     <div className="te-panel-heading te-brand-assets-heading"><h2>Logos & elements</h2><span>{kit.assets.length}/40</span></div>
     <input className="te-brand-search" aria-label="Search brand elements" placeholder="Search brand elements" value={search} onChange={(event) => setSearch(event.target.value)} />
     <div className="te-brand-element-grid">
-      {kit.assets.filter((asset) => asset.name.toLowerCase().includes(search.toLowerCase())).map((asset) => <button key={asset.id} disabled={disabled || scene.elements.length >= 100} aria-label={`Add brand element ${asset.name}`} title={asset.name} onClick={() => onInsert(asset)} onContextMenu={(event) => openMenu(event,{label:asset.name,items:[{id:"insert",label:continuous ? "Add to carousel" : "Add to this page",disabled:disabled || scene.elements.length >= 100,onSelect:() => onInsert(asset)}]})}>
+      {kit.assets.filter((asset) => asset.name.toLowerCase().includes(search.toLowerCase())).map((asset) => <button key={asset.id} disabled={disabled} draggable={!disabled} onPointerDown={event=>onPhotoPointerDown?.(event,{src:asset.src,alt:asset.name,objectFit:'cover',cropX:50,cropY:50})} onDragStart={event=>{if(onPhotoPointerDown)event.preventDefault();else writePhotoDrag(event.dataTransfer,{src:asset.src,alt:asset.name,objectFit:'cover',cropX:50,cropY:50});}} aria-label={`Add brand element ${asset.name}`} title={asset.name} onClick={() => onInsert(asset)} onContextMenu={(event) => openMenu(event,{label:asset.name,items:[{id:"insert",label:continuous ? "Add to carousel" : "Add to this page",disabled:disabled || scene.elements.length >= 100,onSelect:() => onInsert(asset)}]})}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={proxied(asset.src)} alt="" /><span>{asset.name}</span>
       </button>)}

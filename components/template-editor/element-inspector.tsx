@@ -1,15 +1,20 @@
 "use client";
 
 import { useState, type ReactNode } from "react";
-import { CopyIcon, TrashIcon } from "@/components/grateful-future/icons";
+import { CopyIcon, TrashIcon } from "@/components/engine/icons";
 import type {
   CanvasElement,
   CanvasScene,
   ImageElement,
   ShapeElement,
   TextElement,
+  TextStyle,
 } from "@/lib/template-editor/model";
-import { ColorField, FontSelect, Range } from "./controls";
+import type { TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
+import { ColorField, FontSelect, Range, NumberField } from "./controls";
+import { AdvancedProperties, ColorRolesPanel, type ColorRoleOption } from "./advanced-properties";
+import { boldState, booleanState } from "@/lib/template-editor/property-utils";
+import { alignSelectionTo, distributeSelection, matchSelectionSize, copyAppearance, pasteAppearance, applyTextTexture, duplicateSelection, removeSelection, reorderSelection, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
 import "./element-inspector.css";
 
 type Props = {
@@ -21,73 +26,24 @@ type Props = {
   width: number;
   height: number;
   disabled?: boolean;
+  outputScale?: number;
+  slideBounds?: { x: number; y: number; width: number; height: number };
+  textStyles?: TextStyle[];
+  onSaveTextStyle?: (style: TextStyle) => void;
+  onDeleteTextStyle?: (id: string) => void;
+  colorRoles?: ColorRoleOption[];
+  onSaveColorRole?: (role: ColorRoleOption) => void;
+  onDeleteColorRole?: (id: string) => void;
+  onFormatText?: (patch: TextFormattingPatch) => boolean;
+  onUploadTextTexture?: (file:File)=>Promise<void>;
+  onUploadFramePhoto?: (file:File,shapeId:string)=>Promise<void>;
 };
 
-const OUTPUT_SCALE = 3;
 const MAX_ELEMENTS = 100;
-const px = (value: number | undefined) =>
-  value === undefined ? undefined : Number((value * OUTPUT_SCALE).toFixed(2));
-const clamp = (value: number, min: number, max: number) =>
-  Math.min(max, Math.max(min, value));
 
 function shared<T, K extends keyof T>(items: T[], key: K): T[K] | undefined {
   const first = items[0]?.[key];
   return items.every((item) => item[key] === first) ? first : undefined;
-}
-
-function NumberField({
-  label,
-  value,
-  min = -30000,
-  max = 30000,
-  step = 1,
-  unit,
-  onChange,
-}: {
-  label: string;
-  value: number | undefined;
-  min?: number;
-  max?: number;
-  step?: number;
-  unit?: string;
-  onChange: (value: number) => void;
-}) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
-  const formatted = value === undefined ? "" : String(Number(value.toFixed(2)));
-  return (
-    <label className="te-field te-element-number">
-      <span>
-        {label}
-        {unit && <small>{unit}</small>}
-      </span>
-      <input
-        type="number"
-        aria-label={label}
-        placeholder="Mixed"
-        value={editing ? draft : formatted}
-        min={min}
-        max={max}
-        step={step}
-        onFocus={() => {
-          setDraft(formatted);
-          setEditing(true);
-        }}
-        onBlur={() => setEditing(false)}
-        onKeyDown={(event) => {
-          if (event.key === "Enter") event.currentTarget.blur();
-          event.stopPropagation();
-        }}
-        onChange={(event) => {
-          const text = event.target.value;
-          setDraft(text);
-          if (text !== "" && Number.isFinite(Number(text))) {
-            onChange(clamp(Number(text), min, max));
-          }
-        }}
-      />
-    </label>
-  );
 }
 
 function Section({ title, children }: { title: string; children: ReactNode }) {
@@ -106,14 +62,14 @@ function Toggle({
   children,
 }: {
   label: string;
-  active: boolean;
+  active: boolean | "mixed";
   onClick: () => void;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
-      className={active ? "is-active" : ""}
+      className={active === true ? "is-active" : active === "mixed" ? "is-mixed" : ""}
       aria-label={label}
       title={label}
       aria-pressed={active}
@@ -196,11 +152,21 @@ export function ElementInspector({
   onSelect,
   width,
   height,
-  disabled = false,
+  disabled = false, outputScale = 3,
+  slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onUploadTextTexture, onUploadFramePhoto,
 }: Props) {
+  const OUTPUT_SCALE = outputScale;
+  const px = (value: number | undefined) => value === undefined ? undefined : Number((value * OUTPUT_SCALE).toFixed(2));
+  const [alignmentScope, setAlignmentScope] = useState<"page" | "slide" | "selection" | "key-object">("page");
+  const [alignmentMode, setAlignmentMode] = useState<"group" | "individual">("group");
+  const [keyObjectId, setKeyObjectId] = useState("");
+  const [distributionMode, setDistributionMode] = useState<"centers" | "gaps">("gaps");
+  const [useGap, setUseGap] = useState(false);
+  const [gap, setGap] = useState(24);
+  const [appearance, setAppearance] = useState<ReturnType<typeof copyAppearance> | null>(null);
   const selected = new Set(selectedIds);
   const elements = scene.elements.filter((element) => selected.has(element.id));
-  const editable = elements.filter((element) => !element.locked);
+  const editable = elements.filter((element) => !isElementLocked(scene, element));
   const displayed = editable.length ? editable : elements;
   const texts = displayed.filter(
     (element): element is TextElement => element.type === "text",
@@ -215,6 +181,7 @@ export function ElementInspector({
   const groupPrefix = `inspector:${editable.map((element) => element.id).join(",")}`;
   const allLocked = elements.length > 0 && editable.length === 0;
   const hasLocked = editable.length !== elements.length;
+  const inheritedLock = elements.some(element => isElementLocked(scene, element) && !element.locked);
   const noEdits = disabled || allLocked;
 
   function update(
@@ -222,18 +189,14 @@ export function ElementInspector({
     transform: (element: CanvasElement) => CanvasElement,
   ) {
     if (noEdits) return;
-    onChange(
-      {
-        ...scene,
-        elements: scene.elements.map((element) =>
-          editableIds.has(element.id) ? transform(element) : element,
-        ),
-      },
-      `${groupPrefix}:${group}`,
-    );
+    const metadata = ["name", "slot", "master", "anchor", "protection"].includes(group);
+    const property = ["text", "uppercase", "lowercase", "image-fill"].includes(group) ? "content" : ["x", "y", "width", "height", "rotation", "square-shape"].includes(group) ? "position" : "style";
+    const next = scene.elements.map((element) => editableIds.has(element.id) && (metadata || canEditElement(scene, element, property)) ? transform(element) : element);
+    if (next.some((element, index) => element !== scene.elements[index])) onChange({ ...scene, elements: next }, `${groupPrefix}:${group}`);
   }
 
   function updateText(patch: Partial<TextElement>, group: string) {
+    if (!noEdits && onFormatText?.(patch)) return;
     update(group, (element) =>
       element.type === "text" ? { ...element, ...patch } : element,
     );
@@ -251,86 +214,32 @@ export function ElementInspector({
     );
   }
 
-  function alignToPage(
-    align: "left" | "center" | "right" | "top" | "middle" | "bottom",
-  ) {
-    update(`align-${align}`, (element) => {
-      // Align the visible bounds, including the size introduced by rotation.
-      const angle = (element.rotation * Math.PI) / 180;
-      const visualWidth =
-        Math.abs(element.width * Math.cos(angle)) +
-        Math.abs(element.height * Math.sin(angle));
-      const visualHeight =
-        Math.abs(element.width * Math.sin(angle)) +
-        Math.abs(element.height * Math.cos(angle));
-      const insetX = (element.width - visualWidth) / 2;
-      const insetY = (element.height - visualHeight) / 2;
-      if (align === "left")
-        return { ...element, x: clamp(-insetX, -10000, 10000) };
-      if (align === "center")
-        return {
-          ...element,
-          x: clamp((width - element.width) / 2, -10000, 10000),
-        };
-      if (align === "right")
-        return {
-          ...element,
-          x: clamp(width - element.width + insetX, -10000, 10000),
-        };
-      if (align === "top")
-        return { ...element, y: clamp(-insetY, -10000, 10000) };
-      if (align === "middle")
-        return {
-          ...element,
-          y: clamp((height - element.height) / 2, -10000, 10000),
-        };
-      return {
-        ...element,
-        y: clamp(height - element.height + insetY, -10000, 10000),
-      };
-    });
-  }
-
-  function reorder(direction: "forward" | "backward") {
+  function alignToPage(align: "left" | "center" | "right" | "top" | "middle" | "bottom") {
     if (noEdits) return;
-    const next = [...scene.elements];
-    // Move each selected block one step while preserving its relative order.
-    if (direction === "forward") {
-      for (let index = next.length - 2; index >= 0; index--) {
-        if (
-          editableIds.has(next[index].id) &&
-          !editableIds.has(next[index + 1].id)
-        ) {
-          [next[index], next[index + 1]] = [next[index + 1], next[index]];
-        }
-      }
-    } else {
-      for (let index = 1; index < next.length; index++) {
-        if (
-          editableIds.has(next[index].id) &&
-          !editableIds.has(next[index - 1].id)
-        ) {
-          [next[index], next[index - 1]] = [next[index - 1], next[index]];
-        }
-      }
-    }
-    if (next.some((element, index) => element !== scene.elements[index])) {
-      onChange({ ...scene, elements: next });
-    }
+    const result = alignSelectionTo(scene, selectedIds, align, {
+      scope: alignmentScope === "slide" ? "page" : alignmentScope,
+      page: alignmentScope === "slide" && slideBounds ? slideBounds : { x: 0, y: 0, width, height },
+      mode: alignmentMode,
+      keyObjectId: keyObjectId || elements[0]?.id,
+    });
+    if (result.scene !== scene) onChange(result.scene, "align-selection");
   }
-
+  function reorder(direction: "forward" | "backward") {
+    const result = reorderSelection(scene, selectedIds, direction);
+    if (!noEdits && result.scene !== scene) onChange(result.scene);
+  }
   function duplicate() {
-    if (noEdits || scene.elements.length + editable.length > MAX_ELEMENTS)
-      return;
-    const copies = editable.map((element) => ({
-      ...element,
-      id: crypto.randomUUID(),
-      name: `${element.name.slice(0, 195)} copy`,
-      x: Math.min(10000, element.x + 12),
-      y: Math.min(10000, element.y + 12),
-    }));
-    onChange({ ...scene, elements: [...scene.elements, ...copies] });
-    onSelect(copies.map((element) => element.id));
+    if (noEdits) return;
+    const result = duplicateSelection(scene, selectedIds);
+    if (result.scene !== scene) { onChange(result.scene); onSelect(result.selectedIds); }
+  }
+  function distribute(axis: "horizontal" | "vertical") {
+    const result = distributeSelection(scene, selectedIds, axis, distributionMode, useGap ? gap / OUTPUT_SCALE : undefined);
+    if (!noEdits && result.scene !== scene) onChange(result.scene);
+  }
+  function matchSize(mode: "width" | "height" | "both") {
+    const result = matchSelectionSize(scene, selectedIds, mode, keyObjectId || elements[0]?.id);
+    if (!noEdits && result.scene !== scene) onChange(result.scene);
   }
 
   function toggleLock() {
@@ -346,19 +255,11 @@ export function ElementInspector({
 
   function remove() {
     if (noEdits) return;
-    onChange({
-      ...scene,
-      elements: scene.elements.filter(
-        (element) => !editableIds.has(element.id),
-      ),
-    });
-    onSelect(
-      elements.filter((element) => element.locked).map((element) => element.id),
-    );
+    const result = removeSelection(scene, selectedIds);
+    if (result.scene !== scene) { onChange(result.scene); onSelect(result.selectedIds); }
   }
 
   const commonFont = shared(texts, "font");
-  const commonWeight = shared(texts, "fontWeight");
   const commonItalic = shared(texts, "italic");
   const commonUnderline = shared(texts, "underline");
   const canForward = scene.elements.some(
@@ -411,7 +312,7 @@ export function ElementInspector({
                   : "Lock selected elements"
               }
               title={allLocked ? "Unlock selection" : "Lock selection"}
-              disabled={disabled}
+              disabled={disabled || inheritedLock}
               onClick={toggleLock}
             >
               <LockIcon locked={allLocked} />
@@ -445,6 +346,7 @@ export function ElementInspector({
                 {Math.round(height * OUTPUT_SCALE)} px
               </p>
             </Section>
+            <ColorRolesPanel roles={colorRoles ?? []} onSave={onSaveColorRole} onDelete={onDeleteColorRole} />
           </fieldset>
           <div className="te-element-empty">
             <svg
@@ -475,7 +377,7 @@ export function ElementInspector({
             <p className="te-element-lock-note">
               <LockIcon locked />
               {allLocked
-                ? "Unlock to edit this selection."
+                ? inheritedLock ? "Unlock the parent group in Layers to edit this selection." : "Unlock to edit this selection."
                 : "Locked elements stay unchanged."}
             </p>
           )}
@@ -513,7 +415,7 @@ export function ElementInspector({
                       maxLength={20000}
                       value={texts[0].text}
                       onChange={(event) =>
-                        updateText({ text: event.target.value }, "text")
+                        updateText({ text: event.target.value, richText: undefined }, "text")
                       }
                     />
                   </label>
@@ -529,8 +431,8 @@ export function ElementInspector({
                   <NumberField
                     label="Font size"
                     unit="px"
-                    min={3}
-                    max={1500}
+                    min={OUTPUT_SCALE}
+                    max={500 * OUTPUT_SCALE}
                     value={px(shared(texts, "fontSize"))}
                     onChange={(value) =>
                       updateText(
@@ -553,8 +455,8 @@ export function ElementInspector({
                 <NumberField
                   label="Letter spacing"
                   unit="px"
-                  min={-60}
-                  max={300}
+                  min={-20 * OUTPUT_SCALE}
+                  max={100 * OUTPUT_SCALE}
                   step={0.1}
                   value={px(shared(texts, "letterSpacing"))}
                   onChange={(value) =>
@@ -571,12 +473,12 @@ export function ElementInspector({
                 >
                   <Toggle
                     label="Bold"
-                    active={commonWeight !== undefined && commonWeight >= 600}
+                    active={boldState(texts)}
                     onClick={() =>
                       updateText(
                         {
                           fontWeight:
-                            commonWeight !== undefined && commonWeight >= 600
+                            boldState(texts) === true
                               ? 400
                               : 700,
                         },
@@ -588,7 +490,7 @@ export function ElementInspector({
                   </Toggle>
                   <Toggle
                     label="Italic"
-                    active={commonItalic === true}
+                    active={booleanState(texts, "italic")}
                     onClick={() =>
                       updateText({ italic: commonItalic !== true }, "italic")
                     }
@@ -597,7 +499,7 @@ export function ElementInspector({
                   </Toggle>
                   <Toggle
                     label="Underline"
-                    active={commonUnderline === true}
+                    active={booleanState(texts, "underline")}
                     onClick={() =>
                       updateText(
                         { underline: commonUnderline !== true },
@@ -655,7 +557,7 @@ export function ElementInspector({
                 <ColorField
                   label="Text color"
                   value={shared(texts, "color") ?? "Mixed"}
-                  onChange={(color) => updateText({ color }, "text-color")}
+                  onChange={(color) => updateText({ color, colorRoleId: undefined }, "text-color")}
                 />
               </Section>
             )}
@@ -694,7 +596,7 @@ export function ElementInspector({
                       ? "Horizontal crop · Mixed"
                       : "Horizontal crop"
                   }
-                  value={shared(images, "cropX") ?? 50}
+                  value={shared(images, "cropX")}
                   min={0}
                   max={100}
                   unit="%"
@@ -706,7 +608,7 @@ export function ElementInspector({
                       ? "Vertical crop · Mixed"
                       : "Vertical crop"
                   }
-                  value={shared(images, "cropY") ?? 50}
+                  value={shared(images, "cropY")}
                   min={0}
                   max={100}
                   unit="%"
@@ -763,7 +665,7 @@ export function ElementInspector({
                 <ColorField
                   label="Fill"
                   value={shared(shapes, "fill") ?? "Mixed"}
-                  onChange={(fill) => updateShape({ fill }, "shape-fill")}
+                  onChange={(fill) => updateShape({ fill, colorRoleId: undefined }, "shape-fill")}
                 />
                 <ColorField
                   label="Border color"
@@ -806,6 +708,8 @@ export function ElementInspector({
                 <NumberField
                   label="X"
                   unit="px"
+                  min={-10000 * OUTPUT_SCALE}
+                  max={10000 * OUTPUT_SCALE}
                   value={px(shared(displayed, "x"))}
                   onChange={(value) =>
                     update("x", (element) => ({
@@ -817,6 +721,8 @@ export function ElementInspector({
                 <NumberField
                   label="Y"
                   unit="px"
+                  min={-10000 * OUTPUT_SCALE}
+                  max={10000 * OUTPUT_SCALE}
                   value={px(shared(displayed, "y"))}
                   onChange={(value) =>
                     update("y", (element) => ({
@@ -828,8 +734,8 @@ export function ElementInspector({
                 <NumberField
                   label="Width"
                   unit="px"
-                  min={3}
-                  max={30000}
+                  min={OUTPUT_SCALE}
+                  max={10000 * OUTPUT_SCALE}
                   value={px(shared(displayed, "width"))}
                   onChange={(value) =>
                     update("width", (element) => ({
@@ -841,8 +747,8 @@ export function ElementInspector({
                 <NumberField
                   label="Height"
                   unit="px"
-                  min={3}
-                  max={30000}
+                  min={OUTPUT_SCALE}
+                  max={10000 * OUTPUT_SCALE}
                   value={px(shared(displayed, "height"))}
                   onChange={(value) =>
                     update("height", (element) => ({
@@ -879,11 +785,14 @@ export function ElementInspector({
                   }
                 />
               </div>
-              <span className="te-element-label">Align to page</span>
+              <label className="te-field">Align relative to<select aria-label="Alignment reference" value={alignmentScope} onChange={event => { const value = event.target.value as typeof alignmentScope; setAlignmentScope(value); setAlignmentMode(value === "selection" || value === "key-object" ? "individual" : "group"); }}><option value="page">Canvas</option>{slideBounds && <option value="slide">Current slide</option>}<option value="selection" disabled={elements.length < 2}>Selection bounds</option><option value="key-object" disabled={elements.length < 2}>Key object</option></select></label>
+              <label className="te-field">Selection behavior<select aria-label="Alignment behavior" value={alignmentMode} onChange={event => setAlignmentMode(event.target.value as typeof alignmentMode)}><option value="group">Keep arrangement together</option><option value="individual">Align each object</option></select></label>
+              {elements.length > 1 && <label className="te-field">Key / reference object<select aria-label="Key object" value={keyObjectId || elements[0].id} onChange={event => setKeyObjectId(event.target.value)}>{elements.map(item => <option key={item.id} value={item.id}>{item.name || item.type}</option>)}</select></label>}
+              <span className="te-element-label">Align selection</span>
               <div
                 className="te-element-segments te-element-align"
                 role="group"
-                aria-label="Align to page"
+                aria-label="Align selection"
               >
                 {(
                   [
@@ -908,7 +817,15 @@ export function ElementInspector({
               </div>
             </Section>
 
+            <AdvancedProperties outputScale={outputScale} elements={displayed} update={update} textStyles={textStyles} onSaveTextStyle={onSaveTextStyle} onDeleteTextStyle={onDeleteTextStyle} colorRoles={colorRoles} onSaveColorRole={onSaveColorRole} onDeleteColorRole={onDeleteColorRole} onUploadTextTexture={onUploadTextTexture} onUploadFramePhoto={onUploadFramePhoto} onClearTextTexture={()=>{if(noEdits||onFormatText?.({textureFill:null}))return;const result=applyTextTexture(scene,selectedIds,null);if(result.scene!==scene)onChange(result.scene,"remove-text-texture");}} />
             <Section title="Arrange">
+              {editable.length > 1 && <>
+                <label className="te-field">Distribute<select aria-label="Distribution method" value={distributionMode} onChange={event => setDistributionMode(event.target.value as typeof distributionMode)}><option value="gaps">Equal gaps</option><option value="centers">Equal centers</option></select></label>
+                <label className="te-property-check"><input type="checkbox" checked={useGap} onChange={event => setUseGap(event.target.checked)} />Set an exact gap</label>
+                {useGap && <NumberField label="Distribution gap" unit="px" min={0} max={3000} value={gap} onChange={setGap} />}
+                <div className="te-element-grid te-element-actions"><button type="button" onClick={() => distribute("horizontal")}>Distribute ↔</button><button type="button" onClick={() => distribute("vertical")}>Distribute ↕</button><button type="button" onClick={() => matchSize("width")}>Match width</button><button type="button" onClick={() => matchSize("height")}>Match height</button><button type="button" onClick={() => matchSize("both")}>Match size</button></div>
+              </>}
+              <div className="te-element-grid te-element-actions"><button type="button" disabled={displayed.length !== 1} onClick={() => setAppearance(copyAppearance(displayed[0]))}>Copy appearance</button><button type="button" disabled={!appearance} onClick={() => { if (appearance) { const result = pasteAppearance(scene, selectedIds, appearance); if (result.scene !== scene) onChange(result.scene); } }}>Paste appearance</button></div>
               <div className="te-element-grid te-element-actions">
                 <button
                   type="button"
@@ -951,7 +868,7 @@ export function ElementInspector({
           <button
             type="button"
             className="te-element-lock"
-            disabled={disabled}
+            disabled={disabled || inheritedLock}
             onClick={toggleLock}
           >
             <LockIcon locked={allLocked} />

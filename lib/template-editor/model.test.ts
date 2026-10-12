@@ -236,7 +236,7 @@ test("malformed, unsupported, and over-capacity libraries cannot replace saved w
     "{",
     [],
     {},
-    { ...EMPTY_LIBRARY, version: 2 },
+    { ...EMPTY_LIBRARY, version: 99 },
   ])
     assert.equal(parseLibrary(value), null);
   const invalidPages = library();
