@@ -6,13 +6,10 @@ import {
   PlusIcon,
   LayoutIcon,
   CopyIcon,
-  TrashIcon,
-  DownloadIcon,
   ArrowRightIcon,
   StarIcon,
 } from "@/components/engine/icons";
 import {
-  BUILT_IN_TEMPLATES,
   EMPTY_LIBRARY,
   FORMATS,
   createDesign,
@@ -33,7 +30,7 @@ import {
 import { useEditorLibrary } from "@/lib/template-editor/use-library";
 import {RecoveryPanel} from "./recovery-panel";
 import {reconcileLibraries} from "@/lib/template-editor/library-sync";
-import {deleteLibraryTemplate, libraryTemplates, withImportedTemplateStates} from "@/lib/template-editor/template-catalog";
+import {deleteLibraryTemplate, libraryTemplates, trashedTemplates, withImportedTemplateStates} from "@/lib/template-editor/template-catalog";
 import {LibraryTools, OrganizeDialog, LibraryTrash, DocumentVersions, libraryMatches, type LibraryFilters} from "./library-tools";
 import {consumeResearchTransfer} from "@/lib/template-editor/research-transfer";
 import { saveBlob } from "@/lib/template-editor/export";
@@ -54,9 +51,9 @@ function LibraryCard({ menu, children }: { menu: ContextMenuDefinition; children
   </article>;
 }
 
-function WorkspaceMenu({ menu }: { menu: ContextMenuDefinition }) {
+function WorkspaceMenu({ menu, label = "Library tools", primary = false }: { menu: ContextMenuDefinition; label?: string; primary?: boolean }) {
   const { openMenu } = useContextMenu();
-  return <button type="button" className="te-icon te-workspace-menu" aria-label="Workspace actions" title="Workspace actions" aria-haspopup="menu" onClick={(event) => openMenu(event, menu)}>⋯</button>;
+  return <button type="button" className={`te-button ${primary ? "te-primary te-create-button" : "te-library-menu"}`} aria-label={label} aria-haspopup="menu" onClick={(event) => openMenu(event, menu)}>{primary && <PlusIcon size={17} />}{label === "Library tools" ? <><span className="te-menu-full-label">Library tools</span><span className="te-menu-short-label" aria-hidden>Library</span></> : label}<svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.4" aria-hidden><path d="m3 4.5 3 3 3-3" /></svg></button>;
 }
 
 export function templatePreview(template: DesignTemplate): DesignDocument {
@@ -88,9 +85,10 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
     scope: libraryScope,
   } = useEditorLibrary(workspaceScope);
   const [view, setView] = useState<"templates" | "designs" | "brand" | "trash">(
-    "templates",
+    "designs",
   );
   const [query, setQuery] = useState("");
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const [filters, setFilters] = useState<LibraryFilters>({folder: "", favorites: false, tag: ""});
   const [organize, setOrganize] = useState<{kind: "design" | "template"; id: string} | null>(null);
   const [recoveriesOpen, setRecoveriesOpen] = useState(false);
@@ -115,7 +113,16 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
   const permission = useRef(canEdit);
   useEffect(() => { permission.current = canEdit; }, [canEdit]);
   const templates = libraryTemplates(library);
-  const heroTemplates = templates.slice(0, 3);
+  const activeDesigns = library.designs.filter(design => !design.deletedAt);
+  const categories = ["All templates", "My templates", ...new Set(templates.filter(template => !template.custom).map(template => template.category))];
+  const selectedCategory = categories.includes(category) ? category : "All templates";
+  const search = query.trim().toLowerCase();
+  const effectiveFilters = { ...filters, tag: filters.tag.trim() };
+  const filterCount = Number(Boolean(filters.folder)) + Number(filters.favorites) + Number(Boolean(effectiveFilters.tag));
+  const filteredDesigns = activeDesigns.filter(design => libraryMatches(design, effectiveFilters) && `${design.name} ${(design.tags ?? []).join(" ")}`.toLowerCase().includes(search)).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  const filteredTemplates = templates.filter(template => libraryMatches(template, effectiveFilters) && (selectedCategory === "All templates" || (selectedCategory === "My templates" ? template.custom : template.category === selectedCategory)) && `${template.name} ${template.description} ${template.category} ${(template.tags ?? []).join(" ")}`.toLowerCase().includes(search));
+  const filteredDrafts = selectedCategory === "My templates" ? filteredDesigns.filter(design => design.purpose === "template") : [];
+  const trashCount = library.designs.filter(design => design.deletedAt).length + trashedTemplates(library).length;
   const active = library.designs.find((d) => d.id === activeId && !d.deletedAt);
   const organized = organize ? (organize.kind === "design" ? library.designs : library.templates).find(item => item.id === organize.id) : null;
   const statusText = {
@@ -166,20 +173,20 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
       canvas: sceneForPage(p, document.format),
     }));
     const accepted = addDocument(document, template.id);
-    if (accepted !== false) setActiveId(document.id);
+    if (accepted !== false) { setView("designs"); setQuery(""); setActiveId(document.id); }
   }
   function openBlankDesign() {
     if (!permission.current || library.designs.length >= 150) return;
     const document = createBlankDesign("Untitled design", "portrait");
     const accepted = addDocument(document);
-    if (accepted !== false) setActiveId(document.id);
+    if (accepted !== false) { setView("designs"); setQuery(""); setFilters({folder:"",favorites:false,tag:""}); setActiveId(document.id); }
   }
   function openCarousel() {
     const template = templates.find(item => item.pages.length > 1);
     if (template) { openTemplate(template); return; }
     if (!permission.current || library.designs.length >= 150) return;
     const document = enableContinuousCarousel(createBlankDesign("Untitled carousel", "portrait"));
-    if (addDocument(document) !== false) setActiveId(document.id);
+    if (addDocument(document) !== false) { setView("designs"); setQuery(""); setFilters({folder:"",favorites:false,tag:""}); setActiveId(document.id); }
   }
   function openTemplateEditor(template: DesignTemplate) {
     const draft = library.designs.find(
@@ -312,15 +319,23 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
       { id: "delete", label: "Delete template…", disabled: !canEdit, danger: true, separator: true, onSelect: () => { if (permission.current) setConfirm({ kind: "template" as const, id: template.id, name: template.name }); } },
     ] };
   }
+  const createMenu: ContextMenuDefinition = { label: "Create", items: [
+    { id: "new-design", label: "Blank post", disabled: !canEdit || library.designs.length >= 150, onSelect: openBlankDesign },
+    { id: "new-carousel", label: "Carousel", disabled: !canEdit || library.designs.length >= 150, onSelect: openCarousel },
+    { id: "new-template", label: "Reusable template…", disabled: !canEdit || library.designs.length >= 150 || library.templates.length >= 80, onSelect: () => { if (permission.current) setNewTemplate({ name: "Untitled template", format: "portrait" }); } },
+  ] };
+  const libraryMenu: ContextMenuDefinition = { label: "Library tools", items: [
+    { id: "import", label: "Import backup…", disabled: !canEdit, onSelect: () => { if (permission.current) importRef.current?.click(); } },
+    { id: "backup", label: "Export workspace backup", onSelect: backup },
+    { id: "recoveries", label: "Browser recoveries…", separator: true, disabled: !libraryScope, onSelect: () => setRecoveriesOpen(true) },
+    { id: "trash", label: trashCount ? `Trash (${trashCount})` : "Trash", onSelect: () => { setView("trash"); setQuery(""); } },
+  ] };
   const workspaceMenu: ContextMenuDefinition = { label: "Workspace", items: [
-    { id: "new-design", label: "New design", disabled: !canEdit || library.designs.length >= 150, onSelect: openBlankDesign },
-    { id: "new-template", label: "Create template", disabled: !canEdit || library.designs.length >= 150 || library.templates.length >= 80, onSelect: () => { if (permission.current) setNewTemplate({ name: "Untitled template", format: "portrait" }); } },
+    ...createMenu.items,
     { id: "templates", label: "Browse templates", separator: true, onSelect: () => { setView("templates"); setQuery(""); } },
-    { id: "designs", label: "Your designs", onSelect: () => { setView("designs"); setQuery(""); } },
+    { id: "designs", label: "Projects", onSelect: () => { setView("designs"); setQuery(""); } },
     { id: "brand", label: "Brand kits", onSelect: () => setView("brand") },
-    { id: "recoveries", label: "Browser recoveries…", disabled: !libraryScope, onSelect: () => setRecoveriesOpen(true) },
-    { id: "backup", label: "Download workspace backup", separator: true, onSelect: backup },
-    { id: "import", label: "Import workspace backup…", disabled: !canEdit, onSelect: () => { if (permission.current) importRef.current?.click(); } },
+    ...libraryMenu.items,
   ] };
 
   return (
@@ -427,448 +442,122 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
           }}
         />
       ) : (
-        <>
+        <div className="te-home">
           <header className="te-home-header">
-            <a className="te-wordmark" href="/admin/engine">
-              <span className="te-logo" aria-hidden>
-                e.
-              </span>
-              <span>
-                Engine<span className="te-wordmark-sub">template studio</span>
-              </span>
+            <a className="te-wordmark" href="/admin/engine" aria-label="Engine home">
+              <span className="te-logo" aria-hidden>e.</span>
+              <span>Engine</span>
             </a>
             <div className="te-header-right">
-              <WorkspaceMenu menu={workspaceMenu} />
-              <span className="te-save-status" role="status">
-                <span className="te-status-dot" />
-                {statusText}
+              <span className="te-save-status" role="status" title={statusText}>
+                <span className="te-status-dot" />{statusText}
               </span>
-              <button
-                className="te-button te-new-design"
-                onClick={openBlankDesign}
-                disabled={!canEdit || library.designs.length >= 150}
-              >
-                <PlusIcon />
-                New design
-              </button>
-              <button
-                className="te-button te-primary"
-                disabled={
-                  !canEdit ||
-                  library.designs.length >= 150 ||
-                  library.templates.length >= 80
-                }
-                onClick={() =>
-                  setNewTemplate({
-                    name: "Untitled template",
-                    format: "portrait",
-                  })
-                }
-              >
-                <PlusIcon />
-                Create template
-              </button>
+              <WorkspaceMenu menu={libraryMenu} />
+              <WorkspaceMenu menu={createMenu} label="Create" primary />
             </div>
           </header>
           <div className="te-home-shell">
             <aside className="te-home-sidebar">
-              <span className="te-eyebrow">WORKSPACE</span>
               <nav aria-label="Workspace">
-                {(
-                  [
-                    ["templates", "Templates", LayoutIcon],
-                    ["designs", "Your designs", CopyIcon],
-                    ["brand", "Brand kits", StarIcon],
-                    ["trash", "Trash", TrashIcon],
-                  ] as const
-                ).map(([id, label, Icon]) => (
-                  <button
-                    key={id}
-                    className={view === id ? "is-active" : ""}
-                    onClick={() => {
-                      setView(id);
-                      setQuery("");
-                    }}
-                  >
-                    <Icon size={18} />
-                    {label}
-                    {id === "designs" && <span>{library.designs.filter(design => !design.deletedAt).length}</span>}
-                  </button>
-                ))}
+                {([
+                  ["designs", "Projects", CopyIcon],
+                  ["templates", "Templates", LayoutIcon],
+                  ["brand", "Brand", StarIcon],
+                ] as const).map(([id, label, Icon]) => <button key={id} className={view === id ? "is-active" : ""} aria-current={view === id ? "page" : undefined} onClick={() => { setView(id); setQuery(""); }}>
+                  <Icon size={19} /><span className="te-nav-label">{label}</span>
+                  {id === "designs" && activeDesigns.length > 0 && <span className="te-nav-count">{activeDesigns.length}</span>}
+                </button>)}
               </nav>
               <div className="te-sidebar-bottom">
-                <a href="/admin/engine/research">
-                  Research workspace
-                  <ArrowRightIcon size={15} />
-                </a>
-                <p>
-                  A starting point for every
-                  <br />
-                  story you want to tell.
-                </p>
+                <a href="/admin/engine/research">Research<ArrowRightIcon size={16} /></a>
               </div>
             </aside>
             <main className="te-home-main">
-              {message && (
-                <div className="te-notice" role="status">
-                  {message}
-                  <button
-                    onClick={() => setMessage("")}
-                    aria-label="Dismiss notification"
-                  >
-                    ×
-                  </button>
-                </div>
-              )}
-              {(view === "templates" || view === "designs") && <LibraryTools library={library} filters={filters} onFilters={setFilters} canEdit={canEdit} onChange={setLibrary}/>}
-              {view === "trash" && <LibraryTrash library={library} canEdit={canEdit} onChange={setLibrary}/>}
-              {view === "templates" && (
-                <>
-                  <section className="te-hero">
-                    <div>
-                      <span className="te-eyebrow">
-                        LESS SETUP. MORE CREATING.
-                      </span>
-                      <h1>
-                        Good posts start
-                        <br />
-                        with a great template.
-                      </h1>
-                      <p>
-                        Pick a starting point. Make it yours.
-                        <br />
-                        Create something worth sharing.
-                      </p>
-                      <button
-                        className="te-button te-primary"
-                        onClick={openCarousel}
-                        disabled={!canEdit || library.designs.length >= 150}
-                      >
-                        Create a carousel
-                        <ArrowRightIcon size={16} />
-                      </button>
-                    </div>
-                    {heroTemplates.length > 0 && <div className="te-hero-art" aria-hidden>
-                      {heroTemplates.map(template => <div key={template.id}>
-                        <DesignPreview design={templatePreview(template)} page={template.pages[0]}/>
-                      </div>)}
-                    </div>}
-                  </section>
-                  <div className="te-section-heading">
-                    <div>
-                      <h2>Find your starting point</h2>
-                      <p>Defined layouts. Endless possibilities.</p>
-                    </div>
+              {message && <div className="te-notice" role="status">{message}<button onClick={() => setMessage("")} aria-label="Dismiss notification">×</button></div>}
+              {(view === "templates" || view === "designs") && <>
+                <div className="te-gallery-heading">
+                  <div>
+                    <h1>{view === "designs" ? "Projects" : "Templates"}</h1>
+                    <p>{view === "designs" ? "Your posts, carousels, and work in progress" : "Choose a layout and make it your own"}</p>
+                  </div>
+                  <div className="te-gallery-controls">
                     <label className="te-search">
-                      <SearchIcon />
-                      <input
-                        aria-label="Search templates"
-                        placeholder="Search templates…"
-                        value={query}
-                        onChange={(e) => setQuery(e.target.value)}
-                      />
+                      <SearchIcon size={17} />
+                      <input aria-label={view === "designs" ? "Search projects" : "Search templates"} placeholder={view === "designs" ? "Search projects" : "Search templates"} value={query} onChange={event => setQuery(event.target.value)} />
+                      {query && <button type="button" className="te-search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>}
                     </label>
+                    <button type="button" className={`te-button te-filter-toggle ${filterCount ? "has-filters" : ""}`} aria-expanded={filtersOpen} aria-controls="te-gallery-filters" onClick={() => setFiltersOpen(value => !value)}>
+                      <svg width="17" height="17" viewBox="0 0 17 17" fill="none" stroke="currentColor" strokeWidth="1.3" aria-hidden><path d="M2 4.5h13M2 8.5h13M2 12.5h13" /><circle cx="6" cy="4.5" r="1.5" fill="currentColor" stroke="none" /><circle cx="11" cy="8.5" r="1.5" fill="currentColor" stroke="none" /><circle cx="6" cy="12.5" r="1.5" fill="currentColor" stroke="none" /></svg>
+                      Filters{filterCount > 0 && <span>{filterCount}</span>}
+                    </button>
                   </div>
-                  <div className="te-filter-row">
-                    {[
-                      "All templates",
-                      ...new Set(BUILT_IN_TEMPLATES.map((t) => t.category)),
-                      "My templates",
-                    ].map((item) => (
-                      <button
-                        key={item}
-                        className={category === item ? "is-active" : ""}
-                        onClick={() => setCategory(item)}
-                      >
-                        {item}
-                      </button>
-                    ))}
-                  </div>
+                </div>
+                <div id="te-gallery-filters" className="te-gallery-filters" hidden={!filtersOpen}>
+                  <LibraryTools library={library} filters={filters} onFilters={setFilters} canEdit={canEdit} onChange={setLibrary} />
+                  {filterCount > 0 && <button className="te-text-button" onClick={() => setFilters({folder:"",favorites:false,tag:""})}>Clear filters</button>}
+                </div>
+                {view === "templates" && <div className="te-filter-row" aria-label="Template categories">
+                  {categories.map(item => <button key={item} className={selectedCategory === item ? "is-active" : ""} aria-pressed={selectedCategory === item} onClick={() => setCategory(item)}>{item}</button>)}
+                </div>}
+                <div className="te-gallery-summary" aria-live="polite">
+                  <span>{view === "designs" ? `${filteredDesigns.length} ${filteredDesigns.length === 1 ? "project" : "projects"}` : `${filteredTemplates.length + filteredDrafts.length} ${filteredTemplates.length + filteredDrafts.length === 1 ? "template" : "templates"}`}</span>
+                  {filterCount > 0 && !filtersOpen && <button className="te-text-button" onClick={() => setFiltersOpen(true)}>Filtered results</button>}
+                  {view === "designs" && filteredDesigns.length > 0 && <span>Recently edited</span>}
+                </div>
+                {view === "templates" ? <>
                   <div className="te-template-grid">
-                    {category === "My templates" &&
-                      library.designs
-                        .filter((d) => d.purpose === "template" && libraryMatches(d, filters))
-                        .map((draft) => (
-                          <LibraryCard menu={designMenu(draft)} key={draft.id}>
-                            <button
-                              className="te-template-open"
-                              onClick={() => setActiveId(draft.id)}
-                            >
-                              <div className="te-template-art">
-                                <DesignPreview
-                                  design={draft}
-                                  page={draft.pages[0]}
-                                />
-                                <span className="te-page-count">
-                                  TEMPLATE DRAFT
-                                </span>
-                                <span className="te-card-action">
-                                  Continue editing
-                                  <ArrowRightIcon size={15} />
-                                </span>
-                              </div>
-                              <span className="te-card-name">{draft.name}</span>
-                              <span className="te-card-description">
-                                Your changes are autosaved. Save the template
-                                when it’s ready.
-                              </span>
-                            </button>
-                          </LibraryCard>
-                        ))}
-                    {category === "My templates" && (
-                      <button
-                        className="te-blank-template"
-                        disabled={
-                          !canEdit ||
-                          library.designs.length >= 150 ||
-                          library.templates.length >= 80
-                        }
-                        onClick={() =>
-                          setNewTemplate({
-                            name: "Untitled template",
-                            format: "portrait",
-                          })
-                        }
-                      >
-                        <PlusIcon size={26} />
-                        <strong>Create a template</strong>
-                        <span>Start with a blank canvas</span>
+                    {filteredDrafts.map(draft => <LibraryCard menu={designMenu(draft)} key={draft.id}>
+                      <button className="te-template-open" onClick={() => setActiveId(draft.id)} aria-label={`Continue editing ${draft.name}`}>
+                        <div className="te-template-art"><DesignPreview design={draft} page={draft.pages[0]} /><span className="te-page-count">Template draft</span></div>
+                        <span className="te-card-name">{draft.name}</span><span className="te-card-description">Continue editing</span>
                       </button>
-                    )}
-                    {templates
-                      .filter(
-                        (t) =>
-                          libraryMatches(t, filters) &&
-                          (category === "All templates" ||
-                            (category === "My templates"
-                              ? t.custom
-                              : t.category === category)) &&
-                          `${t.name} ${t.description} ${t.category}`
-                            .toLowerCase()
-                            .includes(query.toLowerCase()),
-                      )
-                      .map((template) => (
-                        <LibraryCard menu={templateMenu(template)} key={template.id}>
-                          <button
-                            className="te-template-open"
-                            disabled={!canEdit || library.designs.length >= 150}
-                            onClick={() => openTemplate(template)}
-                            aria-label={`Use ${template.name} template`}
-                          >
-                            <div className="te-template-art">
-                              <DesignPreview
-                                design={templatePreview(template)}
-                                page={template.pages[0]}
-                              />
-                              <span className="te-card-action">
-                                Use template
-                                <ArrowRightIcon size={15} />
-                              </span>
-                              <span className="te-page-count">
-                                {template.pages.length > 1
-                                  ? `${template.pages.length} pages`
-                                  : FORMATS[template.format].label}
-                              </span>
-                            </div>
-                            <span className="te-card-name">
-                              {template.favorite ? "★ " : ""}{template.name}
-                            </span>
-                            <span className="te-card-description">
-                              {template.description}
-                            </span>
-                          </button>
-                          <div className="te-design-actions">
-                              {template.custom && <button
-                                className="te-icon"
-                                title="Edit template"
-                                aria-label={`Edit ${template.name} template`}
-                                disabled={
-                                  !canEdit || library.designs.length >= 150
-                                }
-                                onClick={() => openTemplateEditor(template)}
-                              >
-                                <LayoutIcon />
-                              </button>}
-                              <button
-                                className="te-icon"
-                                title="Delete template"
-                                aria-label={`Delete ${template.name} template`}
-                                disabled={!canEdit}
-                                onClick={() =>
-                                  setConfirm({
-                                    kind: "template",
-                                    id: template.id,
-                                    name: template.name,
-                                  })
-                                }
-                              >
-                                <TrashIcon />
-                              </button>
-                          </div>
-                        </LibraryCard>
-                      ))}
+                    </LibraryCard>)}
+                    {filteredTemplates.map(template => <LibraryCard menu={templateMenu(template)} key={template.id}>
+                      <button className="te-template-open" disabled={!canEdit || library.designs.length >= 150} onClick={() => openTemplate(template)} aria-label={`Use ${template.name} template`}>
+                        <div className="te-template-art">
+                          <DesignPreview design={templatePreview(template)} page={template.pages[0]} />
+                          {template.pages.length > 1 && <span className="te-page-count">{template.pages.length} pages</span>}
+                          <span className="te-card-action">Use template<ArrowRightIcon size={15} /></span>
+                        </div>
+                        <span className="te-card-name">{template.favorite ? "★ " : ""}{template.name}</span>
+                        <span className="te-card-description">{template.custom ? "Your template" : template.category} · {FORMATS[template.format].label}</span>
+                      </button>
+                    </LibraryCard>)}
                   </div>
-                  {!(
-                    category === "My templates" &&
-                    library.designs.some((d) => d.purpose === "template")
-                  ) &&
-                    !templates.some(
-                      (t) =>
-                        (category === "All templates" ||
-                          (category === "My templates"
-                            ? t.custom
-                            : t.category === category)) &&
-                        `${t.name} ${t.description} ${t.category}`
-                          .toLowerCase()
-                          .includes(query.toLowerCase()),
-                    ) && (
-                      <div className="te-empty">
-                        <LayoutIcon size={28} />
-                        <h3>
-                          {category === "My templates"
-                            ? "Your next signature template starts here."
-                            : "No templates found."}
-                        </h3>
-                        <p>
-                          {category === "My templates"
-                            ? "Choose Create template to build one from a blank canvas."
-                            : "Try a different search or category."}
-                        </p>
-                      </div>
-                    )}
-                </>
-              )}
-              {view === "designs" && (
-                <>
-                  <div className="te-section-heading">
-                    <div>
-                      <span className="te-eyebrow">
-                        PICK UP WHERE YOU LEFT OFF
-                      </span>
-                      <h1>Your designs</h1>
-                      <p>Your posts, carousels, and ideas in progress.</p>
-                    </div>
-                    <div className="te-actions">
-                      <button className="te-button" onClick={backup}>
-                        <DownloadIcon />
-                        Backup
-                      </button>
-                      <button
-                        className="te-button"
-                        disabled={!canEdit}
-                        onClick={() => importRef.current?.click()}
-                      >
-                        Import backup
-                      </button>
-                    </div>
-                  </div>
-                  <label className="te-search te-design-search">
-                    <SearchIcon />
-                    <input
-                      aria-label="Search designs"
-                      placeholder="Find a design…"
-                      value={query}
-                      onChange={(e) => setQuery(e.target.value)}
-                    />
-                  </label>
+                  {!filteredTemplates.length && !filteredDrafts.length && <div className="te-empty">
+                    <LayoutIcon size={30} /><h2>{search || filterCount ? "No matching templates" : selectedCategory === "My templates" ? "Make a template of your own" : "Your next layout starts here"}</h2>
+                    <p>{search || filterCount ? "Try another search or clear your filters" : "Create a reusable template, or restore one from Trash"}</p>
+                    {search || filterCount ? <button className="te-button" onClick={() => {setQuery("");setFilters({folder:"",favorites:false,tag:""});setCategory("All templates");}}>Clear search and filters</button> : <button className="te-button te-primary" disabled={!canEdit || library.designs.length >= 150 || library.templates.length >= 80} onClick={() => setNewTemplate({name:"Untitled template",format:"portrait"})}>Create template<PlusIcon size={16}/></button>}
+                  </div>}
+                </> : <>
                   <div className="te-template-grid">
-                    {library.designs
-                      .filter((d) =>
-                        libraryMatches(d, filters) && `${d.name} ${(d.tags ?? []).join(" ")}`.toLowerCase().includes(query.toLowerCase()),
-                      )
-                      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
-                      .map((design) => (
-                        <LibraryCard menu={designMenu(design)} key={design.id}>
-                          <button
-                            className="te-template-open"
-                            onClick={() => setActiveId(design.id)}
-                          >
-                            <div className="te-template-art">
-                              <DesignPreview
-                                design={design}
-                                page={design.pages[0]}
-                              />
-                              <span className="te-page-count">
-                                {design.purpose === "template"
-                                  ? "Template draft · "
-                                  : ""}
-                                {design.pages.length}{" "}
-                                {design.pages.length === 1 ? "page" : "pages"}
-                              </span>
-                              <span className="te-card-action">
-                                Open design
-                                <ArrowRightIcon size={15} />
-                              </span>
-                            </div>
-                            <span className="te-card-name">{design.favorite ? "★ " : ""}{design.name}</span>
-                            <span className="te-card-description">
-                              Edited{" "}
-                              {new Date(design.updatedAt).toLocaleDateString(
-                                undefined,
-                                { month: "short", day: "numeric" },
-                              )}
-                            </span>
-                          </button>
-                          <div className="te-design-actions">
-                            <button
-                              className="te-icon"
-                              title="Duplicate design"
-                              aria-label={`Duplicate ${design.name}`}
-                              disabled={
-                                !canEdit || library.designs.length >= 150
-                              }
-                              onClick={() => duplicateDesign(design)}
-                            >
-                              <CopyIcon />
-                            </button>
-                            <button
-                              className="te-icon"
-                              title="Delete design"
-                              aria-label={`Delete ${design.name}`}
-                              disabled={!canEdit}
-                              onClick={() =>
-                                setConfirm({
-                                  kind: "design",
-                                  id: design.id,
-                                  name: design.name,
-                                })
-                              }
-                            >
-                              <TrashIcon />
-                            </button>
-                          </div>
-                        </LibraryCard>
-                      ))}
-                  </div>
-                  {!library.designs.length && (
-                    <div className="te-empty">
-                      <CopyIcon size={32} />
-                      <h3>Your first design is one template away.</h3>
-                      <p>Choose a layout, add your words, and make it yours.</p>
-                      <button
-                        className="te-button te-primary"
-                        onClick={() => setView("templates")}
-                      >
-                        Explore templates
-                        <ArrowRightIcon />
+                    {filteredDesigns.map(design => <LibraryCard menu={designMenu(design)} key={design.id}>
+                      <button className="te-template-open" onClick={() => setActiveId(design.id)} aria-label={`Open ${design.name}`}>
+                        <div className="te-template-art">
+                          <DesignPreview design={design} page={design.pages[0]} />
+                          <span className="te-page-count">{design.purpose === "template" ? "Template draft" : `${design.pages.length} ${design.pages.length === 1 ? "page" : "pages"}`}</span>
+                          <span className="te-card-action">Open project<ArrowRightIcon size={15}/></span>
+                        </div>
+                        <span className="te-card-name">{design.favorite ? "★ " : ""}{design.name}</span>
+                        <span className="te-card-description">Edited {new Date(design.updatedAt).toLocaleDateString(undefined, {month:"short",day:"numeric"})}</span>
                       </button>
-                    </div>
-                  )}
-                  {library.designs.length > 0 &&
-                    !library.designs.some((d) =>
-                      d.name.toLowerCase().includes(query.toLowerCase()),
-                    ) && (
-                      <div className="te-empty">
-                        <h3>No matching designs.</h3>
-                        <p>Try another search.</p>
-                      </div>
-                    )}
-                </>
-              )}
+                    </LibraryCard>)}
+                  </div>
+                  {!filteredDesigns.length && <div className="te-empty">
+                    <CopyIcon size={30}/><h2>{activeDesigns.length ? "No matching projects" : "Your ideas start here"}</h2>
+                    <p>{activeDesigns.length ? "Try another search or clear your filters" : "Start with a template or choose Create for a blank post"}</p>
+                    {activeDesigns.length ? <button className="te-button" onClick={() => {setQuery("");setFilters({folder:"",favorites:false,tag:""});}}>Clear search and filters</button> : <button className="te-button te-primary" onClick={() => {setView("templates");setQuery("");setFilters({folder:"",favorites:false,tag:""});setCategory("All templates");}}>Browse templates<ArrowRightIcon size={16}/></button>}
+                  </div>}
+                </>}
+              </>}
+              {view === "trash" && <>
+                <button className="te-text-button te-library-back" onClick={() => setView("designs")}>← Back to Projects</button>
+                <LibraryTrash library={library} canEdit={canEdit} onChange={setLibrary} />
+              </>}
               {view === "brand" && <BrandWorkspace library={library} canEdit={canEdit} onChange={setLibrary} />}
             </main>
           </div>
-        </>
+        </div>
       )}
       {newTemplate && (
         <Modal title="Create a template" onClose={() => setNewTemplate(null)}>

@@ -1,12 +1,12 @@
 .te-element-inspector {
-  width: 260px;
-  min-width: 260px;
+  width: 100%;
+  min-width: 0;
   flex-shrink: 0;
   align-self: stretch;
   overflow-y: auto;
-  padding: 22px 18px 24px;
-  background: #171719;
-  border-left: 1px solid #ffffff0a;
+  padding: 16px 16px 24px;
+  background: transparent;
+  border: 0;
   scrollbar-width: thin;
   scrollbar-color: #ffffff20 transparent;
 }
@@ -15,7 +15,7 @@
   justify-content: space-between;
   align-items: center;
   gap: 10px;
-  margin-bottom: 22px;
+  margin-bottom: 16px;
 }
 .te-element-heading > div {
   min-width: 0;
@@ -34,10 +34,10 @@
   overflow-wrap: anywhere;
 }
 .te-element-heading .te-icon {
-  font-size: 22px;
+  font-size: 18px;
 }
 .te-element-section {
-  padding: 16px 0;
+  padding: 14px 0;
   border-top: 1px solid #ffffff0a;
 }
 .te-element-section h3 {
@@ -179,10 +179,17 @@
   color: #fff;
 }
 
-.te-advanced-section > summary { cursor: pointer; list-style: none; color: rgba(255,255,255,.92); font-size: 11px; font-weight: 500; }
+.te-advanced-section > summary { display:flex; justify-content:space-between; align-items:center; gap:8px; cursor: pointer; list-style: none; color: rgba(255,255,255,.82); font-size: 12px; font-weight: 500; min-height:22px; }
+.te-advanced-section > summary::-webkit-details-marker { display:none; }
+.te-advanced-section > summary:focus-visible { outline:2px solid #bda0fc; outline-offset:4px; border-radius:4px; }
 .te-advanced-section > summary::after { content: "+"; float: right; color: rgba(255,255,255,.38); }
 .te-advanced-section[open] > summary::after { content: "−"; }
-.te-advanced-section > div { padding-top: 16px; }
+.te-advanced-section > div { padding-top: 14px; }
+.te-element-section .te-element-section { margin-top:8px; }
+.te-frame-photo-upload { position:relative; display:flex; justify-content:center; align-items:center; min-height:36px; padding:9px 12px; margin-bottom:14px; border:1px solid #ffffff18; border-radius:8px; background:#ffffff08; color:#d1d1d8; font-size:11px; cursor:pointer; overflow:hidden; }
+.te-frame-photo-upload:hover { background:#ffffff12; color:#fff; }
+.te-frame-photo-upload input { position:absolute; inset:0; width:100%; opacity:0; cursor:pointer; }
+.te-frame-photo-upload:has(input:disabled) { opacity:.4; cursor:not-allowed; }
 .te-property-check { display: flex; align-items: center; gap: 8px; margin: 12px 0; font-size: 11px; color: rgba(255,255,255,.58); }
 .te-property-check input { accent-color: #fff; }
 .te-property-action { width: 100%; border: 0; border-radius: 999px; background: rgba(255,255,255,.07); color: rgba(255,255,255,.58); padding: 8px 10px; margin: 7px 0; font-size: 10px; }
@@ -263,8 +270,25 @@
 }
 @media (max-width: 1100px) {
   .te-element-inspector {
-    width: 236px;
-    min-width: 236px;
     padding-inline: 14px;
   }
+}
+
+.te-quick-toolbar.is-compact { gap:8px; flex-wrap:nowrap; min-height:48px; overflow-x:auto; scrollbar-width:none; }
+.te-quick-toolbar.is-compact::-webkit-scrollbar { display:none; }
+.te-quick-toolbar.is-compact > * { flex-shrink:0; }
+.te-quick-toolbar.is-compact .te-quick-basics,
+.te-quick-toolbar.is-compact .te-quick-actions { display:flex; align-items:center; gap:6px; flex-shrink:0; }
+.te-quick-toolbar.is-compact .te-quick-basics > select { max-width:144px; }
+.te-quick-toolbar.is-compact .te-quick-format-button { min-width:32px; padding-inline:7px; }
+.te-quick-toolbar.is-compact .te-quick-control-label { font-size:11px; color:#a9a9b0; margin-left:4px; }
+.te-quick-toolbar.is-compact .te-quick-color { position:relative; display:block; width:30px; height:30px; flex:none; padding:0; border:1px solid #ffffff22; border-radius:7px; overflow:hidden; cursor:pointer; background:repeating-conic-gradient(#78787e 0% 25%,#c8c8cc 0% 50%) 0 0 / 8px 8px; }
+.te-quick-toolbar.is-compact .te-quick-color > span { position:absolute; inset:0; }
+.te-quick-toolbar.is-compact .te-quick-color > input[type=color] { position:absolute; inset:0; opacity:0; width:100%; height:100%; padding:0; cursor:pointer; }
+.te-quick-toolbar.is-compact .te-quick-color:focus-within { outline:2px solid #bda0fc; outline-offset:2px; }
+.te-quick-toolbar.is-compact .te-quick-color:has(input:disabled) { opacity:.35; cursor:not-allowed; }
+.te-quick-toolbar.is-compact .te-quick-spacer { flex:1; min-width:10px; }
+@media (max-width: 1080px) {
+  .te-quick-toolbar.is-compact .te-quick-label { display:none; }
+  .te-quick-toolbar.is-compact .te-quick-basics > select { max-width:120px; }
 }

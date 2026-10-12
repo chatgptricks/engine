@@ -54,6 +54,13 @@
   --font-mono: var(--font-geist-mono);
 }
 
+/* Plain CSS consumers need these aliases even when Tailwind has no matching utility. */
+:root {
+  --font-sans: var(--font-geist-sans, system-ui);
+  --font-serif: var(--font-libre-baskerville, Georgia);
+  --font-mono: var(--font-geist-mono, monospace);
+}
+
 html,
 body {
   background: var(--bg);

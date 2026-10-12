@@ -1537,3 +1537,121 @@
 .te-review-viewer form {max-width:640px; display:grid; gap:12px; margin-top:24px;}
 .te-review-viewer textarea {min-height:120px;}
 @media(max-width:600px) {.te-library-trash article,.te-version-list article {flex-wrap:wrap;}.te-library-trash article>div,.te-version-list article>div {flex-basis:100%;}.te-review-viewer {padding:24px 16px;}}
+
+/* Library navigation and gallery. These rules leave editor and artwork styles scoped separately. */
+.te-home {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  font-size: 13px;
+}
+.te-home .te-home-header {
+  min-height: 76px;
+  height: auto;
+  padding: 15px 28px;
+  gap: 20px;
+  background: #111113;
+}
+.te-home .te-wordmark {
+  gap: 10px;
+  font-size: 21px;
+  letter-spacing: -.6px;
+}
+.te-home .te-logo {
+  width: 34px;
+  height: 34px;
+  font-size: 27px;
+}
+.te-home .te-header-right { gap: 10px; }
+.te-home .te-save-status { margin-right: 12px; font-size: 12px; }
+.te-home .te-button { min-height: 42px; padding: 10px 16px; font-size: 13px !important; }
+.te-home .te-text-button { font-size: 12px !important; }
+.te-menu-short-label { display: none; }
+.te-home .te-home-sidebar { width: 176px; padding: 26px 12px 24px 16px; }
+.te-home .te-home-sidebar nav { gap: 6px; }
+.te-home .te-home-sidebar nav button { min-height: 44px; padding: 12px; gap: 11px; }
+.te-home .te-home-sidebar nav button > .te-nav-label { margin-left: 0; font-size: 13px; }
+.te-home .te-home-sidebar nav button > .te-nav-count { margin-left: auto; font-size: 11px; color: #aaa; }
+.te-home .te-home-sidebar nav button.is-active { background: #ffffff0b; color: #f4f4f5; }
+.te-home .te-sidebar-bottom { padding: 18px 12px 0; }
+.te-home .te-sidebar-bottom a { font-size: 12px; justify-content: space-between; }
+.te-home .te-home-main { padding: 30px 32px 56px 24px; }
+.te-gallery-heading { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 28px; }
+.te-gallery-heading h1 { margin: 0; font-size: clamp(26px, 2.7vw, 34px); line-height: 1.2; letter-spacing: -1px; font-weight: 600; }
+.te-gallery-heading p { margin: 9px 0 0; color: #a0a0a6; font-size: 14px; line-height: 1.5; }
+.te-gallery-controls { display: flex; align-items: center; gap: 10px; }
+.te-home .te-search { padding: 12px 14px; gap: 10px; min-height: 44px; background: #202023; }
+.te-home .te-search input { width: 220px; font-size: 13px; }
+.te-search-clear { border: 0; padding: 0; height: 20px; width: 20px; border-radius: 50%; color: #bbb; background: #ffffff0d; font-size: 16px; }
+.te-home .te-filter-toggle { background: #202023; min-height: 44px; }
+.te-home .te-filter-toggle.has-filters { color: #fff; background: #343437; }
+.te-filter-toggle > span { min-width: 17px; height: 17px; padding: 0 4px; border-radius: 50%; display: grid; place-items: center; background: #efefef; color: #161616; font-size: 10px; }
+.te-gallery-filters[hidden] { display: none; }
+.te-gallery-filters { margin: -10px 0 24px; padding: 16px; background: #ffffff05; border-radius: 12px; }
+.te-home .te-gallery-filters .te-library-tools { margin: 0; padding: 0; background: none; gap: 16px; }
+.te-home .te-gallery-filters .te-library-tools label { font-size: 12px; }
+.te-home .te-gallery-filters .te-library-tools input,
+.te-home .te-gallery-filters .te-library-tools select { font-size: 13px; min-height: 40px; }
+.te-home .te-gallery-filters .te-library-favorite input { min-height: auto; }
+.te-gallery-filters > .te-text-button { margin-top: 12px; }
+.te-home .te-filter-row { flex-wrap: nowrap; overflow-x: auto; padding: 0 0 8px; margin: 0 0 16px; gap: 8px; }
+.te-home .te-filter-row button { flex-shrink: 0; min-height: 36px; padding: 8px 14px; font-size: 12px; }
+.te-gallery-summary { min-height: 28px; margin-bottom: 14px; display: flex; align-items: center; justify-content: space-between; gap: 12px; font-size: 12px; color: #85858d; }
+.te-home .te-template-grid { grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 26px 20px; }
+.te-home .te-template-art { border-radius: 12px; background: #1b1b1e; }
+.te-home .te-template-open:hover .te-template-art { transform: translateY(-2px); box-shadow: 0 8px 24px #0004; }
+.te-home .te-card-name { margin-top: 13px; padding-right: 0; font-size: 14px; font-weight: 500; line-height: 1.4; overflow-wrap: anywhere; }
+.te-home .te-card-description { font-size: 12px; line-height: 1.5; color: #96969e; }
+.te-home .te-page-count { font-size: 10px; padding: 6px 8px; border-radius: 6px; }
+.te-home .te-card-action { font-size: 12px; bottom: 46px; }
+.te-home .te-card-menu { top: 10px; right: 10px; width: 34px; height: 32px; border: 0; border-radius: 8px; }
+.te-home .te-empty { min-height: 280px; gap: 14px; padding: 56px 24px; }
+.te-home .te-empty h2 { font-size: 21px; letter-spacing: -.4px; color: #e1e1e5; font-weight: 500; margin: 0; }
+.te-home .te-empty p { font-size: 14px; line-height: 1.5; margin: 0; color: #9b9ba3; }
+.te-home .te-notice { font-size: 13px; }
+.te-home .te-library-back { margin-bottom: 22px; }
+.te-home .te-library-trash > h1 { font-size: 30px; font-weight: 600; margin: 0 0 12px; }
+.te-home .te-library-trash > p { font-size: 14px; color: #aaa; line-height: 1.6; }
+
+@media (max-width: 1150px) {
+  .te-home .te-home-sidebar { width: 160px; }
+  .te-home .te-home-main { padding: 26px 24px 48px 18px; }
+  .te-gallery-heading { align-items: flex-start; flex-direction: column; gap: 20px; }
+  .te-gallery-controls { width: 100%; }
+  .te-home .te-search { flex: 1; }
+  .te-home .te-search input { width: 100%; }
+}
+@media (max-width: 760px) {
+  .te-home .te-home-header { min-height: 70px; padding: 13px 18px; gap: 12px; }
+  .te-home .te-header-right { gap: 8px; }
+  .te-home .te-home-shell { flex-direction: column; }
+  .te-home .te-home-sidebar { width: 100%; padding: 8px 18px 14px; }
+  .te-home .te-home-sidebar nav { flex-direction: row; gap: 6px; }
+  .te-home .te-home-sidebar nav button { padding: 11px 10px; justify-content: center; gap: 8px; }
+  .te-home .te-home-sidebar nav button > .te-nav-count { margin-left: 0; }
+  .te-home .te-home-main { padding: 12px 18px 40px; }
+  .te-gallery-heading { margin-bottom: 22px; }
+  .te-gallery-heading h1 { font-size: 28px; }
+  .te-gallery-heading p { font-size: 13px; }
+  .te-home .te-template-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 14px; }
+  .te-home .te-gallery-filters .te-library-tools label:not(.te-library-favorite) { flex: 1; min-width: 130px; }
+  .te-home .te-gallery-filters .te-library-tools label > input,
+  .te-home .te-gallery-filters .te-library-tools label > select { width: 100%; }
+}
+@media (max-width: 560px) {
+  .te-menu-full-label { display: none; }
+  .te-menu-short-label { display: inline; }
+  .te-home .te-home-header { padding-inline: 14px; }
+  .te-home .te-button.te-library-menu,
+  .te-home .te-button.te-create-button { padding-inline: 13px; gap: 7px; }
+  .te-home .te-home-sidebar { padding-inline: 14px; }
+  .te-home .te-home-main { padding-inline: 14px; }
+  .te-home .te-card-name { font-size: 13px; }
+  .te-home .te-filter-toggle { padding-inline: 12px; }
+  .te-home .te-page-count { font-size: 9px; }
+}
+@media (max-width: 420px) {
+  .te-home .te-wordmark > span:last-child { display: none; }
+  .te-home .te-home-sidebar nav button > .te-nav-count { display: none; }
+}
