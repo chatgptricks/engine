@@ -23,7 +23,7 @@ import type {
 import { elementIntersectsCanvas, elementIntersectsRect, shapeStrokeOutset } from "@/lib/template-editor/canvas-geometry";
 import { snapMove, snapPoint, translateElements, type SnapGuide } from "@/lib/template-editor/snapping";
 import { gradientCss, gradientEndpoints, maskCss, shapePath } from "@/lib/template-editor/appearance";
-import { editorRichHtml, formatTextRange, textRangeTogglePatch, splitRichLines, resolveRichDecorations, scaleRichTextFonts, captureTextFormattingTarget, sameTextFormattingTarget, type TextFormattingPatch, type TextFormattingTarget, type TextFormatter } from "@/lib/template-editor/rich-text-editing";
+import { editorRichHtml, formatTextRange, textRangeTogglePatch, splitRichLines, resolveRichDecorations, scaleRichTextFonts, captureTextFormattingTarget, sameTextFormattingTarget, textEditingFingerprint, captureTextSelection, restoreTextSelection, type TextFormattingPatch, type TextFormattingTarget, type TextFormatter } from "@/lib/template-editor/rich-text-editing";
 import { duplicateSelection, expandGroupSelection, isElementHidden, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
 import { richTextToPlain } from "@/lib/template-editor/model";
@@ -32,6 +32,7 @@ import { photoContent, updatePhotoContent, shapeViewBox, findPhotoFrameAtPoint }
 import { textureBackgroundStyle, activeTextTextures, textTextureVariables, textTextureCss } from "@/lib/template-editor/text-textures";
 import { fillShapeWithImage } from "@/lib/template-editor/commands";
 import { LayoutOverlay } from "./layout-panel";
+import {historyShortcut} from "@/lib/template-editor/history";
 import { proxied } from "@/lib/engine/util";
 import "./canvas.css";
 
@@ -447,15 +448,19 @@ export function resizeGroup(
   });
 }
 
+export type CanvasHistoryBridge = {flush:()=>boolean};
 type CanvasEditorProps = {
   scene: CanvasScene;
   width?: number;
   height: number;
   selectedIds: string[];
   onSelect: (ids: string[]) => void;
-  onChange: (scene: CanvasScene, group?: string) => void;
+  onChange: (scene: CanvasScene, group?: string) => boolean | void;
   /** The document journal also owns typing and rich-range formatting history. */
-  onHistory?: (direction: "undo" | "redo") => void;
+  onHistory?: (direction: "undo" | "redo") => boolean | void;
+  onRegisterHistoryBridge?: (bridge:CanvasHistoryBridge|null)=>void;
+  onHistoryBoundary?: ()=>void;
+  historyRevision?: number;
   onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>, targetId: string | null) => void;
   editingRequest?: { id: string; serial: number };
   /** Editor-only view setting; thumbnails and exports always clip to the page. */
@@ -491,6 +496,9 @@ export function CanvasEditor({
   onSelect,
   onChange,
   onHistory,
+  onRegisterHistoryBridge,
+  onHistoryBoundary,
+  historyRevision=0,
   onContextMenu,
   editingRequest,
   clipToCanvas = true,
@@ -518,11 +526,14 @@ export function CanvasEditor({
   const editingNode = useRef<HTMLDivElement>(null);
   const editingActive = useRef<string | null>(null);
   const editingOriginal = useRef<TextElement | null>(null);
-  const editingSnapshot = useRef<{ source: string; html: string | undefined } | null>(null);
+  const editingSnapshot = useRef<{ source: string; html: string | undefined;node:HTMLElement|null } | null>(null);
+  const editingAccepted=useRef(true);
+  const observedHistoryRevision=useRef(historyRevision);
   const formatSerial = useRef(0);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingSeed, setEditingSeed] = useState("");
   const [live, setLive] = useState<CanvasScene | null>(null);
+  const [previewSelectedIds,setPreviewSelectedIds]=useState<string[]|null>(null);
   const [selectionArea, setSelectionArea] = useState<Box | null>(null);
   const [guides, setGuides] = useState<SnapGuide[]>([]);
   const richRange = useRef<Range | null>(null);
@@ -538,8 +549,9 @@ export function CanvasEditor({
   const clippedIds = new Set(clipToCanvas ? currentScene.elements
     .filter((element) => !isElementHidden(currentScene, element) && elementIntersectsCanvas(element, width, height))
     .map((element) => element.id) : []);
+  const previewSelection=previewSelectedIds??selectedIds;
   const selected = currentScene.elements.filter((element) =>
-    !isElementHidden(currentScene,element) && inScope(element) && selectedIds.includes(element.id),
+    !isElementHidden(currentScene,element) && inScope(element) && previewSelection.includes(element.id),
   );
   const selectionBox = selected.length ? selectionBounds(selected) : null;
   const editingElement = currentScene.elements.find(
@@ -547,6 +559,7 @@ export function CanvasEditor({
       !isElementHidden(currentScene, element) && inScope(element) && element.id === editingId && element.type === "text",
   );
   function updateEditing(cancel = false, formatting = false, extra?: Partial<TextElement>): CanvasScene {
+    editingAccepted.current=true;
     const id = editingActive.current;
     if (!id) return scene;
     const html = editingNode.current ? editorRichHtml(editingNode.current) : undefined;
@@ -587,8 +600,8 @@ export function CanvasEditor({
     };
     // Keep the DOM's original React text child stable while editing. Publishing
     // scene changes here drives autosave without replacing the caret/selection.
-    editingSnapshot.current = { source: JSON.stringify([replacement.type === 'text' ? replacement.text : value, replacement.type === 'text' ? replacement.richText : undefined]), html };
-    onChange(next, formatting ? `text-format:${id}:${++formatSerial.current}` : `text:${id}`);
+    if(onChange(next, formatting ? `text-format:${id}:${++formatSerial.current}` : `text:${id}`)===false){editingAccepted.current=false;return scene;}
+    editingSnapshot.current = { source: replacement.type==='text'?textEditingFingerprint(replacement):"", html,node:editingNode.current };
     return next;
   }
 
@@ -605,7 +618,7 @@ export function CanvasEditor({
     if(!formatTextRange(node,range,patch,textureId))return false;
     const html=editorRichHtml(node),used=new Set([...html?.matchAll(/data-texture-id="([a-zA-Z0-9_-]+)"/g)??[]].map(match=>match[1]));
     const wordTextures=[...(editingElement.wordTextures??[]),...(patch.textureFill&&textureId?[{...patch.textureFill,id:textureId}]:[])].filter(texture=>used.has(texture.id));
-    richRange.current=range.cloneRange();updateEditing(false,true,{wordTextures:wordTextures.length?wordTextures:undefined});return true;
+    richRange.current=range.cloneRange();updateEditing(false,true,{wordTextures:wordTextures.length?wordTextures:undefined});return editingAccepted.current;
   }
   function toggleRange(key: "fontWeight" | "italic" | "underline" | "strikethrough") {
     const node=editingNode.current, range=richRange.current;
@@ -616,6 +629,7 @@ export function CanvasEditor({
     document.addEventListener('selectionchange',remember);return()=>document.removeEventListener('selectionchange',remember);
   },[]);
   useEffect(()=>{onRegisterTextFormatter?.(editingId?Object.assign(formatRange,{capture:captureFormatting}):null);return()=>onRegisterTextFormatter?.(null);});
+  useEffect(()=>{onRegisterHistoryBridge?.({flush:()=>{updateEditing();return editingAccepted.current;}});return()=>onRegisterHistoryBridge?.(null);});
   useLayoutEffect(()=>{
     if(disabled||live||editingId)return;
     let changed=false;
@@ -650,7 +664,7 @@ export function CanvasEditor({
     const node = editingNode.current;
     const original = editingOriginal.current;
     if (original) node.innerHTML = splitRichLines(original.richText ? resolveRichDecorations(original.richText, original.underline, original.strikethrough) : undefined, original.text).map(line => `<div>${line || "<br>"}</div>`).join("");
-    if (original) editingSnapshot.current = { source: JSON.stringify([original.text, original.richText]), html: editorRichHtml(node) };
+    if (original) editingSnapshot.current = { source: textEditingFingerprint(original), html: editorRichHtml(node),node };
     node.focus({ preventScroll: true });
     const range = document.createRange();
     range.selectNodeContents(node);
@@ -664,18 +678,32 @@ export function CanvasEditor({
     if (!editingId || !node) return;
     const element = scene.elements.find((item): item is TextElement => item.id === editingId && item.type === "text");
     if (!element) return;
-    const source = JSON.stringify([element.text, element.richText]);
-    if (source === editingSnapshot.current?.source) return;
+    const source = textEditingFingerprint(element);
+    if (source === editingSnapshot.current?.source && node===editingSnapshot.current?.node) return;
     // Journal travel and other document updates replace only the editor DOM;
     // ordinary input has already recorded this snapshot and keeps its caret.
+    const focused=document.activeElement===node,selection=window.getSelection();
+    const previousRange=selection?.rangeCount&&node.contains(selection.getRangeAt(0).commonAncestorContainer)?selection.getRangeAt(0):richRange.current;
+    const bookmark=captureTextSelection(node,previousRange);
     node.innerHTML = splitRichLines(element.richText ? resolveRichDecorations(element.richText,element.underline,element.strikethrough) : undefined,element.text).map(line=>`<div>${line || "<br>"}</div>`).join("");
-    editingSnapshot.current = { source, html: editorRichHtml(node) };
-    richRange.current = null;
-    if (document.activeElement === node) {
-      const range = document.createRange(); range.selectNodeContents(node); range.collapse(false);
-      const selection = window.getSelection(); selection?.removeAllRanges(); selection?.addRange(range);
-    }
+    editingSnapshot.current = { source, html: editorRichHtml(node),node };
+    const range=document.createRange();
+    if(bookmark)restoreTextSelection(node,range,bookmark);else{range.selectNodeContents(node);range.collapse(false);}
+    richRange.current=range.collapsed?null:range.cloneRange();
+    if(focused){selection?.removeAllRanges();selection?.addRange(range);}
   }, [scene,editingId]);
+  useLayoutEffect(()=>{
+    if(observedHistoryRevision.current===historyRevision)return;
+    observedHistoryRevision.current=historyRevision;
+    const id=editingActive.current;if(!id)return;
+    const element=scene.elements.find((item):item is TextElement=>item.id===id&&item.type==="text");
+    if(!element||!selectedIds.includes(id)||isElementHidden(scene,element)||!canEditElement(scene,element,"content")){
+      editingActive.current=null;editingOriginal.current=null;editingSnapshot.current=null;richRange.current=null;setEditingId(null);return;
+    }
+    // Escape now cancels edits since the last Undo/Redo rather than restoring
+    // a stale session baseline from before the journal traveled.
+    editingOriginal.current=element;
+  },[historyRevision,scene,selectedIds]);
 
   useEffect(
     () => () => {
@@ -697,6 +725,7 @@ export function CanvasEditor({
     queueMicrotask(() => {
       if (cancelled) return;
       lastEditingRequest.current = request;
+      onHistoryBoundary?.();
       onSelect([element.id]);
       editingActive.current = element.id;
       editingOriginal.current = element;
@@ -704,7 +733,7 @@ export function CanvasEditor({
       setEditingId(element.id);
     });
     return () => { cancelled = true; };
-  }, [editingRequest, scene, disabled, onSelect,inScope]);
+  }, [editingRequest, scene, disabled, onSelect,inScope,onHistoryBoundary]);
 
   function position(event: { clientX: number; clientY: number }): Point {
     const bounds = root.current!.getBoundingClientRect();
@@ -716,11 +745,13 @@ export function CanvasEditor({
 
   function finishEditing(cancel = false): CanvasScene {
     const next = updateEditing(cancel);
+    if(!editingAccepted.current&&!cancel)return next;
     editingActive.current = null;
     editingOriginal.current = null;
     editingSnapshot.current = null;
     richRange.current = null;
     setEditingId(null);
+    onHistoryBoundary?.();
     return next;
   }
 
@@ -728,6 +759,9 @@ export function CanvasEditor({
     if (disabled || !canEditElement(scene,element,'content') || isElementHidden(scene,element) || !inScope(element) || element.type !== "text") return;
     if (editingActive.current && editingActive.current !== element.id)
       finishEditing();
+    if(editingActive.current===element.id){editingNode.current?.focus({preventScroll:true});return;}
+    if(editingActive.current)return;
+    onHistoryBoundary?.();
     onSelect([element.id]);
     editingActive.current = element.id;
     editingOriginal.current = element;
@@ -916,7 +950,8 @@ export function CanvasEditor({
       if (duplicate.limited || duplicate.scene === active.source) { end(true); return; }
       if(isolatedGroupId){const addedGroups=(duplicate.scene.groups??[]).filter(group=>!(active.source.groups??[]).some(existing=>existing.id===group.id));const duplicatedRoot=addedGroups.filter(group=>!group.parentId);const removeRoots=new Set(duplicatedRoot.map(group=>group.id));duplicate.scene={...duplicate.scene,groups:duplicate.scene.groups?.filter(group=>!removeRoots.has(group.id)).map(group=>group.parentId&&removeRoots.has(group.parentId)?{...group,parentId:isolatedGroupId}:group),elements:duplicate.scene.elements.map(element=>duplicate.selectedIds.includes(element.id)&&element.groupId&&removeRoots.has(element.groupId)?{...element,groupId:isolatedGroupId}:element)};}
       active.originalScene = active.source; active.source = duplicate.scene; active.latest = duplicate.scene; active.ids = duplicate.selectedIds;
-      onSelect(active.ids);
+      // Keep the original selection in the journal until this preview commits.
+      setPreviewSelectedIds(active.ids);
     }
     active.moved = true;
     active.dropPoint=point; active.bypassFrame=event.altKey || Boolean(active.originalScene);
@@ -997,13 +1032,14 @@ export function CanvasEditor({
     if (active.capture.hasPointerCapture(active.pointer))
       active.capture.releasePointerCapture(active.pointer);
     setLive(null);
+    setPreviewSelectedIds(null);
     setGuides([]);
     setDragFrameId(null);
     if(!active.bypassFrame&&active.dropTargetId&&active.dropPoint)active.dropTargetId=findPhotoFrameAtPoint(scene,active.dropPoint,{excludedIds:active.ids,isolationGroupId:isolatedGroupId})?.id;
     if (cancel && active.originalSelection) onSelect(active.originalSelection);
     if (!cancel && active.moved && !disabled) {
       const next = commitCanvasGesture(scene,active);
-      if (next !== scene) { onChange(next); if(active.dropTargetId&&!active.bypassFrame&&!next.elements.some(element=>active.ids.includes(element.id)))onSelect([active.dropTargetId]); }
+      if (next !== scene && onChange(next)!==false) { if(active.originalScene)onSelect(active.ids);else if(active.dropTargetId&&!active.bypassFrame&&!next.elements.some(element=>active.ids.includes(element.id)))onSelect([active.dropTargetId]); }
     }
   }
 
@@ -1082,9 +1118,9 @@ export function CanvasEditor({
             role="button"
             tabIndex={disabled ? -1 : 0}
             aria-label={`${element.name || element.type} layer${isElementLocked(currentScene,element) ? ", locked" : ""}`}
-            aria-pressed={selectedIds.includes(element.id)}
+            aria-pressed={previewSelection.includes(element.id)}
             aria-disabled={disabled}
-            className={`te-canvas-hit${isElementLocked(currentScene,element) ? " is-locked" : ""}${selectedIds.includes(element.id) ? " is-selected" : ""}`}
+            className={`te-canvas-hit${isElementLocked(currentScene,element) ? " is-locked" : ""}${previewSelection.includes(element.id) ? " is-selected" : ""}`}
             data-layer-id={element.id}
             title={isElementLocked(currentScene,element) ? `${element.name || element.type} · Locked` : `${element.name || element.type} · Drag to move${element.type === "text" ? " · Double-click to edit" : ""} · Right-click for actions`}
             style={{...boxStyle(element),"--te-hit-pad-x":`${Math.max(minimumHitPadding(element,viewScale).x,shapeStrokeOutset(element))}px`,"--te-hit-pad-y":`${Math.max(minimumHitPadding(element,viewScale).y,shapeStrokeOutset(element))}px`} as CSSProperties}
@@ -1163,10 +1199,11 @@ export function CanvasEditor({
               event.stopPropagation();
               const modifier = event.metaKey || event.ctrlKey;
               const key = event.key.toLowerCase();
-              if (modifier && onHistory && (key === "z" || key === "y")) {
+              const historyDirection=historyShortcut(event.nativeEvent);
+              if (historyDirection && onHistory) {
                 event.preventDefault();
                 updateEditing();
-                onHistory(key === "y" || event.shiftKey ? "redo" : "undo");
+                if(editingAccepted.current)onHistory(historyDirection);
                 return;
               }
               if (

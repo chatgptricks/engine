@@ -37,6 +37,7 @@ type Props = {
   onSaveColorRole?: (role: ColorRoleOption) => void;
   onDeleteColorRole?: (id: string) => void;
   onFormatText?: (patch: TextFormattingPatch) => boolean;
+  onTextTexture?: () => void;
   onUploadTextTexture?: (file:File)=>Promise<void>;
   onUploadFramePhoto?: (file:File,shapeId:string)=>Promise<void>;
 };
@@ -161,7 +162,7 @@ export function ElementInspector({
   width,
   height,
   disabled = false, outputScale = 3, initialSection = "edit",
-  slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onUploadTextTexture, onUploadFramePhoto,
+  slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onTextTexture, onUploadTextTexture, onUploadFramePhoto,
 }: Props) {
   const OUTPUT_SCALE = outputScale;
   const px = (value: number | undefined) => value === undefined ? undefined : Number((value * OUTPUT_SCALE).toFixed(2));
@@ -680,7 +681,7 @@ export function ElementInspector({
                   </label>
                 )}
                 </Section>}
-                <AdvancedProperties {...advancedProps} sections={["texture"]} />
+                {onTextTexture&&texts.length===1?<button type="button" className="te-property-action" disabled={noEdits||!canEditElement(scene,texts[0],"content")} onMouseDown={event=>event.preventDefault()} onClick={onTextTexture}>Image texture · choose words</button>:<AdvancedProperties {...advancedProps} sections={["texture"]} />}
               </Section>
             )}
 

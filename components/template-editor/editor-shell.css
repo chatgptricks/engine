@@ -1,4 +1,12 @@
 /* Keep one optional tool drawer beside the canvas; document controls live in File/View. */
+@media (max-width: 760px) {
+  .te-simple-editor .te-quick-toolbar.is-compact.has-selection { display: grid; grid-template-columns: minmax(0,1fr) auto; overflow: visible; gap: 6px; }
+  .te-simple-editor .te-quick-toolbar.has-selection > .te-quick-basics { grid-column: 1 / -1; grid-row: 1; width: 100%; min-width: 0; overflow-x: auto; padding-bottom: 2px; }
+  .te-simple-editor .te-quick-toolbar.has-selection > .te-quick-actions { grid-column: 1; grid-row: 2; min-width: 0; }
+  .te-simple-editor .te-quick-toolbar.has-selection > .te-quick-spacer { display: none; }
+  .te-simple-editor .te-quick-toolbar.has-selection > button[aria-label="More canvas actions"] { grid-column: 2; grid-row: 2; }
+  .te-simple-editor .te-quick-toolbar.has-selection > select { grid-column: 1 / -1; grid-row: 1; }
+}
 .te-simple-editor {
   height: 100dvh;
   min-height: 0;

@@ -119,6 +119,24 @@ function rangeOffsets(collected: ReturnType<typeof collectRuns>, range: Range) {
   return { start: boundary(range.startContainer, range.startOffset), end: boundary(range.endContainer, range.endOffset) };
 }
 
+export function textEditingFingerprint(element:Pick<TextElement,"text"|"richText"|"underline"|"strikethrough">):string {
+  return JSON.stringify([element.text,element.richText,Boolean(element.underline),Boolean(element.strikethrough)]);
+}
+/** Logical offsets survive DOM replacement, including paragraph separators. */
+export function captureTextSelection(node:HTMLElement,range:Range|null):{start:number;end:number}|null {
+  return range&&node.contains(range.commonAncestorContainer)?rangeOffsets(collectRuns(node),range):null;
+}
+export function restoreTextSelection(node:HTMLElement,range:Range,selection:{start:number;end:number}):void {
+  const collected=collectRuns(node);
+  const setBoundary=(which:"start"|"end",value:number)=>{
+    const offset=Math.max(0,Math.min(collected.length,value)),target=collected.runs.find(run=>offset>=run.start&&offset<=run.end);
+    if(target?.node.nodeType===3){if(which==="start")range.setStart(target.node,offset-target.start);else range.setEnd(target.node,offset-target.start);}
+    else if(target){if(which==="start"){if(offset>target.start)range.setStartAfter(target.node);else range.setStartBefore(target.node);}else{if(offset>target.start)range.setEndAfter(target.node);else range.setEndBefore(target.node);}}
+    else{if(which==="start")range.setStart(node,node.childNodes.length);else range.setEnd(node,node.childNodes.length);}
+  };
+  setBoundary("start",selection.start);setBoundary("end",selection.end);
+}
+
 export function captureTextFormattingTarget(node: HTMLElement, range: Range | null, elementId: string): TextFormattingTarget | null {
   if(!range || range.collapsed || !node.contains(range.commonAncestorContainer))return null;
   const collected=collectRuns(node),{start,end}=rangeOffsets(collected,range);

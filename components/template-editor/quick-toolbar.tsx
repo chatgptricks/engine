@@ -23,6 +23,7 @@ type Props = {
   onUpload: () => void;
   onFormatText?: (patch: TextFormattingPatch) => boolean;
   onEdit?: () => void;
+  onTextTexture?: () => void;
   onBackground?: () => void;
   onPosition?: () => void;
   onCrop?: () => void;
@@ -37,7 +38,7 @@ function ColorSwatch({ label, value, disabled, onChange }: { label: string; valu
   </label>;
 }
 
-export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onBackground, onPosition, onCrop, cropping = false, onGroup, outputScale = 3 }: Props) {
+export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, outputScale = 3 }: Props) {
   const selected=scene.elements.filter(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element));
   const texts=selected.filter((element):element is TextElement=>element.type==="text");
   const shapes=selected.filter((element):element is ShapeElement=>element.type==="shape");
@@ -70,7 +71,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
   }
   const photos=selected.flatMap(element=>{const photo=photoContent(element);return photo?[photo]:[];});
   const disabledStyle=disabled||!styleEditable;
-  return <div className="te-quick-toolbar is-compact" role="toolbar" aria-label="Quick formatting" onKeyDown={event=>{if((event.target as HTMLElement).matches("input, select"))event.stopPropagation();}}>
+  return <div className={`te-quick-toolbar is-compact${selected.length ? " has-selection" : ""}`} role="toolbar" aria-label="Quick formatting" onKeyDown={event=>{if((event.target as HTMLElement).matches("input, select"))event.stopPropagation();}}>
     {!selected.length?<>
       <span className="te-quick-label">Select an element</span>
       <button type="button" disabled={disabled} onClick={onAddText}>+ Text</button>
@@ -101,6 +102,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
       </select>}
       <span className="te-quick-spacer" />
       <div className="te-quick-actions">
+        {onTextTexture&&allText&&texts.length===1&&<button type="button" aria-label="Text texture" disabled={disabledStyle||!canEditElement(scene,texts[0],"content")} onMouseDown={event=>event.preventDefault()} onClick={onTextTexture}>Texture</button>}
         {onCrop&&selected.length===1&&allPhotos&&<button type="button" aria-label={cropping?"Finish crop":"Crop photo"} aria-pressed={cropping} disabled={disabled||!canCrop} onClick={onCrop}>{cropping?"Done crop":"Crop"}</button>}
         {onEdit&&<button type="button" aria-label="Edit selection properties" onClick={onEdit}>{allPhotos?"Edit photo":"Edit"}</button>}
         {onPosition&&<button type="button" aria-label="Position selection" onClick={onPosition}>Position</button>}
