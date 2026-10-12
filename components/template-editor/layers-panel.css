@@ -53,3 +53,16 @@
 .te-layer-group { background: rgba(255,255,255,.04); }
 .te-layer-isolation { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 10px; color: rgba(255,255,255,.58); margin-bottom: 14px; }
 .te-layer-isolation button { border: 0; border-radius: 999px; padding: 6px 10px; background: rgba(255,255,255,.1); color: rgba(255,255,255,.92); }
+
+.te-layer-manager .te-layer-multi-select { display:flex; align-items:center; justify-content:center; gap:8px; width:100%; min-height:36px; margin:0 0 12px; padding:8px 12px; border:1px solid #ffffff20; border-radius:7px; background:#ffffff05; color:#d8d4e4; font-size:12px; }
+.te-layer-manager .te-layer-multi-select[aria-pressed=true] { border-color:#b69ce7; background:#ab81ff23; color:#e5d8fc; }
+.te-layer-manager .te-layer-multi-select:focus-visible { outline:2px solid #c5a9ff; outline-offset:2px; }
+.te-layer-manager .te-layer-multi-help { margin:0 2px 12px; color:#a8a4b1; font-size:11px; line-height:1.5; }
+.te-layer-manager .te-layer-selection-check { display:grid; place-items:center; flex:0 0 16px; height:16px; border:1px solid #ffffff40; border-radius:4px; color:#161319; font-size:12px; line-height:1; }
+.te-layer-manager .te-layer-select[aria-pressed=true] .te-layer-selection-check { border-color:#cdb2fc; background:#cdb2fc; }
+.te-layer-manager.is-selecting-multiple .te-layer-select,
+.te-layer-manager.is-selecting-multiple .te-layer-select:active { cursor:pointer!important; }
+@media (pointer:coarse) {
+  .te-layer-manager .te-layer-multi-select { min-height:44px; }
+  .te-layer-manager .te-layer-select { min-height:52px; }
+}

@@ -28,6 +28,7 @@ import {
   type DesignTemplate,
   type DesignPage,
   type ShapeElement,
+  type TextElement,
   type ShapeImageFill,
   duplicateCanvasScene,
   formatDimensions,
@@ -38,13 +39,16 @@ import { LayoutPanel } from "./layout-panel";
 import { WorkflowPanel } from "./workflow-panel";
 import { ExportDialog } from "./export-dialog";
 import { TemplateApplyDialog } from "./template-apply-dialog";
+import { TextTextureDialog } from "./text-texture-dialog";
+import { getTextWords, applyTextWordTexture } from "@/lib/template-editor/text-word-textures";
+import { activeTextTextures } from "@/lib/template-editor/text-textures";
 import { importSVG, combineShapes } from "@/lib/template-editor/vector";
 import {applyDesignPatch} from "@/lib/template-editor/document-patch";
+import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type HistoryContext} from "@/lib/template-editor/history";
 import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/preflight";
 import { ColorField, Modal } from "./controls";
-import { CanvasEditor } from "./canvas";
+import { CanvasEditor, type CanvasHistoryBridge } from "./canvas";
 import type { TextFormattingPatch, TextFormatter } from "@/lib/template-editor/rich-text-editing";
-import { prepareBrandAsset } from "./brand-workspace";
 import { findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { PHOTO_DRAG_TYPE, decodePhotoDrag, writePhotoDrag } from "@/lib/template-editor/photo-drag";
 import { proxied } from "@/lib/engine/util";
@@ -54,7 +58,7 @@ import { elementIntersectsCanvas, elementVisualBounds, sceneVisualBounds } from 
 import { BrandPanel } from "./brand-panel";
 import { QuickToolbar } from "./quick-toolbar";
 import { useContextMenu, type ContextMenuItem } from "./context-menu";
-import { copySelection, duplicateSelection, pasteSelection, removeSelection, setSelectionLocked, reorderSelection, alignSelection, groupSelection, ungroupSelection, setGroupHidden, setGroupLocked, expandGroupSelection, scopeSelection, constrainSceneToIsolation, canEditElement, isElementHidden, isElementLocked, fillShapeWithImage, applyTextTexture, type SceneCommandResult } from "@/lib/template-editor/commands";
+import { copySelection, duplicateSelection, pasteSelection, removeSelection, setSelectionLocked, reorderSelection, alignSelection, groupSelection, ungroupSelection, setGroupHidden, setGroupLocked, expandGroupSelection, scopeSelection, constrainSceneToIsolation, canEditElement, isElementHidden, isElementLocked, fillShapeWithImage, type SceneCommandResult } from "@/lib/template-editor/commands";
 import {groupMemberIds} from "@/lib/template-editor/layer-tree";
 import { translateElements } from "@/lib/template-editor/snapping";
 import { ElementInspector } from "./element-inspector";
@@ -112,12 +116,12 @@ export function DesignEditor({
   const [renameLayer, setRenameLayer] = useState<{id: string; name: string} | null>(null);
   const [design, setDesign] = useState<DesignDocument>(initial);
   const current = useRef<DesignDocument>(design);
-  const history = useRef<{
-    past: DesignDocument[];
-    future: DesignDocument[];
-    group: string;
-    time: number;
-  }>({ past: [], future: [], group: "", time: 0 });
+  const history = useRef(createDocumentHistory<DesignDocument>());
+  const historyContext=useRef<HistoryContext>({pageId:initial.pages[0].id,selectedIds:[],editingMaster:false,isolatedGroupId:null});
+  const historyBridge=useRef<CanvasHistoryBridge|null>(null);
+  const registerHistoryBridge=useCallback((bridge:CanvasHistoryBridge|null)=>{historyBridge.current=bridge;},[]);
+  const closeEditingHistory=useCallback(()=>closeHistoryGroup(history.current),[]);
+  const [historyRevision,setHistoryRevision]=useState(0);
   const [historyState, setHistoryState] = useState({
     undo: false,
     redo: false,
@@ -154,6 +158,7 @@ export function DesignEditor({
   const [notice, setNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
   const [exportDialog,setExportDialog]=useState(false);
+  const [textureTarget,setTextureTarget]=useState<{element:TextElement;context:string;words?:number[];photos:ShapeImageFill[];background:string}|null>(null);
   const [preflightIssues,setPreflightIssues]=useState<PreflightIssue[]>([]);
   const [layoutOpen,setLayoutOpen]=useState(false);
   const [workflowOpen,setWorkflowOpen]=useState(false);
@@ -221,6 +226,7 @@ export function DesignEditor({
   const scene = editingMaster ? design.masterScene??{background:'transparent',elements:[]} : design.continuousCanvas ?? page.canvas ?? sceneForPage(page, design.format);
   const isolatedGroupId = scene.groups?.some(group => group.id === requestedIsolationGroupId) ? requestedIsolationGroupId : null;
   const selected = scopeSelection(scene, selection, isolatedGroupId ?? undefined);
+  useLayoutEffect(()=>{historyContext.current={pageId:page.id,selectedIds:[...selected],editingMaster,isolatedGroupId};},[page.id,selected,editingMaster,isolatedGroupId]);
   const previousPage = !continuous && index > 0 ? design.pages[index - 1] : undefined;
   const onionScene = onionSkin && page.canvas && previousPage ? previousPage.canvas ?? sceneForPage(previousPage, design.format) : undefined;
   const selectedPhoto = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && (element.type === "image" || (element.type === "shape" && element.imageFill))) : undefined;
@@ -309,18 +315,11 @@ export function DesignEditor({
       const previous = current.current;
       let changed:DesignDocument;
       try{changed=change(previous);}catch(error){setNotice(error instanceof Error?error.message:'Could not apply this change.');return false;}
-      if(changed===previous)return true;
+      if(sameDocumentContent(changed,previous))return true;
       const next = { ...changed, updatedAt: new Date().toISOString() };
-      if (onChangeRef.current(next) === false) return false;
       const h = history.current;
-      if (!group || group !== h.group || Date.now() - h.time > 650) {
-        h.past.push(previous);
-        if (h.past.length > 60) h.past.shift();
-      }
-      h.group = group;
-      h.time = Date.now();
-      h.future = [];
-      setHistoryState({ undo: h.past.length > 0, redo: false });
+      if(!commitHistory(h,previous,next,historyContext.current,value=>onChangeRef.current(value),{group,automatic:group==="text-fit"}))return false;
+      setHistoryState({ undo: h.past.length > 0, redo: h.future.length>0 });
       current.current = next;
       setDesign(next);
       return true;
@@ -329,21 +328,24 @@ export function DesignEditor({
   );
   const travel = useCallback(
     (direction: "undo" | "redo") => {
-      if (blocked.current) return;
+      if (blocked.current || historyBridge.current?.flush()===false) return false;
       const h = history.current;
-      const source = direction === "undo" ? h.past : h.future;
-      const next = source.at(-1);
-      if (!next) return;
-      const updated = { ...next, updatedAt: new Date().toISOString() };
-      if (onChangeRef.current(updated) === false) return;
-      source.pop();
-      (direction === "undo" ? h.future : h.past).push(current.current);
-      h.group = "";
+      const entry=travelHistory(h,current.current,historyContext.current,direction,value=>onChangeRef.current(value),value=>({...value,updatedAt:new Date().toISOString()}));
+      if(!entry)return false;
+      const updated=entry.document;
       setHistoryState({ undo: h.past.length > 0, redo: h.future.length > 0 });
       current.current = updated;
       setDesign(updated);
+      setPageId(updated.pages.find(page=>page.id===entry.context.pageId)?.id??updated.pages[0].id);
+      setSelected(entry.context.selectedIds);
+      setEditingMaster(entry.context.editingMaster&&Boolean(updated.masterScene));
+      setIsolatedGroupId(entry.context.isolatedGroupId);
+      setCropImageId(null);setEditingRequest(undefined);
+      setNotice("");
+      setHistoryRevision(revision=>revision+1);
+      return true;
     },
-    [],
+    [setSelected,setEditingMaster,setIsolatedGroupId,setNotice],
   );
   function changeScene(next: CanvasScene, group = "") {
       return commit(
@@ -361,7 +363,7 @@ export function DesignEditor({
             p.id === activePageId ? { ...p, canvas: next } : p,
           ),
         });},
-        group ? `${activePageId}:${group}` : "",
+        group === "text-fit" ? group : group ? `${activePageId}:${group}` : "",
       );
   }
   function applyCommandChecked(command: (live: CanvasScene) => SceneCommandResult) {
@@ -515,6 +517,7 @@ export function DesignEditor({
     );
   useEffect(() => {
     const handler = (event: KeyboardEvent) => {
+      if(event.defaultPrevented||event.isComposing)return;
       const target = event.target as HTMLElement;
       if (
         target.closest(
@@ -525,11 +528,13 @@ export function DesignEditor({
         return;
       const mod = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
-      if (mod && key === "z") {
+      const historyDirection=historyShortcut(event);
+      if (historyDirection) {
         event.preventDefault();
-        travel(event.shiftKey ? "redo" : "undo");
+        travel(historyDirection);
         return;
       }
+      if(!mod&&target.closest('button,a[href],summary,[role="button"]'))return;
       if (mod && key === "a") {
         event.preventDefault();
         setSelected(selectable.map(e=>e.id));
@@ -712,25 +717,35 @@ export function DesignEditor({
     const width=280,height=Math.min(canvasHeight*.7,width*ratio);
     addElement(createCanvasElement('image',{...photo,fit:photo.objectFit,name:photo.alt||'Photo',x:(continuous?index*FRAME_WIDTH:0)+(FRAME_WIDTH-width)/2,y:(canvasHeight-height)/2,width,height}));
   }
-  async function uploadTextTexture(file:File) {
-    if(disabled||uploading)return;
-    const ids=selected.filter(id=>{const e=scene.elements.find(item=>item.id===id);return e?.type==='text'&&canEditElement(scene,e,'content')&&canEditElement(scene,e,'style')&&!isElementHidden(scene,e);});
-    if(!ids.length){setNotice('Select editable text before adding a texture.');return;}
-    const context=editorTarget.current, original=current.current;
-    const rangeTarget=textFormatter.current?.capture()??null;
-    const wasEditing=Boolean(textFormatter.current);
-    setUploading(true);
-    try {
-      const asset=await prepareBrandAsset(file,'image');
-      if(!mounted.current)return;
-      if(editorTarget.current!==context||current.current!==original||Boolean(textFormatter.current)!==wasEditing)throw new Error('The editing target changed. Select the text and upload again.');
-      const texture:ShapeImageFill={src:asset.src,alt:asset.name,objectFit:'cover',cropX:50,cropY:50,cropScale:1,intrinsicWidth:asset.width,intrinsicHeight:asset.height};
-      const ranged=rangeTarget?textFormatter.current?.({textureFill:texture},rangeTarget)??false:false;
-      if(rangeTarget&&!ranged)throw new Error('The word selection changed. Select the words and upload again.');
-      if(ranged)setNotice('Texture applied to the selected words.');
-      else if(applyCommandChecked(live=>applyTextTexture(live,ids,texture)))setNotice('Texture applied to the selected text.');
-    } catch(error){setNotice(error instanceof Error?error.message:'Could not add this texture.');}
-    finally{if(mounted.current)setUploading(false);}
+  function openTextTexture() {
+    if (disabled || selected.length !== 1) return;
+    if (historyBridge.current?.flush() === false) return;
+    const target = current.current.pages.find(item => item.id === page.id);
+    if (!target) return;
+    const live = editingMaster ? current.current.masterScene ?? scene : current.current.continuousCanvas ?? target.canvas ?? sceneForPage(target,current.current.format);
+    const element = live.elements.find(item => item.id === selected[0]);
+    if (!element || element.type !== "text" || !canEditElement(live,element,"content") || !canEditElement(live,element,"style") || isElementHidden(live,element)) return;
+    const range = textFormatter.current?.capture();
+    const words = range?.elementId === element.id ? getTextWords(element).filter(word => word.end > range.start && word.start < range.end).map(word => word.index) : undefined;
+    const scenes = [...current.current.pages.map(item => item.canvas ?? sceneForPage(item,current.current.format)),current.current.continuousCanvas,current.current.masterScene].filter((item):item is CanvasScene => Boolean(item));
+    const photos:ShapeImageFill[] = scenes.flatMap(item => item.elements.flatMap(layer => layer.type === "image" ? [{src:layer.src,alt:layer.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:layer.intrinsicWidth,intrinsicHeight:layer.intrinsicHeight,directive:layer.directive,rightsNote:layer.rightsNote,sourceUrl:layer.sourceUrl,provenance:layer.provenance}] : layer.type === "shape" && layer.imageFill ? [layer.imageFill] : layer.type === "text" ? activeTextTextures(layer) : []));
+    photos.push(...brandKits.flatMap(kit => kit.assets.map(asset => ({src:asset.src,alt:asset.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:asset.width,intrinsicHeight:asset.height}))));
+    photos.push(...["forest","dunes","coral","folds","orbits","sculpture"].map(name => ({src:`/template-editor/${name}.svg`,alt:`${name} artwork`,objectFit:"cover" as const,cropX:50,cropY:50})));
+    setTextureTarget({element:structuredClone(element),context:editorTarget.current,words,photos,background:live.background});
+    setEditingRequest(undefined);
+  }
+  function applyWordTexture(words:"all"|number[],texture:ShapeImageFill|null) {
+    if (!textureTarget || disabled || textureTarget.context !== editorTarget.current) throw new Error("This text is no longer active. Close this dialog and select the text again.");
+    const target = current.current.pages.find(item => item.id === page.id);
+    if (!target) throw new Error("This page is no longer available.");
+    const live = editingMaster ? current.current.masterScene ?? scene : current.current.continuousCanvas ?? target.canvas ?? sceneForPage(target,current.current.format);
+    const element = live.elements.find(item => item.id === textureTarget.element.id);
+    if (!element || element.type !== "text" || !canEditElement(live,element,"content") || !canEditElement(live,element,"style") || isElementHidden(live,element)) throw new Error("This text is locked or no longer available.");
+    const appearance = (item:TextElement) => JSON.stringify([item.text,item.richText,item.textureFill,item.wordTextures]);
+    if (appearance(element) !== appearance(textureTarget.element)) throw new Error("The text changed. Close this dialog and select your words again.");
+    const result = applyTextWordTexture(live,element.id,words,texture);
+    if (result.scene !== live && !changeScene(result.scene)) throw new Error("Could not save this texture. Please try again.");
+    setNotice(texture ? words === "all" ? "Texture applied to all words." : `Texture applied to ${words.length} selected word${words.length === 1 ? "" : "s"}.` : "Texture removed. You can restore it with Undo.");
   }
   async function upload(file: File, replaceId?: string) {
     if (disabled || uploading) return;
@@ -909,7 +924,7 @@ export function DesignEditor({
       onDeleteColorRole={id=>commit(d=>removeColorRole(d,id))}
       onFormatText={formatText}
       initialSection={inspectorSection}
-      onUploadTextTexture={uploadTextTexture}
+      onTextTexture={openTextTexture}
       onUploadFramePhoto={(file:File,id:string)=>upload(file,id)}
     />
   );
@@ -952,10 +967,12 @@ export function DesignEditor({
             value={design.name}
             maxLength={100}
             disabled={disabled}
+            onFocus={closeEditingHistory}
             onChange={(e) =>
               commit((d) => ({ ...d, name: e.target.value }), "name")
             }
             onBlur={() => {
+              closeEditingHistory();
               if (!design.name.trim())
                 commit((d) => ({
                   ...d,
@@ -975,19 +992,23 @@ export function DesignEditor({
             className="te-icon"
             disabled={disabled || !historyState.undo}
             onClick={() => travel("undo")}
-            title="Undo (⌘Z)"
+            onPointerDown={event=>{if(event.button===0)event.preventDefault();}}
+            title="Undo (⌘Z / Ctrl+Z)"
             aria-label="Undo"
+            aria-keyshortcuts="Meta+z Control+z"
           >
-            ↶
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m9 5-5 5 5 5M4 10h10a6 6 0 0 1 0 12"/></svg>
           </button>
           <button
             className="te-icon"
             disabled={disabled || !historyState.redo}
             onClick={() => travel("redo")}
-            title="Redo (⌘⇧Z)"
+            onPointerDown={event=>{if(event.button===0)event.preventDefault();}}
+            title="Redo (⌘⇧Z / Ctrl+Y)"
             aria-label="Redo"
+            aria-keyshortcuts="Meta+Shift+z Control+Shift+z Control+y"
           >
-            ↷
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="m15 5 5 5-5 5M20 10H10a6 6 0 0 0 0 12"/></svg>
           </button>
         </div>
         <div className="te-editor-header-actions">
@@ -1233,6 +1254,8 @@ export function DesignEditor({
                     maxLength={2200}
                     placeholder="Write a caption for your post…"
                     value={design.caption}
+                    onFocus={closeEditingHistory}
+                    onBlur={closeEditingHistory}
                     onChange={(e) =>
                       commit(
                         (d) => ({ ...d, caption: e.target.value }),
@@ -1343,6 +1366,7 @@ export function DesignEditor({
           <QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
             outputScale={format.width/FRAME_WIDTH}
             onFormatText={formatText}
+            onTextTexture={openTextTexture}
             onBackground={()=>openPanel("page")}
             onEdit={()=>openInspector()}
             onPosition={()=>openInspector("position")}
@@ -1416,6 +1440,9 @@ export function DesignEditor({
                     onSelect={setSelected}
                     onChange={changeScene}
                     onHistory={travel}
+                    onRegisterHistoryBridge={registerHistoryBridge}
+                    onHistoryBoundary={closeEditingHistory}
+                    historyRevision={historyRevision}
                     disabled={disabled}
                     onContextMenu={canvasMenu}
                     editingRequest={editingRequest}
@@ -1539,6 +1566,7 @@ export function DesignEditor({
           </section>}
         </main>
       </div>
+      {textureTarget&&<TextTextureDialog element={textureTarget.element} background={textureTarget.background} photos={textureTarget.photos} initialWords={textureTarget.words} disabled={disabled} onApply={applyWordTexture} onClose={()=>setTextureTarget(null)}/>}
       {layoutOpen&&<LayoutPanel scene={scene} width={canvasWidth} slideWidth={FRAME_WIDTH} height={canvasHeight} outputScale={format.width/FRAME_WIDTH} disabled={disabled} onChange={changeScene} onClose={()=>setLayoutOpen(false)}/>}
       {applyingTemplate&&<TemplateApplyDialog template={applyingTemplate} design={design} scene={scene} pageId={page.id} disabled={disabled} onChangeDesign={next=>{
         if(!currentTemplates.current.some(template=>template.id===applyingTemplate.id&&!template.deletedAt))throw new Error("This template was deleted. Restore it from Trash before applying it.");

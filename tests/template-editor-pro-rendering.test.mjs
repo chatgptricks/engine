@@ -30,12 +30,31 @@ function load(relative) {
 }
 const quick=load("components/template-editor/quick-toolbar.tsx"),inspector=load("components/template-editor/element-inspector.tsx");
 const photoFrames=load("lib/template-editor/photo-frames.ts"), textures=load("lib/template-editor/text-textures.ts");
+const {TextTextureDialog}=load("components/template-editor/text-texture-dialog.tsx");
 const geometry=load("lib/template-editor/canvas-geometry.ts");
 const model=load("lib/template-editor/model.ts"), canvas=load("components/template-editor/canvas.tsx"), rich=load("lib/template-editor/rich-text-editing.ts"), appearance=load("lib/template-editor/appearance.ts");
 const shape=(patch={})=>({...model.createCanvasElement("shape",{x:10,y:20,width:100,height:80,...patch}),...patch});
 const text=(patch={})=>({...model.createCanvasElement("text",{x:10,y:20,width:100,height:80,...patch}),...patch});
 const render=(elements,extra={})=>renderToStaticMarkup(React.createElement(canvas.SceneRenderer,{scene:{background:"#fff",elements,...extra}}));
 const near=(actual,expected)=>assert.ok(Math.abs(actual-expected)<.01,`${actual} ≠ ${expected}`);
+
+test("texture dialog keeps empty captured selections empty and addresses repeated words separately",()=>{
+  const element=text({text:"Gold sky Gold"});
+  const props={element,background:"#111",photos:[],disabled:false,onClose(){},onApply(){}};
+  const empty=renderToStaticMarkup(React.createElement(TextTextureDialog,{...props,initialWords:[]}));
+  assert.match(empty,/Select at least one word/);
+  assert.match(empty,/aria-label="Word 1: Gold" aria-pressed="false"/);
+  assert.match(empty,/aria-label="Word 3: Gold" aria-pressed="false"/);
+  const picked=renderToStaticMarkup(React.createElement(TextTextureDialog,{...props,initialWords:[2]}));
+  assert.match(picked,/aria-label="Word 1: Gold" aria-pressed="false"/);
+  assert.match(picked,/aria-label="Word 3: Gold" aria-pressed="true"/);
+});
+
+test("texture dialog does not enable Apply before choosing an image",()=>{
+  const html=renderToStaticMarkup(React.createElement(TextTextureDialog,{element:text({text:"Gold sky"}),background:"#111",photos:[],disabled:false,onClose(){},onApply(){}}));
+  assert.match(html,/<button[^>]*disabled=""[^>]*>Apply texture<\/button>/);
+  assert.match(html,/aria-label="Upload text texture"/);
+});
 
 test("every shape uses real numeric SVG strokes and honors path fill rule",()=>{
   const html=render([shape({shape:"rectangle",strokeWidth:2,strokeDash:[4,1,2],radius:8}),shape({shape:"ellipse",strokeWidth:3,strokeDash:[1,3]}),shape({shape:"path",path:"M0 0H100V100H0Z",fillRule:"evenodd",strokeWidth:1})]);
