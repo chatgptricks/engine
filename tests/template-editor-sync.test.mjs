@@ -3,7 +3,18 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 import ts from "typescript";
-function load(file){const source=ts.transpileModule(fs.readFileSync(new URL(`../${file}`,import.meta.url),"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;const unit={exports:{}};vm.runInThisContext(`(function(module,exports){${source}\n})`)(unit,unit.exports);return unit.exports;}
+import path from "node:path";
+import {fileURLToPath} from "node:url";
+const loaded = new Map();
+const root = fileURLToPath(new URL("..", import.meta.url));
+function load(file) {
+ if (loaded.has(file)) return loaded.get(file);
+ const filename = path.join(root, file);
+ const source = ts.transpileModule(fs.readFileSync(filename, "utf8"), {compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
+ const unit = {exports:{}}; loaded.set(file, unit.exports);
+ vm.runInThisContext(`(function(require,module,exports){${source}\n})`)(name => load(path.relative(root, path.resolve(path.dirname(filename), `${name}.ts`))), unit, unit.exports);
+ return unit.exports;
+}
 const sync=load("lib/template-editor/library-sync.ts"),model=load("lib/template-editor/model.ts");
 test("three-way merges preserve disjoint edits and copy divergent documents without sharing mutable data",()=>{
  const base={...structuredClone(model.EMPTY_LIBRARY),designs:[model.createBlankDesign("Original","portrait")]},mine=structuredClone(base),remote=structuredClone(base);

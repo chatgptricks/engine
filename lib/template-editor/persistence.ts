@@ -49,9 +49,15 @@ export async function getDocumentHistory(owner: string, documentId: string): Pro
   return record?.history?.[documentId] ?? [];
 }
 async function envelopeFor(current: LibraryEnvelope | null, library: EditorLibrary, operationId?: string): Promise<LibraryEnvelope> {
+  // Schema-2 clients from before the built-in catalog controls omit this
+  // collection in whole-library saves. Omission leaves current choices intact;
+  // explicit catalog decisions remain available to current clients.
+  const savedLibrary = library.builtInTemplateStates === undefined && current?.library.builtInTemplateStates !== undefined
+    ? {...library,builtInTemplateStates:structuredClone(current.library.builtInTemplateStates)}
+    : library;
   const history = structuredClone(current?.history ?? {}), now = Date.now();
   for (const before of current?.library.designs ?? []) {
-    const after = library.designs.find(item => item.id === before.id);
+    const after = savedLibrary.designs.find(item => item.id === before.id);
     if (sameContent(before, after)) continue;
     const entries = history[before.id] ?? [];
     // Preserve a baseline then a checkpoint at most every 30 seconds. Named
@@ -67,7 +73,7 @@ async function envelopeFor(current: LibraryEnvelope | null, library: EditorLibra
     history[id] = history[id].filter(entry => { budget += JSON.stringify(entry.document).length; return budget <= 20 * 1024 * 1024; });
     if (!history[id].length) delete history[id];
   }
-  const packed = await packAssets({library, history});
+  const packed = await packAssets({library:savedLibrary, history});
   return {...packed.value, revision: randomUUID(), assets: packed.assets, operations: [...new Set([...(current?.operations ?? []), ...(operationId ? [operationId] : [])])].slice(-100)};
 }
 async function writeFile(scope: string, envelope: LibraryEnvelope) {

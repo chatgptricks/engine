@@ -33,6 +33,7 @@ import {
 import { useEditorLibrary } from "@/lib/template-editor/use-library";
 import {RecoveryPanel} from "./recovery-panel";
 import {reconcileLibraries} from "@/lib/template-editor/library-sync";
+import {deleteLibraryTemplate, libraryTemplates, withImportedTemplateStates} from "@/lib/template-editor/template-catalog";
 import {LibraryTools, OrganizeDialog, LibraryTrash, DocumentVersions, libraryMatches, type LibraryFilters} from "./library-tools";
 import {consumeResearchTransfer} from "@/lib/template-editor/research-transfer";
 import { saveBlob } from "@/lib/template-editor/export";
@@ -113,7 +114,8 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
   const importRef = useRef<HTMLInputElement>(null);
   const permission = useRef(canEdit);
   useEffect(() => { permission.current = canEdit; }, [canEdit]);
-  const templates = [...BUILT_IN_TEMPLATES, ...library.templates].filter(item => !item.deletedAt);
+  const templates = libraryTemplates(library);
+  const heroTemplates = templates.slice(0, 3);
   const active = library.designs.find((d) => d.id === activeId && !d.deletedAt);
   const organized = organize ? (organize.kind === "design" ? library.designs : library.templates).find(item => item.id === organize.id) : null;
   const statusText = {
@@ -148,8 +150,9 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
     const field = kind === "design" ? "designs" : "templates";
     return setLibrary(current => ({...current, [field]: current[field].map(item => item.id === id ? {...item, ...metadata, ...(kind === "design" ? {updatedAt: new Date().toISOString()} : {})} : item)}));
   }
-  function addDocument(document: DesignDocument) {
+  function addDocument(document: DesignDocument, sourceTemplateId?: string) {
     return setLibrary((current) => {
+      if (sourceTemplateId && !libraryTemplates(current).some(template => template.id === sourceTemplateId)) throw new Error("This template was deleted. Restore it from Trash before using it.");
       if (current.designs.length >= 150) throw new Error("Your workspace has reached its 150-design limit.");
       return { ...current, designs: [document, ...current.designs] };
     });
@@ -162,7 +165,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
       ...p,
       canvas: sceneForPage(p, document.format),
     }));
-    const accepted = addDocument(document);
+    const accepted = addDocument(document, template.id);
     if (accepted !== false) setActiveId(document.id);
   }
   function openBlankDesign() {
@@ -171,9 +174,16 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
     const accepted = addDocument(document);
     if (accepted !== false) setActiveId(document.id);
   }
+  function openCarousel() {
+    const template = templates.find(item => item.pages.length > 1);
+    if (template) { openTemplate(template); return; }
+    if (!permission.current || library.designs.length >= 150) return;
+    const document = enableContinuousCarousel(createBlankDesign("Untitled carousel", "portrait"));
+    if (addDocument(document) !== false) setActiveId(document.id);
+  }
   function openTemplateEditor(template: DesignTemplate) {
     const draft = library.designs.find(
-      (d) => d.purpose === "template" && d.editingTemplateId === template.id,
+      (d) => d.purpose === "template" && d.editingTemplateId === template.id && !d.deletedAt,
     );
     if (draft) {
       setActiveId(draft.id);
@@ -181,7 +191,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
     }
     if (!permission.current || library.designs.length >= 150) return;
     const document = editTemplateDesign(template);
-    const accepted = addDocument(document);
+    const accepted = addDocument(document, template.id);
     if (accepted !== false) setActiveId(document.id);
   }
   async function importLibrary(event: ChangeEvent<HTMLInputElement>) {
@@ -238,7 +248,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
         if (!permission.current) throw new Error("This workspace is not currently editable.");
         if (current.designs.length + restoredDesigns.length > 150 || current.templates.length + restoredTemplates.length > 80 || libraryBrandKits(current).length + restoredKits.length > 20) throw new Error("This backup would exceed the workspace limit. Remove older items and try again.");
         if ((current.folders?.length ?? 0) + restoredFolders.length > 80) throw new Error("Import would exceed the 80-folder limit.");
-        return withBrandKits({ ...current, folders: [...(current.folders ?? []), ...restoredFolders], designs: [...restoredDesigns, ...current.designs], templates: [...current.templates, ...restoredTemplates] }, [...libraryBrandKits(current), ...restoredKits], kitIds.get(imported.activeBrandKitId) ?? restoredKits[0].id);
+        return withBrandKits({ ...withImportedTemplateStates(current, imported), folders: [...(current.folders ?? []), ...restoredFolders], designs: [...restoredDesigns, ...current.designs], templates: [...current.templates, ...restoredTemplates] }, [...libraryBrandKits(current), ...restoredKits], kitIds.get(imported.activeBrandKitId) ?? restoredKits[0].id);
       });
       if (accepted === false) return;
       setView("designs");
@@ -289,15 +299,17 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
       ] : []),
       { id: "duplicate", label: "Duplicate template", disabled: !canEdit || library.templates.length >= 80, onSelect: () => {
         if (!permission.current) return;
-        const copy = designAsTemplate(templatePreview(template), `${template.name.slice(0, 95)} copy`);
         const accepted = setLibrary((current) => {
           if (current.templates.length >= 80) throw new Error("Your workspace has reached its 80-template limit.");
+          const source = libraryTemplates(current).find(item => item.id === template.id);
+          if (!source) throw new Error("This template was deleted. Restore it from Trash before copying it.");
+          const copy = designAsTemplate(templatePreview(source), `${source.name.slice(0, 95)} copy`);
           return { ...current, templates: [copy, ...current.templates] };
         });
         if (accepted === false) return;
         setCategory("My templates"); setMessage("Template copied to My templates.");
       } },
-      ...(template.custom ? [{ id: "delete", label: "Delete template…", disabled: !canEdit, danger: true, separator: true, onSelect: () => { if (permission.current) setConfirm({ kind: "template" as const, id: template.id, name: template.name }); } }] : []),
+      { id: "delete", label: "Delete template…", disabled: !canEdit, danger: true, separator: true, onSelect: () => { if (permission.current) setConfirm({ kind: "template" as const, id: template.id, name: template.name }); } },
     ] };
   }
   const workspaceMenu: ContextMenuDefinition = { label: "Workspace", items: [
@@ -378,26 +390,28 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
           }
           onAddDesigns={(documents) => setLibrary(current => { if (current.designs.length + documents.length > 150) throw new Error("This batch would exceed the 150-design limit."); return {...current, designs: [...documents, ...current.designs]}; })}
           onSaveTemplate={(template) => {
-            const existingId =
-              active.purpose === "template"
-                ? active.editingTemplateId
-                : undefined;
+            const sourceId = active.purpose === "template" ? active.editingTemplateId : undefined;
+            const existingId = library.templates.find(item => item.id === sourceId && !item.deletedAt)?.id;
             if (
               library.templates.length >= 80 &&
               !library.templates.some((t) => t.id === existingId)
             )
               throw new Error("Your library has reached 80 custom templates.");
-            const accepted = setLibrary((current) => ({
-              ...current,
-              templates: [
-                { ...template, id: existingId ?? template.id },
-                ...current.templates.filter((t) => t.id !== existingId),
-              ],
-              designs:
-                active.purpose === "template"
-                  ? current.designs.filter((d) => d.id !== active.id)
-                  : current.designs,
-            }));
+            const accepted = setLibrary((current) => {
+              const currentSourceId = current.templates.find(item => item.id === sourceId && !item.deletedAt)?.id;
+              if (current.templates.length >= 80 && !currentSourceId) throw new Error("Your library has reached 80 custom templates.");
+              return {
+                ...current,
+                templates: [
+                  { ...template, id: currentSourceId ?? template.id },
+                  ...current.templates.filter((t) => t.id !== currentSourceId),
+                ],
+                designs:
+                  active.purpose === "template"
+                    ? current.designs.filter((d) => d.id !== active.id)
+                    : current.designs,
+              };
+            });
             if (accepted === false) throw new Error("This template could not be saved. Check the workspace save message.");
             if (active.purpose === "template") {
               setActiveId(null);
@@ -527,33 +541,18 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
                       </p>
                       <button
                         className="te-button te-primary"
-                        onClick={() => openTemplate(BUILT_IN_TEMPLATES[0])}
+                        onClick={openCarousel}
                         disabled={!canEdit || library.designs.length >= 150}
                       >
                         Create a carousel
                         <ArrowRightIcon size={16} />
                       </button>
                     </div>
-                    <div className="te-hero-art" aria-hidden>
-                      <div>
-                        <DesignPreview
-                          design={templatePreview(BUILT_IN_TEMPLATES[1])}
-                          page={BUILT_IN_TEMPLATES[1].pages[0]}
-                        />
-                      </div>
-                      <div>
-                        <DesignPreview
-                          design={templatePreview(BUILT_IN_TEMPLATES[0])}
-                          page={BUILT_IN_TEMPLATES[0].pages[0]}
-                        />
-                      </div>
-                      <div>
-                        <DesignPreview
-                          design={templatePreview(BUILT_IN_TEMPLATES[2])}
-                          page={BUILT_IN_TEMPLATES[2].pages[0]}
-                        />
-                      </div>
-                    </div>
+                    {heroTemplates.length > 0 && <div className="te-hero-art" aria-hidden>
+                      {heroTemplates.map(template => <div key={template.id}>
+                        <DesignPreview design={templatePreview(template)} page={template.pages[0]}/>
+                      </div>)}
+                    </div>}
                   </section>
                   <div className="te-section-heading">
                     <div>
@@ -678,9 +677,8 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
                               {template.description}
                             </span>
                           </button>
-                          {template.custom && (
-                            <div className="te-design-actions">
-                              <button
+                          <div className="te-design-actions">
+                              {template.custom && <button
                                 className="te-icon"
                                 title="Edit template"
                                 aria-label={`Edit ${template.name} template`}
@@ -690,7 +688,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
                                 onClick={() => openTemplateEditor(template)}
                               >
                                 <LayoutIcon />
-                              </button>
+                              </button>}
                               <button
                                 className="te-icon"
                                 title="Delete template"
@@ -706,8 +704,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
                               >
                                 <TrashIcon />
                               </button>
-                            </div>
-                          )}
+                          </div>
                         </LibraryCard>
                       ))}
                   </div>
@@ -1018,10 +1015,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
                         ...current,
                         designs: current.designs.map(d => d.id === confirm.id ? {...d, deletedAt: new Date().toISOString()} : d),
                       }
-                    : {
-                        ...current,
-                        templates: current.templates.map(t => t.id === confirm.id ? {...t, deletedAt: new Date().toISOString()} : t),
-                      },
+                    : deleteLibraryTemplate(current, confirm.id),
                 );
                 if (accepted === false) return;
                 setConfirm(null);

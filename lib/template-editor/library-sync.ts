@@ -1,4 +1,5 @@
-import type {EditorLibrary} from "./model";
+import {parseBuiltInTemplateState, type BuiltInTemplateState, type EditorLibrary} from "./model";
+import {latestBuiltInTemplateState} from "./template-catalog";
 export const ASSET_PREFIX = "engine-asset:";
 export function stableStringify(value: unknown): string | undefined {
   return JSON.stringify(value, (_key, child) => child && typeof child === "object" && !Array.isArray(child) ? Object.fromEntries(Object.keys(child).sort().map(key => [key, child[key]])) : child);
@@ -35,18 +36,20 @@ export function unpackAssets<T>(value: T, assets: Record<string, string>): T {
   }
   return visit(value) as T;
 }
-export type CollectionName = "designs" | "templates" | "brandKits" | "folders";
+export type CollectionName = "designs" | "templates" | "brandKits" | "folders" | "builtInTemplateStates";
 export interface LibraryChange {id: string; beforeHash: string; value: unknown | null}
 export interface LibraryPatch {version: 1; collections: Partial<Record<CollectionName, LibraryChange[]>>; settings: {key: string; beforeHash: string; value: unknown}[]}
 const equal = sameContent;
 export async function createLibraryPatch(base: EditorLibrary, next: EditorLibrary): Promise<LibraryPatch> {
   const collections: LibraryPatch["collections"] = {};
-  for (const name of ["designs", "templates", "brandKits", "folders"] as const) {
+  for (const name of ["designs", "templates", "brandKits", "folders", "builtInTemplateStates"] as const) {
+    if (name === "builtInTemplateStates" && next.builtInTemplateStates === undefined) continue;
     const previous = new Map((base[name] ?? []).map(item => [item.id, item]));
     const current = new Map((next[name] ?? []).map(item => [item.id, item]));
     const changes: LibraryChange[] = [];
     for (const id of new Set([...previous.keys(), ...current.keys()])) {
       const before = previous.get(id) ?? null, after = current.get(id) ?? null;
+      if (name === "builtInTemplateStates" && after === null) throw new Error("Restore built-in templates explicitly; their saved decisions cannot be removed.");
       if (!equal(before, after)) changes.push({id, beforeHash: await contentHash(before), value: after});
     }
     if (changes.length) collections[name] = changes;
@@ -65,7 +68,7 @@ export async function applyLibraryPatch(current: EditorLibrary, patch: LibraryPa
   if (!patch || patch.version !== 1 || !patch.collections || !Array.isArray(patch.settings)) throw new Error("Invalid document changes.");
   const result = structuredClone(current), conflicts: string[] = [];
   for (const [name, changes] of Object.entries(patch.collections)) {
-    if (!["designs", "templates", "brandKits", "folders"].includes(name) || !Array.isArray(changes) || changes.length > 250) throw new Error("Invalid collection changes.");
+    if (!["designs", "templates", "brandKits", "folders", "builtInTemplateStates"].includes(name) || !Array.isArray(changes) || changes.length > 250) throw new Error("Invalid collection changes.");
     const collection = name as CollectionName;
     const records = new Map<string, unknown>(((result[collection] ?? []) as {id: string}[]).map(item => [item.id, item]));
     const seen = new Set<string>();
@@ -73,6 +76,15 @@ export async function applyLibraryPatch(current: EditorLibrary, patch: LibraryPa
       if (!change || typeof change.id !== "string" || seen.has(change.id) || !/^[a-f0-9]{64}$/.test(change.beforeHash) || (change.value !== null && (typeof change.value !== "object" || !change.value || (change.value as {id?: string}).id !== change.id))) throw new Error("Invalid document change.");
       seen.add(change.id);
       const before = records.get(change.id) ?? null;
+      if (collection === "builtInTemplateStates") {
+        const incoming = parseBuiltInTemplateState(change.value);
+        if (!incoming || incoming.id !== change.id) throw new Error("Invalid built-in template change. Restore it explicitly instead of removing its saved decision.");
+        const saved = before === null ? undefined : parseBuiltInTemplateState(before);
+        if (before !== null && !saved) throw new Error("Invalid saved built-in template decision.");
+        const latest = latestBuiltInTemplateState(saved ?? undefined, incoming);
+        if (latest) records.set(change.id, structuredClone(latest));
+        continue;
+      }
       if (await contentHash(before) !== change.beforeHash && !equal(before, change.value)) { conflicts.push(change.id); continue; }
       if (change.value === null) records.delete(change.id); else records.set(change.id, change.value);
     }
@@ -102,13 +114,36 @@ export function reconcileLibraries(base: EditorLibrary, local: EditorLibrary, re
       if (equal(before, change) || equal(saved, change)) continue;
       if (equal(before, saved)) { if (change === null) server.delete(id); else server.set(id, change); }
       else if (change !== null) {
+        if (name === "templates") {
+          const changedTemplate = change as Record<string, unknown>, savedTemplate = saved as Record<string, unknown> | null;
+          const omitDeletion = (template: Record<string, unknown>) => { const copy = { ...template }; delete copy.deletedAt; return copy; };
+          if (typeof changedTemplate.deletedAt === "string" && savedTemplate && typeof savedTemplate.deletedAt === "string" && equal(omitDeletion(changedTemplate), omitDeletion(savedTemplate))) {
+            server.set(id, Date.parse(changedTemplate.deletedAt) > Date.parse(savedTemplate.deletedAt) ? changedTemplate : savedTemplate);
+            continue;
+          }
+        }
         const copy = structuredClone(change) as Record<string, unknown>; copy.id = crypto.randomUUID(); copy.name = `${String(copy.name).slice(0, name === "folders" || name === "brandKits" ? 80 : 175)} (conflict copy)`; delete copy.deletedAt;
         if (name === "designs") { delete copy.reviewLinks; delete copy.editingTemplateId; delete copy.purpose; copy.updatedAt = new Date().toISOString(); }
-        if (name === "templates") copy.custom = true;
+        if (name === "templates") {
+          copy.custom = true;
+          const deletedAt = (change as Record<string, unknown>).deletedAt ?? (saved as Record<string, unknown> | null)?.deletedAt ?? (saved === null && before !== null ? (before as Record<string, unknown>).deletedAt ?? new Date().toISOString() : undefined);
+          if (typeof deletedAt === "string") copy.deletedAt = deletedAt;
+        }
         server.set(String(copy.id), copy); copies++;
       }
     }
     (result as unknown as Record<string, unknown>)[name] = [...server.values()];
+  }
+  if (base.builtInTemplateStates !== undefined || local.builtInTemplateStates !== undefined || remote.builtInTemplateStates !== undefined) {
+    const states = new Map<string, BuiltInTemplateState>();
+    // Missing rows are older-client omissions, never permission to reseed a template.
+    for (const source of [base.builtInTemplateStates, remote.builtInTemplateStates, local.builtInTemplateStates]) for (const candidate of source ?? []) {
+      const state = parseBuiltInTemplateState(candidate);
+      if (!state) throw new Error("Invalid built-in template decision.");
+      const latest = latestBuiltInTemplateState(states.get(state.id), state);
+      if (latest) states.set(state.id, structuredClone(latest));
+    }
+    result.builtInTemplateStates = [...states.values()];
   }
   for (const key of ["activeBrandKitId"] as const) if (!equal(local[key], base[key]) && equal(remote[key], base[key])) (result as unknown as Record<string, unknown>)[key] = structuredClone(local[key]);
   const kit = result.brandKits.find(item => item.id === result.activeBrandKitId) ?? result.brandKits[0];
