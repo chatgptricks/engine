@@ -2,7 +2,7 @@ import {createHash, randomUUID} from "node:crypto";
 import {promises as fs} from "node:fs";
 import os from "node:os";
 import path from "node:path";
-type Kind = "template-editor" | "template-editor-reviews" | "template-editor-media";
+type Kind = "template-editor" | "template-editor-reviews" | "template-editor-media" | "template-editor-presence";
 /** Runtime data lives outside the source tree so Turbopack cannot treat saves
  * as module dependency changes. Each checkout has its own private namespace. */
 export function developmentDirectory(kind: Kind): string {

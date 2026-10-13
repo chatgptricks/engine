@@ -2,6 +2,7 @@
 
 import {ENGINE_CLIPBOARD_TYPE,encodeElementClipboard,decodeElementClipboard,plainClipboardText} from "@/lib/template-editor/clipboard";
 import type {ElementSnapshot} from "@/lib/template-editor/commands";
+import {useDocumentPresence} from "@/lib/template-editor/use-presence";
 import {PageAccessibilitySection} from "./page-accessibility";
 import {prepareRasterAsset} from "@/lib/template-editor/client-media";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
@@ -83,6 +84,7 @@ type Tab =
   | "page"
   | "view";
 type Props = {
+  workspaceScope?: string;
   design: DesignDocument;
   templates: DesignTemplate[];
   brand: BrandKit;
@@ -100,6 +102,7 @@ type Props = {
 };
 
 export function DesignEditor({
+  workspaceScope,
   design: initial,
   templates,
   brand,
@@ -116,6 +119,7 @@ export function DesignEditor({
   onAddDesigns,
 }: Props) {
   const { openMenu } = useContextMenu();
+  const otherEditors=useDocumentPresence(initial.id,workspaceScope,canEdit);
   const [editingRequest, setEditingRequest] = useState<{id: string; serial: number}>();
   const [renameLayer, setRenameLayer] = useState<{id: string; name: string} | null>(null);
   const [design, setDesign] = useState<DesignDocument>(initial);
@@ -1003,7 +1007,7 @@ export function DesignEditor({
           />
           <span role="status">
             {isTemplateDraft ? "Template draft · " : ""}
-            {saveStatus}
+            {saveStatus}{otherEditors>0&&<span className="te-presence-label" title={`This project is also active in ${otherEditors} other tab${otherEditors===1?"":"s"} or device${otherEditors===1?"":"s"}.`}> · Also open elsewhere{otherEditors>1?` (${otherEditors})`:""}</span>}
           </span>
         </div>
         <div className="te-history">

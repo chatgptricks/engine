@@ -363,6 +363,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
         </div>
       ) : active ? (
         <DesignEditor
+          workspaceScope={libraryScope}
           key={`${active.id}:${documentEpochs[active.id] ?? 0}`}
           design={active}
           templates={templates}

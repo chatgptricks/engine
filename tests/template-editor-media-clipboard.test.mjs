@@ -119,3 +119,35 @@ test('explicit public descriptions survive the library parser with bounded text 
   page.readingOrder=['photo','photo'];assert.equal(model.parseLibrary(library),null);
   page.readingOrder=['photo'];page.publicDescription='x'.repeat(5001);assert.equal(model.parseLibrary(library),null);
 });
+test('presence expires inactive sessions and a delayed heartbeat cannot resurrect a closed tab',()=>{
+  const presence=load('lib/template-editor/presence.ts',{'@/lib/supabase/admin':{getAdminSupabase:()=>null},'./development-storage':{}});
+  const now=100_000;
+  const active=presence.updatePresenceSessions([{id:'expired',documentId:'design',seenAt:1},{id:'other',documentId:'design',seenAt:99_000,sequence:1}],'tab','design',false,now,1);
+  assert.deepEqual(active.map(item=>item.id),['other','tab']);
+  const closed=presence.updatePresenceSessions(active,'tab','design',true,now+1,3);
+  assert.equal(closed.find(item=>item.id==='tab').left,true);
+  const delayed=presence.updatePresenceSessions(closed,'tab','design',false,now+2,2);
+  assert.equal(delayed.find(item=>item.id==='tab').left,true);
+  assert.equal(presence.updatePresenceSessions(delayed,'new','design',false,now+presence.PRESENCE_TTL+3,1).length,1);
+});
+test('presence tracks active editors independently per owner and document, including concurrent tabs',async t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'engine-presence-test-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const presence=load('lib/template-editor/presence.ts',{'@/lib/supabase/admin':{getAdminSupabase:()=>null},'./development-storage':{developmentDirectory:()=>directory,readDevelopmentRecord:async(_kind,name,decode)=>{try{return decode(JSON.parse(await fs.promises.readFile(path.join(directory,name),'utf8')));}catch(error){if(error.code==='ENOENT')return null;throw error;}}}});
+  assert.deepEqual(await Promise.all([presence.heartbeatPresence('owner','a','design'),presence.heartbeatPresence('owner','b','design')]),[0,1]);
+  assert.equal(await presence.heartbeatPresence('owner','a','design',false,2),1);
+  assert.equal(await presence.heartbeatPresence('someone-else','c','design'),0);
+  assert.equal(await presence.heartbeatPresence('owner','d','another-design'),0);
+  await presence.heartbeatPresence('owner','b','design',true,2);
+  assert.equal(await presence.heartbeatPresence('owner','a','design',false,3),0);
+});
+test('presence API checks authentication and workspace identity before recording a session',async()=>{
+  let access=null,calls=0;
+  const route=load('app/api/template-editor/presence/route.ts',{'@/lib/engine/member':{resolveEngineAccess:async()=>access},'@/lib/template-editor/persistence':{editorOwnerScope:()=> 'scope-a'},'@/lib/template-editor/presence':{heartbeatPresence:async(owner,id,documentId,leave,sequence)=>{calls++;assert.equal(owner,'owner');assert.equal(sequence,1);return 2;}}});
+  const input={sessionId:crypto.randomUUID(),documentId:'design',expectedScope:'scope-a',sequence:1};
+  const request=(body=input,origin='https://engine.test')=>new Request('https://engine.test/api/template-editor/presence',{method:'POST',headers:{origin,'content-type':'application/json'},body:JSON.stringify(body)});
+  assert.equal((await route.POST(request())).status,401);access={ownerKey:'owner'};
+  assert.equal((await route.POST(request({...input,expectedScope:'scope-b'}))).status,403);
+  assert.equal((await route.POST(request(input,'https://other.test'))).status,403);
+  assert.equal((await route.POST(request({...input,padding:'x'.repeat(5000)}))).status,413);
+  assert.equal(calls,0);const result=await route.POST(request());assert.equal((await result.json()).others,2);assert.equal(calls,1);
+});
