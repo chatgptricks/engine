@@ -16,7 +16,8 @@
       "change": "Private owner-scoped original image storage, original dimensions and exact bytes, lightweight rendering previews, original-resolution exports and portable ZIP backups with verified assets.",
       "verification": [
         "template-editor-media-clipboard.test.mjs: 6000x4000 exact-byte retention, transparency, owner isolation, bounded upload, selective ZIP restore and hash validation",
-        "Local browser upload: intrinsic 6000x4000, preview 1440x960"
+        "Local browser upload: intrinsic 6000x4000, preview 1440x960",
+        "Browser portable ZIP: selected design only, original SHA-256 asset restored byte-for-byte; lossless export rendition bounds dimensions without changing stored original."
       ]
     },
     {
@@ -26,7 +27,7 @@
       "verification": [
         "template-editor-media-clipboard.test.mjs: safe reading sequence, master order, metadata bounds and parser retention",
         "Local browser: page description and reordering saved; Describe opens image properties; explicit public description is exposed as image alt",
-        "Public review integration is pending the reliability branch."
+        "Integrated local public review exposes authored page description, image alt and ordered reading content; snapshot strips private metadata values. Object-pinned feedback retains element ID and coordinates."
       ]
     }
   ]
