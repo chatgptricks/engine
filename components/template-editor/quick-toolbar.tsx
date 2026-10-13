@@ -29,6 +29,7 @@ type Props = {
   onCrop?: () => void;
   cropping?: boolean;
   onGroup?: () => void;
+  onMergeShapes?: () => void;
 };
 
 function ColorSwatch({ label, value, disabled, onChange }: { label: string; value?: string; disabled: boolean; onChange: (rgb: string) => void }) {
@@ -38,7 +39,7 @@ function ColorSwatch({ label, value, disabled, onChange }: { label: string; valu
   </label>;
 }
 
-export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, outputScale = 3 }: Props) {
+export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, outputScale = 3 }: Props) {
   const selected=scene.elements.filter(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element));
   const texts=selected.filter((element):element is TextElement=>element.type==="text");
   const shapes=selected.filter((element):element is ShapeElement=>element.type==="shape");
@@ -79,6 +80,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
       {onBackground&&<button type="button" aria-label="Edit page background" onClick={onBackground}>Background</button>}
     </>:<>
       <span className="te-quick-label">{label}</span>
+      {onMergeShapes&&allShapes&&selected.length>1&&<button type="button" aria-label="Merge shapes" title="Union: combine the selected shapes into one shape" disabled={disabled||selected.length!==selectedIds.length||!selected.every(element=>canEditElement(scene,element,"position")&&canEditElement(scene,element,"delete"))} onClick={onMergeShapes}>Merge shapes</button>}
       {allText&&<div className="te-quick-basics">
         <select aria-label="Quick font" disabled={disabledStyle} value={commonValue(texts,"font")??""} onChange={event=>patchText({font:event.target.value})}>
           {commonValue(texts,"font")===undefined&&<option value="" disabled>Mixed fonts</option>}
