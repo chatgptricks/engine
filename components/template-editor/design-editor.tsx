@@ -44,6 +44,10 @@ import { exportFrames, fileName, saveBlob, type ExportOptions } from "@/lib/temp
 import { updateColorRole, removeColorRole, resizeDesignDocument } from "@/lib/template-editor/advanced";
 import { LayoutPanel } from "./layout-panel";
 import { WorkflowPanel } from "./workflow-panel";
+import {WorkspaceResourcesPanel} from "./workspace-resources-panel";
+import {captureBrandImage,brandAssetPhoto} from "@/lib/template-editor/brand-assets";
+import {insertWorkspaceStyle,insertWorkspaceComponent,brandScene} from "@/lib/template-editor/library-workflows";
+import type {EditorLibrary,TextStyle,ReusableComponent} from "@/lib/template-editor/model";
 import { ExportDialog } from "./export-dialog";
 import { TemplateApplyDialog } from "./template-apply-dialog";
 import { TextTextureDialog } from "./text-texture-dialog";
@@ -88,6 +92,8 @@ type Tab =
 type Props = {
   workspaceScope?: string;
   design: DesignDocument;
+  workspaceLibrary?: EditorLibrary;
+  onWorkspaceChange?: (recipe:(library:EditorLibrary)=>EditorLibrary)=>boolean|void;
   templates: DesignTemplate[];
   brand: BrandKit;
   brandKits: SavedBrandKit[];
@@ -106,6 +112,8 @@ type Props = {
 export function DesignEditor({
   workspaceScope,
   design: initial,
+  workspaceLibrary,
+  onWorkspaceChange,
   templates,
   brand,
   brandKits,
@@ -573,10 +581,9 @@ export function DesignEditor({
       {id: "visibility", label: elements.some((element) => !element.hidden) ? "Hide layers" : "Show layers", disabled:disabled||!elements.some(e=>!isElementLocked(scene,e)), onSelect: () => applyCommand((live) => ({scene: {...live, elements: live.elements.map((element) => ids.includes(element.id)&&!isElementLocked(live,element) ? {...element, hidden: elements.some((item) => !item.hidden)} : element)}, selectedIds: ids, limited: false}))},
       ...(single ? [{id: "locate", label: "Find on workspace", onSelect: () => locateLayer(single)}] : []),
       ...(single ? [{id: "rename", label: "Rename layer", disabled: disabled || !canEditElement(scene,single,"content"), onSelect: () => setRenameLayer({id: single.id, name: single.name})}] : []),
-      ...(single?.type === "image" ? [{id:"save-brand", label:"Save image to brand kit", disabled:disabled || (brandKits.find((kit) => kit.id === activeBrandKitId)?.assets.length ?? 0) >= 40, onSelect:() => {
+      ...(single?.type === "image" ? [{id:"save-brand", label:"Save image to brand kit", disabled:disabled || (brandKits.find((kit) => kit.id === activeBrandKitId)?.assets.length ?? 0) >= 40, onSelect:async() => {
         if (blocked.current) return;
-        if (onSaveBrandAsset({id:crypto.randomUUID(),name:single.name,src:single.src,width:single.width,height:single.height,kind:"image"}, activeBrandKitId) === false) return;
-        setNotice("Image saved to your brand kit. Reuse it from the Brand tab.");
+        try {const asset=await captureBrandImage(single);if(blocked.current)return;if(onSaveBrandAsset(asset,activeBrandKitId)===false)return;setNotice("Original image saved to your brand kit.");}catch(reason){setNotice(reason instanceof Error?reason.message:"This image could not be saved.");}
       }}] : []),
       {id: "properties", label: "Show properties", onSelect: () => openInspector()},
       {id: "delete", label: "Delete", shortcut: "⌫", separator: true, danger: true, disabled: disabled || !deletable.length, onSelect: () => applyCommand((live) => removeSelection(live, ids))},
@@ -892,7 +899,7 @@ export function DesignEditor({
     const words = range?.elementId === element.id ? getTextWords(element).filter(word => word.end > range.start && word.start < range.end).map(word => word.index) : undefined;
     const scenes = [...current.current.pages.map(item => item.canvas ?? sceneForPage(item,current.current.format)),current.current.continuousCanvas,current.current.masterScene].filter((item):item is CanvasScene => Boolean(item));
     const photos:ShapeImageFill[] = scenes.flatMap(item => item.elements.flatMap(layer => layer.type === "image" ? [{src:layer.src,previewSrc:layer.previewSrc,alt:layer.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:layer.intrinsicWidth,intrinsicHeight:layer.intrinsicHeight,directive:layer.directive,rightsNote:layer.rightsNote,sourceUrl:layer.sourceUrl,provenance:layer.provenance}] : layer.type === "shape" && layer.imageFill ? [layer.imageFill] : layer.type === "text" ? activeTextTextures(layer) : []));
-    photos.push(...brandKits.flatMap(kit => kit.assets.map(asset => ({src:asset.src,alt:asset.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:asset.width,intrinsicHeight:asset.height}))));
+    photos.push(...brandKits.flatMap(kit => kit.assets.map(asset => ({...brandAssetPhoto(asset),objectFit:"cover" as const}))));
     photos.push(...["forest","dunes","coral","folds","orbits","sculpture"].map(name => ({src:`/template-editor/${name}.svg`,alt:`${name} artwork`,objectFit:"cover" as const,cropX:50,cropY:50})));
     setTextureTarget({element:structuredClone(element),context:editorTarget.current,words,photos,background:live.background});
     setEditingRequest(undefined);
@@ -910,8 +917,27 @@ export function DesignEditor({
     if (result.scene !== live && !changeScene(result.scene)) throw new Error("Could not save this texture. Please try again.");
     setNotice(texture ? words === "all" ? "Texture applied to all words." : `Texture applied to ${words.length} selected word${words.length === 1 ? "" : "s"}.` : "Texture removed. You can restore it with Undo.");
   }
+  function updateWorkspace(recipe:(library:EditorLibrary)=>EditorLibrary):boolean {
+    if(disabled||!onWorkspaceChange)return false;
+    let updated:DesignDocument|undefined;
+    const accepted=onWorkspaceChange(library=>{const next=recipe(library);updated=next.designs.find(item=>item.id===design.id);return next;});
+    if(accepted===false)return false;
+    if(updated&&JSON.stringify(updated)!==JSON.stringify(design))return commit(live=>applyDesignPatch(design,updated!,live));
+    return true;
+  }
+  function insertSavedWorkspaceStyle(style:TextStyle,linked:boolean):boolean {
+    if(disabled)return false;
+    return commit(live=>{const content=editingMaster?live.masterScene??scene:live.continuousCanvas??live.pages.find(item=>item.id===page.id)?.canvas??scene;return insertWorkspaceStyle(live,content,selected,page.id,style,linked,editingMaster);});
+  }
+  function insertSavedWorkspaceComponent(component:ReusableComponent,linked:boolean):boolean {
+    if(disabled)return false;
+    let inserted:string[]=[];
+    const accepted=commit(live=>{const content=editingMaster?live.masterScene??scene:live.continuousCanvas??live.pages.find(item=>item.id===page.id)?.canvas??scene;const result=insertWorkspaceComponent(live,content,page.id,component,linked,editingMaster,isolatedGroupId??undefined);inserted=result.selectedIds;
+      return result.design;});
+    if(accepted)setSelected(inserted);return accepted;
+  }
   function applyBrand(all = true) {
-    const update = (content: CanvasScene): CanvasScene => ({...content,background: brand.background, elements: content.elements.map((element) => element.type === "text" && canEditElement(content,element,'style') ? {...element, font: brand.font, color: brand.text,textStyleId:undefined,colorRoleId:undefined} : element)});
+    const update = (content: CanvasScene): CanvasScene => brandScene(content,brand);
     if (isolatedGroupId) {
       if (changeScene(update(scene))) setNotice(`Applied ${brand.name || "your brand"} inside this group.`);
       return;
@@ -1273,7 +1299,7 @@ export function DesignEditor({
                 const ratio = Math.min(280 / asset.width, (canvasHeight * .65) / asset.height);
                 const width = Math.max(1, asset.width * ratio);
                 const height = Math.max(1, asset.height * ratio);
-                addElement(createCanvasElement("image", {name:asset.name, src:asset.src, fit:"contain", x:(continuous ? index * FRAME_WIDTH : 0)+(FRAME_WIDTH-width)/2, y:(canvasHeight-height)/2, width,height}));
+                addElement({...createCanvasElement("image", {name:asset.name, src:asset.src, fit:"contain", x:(continuous ? index * FRAME_WIDTH : 0)+(FRAME_WIDTH-width)/2, y:(canvasHeight-height)/2, width,height}),...brandAssetPhoto(asset),fit:"contain"});
               }} />}
             {tab === "layers" && <LayersPanel scene={scene} selectedIds={selected} width={canvasWidth} height={canvasHeight} disabled={disabled}
               isolatedGroupId={isolatedGroupId??undefined} onEnterGroup={enterGroup} onExitGroup={()=>setIsolatedGroupId(null)}
@@ -1621,7 +1647,7 @@ export function DesignEditor({
         if(!currentTemplates.current.some(template=>template.id===applyingTemplate.id&&!template.deletedAt))throw new Error("This template was deleted. Restore it from Trash before applying it.");
         return commit(live=>applyDesignPatch(design,next,live));
       }} onChangeScene={changeScene} onClose={()=>setApplyingTemplateId(null)}/>}
-      {workflowOpen&&<WorkflowPanel initialTab={workflowTab} design={design} scene={scene} selected={selected} pageId={page.id} disabled={disabled} onChange={next=>commit(live=>applyDesignPatch(design,next,live))} onSceneChange={changeScene} onSelect={setSelected} onAddDesigns={onAddDesigns} canShare={saveStatus.startsWith("Saved")} onMakeMaster={()=>{const promotable=selected.filter(id=>{const element=scene.elements.find(e=>e.id===id);return element&&canEditElement(scene,element,'position')&&canEditElement(scene,element,'delete');});if(!promotable.length)return;if(changeScene({...scene,elements:scene.elements.map(e=>promotable.includes(e.id)?{...e,master:true}:e)})){setSelected([]);setIsolatedGroupId(null);setWorkflowOpen(false);setEditingMaster(true);}}} onEditMaster={()=>{setEditingMaster(true);setIsolatedGroupId(null);setSelected([]);setWorkflowOpen(false);}} onClose={()=>setWorkflowOpen(false)}/>}
+      {workflowOpen&&<WorkflowPanel workspaceResources={workspaceLibrary&&onWorkspaceChange?<WorkspaceResourcesPanel library={workspaceLibrary} disabled={disabled} design={design} scene={scene} selected={selected} onChange={updateWorkspace} onUseStyle={(style,linked)=>insertSavedWorkspaceStyle(style,linked)} onUseComponent={(component,linked)=>insertSavedWorkspaceComponent(component,linked)}/>:undefined} initialTab={workflowTab} design={design} scene={scene} selected={selected} pageId={page.id} disabled={disabled} onChange={next=>commit(live=>applyDesignPatch(design,next,live))} onSceneChange={changeScene} onSelect={setSelected} onAddDesigns={onAddDesigns} canShare={saveStatus.startsWith("Saved")} onMakeMaster={()=>{const promotable=selected.filter(id=>{const element=scene.elements.find(e=>e.id===id);return element&&canEditElement(scene,element,'position')&&canEditElement(scene,element,'delete');});if(!promotable.length)return;if(changeScene({...scene,elements:scene.elements.map(e=>promotable.includes(e.id)?{...e,master:true}:e)})){setSelected([]);setIsolatedGroupId(null);setWorkflowOpen(false);setEditingMaster(true);}}} onEditMaster={()=>{setEditingMaster(true);setIsolatedGroupId(null);setSelected([]);setWorkflowOpen(false);}} onClose={()=>setWorkflowOpen(false)}/>}
       {exportDialog&&<ExportDialog design={design} pageId={page.id} disabled={disabled} issues={preflightIssues} onClose={()=>setExportDialog(false)} onExport={(options,pageIds)=>{setExportDialog(false);setJob({design:structuredClone(design),options,pageIds});}}/>}
       {job&&<button className="te-button te-export-cancel" onClick={()=>exportAbort.current?.abort()}>Cancel export · {progress}%</button>}
       {renameLayer && <Modal title="Rename layer" onClose={() => setRenameLayer(null)}>

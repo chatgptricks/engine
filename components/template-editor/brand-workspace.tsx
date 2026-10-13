@@ -7,24 +7,18 @@ import { proxied } from "@/lib/engine/util";
 import { ColorField, FontSelect, Modal } from "./controls";
 import { useContextMenu, type ContextMenuDefinition } from "./context-menu";
 import "./brand-workspace.css";
+import { prepareRasterAsset } from "@/lib/template-editor/client-media";
+import { prepareVectorBrandAsset } from "@/lib/template-editor/brand-assets";
+import { organizeBrandAsset } from "@/lib/template-editor/library-workflows";
 
-/** Rasterize uploads at a reusable size. The transparent canvas preserves PNG alpha. */
+/** Preserve raster originals privately and keep supported logos as passive vectors. */
 export async function prepareBrandAsset(file: File, kind: BrandAsset["kind"]): Promise<BrandAsset> {
-  if (!["image/jpeg", "image/png", "image/webp"].includes(file.type)) throw new Error("Choose a JPG, PNG, or WebP file.");
-  if (file.size > 15 * 1024 * 1024) throw new Error("Choose an image smaller than 15 MB.");
-  const bitmap = await createImageBitmap(file);
-  try {
-    const scale = Math.min(1, 1800 / Math.max(bitmap.width, bitmap.height));
-    const canvas = document.createElement("canvas");
-    canvas.width = Math.max(1, Math.round(bitmap.width * scale));
-    canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-    const context = canvas.getContext("2d");
-    if (!context) throw new Error("Image processing is unavailable in this browser.");
-    context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-    const src = canvas.toDataURL("image/webp", .88);
-    if (src.length > 2_000_000) throw new Error("This image is too large after processing. Choose a smaller image.");
-    return { id: crypto.randomUUID(), name: file.name.slice(0, 200), src, width: canvas.width, height: canvas.height, kind };
-  } finally { bitmap.close(); }
+  if (file.type === "image/svg+xml" || file.name.toLowerCase().endsWith(".svg")) {
+    if (file.size > 1_000_000) throw new Error("Choose an SVG smaller than 1 MB.");
+    return prepareVectorBrandAsset(await file.text(), file.name, kind);
+  }
+  const asset = await prepareRasterAsset(file);
+  return { id: crypto.randomUUID(), name: file.name.slice(0, 200), src: asset.src, previewSrc: asset.previewSrc, width: asset.width, height: asset.height, kind };
 }
 
 type Props = { library: EditorLibrary; canEdit: boolean; onChange: (update: (library: EditorLibrary) => EditorLibrary) => boolean | void };
@@ -44,6 +38,12 @@ export function BrandWorkspace({ library, canEdit, onChange }: Props) {
   const [nameDialog, setNameDialog] = useState<{ kind: "new" | "kit" | "asset"; name: string; kitId?: string; assetId?: string } | null>(null);
   const [remove, setRemove] = useState<{ kind: "kit" | "asset"; name: string; kitId: string; assetId?: string } | null>(null);
   const [assetFilter, setAssetFilter] = useState<"all" | BrandAsset["kind"]>("all");
+  const [assetSearch, setAssetSearch] = useState("");
+  const [allKits, setAllKits] = useState(false);
+  const [variantFilter,setVariantFilter]=useState<"all"|NonNullable<BrandAsset["variant"]>>("all");
+  const [favoritesOnly, setFavoritesOnly] = useState(false);
+  const [assetEdit, setAssetEdit] = useState<{kitId:string;assetId:string;tags:string;favorite:boolean;variant:NonNullable<BrandAsset["variant"]>;destination:string;copy:boolean}|null>(null);
+  const assetResults = (allKits ? kits : [kit]).flatMap(owner => owner.assets.map(asset => ({owner,asset}))).filter(({asset}) => (assetFilter === "all" || asset.kind === assetFilter) && (variantFilter==="all"||(asset.variant??"universal")===variantFilter) && (!favoritesOnly || asset.favorite) && `${asset.name} ${(asset.tags ?? []).join(" ")}`.toLowerCase().includes(assetSearch.trim().toLowerCase()));
   const [newColor, setNewColor] = useState("#8c79e8");
 
   function updateKit(id: string, change: (kit: SavedBrandKit) => SavedBrandKit) {
@@ -69,11 +69,13 @@ export function BrandWorkspace({ library, canEdit, onChange }: Props) {
       { id: "delete", label: "Delete kit…", disabled: !canEdit || kits.length <= 1, separator: true, danger: true, onSelect: () => setRemove({ kind: "kit", kitId: item.id, name: item.name }) },
     ] };
   }
-  function assetMenu(asset: BrandAsset): ContextMenuDefinition {
+  function assetMenu(asset: BrandAsset, ownerId = kit.id): ContextMenuDefinition {
     return { label: asset.name, items: [
-      { id: "rename", label: "Rename asset", disabled: !canEdit, onSelect: () => setNameDialog({ kind: "asset", kitId: kit.id, assetId: asset.id, name: asset.name }) },
-      { id: "kind", label: asset.kind === "logo" ? "Move to images" : "Move to logos", disabled: !canEdit, onSelect: () => updateKit(kit.id, (current) => ({ ...current, assets: current.assets.map((item) => item.id === asset.id ? { ...item, kind: item.kind === "logo" ? "image" : "logo" } : item) })) },
-      { id: "delete", label: "Delete asset…", disabled: !canEdit, danger: true, separator: true, onSelect: () => setRemove({ kind: "asset", kitId: kit.id, assetId: asset.id, name: asset.name }) },
+      { id: "rename", label: "Rename asset", disabled: !canEdit, onSelect: () => setNameDialog({ kind: "asset", kitId: ownerId, assetId: asset.id, name: asset.name }) },
+      { id: "favorite", label: asset.favorite ? "Remove favorite" : "Favorite asset", disabled: !canEdit, onSelect: () => updateKit(ownerId, current => ({...current, assets: current.assets.map(item => item.id === asset.id ? {...item, favorite: !item.favorite} : item)})) },
+      { id: "organize", label: "Tags, variants & move/copy…", disabled: !canEdit, onSelect: () => setAssetEdit({kitId:ownerId,assetId:asset.id,tags:(asset.tags ?? []).join(", "),favorite:Boolean(asset.favorite),variant:asset.variant ?? "universal",destination:ownerId,copy:false}) },
+      { id: "kind", label: asset.kind === "logo" ? "Move to images" : "Move to logos", disabled: !canEdit, onSelect: () => updateKit(ownerId, (current) => ({ ...current, assets: current.assets.map((item) => item.id === asset.id ? { ...item, kind: item.kind === "logo" ? "image" : "logo" } : item) })) },
+      { id: "delete", label: "Delete asset…", disabled: !canEdit, danger: true, separator: true, onSelect: () => setRemove({ kind: "asset", kitId: ownerId, assetId: asset.id, name: asset.name }) },
     ] };
   }
   function chooseUpload(kind: BrandAsset["kind"]) {
@@ -149,8 +151,7 @@ export function BrandWorkspace({ library, canEdit, onChange }: Props) {
           <div className="te-brand-palette-heading"><h3>Palette</h3><span>{kit.palette.length}/20</span></div>
           <div className="te-brand-palette">
             {kit.palette.map((color, index) => <div className="te-brand-color" key={`${index}-${color}`}>
-              <label><span className="te-sr-only">Palette color {index + 1}</span><input type="color" value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#ffffff"} onChange={(event) => updateKit(kit.id, (item) => ({ ...item, palette: item.palette.map((value, i) => i === index ? event.target.value : value) }))} /></label>
-              <code>{color.toUpperCase()}</code>
+              <ColorField label={`Palette color ${index + 1}`} value={color} onChange={value => updateKit(kit.id, item => ({...item, palette:item.palette.map((previous,i) => i === index ? value : previous)}))} />
               <button type="button" className="te-icon" aria-label={`Remove palette color ${index + 1}`} onClick={() => updateKit(kit.id, (item) => ({ ...item, palette: item.palette.filter((_, i) => i !== index) }))}>×</button>
             </div>)}
           </div>
@@ -161,22 +162,32 @@ export function BrandWorkspace({ library, canEdit, onChange }: Props) {
       <section className="te-brand-assets">
         <div className="te-brand-panel-title"><div><h2>Logos & brand elements</h2><p>Add them to any post from the editor’s Brand panel.</p></div><span>{kit.assets.length}/40</span></div>
         <div className="te-brand-upload-actions"><button className="te-button" disabled={!canEdit || uploading || kit.assets.length >= 40} onClick={() => chooseUpload("logo")}><LayoutIcon />{uploading ? "Processing…" : "Upload logos"}</button><button className="te-button" disabled={!canEdit || uploading || kit.assets.length >= 40} onClick={() => chooseUpload("image")}><ImageIcon />Upload images</button></div>
-        <input ref={fileRef} type="file" hidden multiple accept="image/png,image/jpeg,image/webp" onChange={upload} />
-        <p className="te-brand-upload-help">PNG, JPG, or WebP · up to 15 MB each · transparency preserved</p>
+        <input ref={fileRef} type="file" hidden multiple accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg" onChange={upload} />
+        <p className="te-brand-upload-help">PNG, JPG, WebP · original quality · SVG logos up to 1 MB</p>
+        <div className="te-brand-asset-search"><input aria-label="Search brand assets" placeholder="Search names or tags" value={assetSearch} onChange={event=>setAssetSearch(event.target.value)}/><label><input type="checkbox" checked={allKits} onChange={event=>setAllKits(event.target.checked)}/>All kits</label><label><input type="checkbox" checked={favoritesOnly} onChange={event=>setFavoritesOnly(event.target.checked)}/>Favorites</label><label>Variant<select value={variantFilter} onChange={event=>setVariantFilter(event.target.value as typeof variantFilter)}><option value="all">All variants</option><option value="universal">Universal</option><option value="light">For light backgrounds</option><option value="dark">For dark backgrounds</option></select></label></div>
         <div className="te-brand-asset-filters" role="group" aria-label="Asset type">{(["all", "logo", "image"] as const).map((filter) => <button key={filter} className={assetFilter === filter ? "is-active" : ""} aria-pressed={assetFilter === filter} onClick={() => setAssetFilter(filter)}>{filter === "all" ? "All assets" : filter === "logo" ? "Logos" : "Images"}</button>)}</div>
         <div className="te-brand-asset-grid">
-          {kit.assets.filter((asset) => assetFilter === "all" || asset.kind === assetFilter).map((asset) => <article className="te-brand-asset-card" key={asset.id} onContextMenu={(event) => openMenu(event, assetMenu(asset))}>
+          {assetResults.map(({asset,owner}) => <article className="te-brand-asset-card" key={`${owner.id}:${asset.id}`} onContextMenu={(event) => openMenu(event, assetMenu(asset,owner.id))}>
             <div className="te-brand-asset-art">
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={proxied(asset.src)} alt={asset.name} />
-              <button className="te-card-menu" aria-haspopup="menu" aria-label={`Actions for ${asset.name}`} onClick={(event) => openMenu(event, assetMenu(asset))}>⋯</button>
+              <img src={proxied(asset.previewSrc ?? asset.src)} alt={asset.name} loading="lazy" />
+              <button className="te-card-menu" aria-haspopup="menu" aria-label={`Actions for ${asset.name}`} onClick={(event) => openMenu(event, assetMenu(asset,owner.id))}>⋯</button>
             </div>
-            <strong title={asset.name}>{asset.name}</strong><span>{asset.kind === "logo" ? "Logo" : "Image"} · {asset.width} × {asset.height}</span>
+            <strong title={asset.name}>{asset.favorite ? "★ " : ""}{asset.name}</strong><span>{allKits ? `${owner.name} · ` : ""}{asset.variant && asset.variant !== "universal" ? `${asset.variant} · ` : ""}{asset.kind === "logo" ? "Logo" : "Image"} · {asset.width} × {asset.height}</span>
           </article>)}
         </div>
-        {!kit.assets.some((asset) => assetFilter === "all" || asset.kind === assetFilter) && <div className="te-brand-assets-empty"><ImageIcon size={32} /><h3>{kit.assets.length ? "No assets in this category" : "Keep your brand close"}</h3><p>Upload logos, product images, signatures, or decorative elements to reuse across your designs.</p></div>}
+        {!assetResults.length && <div className="te-brand-assets-empty"><ImageIcon size={32} /><h3>{kit.assets.length ? "No matching assets" : "Keep your brand close"}</h3><p>Upload logos, product images, signatures, or decorative elements to reuse across your designs.</p></div>}
       </section>
     </div>
+    {assetEdit && <Modal title="Organize brand asset" onClose={()=>setAssetEdit(null)}><form onSubmit={event=>{event.preventDefault();if(!canEdit)return;try{const accepted=onChange(current=>organizeBrandAsset(current,assetEdit.kitId,assetEdit.assetId,{tags:assetEdit.tags.split(",").map(tag=>tag.trim()).filter(Boolean),favorite:assetEdit.favorite,variant:assetEdit.variant},assetEdit.destination,assetEdit.copy));if(accepted===false){setNotice("This asset could not be saved. Check the workspace save message.");return;}{setAssetEdit(null);setNotice(assetEdit.copy?"Asset copied. Existing designs keep their own artwork.":"Asset updated. Existing designs keep their own artwork.");}}catch(error){setNotice(error instanceof Error?error.message:"This asset could not be updated.");}}}>
+      {notice&&<p role="status">{notice}</p>}
+      <label className="te-field">Tags<input value={assetEdit.tags} maxLength={800} onChange={event=>setAssetEdit({...assetEdit,tags:event.target.value})}/></label>
+      <label className="te-field">Logo variant<select value={assetEdit.variant} onChange={event=>setAssetEdit({...assetEdit,variant:event.target.value as typeof assetEdit.variant})}><option value="universal">Universal</option><option value="light">For light backgrounds</option><option value="dark">For dark backgrounds</option></select></label>
+      <label className="te-field">Destination kit<select value={assetEdit.destination} onChange={event=>setAssetEdit({...assetEdit,destination:event.target.value})}>{kits.map(owner=><option key={owner.id} value={owner.id}>{owner.name}</option>)}</select></label>
+      <label><input type="checkbox" checked={assetEdit.favorite} onChange={event=>setAssetEdit({...assetEdit,favorite:event.target.checked})}/>Favorite asset</label>
+      <label><input type="checkbox" checked={assetEdit.copy} onChange={event=>setAssetEdit({...assetEdit,copy:event.target.checked})}/>Create an independent copy</label>
+      <div className="te-modal-actions"><button type="button" className="te-button" onClick={()=>setAssetEdit(null)}>Cancel</button><button className="te-button te-primary" disabled={!canEdit}>Save asset</button></div>
+    </form></Modal>}
     {nameDialog && <Modal title={nameDialog.kind === "new" ? "Create a brand kit" : nameDialog.kind === "kit" ? "Rename brand kit" : "Rename asset"} onClose={() => setNameDialog(null)}>
       <form onSubmit={(event) => {
         event.preventDefault();

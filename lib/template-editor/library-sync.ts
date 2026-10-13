@@ -36,14 +36,14 @@ export function unpackAssets<T>(value: T, assets: Record<string, string>): T {
   }
   return visit(value) as T;
 }
-export type CollectionName = "designs" | "templates" | "brandKits" | "folders" | "builtInTemplateStates";
+export type CollectionName = "designs" | "templates" | "brandKits" | "folders" | "builtInTemplateStates" | "workspaceStyles" | "workspaceComponents";
 export interface LibraryChange {id: string; beforeHash: string; value: unknown | null}
 export interface LibraryPatch {version: 1; collections: Partial<Record<CollectionName, LibraryChange[]>>; settings: {key: string; beforeHash: string; value: unknown}[]}
 const equal = sameContent;
 export async function createLibraryPatch(base: EditorLibrary, next: EditorLibrary): Promise<LibraryPatch> {
   const collections: LibraryPatch["collections"] = {};
-  for (const name of ["designs", "templates", "brandKits", "folders", "builtInTemplateStates"] as const) {
-    if (name === "builtInTemplateStates" && next.builtInTemplateStates === undefined) continue;
+  for (const name of ["designs", "templates", "brandKits", "folders", "builtInTemplateStates", "workspaceStyles", "workspaceComponents"] as const) {
+    if ((name === "builtInTemplateStates" || name === "workspaceStyles" || name === "workspaceComponents") && next[name] === undefined) continue;
     const previous = new Map((base[name] ?? []).map(item => [item.id, item]));
     const current = new Map((next[name] ?? []).map(item => [item.id, item]));
     const changes: LibraryChange[] = [];
@@ -68,7 +68,7 @@ export async function applyLibraryPatch(current: EditorLibrary, patch: LibraryPa
   if (!patch || patch.version !== 1 || !patch.collections || !Array.isArray(patch.settings)) throw new Error("Invalid document changes.");
   const result = structuredClone(current), conflicts: string[] = [];
   for (const [name, changes] of Object.entries(patch.collections)) {
-    if (!["designs", "templates", "brandKits", "folders", "builtInTemplateStates"].includes(name) || !Array.isArray(changes) || changes.length > 250) throw new Error("Invalid collection changes.");
+    if (!["designs", "templates", "brandKits", "folders", "builtInTemplateStates", "workspaceStyles", "workspaceComponents"].includes(name) || !Array.isArray(changes) || changes.length > 250) throw new Error("Invalid collection changes.");
     const collection = name as CollectionName;
     const records = new Map<string, unknown>(((result[collection] ?? []) as {id: string}[]).map(item => [item.id, item]));
     const seen = new Set<string>();
@@ -105,7 +105,8 @@ export async function applyLibraryPatch(current: EditorLibrary, patch: LibraryPa
 /** Three-way merge: disjoint edits merge, divergent documents become independent copies. */
 export function reconcileLibraries(base: EditorLibrary, local: EditorLibrary, remote: EditorLibrary): {library: EditorLibrary; copies: number} {
   const result = structuredClone(remote); let copies = 0;
-  for (const name of ["designs", "templates", "brandKits", "folders"] as const) {
+  for (const name of ["designs", "templates", "brandKits", "folders", "workspaceStyles", "workspaceComponents"] as const) {
+    if ((name === "workspaceStyles" || name === "workspaceComponents") && local[name] === undefined) continue;
     const old = new Map<string, unknown>((base[name] ?? []).map(item => [item.id, item]));
     const server = new Map<string, unknown>((remote[name] ?? []).map(item => [item.id, item]));
     const mine = new Map<string, unknown>((local[name] ?? []).map(item => [item.id, item]));

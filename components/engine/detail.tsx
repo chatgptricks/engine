@@ -2,7 +2,7 @@
 
 import {useRouter} from "next/navigation";
 import { useCallback, useRef, useState } from "react";
-import {transferResearch} from "@/lib/template-editor/research-transfer";
+import {ResearchTransferDialog} from "@/components/template-editor/research-transfer-dialog";
 import { useEngine } from "@/lib/engine/store";
 import type { Story, StoryImage } from "@/lib/engine/types";
 import { alignmentLabel, postTypeLabel } from "@/lib/engine/post-types";
@@ -162,6 +162,7 @@ export function Detail({ story }: { story: Story }) {
   const shelved = Boolean(getCuration(story.id).shelved);
   const [view, setView] = useState<"gallery" | "instagram">("gallery");
   const [findingMore, setFindingMore] = useState(false);
+  const [transferOpen,setTransferOpen]=useState(false);
   const [moreNote, setMoreNote] = useState<string | null>(null);
   const [captionOpen, setCaptionOpen] = useState(readCaptionOpen);
   const [chatOpen, setChatOpen] = useState(readChatOpen);
@@ -465,10 +466,11 @@ export function Detail({ story }: { story: Story }) {
         </div>
       )}
 
+      {transferOpen&&<ResearchTransferDialog story={story} onClose={()=>setTransferOpen(false)} onTransferred={()=>{setTransferOpen(false);router.push("/admin/engine?from=research");}}/>}
       <Dock>
         {toggle}
         <DockDivider />
-        <button className="gf-btn gf-btn-icon" onClick={() => {try {transferResearch(story);router.push("/admin/engine?from=research");} catch (cause) {setMoreNote(cause instanceof Error ? cause.message : "Research could not be transferred.");}}}>Open in post editor</button>
+        <button className="gf-btn gf-btn-icon" onClick={()=>setTransferOpen(true)}>Open in post editor</button>
         {view === "gallery" && (
           <>
             <DockDivider />
