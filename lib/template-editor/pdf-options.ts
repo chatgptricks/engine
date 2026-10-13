@@ -8,9 +8,9 @@ export function pdfGeometry(canvasWidth:number,canvasHeight:number,options:PdfOp
  return{dpi,widthMm,trimWidth,trimHeight,bleed,marks,width:trimWidth+2*(bleed+marks),height:trimHeight+2*(bleed+marks),scale:trimWidth/360,rasterScale:trimWidth*dpi/72/360};
 }
 
-export function needsPdfRaster(elements:CanvasElement[],groups:unknown[]=[]):boolean{return groups.some(group=>typeof (group as {opacity?:number}).opacity==='number'&&(group as {opacity:number}).opacity!==1)||elements.some(element=>Boolean(element.shadow||element.blur||element.gradient?.type==='radial'||element.type==='shape'&&(element.opacity!==1||element.shape!=='rectangle'&&element.shape!=='ellipse'&&element.strokeWidth>0)||element.blendMode&&element.blendMode!=='normal'||element.type==='text'&&(element.gradient||element.richText||element.letterSpacing!==0||element.textureFill||element.wordTextures?.length||element.listStyle&&element.listStyle!=='none')));}
+export function needsPdfRaster(elements:CanvasElement[],groups:unknown[]=[]):boolean{return groups.some(group=>typeof (group as {opacity?:number}).opacity==='number'&&(group as {opacity:number}).opacity!==1)||elements.some(element=>Boolean(element.shadow||element.blur||element.gradient?.type==='radial'||element.type==='shape'&&(element.opacity!==1||element.shape!=='rectangle'&&element.shape!=='ellipse'&&element.strokeWidth>0)||element.blendMode&&element.blendMode!=='normal'||element.type==='text'&&(element.gradient||element.richText||/[^\u0000-\u024f\u2000-\u206f\u20a0-\u20cf]/u.test(element.text)||element.letterSpacing!==0||element.textureFill||element.wordTextures?.length||element.listStyle&&element.listStyle!=='none')));}
 
 export function photoRasterDimension(width:number,height:number,sourceWidth:number,sourceHeight:number,fit:string,zoom:number,scale:number):number{
  const ratio=(fit==='contain'?Math.min:Math.max)(width/sourceWidth,height/sourceHeight);
- return Math.min(16384,Math.max(1,Math.ceil(Math.max(sourceWidth,sourceHeight)*ratio*zoom*scale)));
+ return Math.min(8192,Math.max(1,Math.ceil(Math.max(sourceWidth,sourceHeight)*ratio*zoom*scale)));
 }

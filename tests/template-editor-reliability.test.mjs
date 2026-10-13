@@ -97,3 +97,26 @@ test('save worker hashes only the changed entities and serializes the retry body
 });
 
 test('typing preserves Retry-After backoff and does not restart an exhausted retry loop',()=>{const {autosaveDelay}=load('lib/template-editor/save-retry.ts');assert.equal(autosaveDelay(60000,false,1000),59000);assert.equal(autosaveDelay(0,false,1000),600);assert.equal(autosaveDelay(60000,true,1000),null);});
+
+test('private originals use output-aware renditions and remain unchanged in saved artwork',()=>{
+ const {prepareExportScene}=load('lib/template-editor/export-renditions.ts'),original='/api/template-editor/assets/'+'a'.repeat(64),image={...model.createCanvasElement('image'),src:original,previewSrc:'EDITOR_PREVIEW',width:360,height:450,intrinsicWidth:6000,intrinsicHeight:4000},scene={background:'#fff',elements:[image]},prepared=prepareExportScene(scene,3);
+ assert.equal(prepared.scene.elements[0].src,original+'?maxDimension=2025');assert.equal(prepared.scene.elements[0].previewSrc,'EDITOR_PREVIEW');assert.equal(scene.elements[0].src,original);assert.equal(prepared.pixels,2025*1350);
+});
+test('source image aggregate is checked before mounting export frames and counts a shared source once',()=>{
+ const {prepareExportScene}=load('lib/template-editor/export-renditions.ts'),image={...model.createCanvasElement('image'),width:360,height:450,intrinsicWidth:6000,intrinsicHeight:4000},elements=Array.from({length:30},(_,index)=>({...image,id:'image'+index,src:'/api/template-editor/assets/'+index.toString(16).padStart(64,'0')}));
+ assert.throws(()=>prepareExportScene({background:'#fff',elements},6),/64-megapixel/);assert.ok(prepareExportScene({background:'#fff',elements},1).pixels<64_000_000);
+ assert.equal(prepareExportScene({background:'#fff',elements:elements.map(image=>({...image,src:elements[0].src}))},6).pixels,4050*2700);
+});
+test('inactive texture resources and parked images do not block the source memory preflight',()=>{
+ const {assertDesignExportBudget}=load('lib/template-editor/export-renditions.ts'),design=doc(),text={...model.createCanvasElement('text'),wordTextures:[{id:'unused',src:'https://example.com/unknown.png',objectFit:'cover',cropX:50,cropY:50}]},parked={...model.createCanvasElement('image'),x:1000,src:'https://example.com/unknown.png'};
+ design.pages[0].canvas.elements=[text,parked];assert.doesNotThrow(()=>assertDesignExportBudget(design,{format:'png',scale:3},[design.pages[0].id]));
+});
+test('live owner feedback polling sends revisions, pauses hidden tabs and aborts after panel close',async()=>{
+ const {watchReviewFeedback}=load('lib/template-editor/review-feedback-poller.ts'),calls=[],updates=[];let visible=false;
+ const stop=watchReviewFeedback([{id:'review',token:'token'}],(id,comments)=>updates.push([id,comments]),message=>assert.fail(message),{interval:10,visible:()=>visible,fetcher:async url=>{calls.push(url);return Response.json(calls.length===1?{revision:'R1',comments:[{id:'C',text:'New comment'}]}:{revision:'R1',notModified:true});}});
+ await new Promise(resolve=>setTimeout(resolve,15));assert.equal(calls.length,0);visible=true;await new Promise(resolve=>setTimeout(resolve,25));stop();const count=calls.length;assert.equal(updates.length,1);assert.ok(calls.at(-1).includes('since=R1'));await new Promise(resolve=>setTimeout(resolve,20));assert.equal(calls.length,count);
+});
+test('closing an owner feedback panel discards its in-flight response',async()=>{
+ const {watchReviewFeedback}=load('lib/template-editor/review-feedback-poller.ts');let resolve,changed=0;
+ const stop=watchReviewFeedback([{id:'review',token:'token'}],()=>changed++,()=>{}, {visible:()=>true,fetcher:()=>new Promise(done=>{resolve=done;})});await new Promise(done=>setTimeout(done,5));stop();resolve(Response.json({revision:'R1',comments:[]}));await new Promise(done=>setTimeout(done,5));assert.equal(changed,0);
+});

@@ -101,7 +101,7 @@ export async function readOwnerReview(owner: string, token: string): Promise<Pub
 }
 
 export {listReviewLinks};
-export async function getReviewFeedback(token:string,since?:string){const record=await read(token);if(!record||record.revokedAt||Date.parse(record.expiresAt)<=Date.now()||record.inventoryId&&!await reviewIsActive(record.owner,record.inventoryId))return null;return{revision:record.revision,expiresAt:record.expiresAt,...(since===record.revision?{notModified:true}:{comments:record.comments})};}
+export async function getReviewFeedback(token:string,since?:string){const record=await readFeedback(token);if(!record||record.revokedAt||Date.parse(record.expiresAt)<=Date.now()||record.inventoryId&&!await reviewIsActive(record.owner,record.inventoryId))return null;return{revision:record.revision,expiresAt:record.expiresAt,...(since===record.revision?{notModified:true}:{comments:record.comments})};}
 export async function resolveReviewComment(owner:string,token:string,commentId:string,resolved:boolean):Promise<void>{await lock(async()=>{const record=await read(token);if(!record||record.owner!==owner)throw Error('Review not found.');if(!record.comments.some(comment=>comment.id===commentId))throw Error('Comment not found.');await write(token,{...record,revision:randomUUID(),comments:resolveThread(record.comments,commentId,resolved)},record.revision);});}
 
 export function resolveThread(comments:ReviewComment[],commentId:string,resolved:boolean):ReviewComment[]{
@@ -109,3 +109,15 @@ export function resolveThread(comments:ReviewComment[],commentId:string,resolved
  const root=(id:string)=>{const visited=new Set<string>();while(parents.get(id)&&!visited.has(id)){visited.add(id);id=parents.get(id)!;}return id;};
  const target=root(commentId);return comments.map(comment=>root(comment.id)===target?{...comment,resolved}:comment);
 }
+
+/** Poll only feedback columns: public snapshots/assets are immutable and do
+ * not need to cross the database/network boundary for each comment refresh. */
+async function readFeedback(token:string):Promise<Pick<ReviewRecord,'owner'|'revision'|'comments'|'expiresAt'|'revokedAt'|'inventoryId'>|null>{
+ if(!tokenValid(token))return null;const db=getAdminSupabase();if(!db)return read(token);
+ const{data,error}=await db.from('gf_client_state').select('owner:data->>owner,revision:data->>revision,comments:data->comments,expiresAt:data->>expiresAt,revokedAt:data->>revokedAt,inventoryId:data->>inventoryId').eq('owner',reviewKey(token)).maybeSingle();
+ if(error)throw Error('Feedback temporarily unavailable.');if(!data)return null;
+ const value=(data as unknown as {data?:unknown}).data??data,record=value as ReviewRecord;
+ if(typeof record.owner!=='string'||typeof record.revision!=='string'||!Array.isArray(record.comments)||record.comments.length>100||!Number.isFinite(Date.parse(record.expiresAt)))throw Error('Feedback could not be read.');
+ return{owner:record.owner,revision:record.revision,comments:record.comments,expiresAt:record.expiresAt,revokedAt:record.revokedAt,inventoryId:record.inventoryId};
+}
+export async function readOwnerFeedback(owner:string,token:string,since?:string){const record=await readFeedback(token);if(!record||record.owner!==owner)return null;return{revision:record.revision,...(since===record.revision?{notModified:true}:{comments:record.comments})};}

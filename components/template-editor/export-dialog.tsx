@@ -3,6 +3,7 @@ import {useState} from "react";
 import {Modal} from "./controls";
 import {formatDimensions,type DesignDocument} from "@/lib/template-editor/model";
 import {validateExportOptions,type ExportOptions} from "@/lib/template-editor/export";
+import {assertDesignExportBudget} from '@/lib/template-editor/export-renditions';
 import {pdfGeometry} from '@/lib/template-editor/pdf-options';
 import {preflightDesign,type PreflightIssue} from "@/lib/template-editor/preflight";
 import "./dialog-tools.css";
@@ -11,7 +12,7 @@ export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{d
   const size=formatDimensions(design),nativeScale=size.width/360;
   const recommendedScale=Math.min(nativeScale,Math.floor(360*Math.sqrt(40_000_000/(360*Math.ceil(360*size.height/size.width))))/360);
   const [format,setFormat]=useState<NonNullable<ExportOptions["format"]>>("png");
-  const [pdfMode,setPdfMode]=useState<'document'|'raster'>('document'),[dpi,setDpi]=useState(150),[widthMm,setWidthMm]=useState(size.width/96*25.4),[bleedMm,setBleedMm]=useState(0),[cropMarks,setCropMarks]=useState(false),[delivery,setDelivery]=useState<'archive'|'batches'>('archive'),[batchSize,setBatchSize]=useState(4);
+  const [pdfMode,setPdfMode]=useState<'document'|'raster'>('document'),[dpi,setDpi]=useState(150),[widthMm,setWidthMm]=useState(Math.min(2000,Math.max(10,size.width/96*25.4))),[bleedMm,setBleedMm]=useState(0),[cropMarks,setCropMarks]=useState(false),[delivery,setDelivery]=useState<'archive'|'batches'>('archive'),[batchSize,setBatchSize]=useState(4);
   const [scale,setScale]=useState(recommendedScale),[quality,setQuality]=useState(.92),[transparent,setTransparent]=useState(false);
   const [pages,setPages]=useState("all"),[range,setRange]=useState(String(Math.max(1,design.pages.findIndex(page=>page.id===pageId)+1))),[error,setError]=useState("");
   function selectedPages() {
@@ -40,6 +41,7 @@ export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{d
       validateExportOptions(options);
       if(format==='pdf')pdfGeometry(size.width,size.height,options);
       if(format!=='pdf'&&(Math.max(width,height)>16384||(format!=="svg"&&width*height>40_000_000)))throw new Error("This size is too large to download. Open advanced settings and choose a smaller size.");
+      assertDesignExportBudget(design,options,ids);
       onExport(options,ids);
     }catch(reason){setError(reason instanceof Error?reason.message:"Choose valid download settings.");}
   }

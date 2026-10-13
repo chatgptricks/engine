@@ -1,5 +1,5 @@
 import {resolveEngineAccess} from "@/lib/engine/member";
-import {addReviewComment,createReview,getPublicReview,getReviewFeedback,listReviewLinks,readOwnerReview,revokeReview,resolveReviewComment} from "@/lib/template-editor/reviews";
+import {addReviewComment,createReview,getPublicReview,getReviewFeedback,listReviewLinks,readOwnerReview,readOwnerFeedback,revokeReview,resolveReviewComment} from "@/lib/template-editor/reviews";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const headers = {"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow"};
@@ -20,6 +20,7 @@ async function body(request: Request): Promise<Record<string, unknown>> {
 export async function GET(request: Request) {
   const query = new URL(request.url).searchParams, token = query.get("token") ?? "";
   try {
+    if(query.get('owner')==='1'&&query.get('feedback')==='1'){const access=await resolveEngineAccess();if(!access)return reply({error:'Sign in to manage feedback.'},401);const feedback=await readOwnerFeedback(access.ownerKey,token,query.get('since')??undefined);return feedback?reply(feedback):reply({error:'Review not found.'},404);}
     if(query.get('feedback')==='1'){const feedback=await getReviewFeedback(token,query.get('since')??undefined);return feedback?reply(feedback):reply({error:'Review expired or revoked.'},404);}
     if(query.get('list')==='1'){const access=await resolveEngineAccess();if(!access)return reply({error:'Sign in to manage reviews.'},401);return reply({links:await listReviewLinks(access.ownerKey,query.get('documentId')??undefined)});}
     if (query.get("owner") === "1") { const access = await resolveEngineAccess(); if (!access) return reply({error: "Sign in to manage review feedback."}, 401); const review = await readOwnerReview(access.ownerKey, token); return review ? reply({review}) : reply({error: "Review not found."}, 404); }

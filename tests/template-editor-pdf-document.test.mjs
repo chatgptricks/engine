@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import ts from 'typescript';
+import {inflateSync} from 'node:zlib';
 import sharp from 'sharp';
 import {PDFDocument,PDFName,PDFDict,PDFArray} from 'pdf-lib';
 const root=fileURLToPath(new URL('..',import.meta.url)),native=createRequire(import.meta.url);
@@ -39,4 +40,13 @@ test('valid 48MP original image is downsampled for PDF instead of rejected',asyn
 });
 test('document export observes pre-aborted cancellation and rejects duplicate page IDs',async()=>{
  const design=basic(),controller=new AbortController();controller.abort(Error('Cancelled by test'));await assert.rejects(renderer().renderDocumentPdf(design,design.pages[0].id,{},'owner',undefined,controller.signal),/Cancelled/);await assert.rejects(renderer().renderDocumentPdf(design,[design.pages[0].id,design.pages[0].id],{},'owner'),/distinct/);
+});
+
+test('PDF clipping never removes an entire semantic line from a short text box',async()=>{
+ const design=basic();design.pages[0].canvas.elements=[{...model.createCanvasElement('text'),text:'History follows the edited page',x:10,y:10,width:200,height:22,fontSize:20,lineHeight:1,letterSpacing:0}];
+ for(const raster of [false,true]){
+  const snapshot=raster?'data:image/png;base64,'+(await sharp({create:{width:360,height:450,channels:4,background:'#fff'}}).png().toBuffer()).toString('base64'):undefined;
+  const bytes=await renderer().renderDocumentPdf(design,design.pages[0].id,{pdfMode:raster?'raster':'document'},'owner',snapshot),pdf=await PDFDocument.load(bytes),fonts=pdf.getPage(0).node.Resources().lookup(PDFName.of('Font'),PDFDict),font=fonts.lookup(fonts.keys()[0],PDFDict),unicode=font.lookup(PDFName.of('ToUnicode')),cmap=inflateSync(unicode.contents).toString();
+  for(const char of ['d','p','a','g'])assert.ok(cmap.includes(char.charCodeAt(0).toString(16).padStart(4,'0')),`${char} was clipped from ${raster?'raster':'vector'} text`);
+ }
 });
