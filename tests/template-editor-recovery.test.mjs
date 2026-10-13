@@ -1,6 +1,6 @@
-/* Real browser IndexedDB tests, with no application server or user profile.
- * Uses Playwright when available; set ENGINE_BROWSER_PATH for installed Chrome.
- * Normal environments without browser tooling report these checks as skipped. */
+/* Native IndexedDB tests on a blank loopback origin, with fresh browser contexts.
+ * No application UI, user profile, mock IndexedDB, or external requests are used.
+ * The strict acceptance command requires both the runner and a real browser. */
 import test, { before, after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -14,14 +14,27 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const require = createRequire(import.meta.url);
 let chromium;
 try { ({ chromium } = require("playwright")); } catch { /* Optional browser runner. */ }
-const browserTest = (name, run) => test(name, { skip: !chromium }, async () => {
+const explicitBrowser = process.env.ENGINE_BROWSER_PATH;
+const installedBrowsers = process.platform === "darwin"
+  ? ["/Applications/Google Chrome.app/Contents/MacOS/Google Chrome", "/Applications/Chromium.app/Contents/MacOS/Chromium"]
+  : process.platform === "win32"
+    ? [process.env.PROGRAMFILES, process.env["PROGRAMFILES(X86)"], process.env.LOCALAPPDATA].filter(Boolean).map(directory => path.join(directory, "Google/Chrome/Application/chrome.exe"))
+    : ["/usr/bin/google-chrome", "/usr/bin/chromium", "/usr/bin/chromium-browser"];
+const browserExecutable = explicitBrowser || [chromium?.executablePath(), ...installedBrowsers].find(filename => filename && fs.existsSync(filename));
+const available = Boolean(chromium && browserExecutable && fs.existsSync(browserExecutable));
+if ((process.env.ENGINE_REQUIRE_BROWSER === "1" || explicitBrowser) && !available) {
+  throw Error("Native IndexedDB acceptance requires Playwright and Chrome/Chromium. Run npm ci and set ENGINE_BROWSER_PATH to an installed browser, or install Playwright Chromium. This acceptance check cannot be skipped.");
+}
+const browserTest = (name, run) => test(name, { skip: !available, timeout: 20_000 }, async (t) => {
   const context = await browser.newContext();
+  const stop = () => void context.close().catch(() => undefined);
+  t.signal.addEventListener("abort", stop, {once: true});
   try {
     const page = await context.newPage();
     await page.goto(origin);
     await page.addScriptTag({ content: browserSource });
     await run(page);
-  } finally { await context.close(); }
+  } finally { t.signal.removeEventListener("abort", stop); await context.close(); }
 });
 
 const compile = (filename) => ts.transpileModule(fs.readFileSync(path.join(root, filename), "utf8"), {
@@ -44,8 +57,8 @@ const browserSource = `(() => {
     key, scope, stamp, updatedAt, revision: 'server-revision-before-edit',
     library: model.exports.withBrandKits(structuredClone(model.exports.EMPTY_LIBRARY), [{ ...model.exports.activeBrandKit(model.exports.EMPTY_LIBRARY), name: stamp }]),
   });
-  window.openTestDatabase = (name) => new Promise((resolve, reject) => {
-    const request = indexedDB.open(name, 1);
+  window.openTestDatabase = (name, version = 1) => new Promise((resolve, reject) => {
+    const request = indexedDB.open(name, version);
     request.onupgradeneeded = () => request.result.createObjectStore('drafts', { keyPath: 'key' }).createIndex('scope', 'scope');
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);
@@ -60,8 +73,8 @@ const browserSource = `(() => {
     if (!keepOpen) db.close();
     return db;
   };
-  window.readTestDrafts = async (name) => {
-    const db = await window.openTestDatabase(name);
+  window.readTestDrafts = async (name, version = 1) => {
+    const db = await window.openTestDatabase(name, version);
     try { return await new Promise((resolve, reject) => {
       const tx = db.transaction('drafts', 'readonly');
       const request = tx.objectStore('drafts').getAll();
@@ -72,11 +85,12 @@ const browserSource = `(() => {
 
 let server, browser, origin;
 before(async () => {
-  if (!chromium) return;
+  if (!available) return;
   server = http.createServer((_request, response) => response.end("<!doctype html><title>Engine recovery checks</title>"));
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   origin = `http://127.0.0.1:${server.address().port}`;
-  browser = await chromium.launch({ headless: true, executablePath: process.env.ENGINE_BROWSER_PATH || undefined });
+  browser = await chromium.launch({ headless: true, executablePath: browserExecutable });
+  console.info(`Recovery acceptance: Chrome/Chromium ${browser.version()}, native IndexedDB, isolated contexts.`);
 });
 after(async () => {
   await browser?.close();
@@ -261,4 +275,36 @@ browserTest("unsupported browser enumeration reports recovery migration failure 
   assert.equal(result.error.name, "RecoveryMigrationError");
   assert.match(result.error.message, /Update the browser/);
   assert.equal(result.source[0].stamp, "protected-edit");
+});
+
+browserTest("saved recovery baseline survives a reload with one deduplicated image in native IndexedDB", async page => {
+  await page.evaluate(async () => {
+    const image = {...editorModel.createCanvasElement("image"), src:"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wl6xV4AAAAASUVORK5CYII="};
+    const text = {...editorModel.createCanvasElement("text"), text:"Before edit"};
+    const document = editorModel.createBlankDesign("Recoverable design", "portrait");
+    document.pages[0].canvas.elements = [image,text];
+    const baseline = {...structuredClone(editorModel.EMPTY_LIBRARY), designs:[document]}, library = structuredClone(baseline);
+    library.designs[0].pages[0].canvas.elements[1].text = "After edit";
+    const draft = {...makeDraft("pending-edit",20), library, baseline};
+    await editorRecovery.saveRecoveryDraft(draft);
+  });
+  await page.reload();
+  await page.addScriptTag({content:browserSource});
+  const result=await page.evaluate(async()=>({recovered:(await editorRecovery.getRecoveryDrafts("workspace-owner"))[0],stored:(await readTestDrafts("engine-template-editor",2))[0]}));
+  assert.equal(result.recovered.library.designs[0].pages[0].canvas.elements[1].text,"After edit");
+  assert.equal(result.recovered.baseline.designs[0].pages[0].canvas.elements[1].text,"Before edit");
+  assert.equal(Object.keys(result.stored.recoveryAssets).length,1);
+  assert.match(result.stored.library.designs[0].pages[0].canvas.elements[0].src,/^engine-asset:[a-f0-9]{64}$/);
+  assert.equal(result.stored.library.designs[0].pages[0].canvas.elements[0].src,result.stored.baseline.designs[0].pages[0].canvas.elements[0].src);
+});
+
+browserTest("a corrupt baseline cannot masquerade as confirmed state while pending artwork remains recoverable",async page => {
+  const result = await page.evaluate(async()=>{
+    const draft = {...makeDraft("Valid pending artwork",20),baseline:{version:99,designs:[],templates:[]}};
+    await storeTestDrafts("engine-template-editor",[draft]);
+    return {recovered:(await editorRecovery.getRecoveryDrafts(draft.scope))[0],stored:(await readTestDrafts("engine-template-editor",2))[0]};
+  });
+  assert.equal(result.recovered.library.brand.name,"Valid pending artwork");
+  assert.equal(result.recovered.baseline,undefined);
+  assert.equal(result.stored.baseline.version,99);
 });

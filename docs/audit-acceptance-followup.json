@@ -1,0 +1,46 @@
+{
+  "scope": "Acceptance follow-up of the original 41 Engine audit recommendations",
+  "baselineCommit": "24036ff12c6b6e4a593eb31f563d06ea55bc5e00",
+  "inventory": {
+    "recommendations": 41,
+    "missingIds": [],
+    "duplicateIds": [],
+    "sources": ["audit-canvas-status.json", "audit-library-status.json", "audit-media-clipboard-status.json", "audit-reliability-status.json"]
+  },
+  "corrections": [
+    {
+      "recommendations": [30],
+      "behavior": "Page URLs and owner-scoped recent-page storage preserve the active carousel page across reload, project reopening and browser Back/Forward. Deleted pages fall back safely. Editor Undo restores its page and selection without adding browser history entries or document saves.",
+      "browserVerification": "Page 3 survives reload; Back/Forward switches between pages 3 and 2; Continue restores page 2; navigation does not enable Undo; deleting page 3 falls back to a valid page and Undo restores page 3; undoing a page-2 edit from page 3 restores page 2 and its selected shape."
+    },
+    {
+      "recommendations": [20],
+      "behavior": "Painting, pointer hit-testing and photo-frame targeting share the same order for interleaved and nested opacity groups.",
+      "verification": "Regression coverage compares rendered markup with hit-test and photo-drop order, including hidden, transparent, zero-opacity and isolated artwork."
+    },
+    {
+      "recommendations": [21, 24],
+      "behavior": "Pen and Hand do not expose or start selection transforms; changing tools cancels in-progress transformations. Select restores its controls and Nodes retains anchor editing.",
+      "browserVerification": "A selected Circle exposes zero resize/rotation controls in Pen and Hand and restores all nine controls in Select."
+    },
+    {
+      "recommendations": [15],
+      "behavior": "Valid pending artwork with a corrupt baseline remains explicitly recoverable, without treating the damaged baseline as confirmed state for automatic merging.",
+      "verification": "Native IndexedDB regression preserves the pending library, omits the invalid returned baseline and retains the stored original for recovery."
+    }
+  ],
+  "recoveryAcceptance": {
+    "command": "npm run test:template-editor:recovery",
+    "environment": "Real Chrome/Chromium IndexedDB on a blank loopback origin, fresh isolated contexts, no application UI or user browser profile",
+    "strict": "Fails when the browser or runner is missing; does not report skipped checks as success."
+  },
+  "integratedValidation": {
+    "testsPassed": 404,
+    "testsFailed": 0,
+    "testsSkipped": 0,
+    "nativeIndexedDBCases": 12,
+    "eslint": "passed",
+    "productionBuild": "passed",
+    "browser": "Page reload, gallery Continue, Back/Forward, deletion fallback, cross-page Undo and selection, and Select/Pen/Hand tool controls verified in the isolated local fixture."
+  }
+}

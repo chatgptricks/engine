@@ -125,13 +125,22 @@ Research uses `gpt-5.4` by default; chat and image review use `gpt-5.4-mini`. Ov
 
 ```sh
 npm run test:template-editor
+npm run test:template-editor:recovery
 npm run lint
 npm run build
 ```
 
-The template-editor tests use Node's built-in test runner and the installed TypeScript compiler. They load the real model and persistence modules; authentication and database boundaries are replaced with controlled fixtures. No API keys, live database, or additional test dependencies are required. Coverage includes independent design copies, template round trips, import validation, unsafe rich text, owner isolation, concurrent saves, API access, request limits, brand migrations and asset validation, and immutable selection commands with locked-layer protection. Additional checks cover entity merges, stable hashes across schema normalization, idempotent retries, owner-scope changes, legacy-client rejection, deduplicated assets and forged-hash rejection, durable checkpoints, PDF binary cross references, export option validation/cancellation, review privacy, revocation and protected image fetching.
+The template-editor tests use Node's built-in test runner and the installed TypeScript compiler. They load the real model and persistence modules; authentication and database boundaries are replaced with controlled fixtures. No API keys or live database are required. The browser storage checks use the installed Playwright development dependency and a real Chrome/Chromium executable. Coverage includes independent design copies, template round trips, import validation, unsafe rich text, owner isolation, concurrent saves, API access, request limits, brand migrations and asset validation, and immutable selection commands with locked-layer protection. Additional checks cover entity merges, stable hashes across schema normalization, idempotent retries, owner-scope changes, legacy-client rejection, deduplicated assets and forged-hash rejection, durable checkpoints, PDF binary cross references, export option validation/cancellation, review privacy, revocation and protected image fetching.
 
-Recovery migration checks use isolated browser contexts when Playwright is available. Set `ENGINE_BROWSER_PATH` to an installed Chromium executable if needed. Environments without browser tooling skip these additional checks.
+**Recovery acceptance** runs `npm run test:template-editor:recovery`. It requires a real browser and fails when the runner/browser is unavailable; it cannot pass by skipping checks. The harness uses native IndexedDB on a blank loopback origin, separate contexts and a temporary browser profile. It does not automate the application UI or access the user's profile. A cached Playwright Chromium or installed Chrome/Chromium is detected automatically; set `ENGINE_BROWSER_PATH` to another installed executable when needed. On CI without a browser, install Playwright Chromium as part of CI setup.
+
+To make the entire Node suite require these browser checks on this Mac:
+
+```sh
+ENGINE_REQUIRE_BROWSER=1 ENGINE_BROWSER_PATH='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' npm run test:template-editor
+```
+
+The twelve recovery cases cover migration races, owner isolation, failed writes, unreadable records, a baseline and shared image surviving reload, and preserving valid pending artwork when its baseline is corrupt. A corrupt baseline is excluded from automatic merge input; the original stored record remains intact. The general unit command can still report browser checks as skipped on environments without browser tooling, so release acceptance also requires the strict command above.
 
 For a browser check, create a carousel, edit text and imagery, reorder pages, reopen the design after a reload, save it as a template, and export each of the three formats. Check the exported dimensions and appearance as well as the save status.
 

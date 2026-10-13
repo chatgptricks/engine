@@ -29,13 +29,17 @@ function validDraft(value: unknown): RecoveryDraft | null {
   let decoded:RecoveryDraft;
   try{const stored=draft as RecoveryDraft&{recoveryAssets?:Record<string,string>};decoded=stored.recoveryAssets?unpackAssets(stored,stored.recoveryAssets):draft;}catch{return null;}
   const library = parseLibrary(decoded.library);
+  // Pending artwork can remain valid when its baseline is damaged. Treat that
+  // record as legacy recovery, never as a confirmed base for automatic merging.
+  const {baseline:baselineValue,...data}=decoded;
+  const baseline=baselineValue===undefined?null:parseLibrary(baselineValue);
   return library &&
     typeof draft.key === "string" &&
     typeof draft.scope === "string" &&
     typeof draft.stamp === "string" &&
     Number.isFinite(draft.updatedAt) &&
     (draft.revision === null || typeof draft.revision === "string")
-    ? { ...decoded, library, ...(decoded.baseline&&parseLibrary(decoded.baseline)?{baseline:parseLibrary(decoded.baseline)!}:{}) }
+    ? { ...data, library, ...(baseline?{baseline}:{}) }
     : null;
 }
 

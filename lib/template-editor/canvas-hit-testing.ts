@@ -6,6 +6,7 @@ import {shapeContainsPoint,shapeViewBox} from "./photo-frames";
 import {shapePath} from "./appearance";
 import {flattenVectorPath} from "./vector";
 import {parseColor} from "./color-utils";
+import {scenePaintOrder} from "./paint-order";
 
 type Point={x:number;y:number};
 export function elementLocalPoint(element:CanvasElement,point:Point):Point {
@@ -50,7 +51,7 @@ export function elementContainsPoint(element:CanvasElement,point:Point,padding=0
 }
 export function layersAtPoint(scene:CanvasScene,point:Point,options:{isolationGroupId?:string|null;padding?:number}={}):CanvasElement[] {
   const scope=options.isolationGroupId?new Set(groupMemberIds(scene,options.isolationGroupId)):null;
-  return [...scene.elements].reverse().filter(element=>(!scope||scope.has(element.id))&&!isElementHidden(scene,element)&&elementEffectiveOpacity(scene,element)>0&&elementContainsPoint(element,point,options.padding));
+  return scenePaintOrder(scene).reverse().filter(element=>(!scope||scope.has(element.id))&&!isElementHidden(scene,element)&&elementEffectiveOpacity(scene,element)>0&&elementContainsPoint(element,point,options.padding));
 }
 export function cycleLayerAtPoint(layers:readonly CanvasElement[],selectedIds:readonly string[]):CanvasElement|undefined {
   const current=layers.findLastIndex(element=>selectedIds.includes(element.id));return layers[(current+1)%layers.length];
