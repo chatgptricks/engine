@@ -1,5 +1,6 @@
 import type { CanvasElement, CanvasScene, ImageElement, ShapeElement, ShapeImageFill } from "./model";
 import { canEditElement, isElementHidden } from "./commands";
+import { elementEffectiveOpacity } from "./group-opacity";
 import { groupMemberIds } from "./layer-tree";
 import { shapePath } from "./appearance";
 import { flattenVectorPath } from "./vector";
@@ -7,7 +8,7 @@ import { flattenVectorPath } from "./vector";
 export type PhotoContent = ShapeImageFill & { fit: "cover" | "contain" };
 export function photoContent(element: CanvasElement): PhotoContent | null {
   if (element.type === "shape") return element.imageFill ? { ...element.imageFill, fit: element.imageFill.objectFit } : null;
-  return element.type === "image" ? {src:element.src,objectFit:element.fit,fit:element.fit,cropX:element.cropX,cropY:element.cropY,cropScale:element.cropScale,flipX:element.flipX,flipY:element.flipY,intrinsicWidth:element.intrinsicWidth,intrinsicHeight:element.intrinsicHeight} : null;
+  return element.type === "image" ? {src:element.src,previewSrc:element.previewSrc,publicAlt:element.publicAlt,directive:element.directive,rightsNote:element.rightsNote,sourceUrl:element.sourceUrl,provenance:element.provenance,objectFit:element.fit,fit:element.fit,cropX:element.cropX,cropY:element.cropY,cropScale:element.cropScale,flipX:element.flipX,flipY:element.flipY,intrinsicWidth:element.intrinsicWidth,intrinsicHeight:element.intrinsicHeight} : null;
 }
 export function updatePhotoContent(element: CanvasElement, patch: Partial<Pick<ImageElement,"cropX"|"cropY"|"cropScale"|"flipX"|"flipY"|"fit">>): CanvasElement {
   if(element.type === "image")return {...element,...patch};
@@ -63,5 +64,5 @@ export function shapeContainsPoint(shape: ShapeElement, point: {x:number;y:numbe
 export function findPhotoFrameAtPoint(scene: CanvasScene, point:{x:number;y:number}, options:{excludedIds?:readonly string[];isolationGroupId?:string|null} = {}): ShapeElement | null {
   const excluded=new Set(options.excludedIds??[]);
   const scoped=options.isolationGroupId?new Set(groupMemberIds(scene,options.isolationGroupId)):null;
-  return [...scene.elements].reverse().find((element):element is ShapeElement=>element.type==="shape"&&!excluded.has(element.id)&&(!scoped||scoped.has(element.id))&&!isElementHidden(scene,element)&&element.opacity>0&&canEditElement(scene,element,"content")&&shapeContainsPoint(element,point))??null;
+  return [...scene.elements].reverse().find((element):element is ShapeElement=>element.type==="shape"&&!excluded.has(element.id)&&(!scoped||scoped.has(element.id))&&!isElementHidden(scene,element)&&elementEffectiveOpacity(scene,element)>0&&canEditElement(scene,element,"content")&&shapeContainsPoint(element,point))??null;
 }

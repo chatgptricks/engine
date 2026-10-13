@@ -30,8 +30,14 @@ const compile = (filename) => ts.transpileModule(fs.readFileSync(path.join(root,
 const browserSource = `(() => {
   const model = { exports: {} };
   (function(module, exports) { ${compile("lib/template-editor/model.ts")} })(model, model.exports);
+  const merge={exports:{}};
+  (function(module,exports){ ${compile("lib/template-editor/three-way-merge.ts")} })(merge,merge.exports);
+  const catalog={exports:{}};
+  (function(module,exports,require){ ${compile("lib/template-editor/template-catalog.ts")} })(catalog,catalog.exports,()=>model.exports);
+  const sync={exports:{}};
+  (function(module,exports,require){ ${compile("lib/template-editor/library-sync.ts")} })(sync,sync.exports,name=>name==='./model'?model.exports:name==='./template-catalog'?catalog.exports:merge.exports);
   const recovery = { exports: {} };
-  (function(module, exports, require) { ${compile("lib/template-editor/recovery-storage.ts")} })(recovery, recovery.exports, () => model.exports);
+  (function(module, exports, require) { ${compile("lib/template-editor/recovery-storage.ts")} })(recovery, recovery.exports, name=>name==='./model'?model.exports:name==='./asset-processing'?{packAssetsOffThread:sync.exports.packAssets}:sync.exports);
   window.editorModel = model.exports;
   window.editorRecovery = recovery.exports;
   window.makeDraft = (stamp, updatedAt, scope = 'workspace-owner', key = scope + ':tab-1') => ({

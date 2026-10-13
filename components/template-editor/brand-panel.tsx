@@ -4,7 +4,9 @@ import { useState } from "react";
 import type { BrandAsset, SavedBrandKit, CanvasScene, ShapeImageFill } from "@/lib/template-editor/model";
 import { proxied } from "@/lib/engine/util";
 import { useContextMenu } from "./context-menu";
+import { canEditElement, isElementHidden } from "@/lib/template-editor/commands";
 import { writePhotoDrag } from "@/lib/template-editor/photo-drag";
+import { brandAssetPhoto, captureBrandImage } from "@/lib/template-editor/brand-assets";
 
 export function BrandPanel({ kits, activeId, scene, selectedIds, disabled, continuous = false, onSelectKit, onInsert, onSaveAsset, onChange, onApply, onManage, onPhotoPointerDown }: {
   kits: SavedBrandKit[];
@@ -23,14 +25,18 @@ export function BrandPanel({ kits, activeId, scene, selectedIds, disabled, conti
 }) {
   const {openMenu} = useContextMenu();
   const [search, setSearch] = useState("");
+  const [allKits, setAllKits] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
   const kit = kits.find((item) => item.id === activeId) ?? kits[0];
   if (!kit) return null;
+  const assets = (allKits ? kits : [kit]).flatMap(owner=>owner.assets.map(asset=>({owner,asset}))).filter(({asset})=>`${asset.name} ${(asset.tags??[]).join(" ")}`.toLowerCase().includes(search.trim().toLowerCase()));
   const images = scene.elements.filter((element) => selectedIds.includes(element.id) && element.type === "image");
-  const canColor = !selectedIds.length || scene.elements.some((element) => selectedIds.includes(element.id) && !element.locked && element.type !== "image");
+  const canColor = !selectedIds.length || scene.elements.some((element) => selectedIds.includes(element.id) && canEditElement(scene, element, "style") && !isElementHidden(scene, element) && element.type !== "image");
   const applyColor = (color: string) => {
     onChange((live) => {
-    const editable = live.elements.some((element) => selectedIds.includes(element.id) && !element.locked && element.type !== "image");
-    return editable ? {...live, elements: live.elements.map((element) => selectedIds.includes(element.id) && !element.locked ? element.type === "text" ? {...element, color} : element.type === "shape" ? {...element, fill: color} : element : element)} : selectedIds.length ? live : {...live, background: color};
+    const editable = live.elements.some((element) => selectedIds.includes(element.id) && canEditElement(live, element, "style") && !isElementHidden(live, element) && element.type !== "image");
+    return editable ? {...live, elements: live.elements.map((element) => selectedIds.includes(element.id) && canEditElement(live, element, "style") && !isElementHidden(live, element) ? element.type === "text" ? {...element, color, colorRoleId: undefined} : element.type === "shape" ? {...element, fill: color, colorRoleId: undefined} : element : element)} : selectedIds.length ? live : {...live, background: color};
     });
   };
   return <div className="te-brand-panel">
@@ -48,17 +54,20 @@ export function BrandPanel({ kits, activeId, scene, selectedIds, disabled, conti
     {!continuous && <button className="te-text-button te-full" disabled={disabled} onClick={() => onApply(true)}>Apply to all pages</button>}
     <div className="te-panel-heading te-brand-assets-heading"><h2>Logos & elements</h2><span>{kit.assets.length}/40</span></div>
     <input className="te-brand-search" aria-label="Search brand elements" placeholder="Search brand elements" value={search} onChange={(event) => setSearch(event.target.value)} />
+    <label className="te-help"><input type="checkbox" checked={allKits} onChange={event=>setAllKits(event.target.checked)}/>Search all kits</label>
     <div className="te-brand-element-grid">
-      {kit.assets.filter((asset) => asset.name.toLowerCase().includes(search.toLowerCase())).map((asset) => <button key={asset.id} disabled={disabled} draggable={!disabled} onPointerDown={event=>onPhotoPointerDown?.(event,{src:asset.src,alt:asset.name,objectFit:'cover',cropX:50,cropY:50})} onDragStart={event=>{if(onPhotoPointerDown)event.preventDefault();else writePhotoDrag(event.dataTransfer,{src:asset.src,alt:asset.name,objectFit:'cover',cropX:50,cropY:50});}} aria-label={`Add brand element ${asset.name}`} title={asset.name} onClick={() => onInsert(asset)} onContextMenu={(event) => openMenu(event,{label:asset.name,items:[{id:"insert",label:continuous ? "Add to carousel" : "Add to this page",disabled:disabled || scene.elements.length >= 100,onSelect:() => onInsert(asset)}]})}>
+      {assets.map(({asset,owner}) => <button key={`${owner.id}:${asset.id}`} disabled={disabled} draggable={!disabled} onPointerDown={event=>onPhotoPointerDown?.(event,brandAssetPhoto(asset))} onDragStart={event=>{if(onPhotoPointerDown)event.preventDefault();else writePhotoDrag(event.dataTransfer,brandAssetPhoto(asset));}} aria-label={`Add brand element ${asset.name}`} title={`${owner.name} · ${asset.name}`} onClick={() => onInsert(asset)} onContextMenu={(event) => openMenu(event,{label:asset.name,items:[{id:"insert",label:continuous ? "Add to carousel" : "Add to this page",disabled:disabled || scene.elements.length >= 100,onSelect:() => onInsert(asset)}]})}>
         {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img src={proxied(asset.src)} alt="" /><span>{asset.name}</span>
+        <img src={proxied(asset.previewSrc ?? asset.src)} alt="" loading="lazy" /><span>{asset.favorite?"★ ":""}{asset.name}</span>
       </button>)}
     </div>
     {!kit.assets.length && <p className="te-help">Keep logos, product photos, and graphic elements here, ready for every post.</p>}
-    {images.length === 1 && images[0].type === "image" && <button className="te-button te-full" disabled={disabled || kit.assets.length >= 40} onClick={() => {
+    {images.length === 1 && images[0].type === "image" && <button className="te-button te-full" disabled={disabled || saving || kit.assets.length >= 40} onClick={async () => {
       const image = images[0];
-      if (image.type === "image") onSaveAsset({id:crypto.randomUUID(),name:image.name,src:image.src,width:image.width,height:image.height,kind:"image"}, kit.id);
-    }}>Save selected image to brand</button>}
+      if (image.type !== "image") return;
+      setSaving(true);setMessage("");try{if(onSaveAsset(await captureBrandImage(image), kit.id)!==false)setMessage("Original photo saved to Brand.");}catch(error){setMessage(error instanceof Error?error.message:"Could not save this photo.");}finally{setSaving(false);}
+    }}>{saving?"Reading original…":"Save selected image to brand"}</button>}
+    {message&&<p className="te-help" role="status">{message}</p>}
     <button className="te-button te-full" disabled={disabled} onClick={onManage}>Manage kits & upload elements</button>
   </div>;
 }

@@ -1,19 +1,20 @@
 import {parseBuiltInTemplateState, type BuiltInTemplateState, type EditorLibrary} from "./model";
 import {latestBuiltInTemplateState} from "./template-catalog";
+import {mergeEntity} from "./three-way-merge";
 export const ASSET_PREFIX = "engine-asset:";
-export function stableStringify(value: unknown): string | undefined {
-  return JSON.stringify(value, (_key, child) => child && typeof child === "object" && !Array.isArray(child) ? Object.fromEntries(Object.keys(child).sort().map(key => [key, child[key]])) : child);
+export function stableStringify(value: unknown, omitReviewLinks=false): string | undefined {
+  return JSON.stringify(value, (key, child) => omitReviewLinks && key === "reviewLinks" ? undefined : child && typeof child === "object" && !Array.isArray(child) ? Object.fromEntries(Object.keys(child).sort().map(key => [key, child[key]])) : child);
 }
 export function sameContent(a: unknown, b: unknown): boolean {return a === b || stableStringify(a) === stableStringify(b);}
 export async function contentHash(value: unknown): Promise<string> {
-  const bytes = new TextEncoder().encode(stableStringify(value) ?? "null");
+  const bytes = new TextEncoder().encode(stableStringify(value,true) ?? "null");
   const hash = await crypto.subtle.digest("SHA-256", bytes);
   return Array.from(new Uint8Array(hash), byte => byte.toString(16).padStart(2, "0")).join("");
 }
 export async function packAssets<T>(value: T, known = new Set<string>()): Promise<{value: T; assets: Record<string, string>}> {
   const assets: Record<string, string> = {}, cache = new Map<string, Promise<string>>();
   async function visit(input: unknown, field = ""): Promise<unknown> {
-    if ((field === "src" || field === "url") && typeof input === "string" && /^data:image\//.test(input)) {
+    if ((field === "src" || field === "url" || field === "previewSrc") && typeof input === "string" && /^data:image\//.test(input)) {
       let key = cache.get(input); if (!key) { key = contentHash(input); cache.set(input, key); }
       const hash = await key; if (!known.has(hash)) assets[hash] = input; return `${ASSET_PREFIX}${hash}`;
     }
@@ -25,7 +26,7 @@ export async function packAssets<T>(value: T, known = new Set<string>()): Promis
 }
 export function unpackAssets<T>(value: T, assets: Record<string, string>): T {
   function visit(input: unknown, field = ""): unknown {
-    if ((field === "src" || field === "url") && typeof input === "string" && input.startsWith(ASSET_PREFIX)) {
+    if ((field === "src" || field === "url" || field === "previewSrc") && typeof input === "string" && input.startsWith(ASSET_PREFIX)) {
       const hash = input.slice(ASSET_PREFIX.length), asset = assets[hash];
       if (!/^[a-f0-9]{64}$/.test(hash) || typeof asset !== "string" || !asset.startsWith("data:image/")) throw new Error("An embedded asset is missing. Saved artwork has not been overwritten.");
       return asset;
@@ -36,21 +37,21 @@ export function unpackAssets<T>(value: T, assets: Record<string, string>): T {
   }
   return visit(value) as T;
 }
-export type CollectionName = "designs" | "templates" | "brandKits" | "folders" | "builtInTemplateStates";
-export interface LibraryChange {id: string; beforeHash: string; value: unknown | null}
+export type CollectionName = "designs" | "templates" | "brandKits" | "folders" | "builtInTemplateStates" | "workspaceStyles" | "workspaceComponents";
+export interface LibraryChange {id: string; beforeHash: string; beforeValue?:unknown; value: unknown | null}
 export interface LibraryPatch {version: 1; collections: Partial<Record<CollectionName, LibraryChange[]>>; settings: {key: string; beforeHash: string; value: unknown}[]}
 const equal = sameContent;
 export async function createLibraryPatch(base: EditorLibrary, next: EditorLibrary): Promise<LibraryPatch> {
   const collections: LibraryPatch["collections"] = {};
-  for (const name of ["designs", "templates", "brandKits", "folders", "builtInTemplateStates"] as const) {
-    if (name === "builtInTemplateStates" && next.builtInTemplateStates === undefined) continue;
+  for (const name of ["designs", "templates", "brandKits", "folders", "builtInTemplateStates", "workspaceStyles", "workspaceComponents"] as const) {
+    if ((name === "builtInTemplateStates" || name === "workspaceStyles" || name === "workspaceComponents") && next[name] === undefined) continue;
     const previous = new Map((base[name] ?? []).map(item => [item.id, item]));
     const current = new Map((next[name] ?? []).map(item => [item.id, item]));
     const changes: LibraryChange[] = [];
     for (const id of new Set([...previous.keys(), ...current.keys()])) {
       const before = previous.get(id) ?? null, after = current.get(id) ?? null;
       if (name === "builtInTemplateStates" && after === null) throw new Error("Restore built-in templates explicitly; their saved decisions cannot be removed.");
-      if (!equal(before, after)) changes.push({id, beforeHash: await contentHash(before), value: after});
+      if (!equal(before, after)) changes.push({id, beforeHash: await contentHash(before), beforeValue:before, value: after});
     }
     if (changes.length) collections[name] = changes;
   }
@@ -68,7 +69,7 @@ export async function applyLibraryPatch(current: EditorLibrary, patch: LibraryPa
   if (!patch || patch.version !== 1 || !patch.collections || !Array.isArray(patch.settings)) throw new Error("Invalid document changes.");
   const result = structuredClone(current), conflicts: string[] = [];
   for (const [name, changes] of Object.entries(patch.collections)) {
-    if (!["designs", "templates", "brandKits", "folders", "builtInTemplateStates"].includes(name) || !Array.isArray(changes) || changes.length > 250) throw new Error("Invalid collection changes.");
+    if (!["designs", "templates", "brandKits", "folders", "builtInTemplateStates", "workspaceStyles", "workspaceComponents"].includes(name) || !Array.isArray(changes) || changes.length > 250) throw new Error("Invalid collection changes.");
     const collection = name as CollectionName;
     const records = new Map<string, unknown>(((result[collection] ?? []) as {id: string}[]).map(item => [item.id, item]));
     const seen = new Set<string>();
@@ -85,7 +86,10 @@ export async function applyLibraryPatch(current: EditorLibrary, patch: LibraryPa
         if (latest) records.set(change.id, structuredClone(latest));
         continue;
       }
-      if (await contentHash(before) !== change.beforeHash && !equal(before, change.value)) { conflicts.push(change.id); continue; }
+      if (await contentHash(before) !== change.beforeHash && !equal(before, change.value)) {
+        if(change.beforeValue!==undefined&&await contentHash(change.beforeValue)===change.beforeHash){const merged=mergeEntity(change.beforeValue,change.value,before);if(!merged.conflicts.length){records.set(change.id,merged.value);continue;}}
+        conflicts.push(change.id); continue;
+      }
       if (change.value === null) records.delete(change.id); else records.set(change.id, change.value);
     }
     // Retain existing ordering; newly-created documents are shown first in the UI.
@@ -105,7 +109,8 @@ export async function applyLibraryPatch(current: EditorLibrary, patch: LibraryPa
 /** Three-way merge: disjoint edits merge, divergent documents become independent copies. */
 export function reconcileLibraries(base: EditorLibrary, local: EditorLibrary, remote: EditorLibrary): {library: EditorLibrary; copies: number} {
   const result = structuredClone(remote); let copies = 0;
-  for (const name of ["designs", "templates", "brandKits", "folders"] as const) {
+  for (const name of ["designs", "templates", "brandKits", "folders", "workspaceStyles", "workspaceComponents"] as const) {
+    if ((name === "workspaceStyles" || name === "workspaceComponents") && local[name] === undefined) continue;
     const old = new Map<string, unknown>((base[name] ?? []).map(item => [item.id, item]));
     const server = new Map<string, unknown>((remote[name] ?? []).map(item => [item.id, item]));
     const mine = new Map<string, unknown>((local[name] ?? []).map(item => [item.id, item]));
@@ -114,6 +119,7 @@ export function reconcileLibraries(base: EditorLibrary, local: EditorLibrary, re
       if (equal(before, change) || equal(saved, change)) continue;
       if (equal(before, saved)) { if (change === null) server.delete(id); else server.set(id, change); }
       else if (change !== null) {
+        const merged=mergeEntity(before,change,saved);if(!merged.conflicts.length){server.set(id,merged.value);continue;}
         if (name === "templates") {
           const changedTemplate = change as Record<string, unknown>, savedTemplate = saved as Record<string, unknown> | null;
           const omitDeletion = (template: Record<string, unknown>) => { const copy = { ...template }; delete copy.deletedAt; return copy; };

@@ -1,0 +1,144 @@
+{
+  "scope": "canvas-audit-fixes",
+  "baseCommit": "12e0d96470c73575fd7f48d12b8bc07db929dd9a",
+  "acceptance": [
+    {
+      "id": 3,
+      "status": "complete",
+      "behavior": "Named styles propagate and link the selection in a single document transaction. Updates reach separate pages, continuous canvas and master, honoring property protection.",
+      "test": [
+        "saving a named style propagates to linked pages and master before linking selection, atomically"
+      ],
+      "risks": []
+    },
+    {
+      "id": 4,
+      "status": "complete",
+      "behavior": "Mixed selection edits each gradient stop independently; unrelated stops, type, angle and differing stop counts survive. Add/remove respect2\u201320 stops.",
+      "test": [
+        "mixed-gradient stop editing preserves unrelated stops, each gradient type and differing counts"
+      ],
+      "risks": []
+    },
+    {
+      "id": 6,
+      "status": "complete",
+      "behavior": "SVG affine normalization retains open paths, inherited paint alpha and true root/nested group opacity. Composite containers apply group opacity once to overlapping children. Group opacity is editable in Layers.",
+      "test": [
+        "SVG skew and reflection preserve open paths rather than adding a closing stroke",
+        "inherited SVG fill/stroke opacity and root/group compositing survive parsing and render once"
+      ],
+      "risks": [
+        "Non-orthogonal imported curves are sampled with existing vector tolerance; native orthogonal curves stay exact."
+      ]
+    },
+    {
+      "id": 7,
+      "status": "complete",
+      "behavior": "Dragging photo crops solves the actual cover/contain paint translation including zoom, flips and element rotation, leaving zero-overflow axes stable. Photo frames share the calculation.",
+      "test": [
+        "crop translation uses cover/contain painted overflow and zero-overflow leaves the axis stable",
+        "rotated, flipped, zoomed crop math matches the actual nested CSS paint translation"
+      ],
+      "risks": [
+        "Missing intrinsic and not-yet-decoded image dimensions use frame aspect until decoding."
+      ]
+    },
+    {
+      "id": 9,
+      "status": "complete",
+      "behavior": "Case changes operate on decoded Unicode text tokens and re-escape them; inline styles, texture references and the plain mirror stay synchronized.",
+      "test": [
+        "case conversion decodes entities before Unicode case while keeping styles, textures and mirror consistent"
+      ],
+      "risks": []
+    },
+    {
+      "id": 10,
+      "status": "complete",
+      "behavior": "Keyboard selection uses the same group unit as pointer selection; Layers dragging expands unselected or partially selected group children. Isolation permits children, inherited locks block reorder.",
+      "test": [
+        "Layers keyboard selection and dragging an unselected or partially selected nested group remain group operations"
+      ],
+      "risks": []
+    },
+    {
+      "id": 11,
+      "status": "complete",
+      "behavior": "Focusable resize and rotation handles react to arrow keys, with Shift larger steps, shared anchored geometry and appearance protection. Enter/Space opens help; Escape/Done exits and a live status announces dimensions.",
+      "test": [
+        "keyboard resize keeps the opposite edge anchored and preserves protected appearance"
+      ],
+      "risks": []
+    },
+    {
+      "id": 20,
+      "status": "complete",
+      "behavior": "Canvas hit tests actual filled geometry, masks, holes, rounded corners, clips and physical strokes. Transparent corners pass through. Primary-modifier click cycles underlying layers, respecting groups, isolation and visibility. Context and double-click resolve the same geometry.",
+      "test": [
+        "geometry selects the painted interior, ignores transparent corners/holes and cycles depth in group units",
+        "stroke hit geometry distinguishes inside/outside borders, open paths, clips, hidden groups and opacity0"
+      ],
+      "risks": [
+        "Raster alpha and text glyph outlines retain the image/text frame hit area; geometric masks are precise."
+      ]
+    },
+    {
+      "id": 21,
+      "status": "complete",
+      "behavior": "Select and persistent Hand tools are visible, with H/V shortcuts. Two fingers pan and pinch; pointer-count changes reset baselines and cancel an edit gesture without committing it. Hand arrows pan rather than nudge artwork.",
+      "test": [
+        "one-finger Hand and two-finger pan/pinch compute client deltas without pointer-count jumps"
+      ],
+      "risks": [
+        "Full touch-pointer device validation belongs to integrated browser QA."
+      ]
+    },
+    {
+      "id": 23,
+      "status": "complete",
+      "behavior": "Auto-fit retains requested nominal size separately from the measured size, grows again after shorter content and supports minimum/maximum in progressive text options. Rich font sizes scale consistently in editing and saved rendering, font load re-measures and bounds/styles round-trip.",
+      "test": [
+        "autofit recovers nominal size when content shrinks and honors configured minimum and maximum",
+        "autofit measures rich sizes relatively and restores exact DOM styles after measurement"
+      ],
+      "risks": [
+        "Previously shrunk legacy nominal sizes cannot be inferred; users set their desired size once."
+      ]
+    },
+    {
+      "id": 24,
+      "status": "complete",
+      "behavior": "Visible Nodes tool edits anchors and incoming/outgoing Bezier handles by pointer or keyboard, adds/removes anchors, converts curve/corner, mirrors handles and opens/closes subpaths. Pen exposes Finish/Remove/Cancel and an open/closed option. Reframing preserves rotated scene-space geometry.",
+      "test": [
+        "node parser preserves cubic, smooth, quadratic, arc and open/closed subpath semantics",
+        "adding a cubic anchor preserves the actual curve and moving an anchor moves both handles",
+        "node reframing preserves world geometry for rotated paths and degenerate open lines",
+        "node actions expose curve/corner, insertion/deletion and open/closed paths without throwing on bounds"
+      ],
+      "risks": [
+        "SVG arcs normalize to cubic segments of at most45 degrees, with maximum relative error below0.00001."
+      ]
+    },
+    {
+      "id": 25,
+      "status": "complete",
+      "behavior": "A single typed command registry drives keyboard resolution and visible help, including history alternatives, group/layer order, Hand/Select/Nodes/Pen and zoom/fit; gesture descriptions expose depth, Alt duplicate and touch. Native input activation and composition are respected.",
+      "test": [
+        "command execution and shortcut help share one registry, including redo, groups, depth and touch"
+      ],
+      "risks": [
+        "Root integration retains native system clipboard event handlers instead of the old base-commit handlers."
+      ]
+    }
+  ],
+  "verification": {
+    "suite": "node --test tests/template-editor-*.test.mjs",
+    "testsPassed": 302,
+    "testsFailed": 0,
+    "focusedLint": "passed",
+    "typecheck": "npx tsc --noEmit --incremental false passed before generated build route validators",
+    "productionBuild": "Webpack production compilation passed6s; pre-existing route validator failures prevent final build: forbidden ENGINE_BUILD export in app/api/engine/version/route.ts and GET Request|undefined in app/api/template-editor/route.ts. Root will validate integrated build.",
+    "browserQA": "Root runs integrated QA after cherry-pick; no own browser/server launched."
+  }
+}

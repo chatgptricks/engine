@@ -90,7 +90,7 @@ test("SVG importer rejects active content, unsafe attributes, malformed markup a
 test("SVG gradients, fill rules, opacity, dash and skew normalize into safe artwork", () => {
   const source = '<svg viewBox="0 0 100 100"><defs><linearGradient id="gradient"><stop offset="0" stop-color="#000"/><stop offset="100%" stop-color="#fff" stop-opacity=".5"/></linearGradient></defs><g opacity=".5"><path d="M0 0H80V80H0ZM20 20H60V60H20Z" fill="url(#gradient)" fill-rule="evenodd" transform="skewX(10)" stroke="#f00" stroke-width="2" stroke-dasharray="2 3" opacity=".5"/><rect x="0" y="0" width="10" height="10" fill="#f00" fill-opacity=".5"/></g></svg>';
   const imported = vector.importSVG(source);
-  assert.equal(imported.elements[0].fillRule, "evenodd"); assert.equal(imported.elements[0].opacity, .25);
+  assert.equal(imported.elements[0].fillRule, "evenodd"); assert.equal(imported.elements[0].opacity, .5); assert.equal(imported.groups[0].opacity, .5);
   assert.equal(imported.elements[0].gradient.stops[1].color, "#ffffff80");
   assert.deepEqual(imported.elements[0].strokeDash, [7.2, 10.8]);
   assert.equal(imported.elements[1].fill, "#ff000080"); assert.ok(model.parseCanvasScene(imported));

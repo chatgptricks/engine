@@ -71,6 +71,12 @@ export function layerSelectionAfterClick(scene: CanvasScene, selectedIds: readon
     : [...new Set([...current, ...targets])];
 }
 
+/** Dragging an already-selected group child still moves its complete selection unit. */
+export function layerDragSelection(scene:CanvasScene,selectedIds:readonly string[],targetId:string,isolatedGroupId?:string):string[]{
+  const ids=expandGroupSelection(scene,selectedIds.includes(targetId)?selectedIds:[targetId],isolatedGroupId);
+  return ids.filter(id=>{const item=scene.elements.find(element=>element.id===id);return item&&!isElementLocked(scene,item);});
+}
+
 export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, height, disabled = false, onContextMenu, onMenuClick, onDuplicate, onDelete, onLocate, onEnterGroup, onExitGroup, isolatedGroupId, onGroupContextMenu }: LayersPanelProps) {
   const [query, setQuery] = useState("");
   const [multiSelect, setMultiSelect] = useState(false);
@@ -128,7 +134,7 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
   }
   function startDrag(event: DragEvent, element: CanvasElement) {
     if (disabled || multiSelect || isElementLocked(scene, element) || rename) { event.preventDefault(); return; }
-    const ids = selectedSet.has(element.id) ? unlocked.map((item) => item.id) : [element.id];
+    const ids = layerDragSelection(scene,selectedIds,element.id,isolatedGroupId);
     if (!selectedSet.has(element.id)) onSelect(ids);
     dragIds.current = ids; setDragging(ids);
     event.dataTransfer.effectAllowed = "move";
@@ -196,6 +202,7 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
               <button type="button" className="te-layer-select" disabled={disabled} aria-label={`Select group ${group.name}`} aria-pressed={members.length > 0 && memberIds.every(id => selectedSet.has(id))} onClick={event => onSelect(layerSelectionAfterClick(scene, selectedIds, memberIds, multiSelect || event.shiftKey || event.metaKey || event.ctrlKey, isolatedGroupId))} onDoubleClick={() => { if (!multiSelect) onEnterGroup?.(group.id); }}>{multiSelect && <span className="te-layer-selection-check" aria-hidden="true">{memberIds.length > 0 && memberIds.every(id => selectedSet.has(id)) ? "✓" : memberIds.some(id => selectedSet.has(id)) ? "−" : ""}</span>}<span className="te-layer-thumb" aria-hidden>▤</span><span className="te-layer-description"><strong>{group.name}</strong><span>{memberIds.length} layers</span></span></button>
               <div className="te-layer-row-tools"><button type="button" disabled={disabled} aria-label={`${hidden ? "Show" : "Hide"} group ${group.name}`} onClick={() => { const result = setGroupHidden(scene, group.id, !hidden); onChange(result.scene); }}><Eye hidden={hidden} /></button><button type="button" disabled={disabled} aria-label={`${locked ? "Unlock" : "Lock"} group ${group.name}`} onClick={() => { const result = setGroupLocked(scene, group.id, !locked); onChange(result.scene); }}><Lock locked={locked} /></button><button type="button" disabled={disabled} aria-label={`Rename group ${group.name}`} onClick={() => setGroupRename({ id: group.id, value: group.name })}>✎</button>{onEnterGroup && <button type="button" title="Edit inside group" aria-label={`Enter group ${group.name}`} onClick={() => onEnterGroup(group.id)}>↳</button>}</div>
             </div>
+            <details className="te-layer-group-appearance"><summary>Group opacity</summary><label>Opacity <input aria-label={`Opacity of group ${group.name}`} type="range" min={0} max={100} value={Math.round((group.opacity??1)*100)} disabled={disabled||locked||members.some(element=>isElementLocked(scene,element)||element.protected?.includes("style"))} onChange={event=>onChange({...scene,groups:scene.groups?.map(item=>item.id===group.id?{...item,opacity:Number(event.target.value)/100}:item)},`group-opacity:${group.id}`)}/><output>{Math.round((group.opacity??1)*100)}%</output></label></details>
             {groupRename?.id === group.id && <input className="te-layer-rename" autoFocus aria-label={`Group name ${group.name}`} value={groupRename.value} maxLength={100} onChange={event => setGroupRename({ ...groupRename, value: event.target.value })} onBlur={() => { const name = groupRename.value.trim(); if (name && name !== group.name && !disabled) onChange({ ...scene, groups: scene.groups?.map(item => item.id === group.id ? { ...item, name } : item) }); setGroupRename(null); }} onKeyDown={event => { event.stopPropagation(); if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") setGroupRename(null); }} />}
           </li>;
         }

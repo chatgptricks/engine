@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import {
   loadChannels,
@@ -13,6 +13,7 @@ import {
   normalizeHandle,
 } from "@/lib/engine/channels";
 import { ENGINE_PLAN, formatPlanPrice } from "@/lib/engine/plan";
+import {readOnboardingDraft,saveOnboardingDraft} from "@/lib/engine/onboarding-state";
 
 /**
  * Engine — public onboarding. Three steps on one page:
@@ -43,6 +44,9 @@ function StartFlow() {
   const [handle, setHandle] = useState("");
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState<string | null>(null);
+  const [restored,setRestored]=useState(false);
+  useEffect(()=>{const draft=readOnboardingDraft();queueMicrotask(()=>{if(draft){setStep(draft.step);setName(draft.name);setEmail(draft.email);setChannelName(draft.channelName);setHandle(draft.handle);}setRestored(true);});},[]);
+  useEffect(()=>{if(restored)saveOnboardingDraft({step,name,email,channelName,handle});},[restored,step,name,email,channelName,handle]);
 
   function next(e: React.FormEvent) {
     e.preventDefault();
@@ -63,7 +67,8 @@ function StartFlow() {
       // Seed the studio with their first channel, set active.
       const existing = loadChannels();
       const clean = normalizeHandle(handle);
-      if (!existing.some((c) => c.handle === clean && clean)) {
+      const matching=existing.find(channel=>clean?channel.handle===clean:channel.name===channelName.trim());
+      if (!matching) {
         const channel = {
           id: newChannelId(),
           name: channelName.trim() || `@${clean}`,
@@ -73,7 +78,7 @@ function StartFlow() {
         };
         saveChannels([...existing, channel]);
         saveActiveChannelId(channel.id);
-      }
+      }else saveActiveChannelId(matching.id);
       setStep(2);
       return;
     }
@@ -133,7 +138,7 @@ function StartFlow() {
         ))}
       </ol>
 
-      {canceled && step === 0 && (
+      {canceled && (
         <p className="mt-4 rounded-xl border border-card-border bg-card px-4 py-3 text-sm text-muted">
           Checkout was canceled — pick up where you left off whenever you’re
           ready.

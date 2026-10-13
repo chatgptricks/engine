@@ -23,7 +23,7 @@ export function composeScene(design: CompositionSource, page: DesignPage | numbe
   return { ...content, groups: [...(design.masterScene.groups ?? []).map(group => ({ ...group, id: groupIds.get(group.id)!, ...(group.parentId ? { parentId: groupIds.get(group.parentId) } : {}) })), ...(content.groups ?? [])], elements: [...master, ...content.elements] };
 }
 
-const STYLE_KEYS = ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill"] as const;
+const STYLE_KEYS = ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill", "autoFitMinFontSize", "autoFitMaxFontSize"] as const;
 export function textStyleFromElement(element: TextElement, name = "Text style"): TextStyle {
   const style: Record<string, unknown> = { id: crypto.randomUUID(), name: name.trim().slice(0, 200) || "Text style" };
   for (const key of STYLE_KEYS) if (element[key] !== undefined) style[key] = structuredClone(element[key]);
@@ -112,7 +112,7 @@ export function updateComponentInstances(design: DesignDocument, component: Reus
         const width = Math.max(1, element.width * sx), height = Math.max(1, element.height * sy), cx = (element.x + element.width / 2) * sx, cy = (element.y + element.height / 2) * sy;
         let updated: CanvasElement = { ...element, x: origin.x + cos * cx - sin * cy - width / 2, y: origin.y + sin * cx + cos * cy - height / 2, width, height, rotation: element.rotation + rotation, componentId: component.id, componentInstanceId: instance, componentSourceId: original.id, ...(element.type === "text" ? { fontSize: Math.min(500, element.fontSize * Math.min(sx, sy)) } : {}), ...(element.groupId ? {} : wrapperId ? { groupId: wrapperId } : {}) };
         if (current && oldSource && current.type === "text" && oldSource.type === "text" && updated.type === "text" && current.text !== oldSource.text) updated = { ...updated, text: current.text, richText: current.richText };
-        if (current && oldSource && current.type === "image" && oldSource.type === "image" && updated.type === "image" && current.src !== oldSource.src) updated = { ...updated, src: current.src, intrinsicWidth: current.intrinsicWidth, intrinsicHeight: current.intrinsicHeight, directive: current.directive, rightsNote: current.rightsNote, sourceUrl: current.sourceUrl, provenance: current.provenance ? structuredClone(current.provenance) : undefined };
+        if (current && oldSource && current.type === "image" && oldSource.type === "image" && updated.type === "image" && current.src !== oldSource.src) updated = { ...updated, src: current.src, previewSrc:current.previewSrc, publicAlt:current.publicAlt, intrinsicWidth: current.intrinsicWidth, intrinsicHeight: current.intrinsicHeight, directive: current.directive, rightsNote: current.rightsNote, sourceUrl: current.sourceUrl, provenance: current.provenance ? structuredClone(current.provenance) : undefined };
         if (current?.type === "shape" && oldSource?.type === "shape" && updated.type === "shape" && JSON.stringify(current.imageFill) !== JSON.stringify(oldSource.imageFill)) updated = { ...updated, imageFill: current.imageFill ? structuredClone(current.imageFill) : undefined };
         if (current?.type === "text" && oldSource?.type === "text" && updated.type === "text") {
           if (JSON.stringify(current.textureFill) !== JSON.stringify(oldSource.textureFill)) updated = { ...updated, textureFill: current.textureFill ? structuredClone(current.textureFill) : undefined };
@@ -130,6 +130,14 @@ export function updateComponentInstances(design: DesignDocument, component: Reus
   return { ...result, components: [...(design.components ?? []).filter(item => item.id !== component.id), structuredClone(component)] };
 }
 
+/** Source-bound metadata cannot be reused when a template field points to a different photo. */
+export function replacePhotoSource<T extends {src:string}>(previous:T,src:string):T {
+  if(previous.src===src)return previous;
+  const next={...previous,src} as Record<string,unknown>;
+  for(const field of ['previewSrc','intrinsicWidth','intrinsicHeight','publicAlt','alt','directive','rightsNote','sourceUrl','provenance'])delete next[field];
+  return next as T;
+}
+
 export function instantiateTemplate(template: DesignTemplate, data: Record<string, string>, name?: string): DesignDocument {
   const values: Record<string, string> = Object.create(null);
   for (const parameter of template.parameters ?? []) {
@@ -142,7 +150,7 @@ export function instantiateTemplate(template: DesignTemplate, data: Record<strin
   const escaped = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   const interpolate = (value: string, html = false) => value.replace(/\{\{\s*([^{}]+?)\s*\}\}/g, (original, key: string) => Object.hasOwn(values, key) ? html ? escaped(values[key]) : values[key] : original);
   const photoFill = (src: string, previous?: NonNullable<Extract<CanvasElement, { type: "shape" }>["imageFill"]>) => {
-    const parsed = parseShapeImageFill({ objectFit: "cover", cropX: 50, cropY: 50, cropScale: 1, ...previous, src });
+    const parsed = parseShapeImageFill({ objectFit: "cover", cropX: 50, cropY: 50, cropScale: 1, ...(previous?replacePhotoSource(previous,src):{}), src });
     if (!parsed) throw new Error("A template photo field contains an invalid image URL.");
     return parsed;
   };
@@ -152,7 +160,7 @@ export function instantiateTemplate(template: DesignTemplate, data: Record<strin
     const parameter = template.parameters?.find(item => item.id === element.slot || item.name === element.slot);
     if (element.type === "text" && parameter?.type === "color" && slotValue) return { ...element, color: slotValue };
     if (element.type === "text") return { ...element, text: parameter?.type === "image" ? interpolate(element.text) : slotValue ?? interpolate(element.text), ...(element.richText ? { richText: sanitizeRichText(slotValue !== undefined && parameter?.type !== "image" ? escaped(slotValue) : interpolate(element.richText, true)) } : {}), ...(parameter?.type === "image" && slotValue ? { textureFill: photoFill(slotValue, element.textureFill) } : element.textureFill ? { textureFill: photoFill(interpolate(element.textureFill.src), element.textureFill) } : {}), ...(element.wordTextures ? { wordTextures: element.wordTextures.map(texture => ({ ...photoFill(interpolate(texture.src), texture), id: texture.id })) } : {}) };
-    if (element.type === "image") return slotValue !== undefined && slotValue ? { ...element, src: slotValue } : element;
+    if (element.type === "image") return slotValue !== undefined && slotValue ? replacePhotoSource(element,slotValue) : element;
     if (element.type === "shape") {
       if (parameter?.type === "image" && slotValue) return { ...element, imageFill: photoFill(slotValue, element.imageFill) };
       return { ...element, ...(slotValue !== undefined && slotValue ? { fill: slotValue } : {}), ...(element.imageFill ? { imageFill: photoFill(interpolate(element.imageFill.src), element.imageFill) } : {}) };

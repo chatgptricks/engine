@@ -5,6 +5,8 @@ import {developmentDirectory,readDevelopmentRecord} from "./development-storage"
 import {getAdminSupabase} from "@/lib/supabase/admin";
 import {EMPTY_LIBRARY, parseLibrary, type EditorLibrary, type DesignDocument} from "./model";
 import {checkLibrarySaveBudget} from "./library-budget";
+import {listReviewLinks} from './review-inventory';
+import {retainDocumentHistory} from './history-retention';
 import {applyLibraryPatch, contentHash, sameContent, LibraryPatchConflict, packAssets, unpackAssets, type LibraryPatch} from "./library-sync";
 
 export interface StoredLibrary {library: EditorLibrary; revision: string | null; storage: "cloud" | "local"; scope: string; assetKeys?: string[]; reconciled?: boolean}
@@ -42,7 +44,10 @@ async function readRecord(owner: string): Promise<{record: LibraryEnvelope | nul
 function stored(record: LibraryEnvelope | null, storage: "cloud" | "local", scope: string): StoredLibrary {
   return {library: record?.library ?? EMPTY_LIBRARY, revision: record?.revision ?? null, storage, scope, assetKeys: Object.keys(record?.assets ?? {})};
 }
-export async function getEditorLibrary(owner: string): Promise<StoredLibrary> { const state = await readRecord(owner); return stored(state.record, state.storage, state.scope); }
+export async function getEditorLibrary(owner: string): Promise<StoredLibrary> {
+ const state=await readRecord(owner),value=stored(state.record,state.storage,state.scope),links=await listReviewLinks(owner);
+ value.library={...value.library,designs:value.library.designs.map(doc=>{const documentLinks=links.filter(link=>link.documentId===doc.id),owned=documentLinks.filter(link=>!link.revokedAt&&Date.parse(link.expiresAt)>Date.now()).map(({id,url,expiresAt})=>({id,url,expiresAt}));return {...doc,reviewLinks:documentLinks.length?owned:doc.reviewLinks};})};return value;
+}
 export async function getDocumentHistory(owner: string, documentId: string): Promise<DocumentHistoryEntry[]> {
   const {record} = await readRecord(owner);
   // Owner is always supplied by the authenticated route, never by the browser.
@@ -68,12 +73,8 @@ async function envelopeFor(current: LibraryEnvelope | null, library: EditorLibra
   }
   // Prune history for permanently removed documents after retaining their latest
   // checkpoints for recovery; cap the total history to a practical shared budget.
-  let budget = 0;
-  for (const id of Object.keys(history)) {
-    history[id] = history[id].filter(entry => { budget += JSON.stringify(entry.document).length; return budget <= 20 * 1024 * 1024; });
-    if (!history[id].length) delete history[id];
-  }
-  const packed = await packAssets({library:savedLibrary, history});
+  const retained=retainDocumentHistory(history,new Set(savedLibrary.designs.map(doc=>doc.id)),now);
+  const packed = await packAssets({library:savedLibrary, history:retained});
   return {...packed.value, revision: randomUUID(), assets: packed.assets, operations: [...new Set([...(current?.operations ?? []), ...(operationId ? [operationId] : [])])].slice(-100)};
 }
 async function writeFile(scope: string, envelope: LibraryEnvelope) {

@@ -16,7 +16,8 @@ function load(relative,dependencies={}) {
   vm.runInThisContext(`(function(require,module,exports){${source}\n})`,{filename})(name=>Object.hasOwn(dependencies,name)?dependencies[name]:requireModule(name),unit,unit.exports);
   return unit.exports;
 }
-const history=load("lib/template-editor/history.ts"),model=load("lib/template-editor/model.ts");
+const registry=load("lib/template-editor/editor-commands.ts");
+const history=load("lib/template-editor/history.ts",{"./editor-commands":registry}),model=load("lib/template-editor/model.ts");
 const commands=load("lib/template-editor/commands.ts",{"./model":model});
 const colors=load("lib/template-editor/color-utils.ts");
 const rich=load("lib/template-editor/rich-text-editing.ts",{"./model":model,"./color-utils":colors});
@@ -272,4 +273,16 @@ test("Mac and Windows shortcuts share journal history and ignore IME or handled 
 test("content comparisons detect nested changes but ignore absent optional fields",()=>{
   assert.equal(sameDocumentContent(doc({pages:[{id:"p",canvas:{elements:[],groups:undefined}}]}),doc({pages:[{id:"p",canvas:{elements:[]}}],updatedAt:"later"})),true);
   assert.equal(sameDocumentContent(doc({pages:[{id:"p",canvas:{elements:[{x:1}]}}]}),doc({pages:[{id:"p",canvas:{elements:[{x:2}]}}]})),false);
+});
+
+// DOM KeyboardEvent fields are getters on the prototype, not enumerable data.
+test("native keyboard event prototype fields retain undo and redo shortcuts",()=>{
+  for(const [shiftKey,expected] of [[false,"undo"],[true,"redo"]]){
+    const values={key:"z",metaKey:true,ctrlKey:false,shiftKey,altKey:false,isComposing:false,defaultPrevented:false};
+    const prototype=Object.create(null);
+    for(const [key,value] of Object.entries(values))Object.defineProperty(prototype,key,{get:()=>value});
+    const event=Object.create(prototype);
+    assert.deepEqual(Object.keys(event),[]);
+    assert.equal(historyShortcut(event),expected);
+  }
 });

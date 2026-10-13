@@ -1,0 +1,194 @@
+{
+  "area": "library-brand",
+  "base": "12e0d96470c73575fd7f48d12b8bc07db929dd9a",
+  "recommendations": [
+    {
+      "id": 1,
+      "status": "implemented",
+      "behavior": "Brand palette/apply respects inherited locks, style protection and hidden groups; retains geometry and guides.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 2,
+      "status": "implemented",
+      "behavior": "Alpha-aware ColorField edits shorthand/long RGBA and transparent palette colors.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 8,
+      "status": "implemented",
+      "behavior": "Brand saves retain original intrinsic dimensions, rights/provenance/public alt and lightweight previews; insertion keeps a fresh canvas ID.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs",
+        "tests/template-editor-brand-upload.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 12,
+      "status": "implemented",
+      "behavior": "Gallery creation previews all template pages, instantiates declared defaults/required fields and validates content.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 13,
+      "status": "implemented",
+      "behavior": "Research transfer reads without consuming, accepts against the live library, then acknowledges matching document; owner-scoped pending transfer survives failures.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 14,
+      "status": "implemented",
+      "behavior": "Onboarding resumes fields and step in sessionStorage for 24 hours, including checkout cancellation; existing channel is reused.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 26,
+      "status": "implemented",
+      "behavior": "Creation dialog configures format/custom pixels, 1–20 blank pages, separate/continuous canvas and Brand; templates explicitly retain their page count.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 27,
+      "status": "implemented",
+      "behavior": "Import reviews selectable collections with skip/independent-copy/merge policies, structural dedupe and before-import project/template copies; selected originals restored before acceptance; current Brand retained unless explicitly activated.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 28,
+      "status": "implemented",
+      "behavior": "Search includes canvas and master text, captions, page labels and metadata; format/purpose/review/favorite/folder/tag filters plus sorting.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 29,
+      "status": "implemented",
+      "behavior": "Gallery selection supports batch folder/tags/add-replace/favorite/export; organized starter templates become custom copies with explicit disclosure.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 30,
+      "status": "implemented",
+      "behavior": "Validated project/view/folder URLs, browser Back/Forward and owner-scoped Continue recent project.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 31,
+      "status": "implemented",
+      "behavior": "Workspace components/styles can be saved, edited, removed and reused as copies or linked resources across projects; global edits propagate only to editable linked artwork.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 32,
+      "status": "implemented",
+      "behavior": "Research preflight selects/orders/excludes photos, reports videos, previews output, chooses template/format/Brand and maps content into editable frames.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 33,
+      "status": "implemented",
+      "behavior": "Supported SVG logos persist as sanitized passive vector paths/gradients with nested opacity and original dimensions; light/dark/universal variants can be tagged and filtered.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs",
+        "tests/template-editor-brand-upload.test.mjs"
+      ],
+      "risks": []
+    },
+    {
+      "id": 34,
+      "status": "implemented",
+      "behavior": "Brand asset search spans kits/name/tags, favorites and variants; moves/copies retain originals and metadata.",
+      "tests": [
+        "tests/template-editor-library-workflows.test.mjs",
+        "tests/template-editor-brand-upload.test.mjs"
+      ],
+      "risks": []
+    }
+  ],
+  "sharedSchema": [
+    "PhotoMetadata.publicAlt<=2000",
+    "DesignPage.publicDescription<=5000",
+    "DesignPage.readingOrder filters stale references and remaps copies",
+    "CanvasGroup.opacity retains SVG composition",
+    "workspaceStyles/workspaceComponents optional; EditorLibrary.version remains 2"
+  ],
+  "validation": {
+    "focusedTests": "35 passed (29 library workflows +6 Brand upload)",
+    "fullSuite": "301 passed,10 browser-dependent skips",
+    "typescript": "passed",
+    "eslint": "passed",
+    "build": "Isolated Turbopack refuses node_modules symlink outside filesystem root; root runs the integrated production build.",
+    "browser": "Root owns integrated desktop/mobile browser QA."
+  },
+  "integrationDependencies": [
+    "Root commit 6b5ab22 original-media/client-media/media-archive/media-preview helpers",
+    "Agent A vector import preserves CanvasGroup.opacity",
+    "Agent B sync/write guards accept workspaceStyles/workspaceComponents and clientSchema3",
+    "Public review materialization allows only isSafeBrandSvgUrl canonical data SVG"
+  ],
+  "limits": [
+    "Workspace: 150 projects,80 custom templates,20 Brand kits,40 assets per kit,40 workspace styles and40 components.",
+    "SVG supports passive path geometry/gradients; unsupported live text/filters must be converted to paths.",
+    "Research transfers up to20 photos; videos stay in Research; template frames protected against content changes are rejected explicitly.",
+    "Locked/protected linked artwork keeps its current appearance."
+  ],
+  "excludedDependencyCopies": [
+    "lib/template-editor/client-media.ts",
+    "lib/template-editor/media-archive.ts",
+    "lib/template-editor/media-preview.ts",
+    "lib/template-editor/vector.ts",
+    "tests/template-editor-vector.test.mjs"
+  ],
+  "followup": {
+    "corrected": [
+      "Copy/merge import remaps workspace bindings once, including named versions; retains template-draft purpose and custom template metadata.",
+      "Repeated import compares component blueprint IDs within their own scope and includes independent version snapshots.",
+      "Research mapping skips hidden/inherited-hidden photo and title layers.",
+      "Native History uses pushState(null) so Next16 keeps the canonical URL in sync.",
+      "Bulk operations keep selection, transfer selected starter IDs to the new custom copies and show accurate conditional feedback.",
+      "Import completion/skipping replaces old notifications."
+    ],
+    "tests": "4 added regression tests plus the existing suite; TypeScript and ESLint pass."
+  },
+  "integrationPreviewFix": {
+    "behavior": "Changing an image/texture source removes stale preview, dimensions and photo-specific metadata; an unchanged source retains them. Linked manual photo overrides retain their current preview/publicAlt. Research photo replacement uses the same source contract.",
+    "tests": "3 new regressions;32 focused library-workflow tests pass; TypeScript and ESLint pass. No repeat of the full integration suite.",
+    "sharedApi": "advanced.replacePhotoSource(previous,src)"
+  }
+}

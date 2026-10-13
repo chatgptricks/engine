@@ -1,0 +1,10 @@
+.te-vector-node-overlay {position:absolute;overflow:visible;pointer-events:none;transform-origin:center;z-index:20;}
+.te-vector-anchor,.te-vector-control {pointer-events:all;cursor:move;touch-action:none;}
+.te-vector-anchor:focus-visible,.te-vector-control:focus-visible {outline:2px solid #9a86ff;}
+.te-vector-tools {position:static;display:flex;align-items:center;flex-wrap:wrap;gap:6px;max-width:100%;width:100%;padding:8px;border:1px solid #7967df;background:#24232d;color:#fff;border-radius:8px;font:12px system-ui;pointer-events:auto;}
+.te-vector-tools button,.te-vector-tools select {font:inherit;color:inherit;background:#ffffff12;border:1px solid #ffffff30;border-radius:5px;padding:5px;}
+.te-vector-tools label {display:flex;gap:4px;align-items:center;}
+.te-vector-tools details {position:relative;}
+.te-vector-tools details[open] {flex-basis:100%;}
+.te-vector-coordinate-fields {position:static;width:100%;min-width:0;background:#24232d;border:1px solid #7967df;padding:10px;display:grid;gap:8px;}
+.te-vector-tools [role=alert] {width:100%;color:#ffb5b5;}

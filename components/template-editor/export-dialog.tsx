@@ -3,6 +3,7 @@ import {useState} from "react";
 import {Modal} from "./controls";
 import {formatDimensions,type DesignDocument} from "@/lib/template-editor/model";
 import {validateExportOptions,type ExportOptions} from "@/lib/template-editor/export";
+import {pdfGeometry} from '@/lib/template-editor/pdf-options';
 import {preflightDesign,type PreflightIssue} from "@/lib/template-editor/preflight";
 import "./dialog-tools.css";
 
@@ -10,6 +11,7 @@ export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{d
   const size=formatDimensions(design),nativeScale=size.width/360;
   const recommendedScale=Math.min(nativeScale,Math.floor(360*Math.sqrt(40_000_000/(360*Math.ceil(360*size.height/size.width))))/360);
   const [format,setFormat]=useState<NonNullable<ExportOptions["format"]>>("png");
+  const [pdfMode,setPdfMode]=useState<'document'|'raster'>('document'),[dpi,setDpi]=useState(150),[widthMm,setWidthMm]=useState(Math.min(2000,Math.max(10,size.width/96*25.4))),[bleedMm,setBleedMm]=useState(0),[cropMarks,setCropMarks]=useState(false),[delivery,setDelivery]=useState<'archive'|'batches'>('archive'),[batchSize,setBatchSize]=useState(4);
   const [scale,setScale]=useState(recommendedScale),[quality,setQuality]=useState(.92),[transparent,setTransparent]=useState(false);
   const [pages,setPages]=useState("all"),[range,setRange]=useState(String(Math.max(1,design.pages.findIndex(page=>page.id===pageId)+1))),[error,setError]=useState("");
   function selectedPages() {
@@ -27,15 +29,17 @@ export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{d
   }
   let selectedIds:string[]=[];
   try{selectedIds=selectedPages();}catch{/* Keep the range editable until submitted. */}
-  const findings=(issues??preflightDesign(design)).filter(issue=>selectedIds.includes(issue.pageId));
+  let effectiveScale=scale;try{if(format==='pdf')effectiveScale=pdfGeometry(size.width,size.height,{dpi,widthMm,bleedMm,cropMarks}).rasterScale;}catch{/* Validation is shown on submit. */}
+  const findings=[...new Map([...(issues??[]).filter(issue=>issue.code!=='image-resolution'),...preflightDesign(design,{outputScale:effectiveScale})].map(issue=>[issue.id,issue])).values()].filter(issue=>selectedIds.includes(issue.pageId));
   const width=Math.round(360*scale),height=Math.round(360*size.height/size.width*scale);
   function start() {
     if(disabled)return;
     try {
       const ids=selectedPages();if(!ids.length)throw new Error("Choose at least one page.");
-      const options={format,scale,quality,transparent:transparent&&format!=="jpeg"&&format!=="pdf"};
+      const options={format,scale,quality,delivery,batchSize,pdfMode,dpi,widthMm,bleedMm,cropMarks,transparent:transparent&&format!=="jpeg"&&format!=="pdf"};
       validateExportOptions(options);
-      if(Math.max(width,height)>16384||(format!=="svg"&&width*height>40_000_000))throw new Error("This size is too large to download. Open advanced settings and choose a smaller size.");
+      if(format==='pdf')pdfGeometry(size.width,size.height,options);
+      if(format!=='pdf'&&(Math.max(width,height)>16384||(format!=="svg"&&width*height>40_000_000)))throw new Error("This size is too large to download. Open advanced settings and choose a smaller size.");
       onExport(options,ids);
     }catch(reason){setError(reason instanceof Error?reason.message:"Choose valid download settings.");}
   }
@@ -47,11 +51,12 @@ export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{d
         </select></label>
         {design.pages.length>1&&<label>Pages<select aria-label="Export pages" value={pages} onChange={event=>{setPages(event.target.value);setError("");}}><option value="all">All {design.pages.length} pages</option><option value="current">Current page</option><option value="range">Choose page numbers</option></select></label>}
         {pages==="range"&&<label>Page numbers<input aria-label="Export page range" value={range} onChange={event=>{setRange(event.target.value);setError("");}} placeholder="1, 3-5" aria-invalid={Boolean(error)}/></label>}
-        <div className="te-dialog-summary"><strong>{width.toLocaleString("en-US")} × {height.toLocaleString("en-US")} px</strong><span>{selectedIds.length} page{selectedIds.length===1?"":"s"}{selectedIds.length>1&&format!=="pdf"?" · ZIP":""}</span></div>
+        <div className="te-dialog-summary"><strong>{format==='pdf'?`${Math.round(widthMm*100)/100} × ${Math.round(widthMm*size.height/size.width*100)/100} mm`:`${width.toLocaleString("en-US")} × ${height.toLocaleString("en-US")} px`}</strong><span>{selectedIds.length} page{selectedIds.length===1?"":"s"}{selectedIds.length>1&&format!=="pdf"?" · ZIP":""}</span></div>
         <details><summary>Advanced settings</summary><div className="te-dialog-details-body">
-          <label>Image size<select aria-label="Export resolution" value={scale} onChange={event=>{setScale(Number(event.target.value));setError("");}}>{Array.from(new Set([recommendedScale,nativeScale,1,2,3,4,6])).sort((a,b)=>a-b).map(value=><option key={value} value={value}>{Math.round(360*value)} × {Math.round(360*size.height/size.width*value)} px{value===nativeScale?" · original size":value===recommendedScale?" · recommended":""}</option>)}</select></label>
+          {format==='pdf'?<><label>PDF mode<select value={pdfMode} onChange={event=>setPdfMode(event.target.value as typeof pdfMode)}><option value='document'>Document · text and vectors</option><option value='raster'>Picture · selectable text overlay</option></select></label><label>Page width (mm)<input type='number' min='10' max='2000' step='.1' value={widthMm} onChange={event=>setWidthMm(Number(event.target.value))}/></label><label>Picture resolution (DPI)<input type='number' min='72' max='600' value={dpi} onChange={event=>setDpi(Number(event.target.value))}/></label><label>Bleed (mm)<input type='number' min='0' max='10' step='.5' value={bleedMm} onChange={event=>setBleedMm(Number(event.target.value))}/></label><label className='te-dialog-check'><input type='checkbox' checked={cropMarks} onChange={event=>setCropMarks(event.target.checked)}/>Crop marks</label><p>Fonts are embedded. Complex effects use the rendered page while text remains selectable. Colors are RGB; this is not a CMYK press profile.</p></>:<label>Image size<select aria-label="Export resolution" value={scale} onChange={event=>{setScale(Number(event.target.value));setError("");}}>{Array.from(new Set([recommendedScale,nativeScale,1,2,3,4,6])).sort((a,b)=>a-b).map(value=><option key={value} value={value}>{Math.round(360*value)} × {Math.round(360*size.height/size.width*value)} px{value===nativeScale?" · original size":value===recommendedScale?" · recommended":""}</option>)}</select></label>}
           {(format==="jpeg"||format==="webp")&&<label>Quality · {Math.round(quality*100)}%<input aria-label="Export image quality" type="range" min=".1" max="1" step=".01" value={quality} onChange={event=>setQuality(Number(event.target.value))}/></label>}
           {format!=="jpeg"&&format!=="pdf"&&<label className="te-dialog-check"><input type="checkbox" checked={transparent} onChange={event=>setTransparent(event.target.checked)}/>Transparent background</label>}
+          {design.pages.length>1&&<><label>Delivery<select value={delivery} onChange={event=>setDelivery(event.target.value as typeof delivery)}><option value='archive'>One PDF or ZIP archive</option><option value='batches'>Smaller batch downloads</option></select></label>{delivery==='batches'&&<label>Maximum pages per batch<input type='number' min='1' max='10' value={batchSize} onChange={event=>setBatchSize(Number(event.target.value))}/></label>}<p>One page renders at a time. Each output is limited to 64 MB. Batches download separately; allow multiple downloads in your browser.</p></>}
           <p>{format==="svg"?"SVG keeps the design in compatible web viewers. Use an Engine file from your library to continue editing.":format==="pdf"?"All selected pages are included in one PDF.":"Several image pages download together in a ZIP."}</p>
         </div></details>
         {findings.length>0&&<details open={findings.some(issue=>issue.severity==="error")}><summary>{findings.length} item{findings.length===1?"":"s"} to check before downloading</summary><div className="te-dialog-details-body"><ul className="te-dialog-warning-list">{findings.slice(0,20).map(issue=><li key={issue.id}>{issue.message}</li>)}</ul>{findings.length>20&&<p>{findings.length-20} more items to check.</p>}</div></details>}

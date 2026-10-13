@@ -10,7 +10,7 @@ export type CanvasLayout = {
   grid?: { enabled: boolean; size: number; columns: number; rows: number; gutter: number };
   snapping?: { enabled: boolean; objects: boolean; page: boolean; guides: boolean; grid: boolean; spacing: boolean; tolerance: number };
 };
-export type CanvasGroup = { id: string; name: string; parentId?: string; locked?: boolean; hidden?: boolean };
+export type CanvasGroup = { id: string; name: string; parentId?: string; locked?: boolean; hidden?: boolean; opacity?: number };
 export type CanvasGradient = { type: "linear" | "radial"; angle: number; stops: { color: string; position: number }[] };
 export type CanvasShadow = { color: string; offsetX: number; offsetY: number; blur: number; spread: number };
 export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten" | "color-dodge" | "color-burn" | "hard-light" | "soft-light" | "difference" | "exclusion" | "hue" | "saturation" | "color" | "luminosity";
@@ -69,6 +69,9 @@ export type TextElement = CanvasElementBase & {
   letterSpacing: number;
   richText?: string;
   textMode?: "fixed" | "auto-height" | "auto-fit";
+  autoFitMinFontSize?: number;
+  autoFitMaxFontSize?: number;
+  autoFitFontSize?: number;
   verticalAlign?: "top" | "middle" | "bottom";
   padding?: number;
   paragraphSpacing?: number;
@@ -79,6 +82,10 @@ export type TextElement = CanvasElementBase & {
   wordTextures?: (ShapeImageFill & { id: string })[];
 };
 export type PhotoMetadata = {
+  /** Intentionally public description; internal directives never become alt text. */
+  publicAlt?: string;
+  /** Lightweight editor preview; src always keeps the original. */
+  previewSrc?: string;
   directive?: string;
   rightsNote?: string;
   sourceUrl?: string;
@@ -86,6 +93,8 @@ export type PhotoMetadata = {
 };
 export type ShapeImageFill = PhotoMetadata & {
   src: string;
+  previewSrc?: string;
+  publicAlt?: string;
   alt?: string;
   objectFit: "cover" | "contain";
   cropX: number;
@@ -99,6 +108,8 @@ export type ShapeImageFill = PhotoMetadata & {
 export type ImageElement = CanvasElementBase & PhotoMetadata & {
   type: "image";
   src: string;
+  previewSrc?: string;
+  publicAlt?: string;
   fit: "cover" | "contain";
   /** Object-position percentages, from 0 through 100; 50 centers the image. */
   cropX: number;
@@ -129,8 +140,8 @@ export type ShapeElement = CanvasElementBase & {
 };
 export type CanvasElement = TextElement | ImageElement | ShapeElement;
 export type CanvasScene = { background: string; elements: CanvasElement[]; groups?: CanvasGroup[]; layout?: CanvasLayout };
-export type TextStyle = Omit<TextElement, keyof CanvasElementBase | "type" | "text" | "richText" | "textStyleId" | "textMode" | "wordTextures"> & { id: string; name: string };
-export type ReusableComponent = { id: string; name: string; scene: CanvasScene; width: number; height: number };
+export type TextStyle = Omit<TextElement, keyof CanvasElementBase | "type" | "text" | "richText" | "textStyleId" | "textMode" | "wordTextures" | "autoFitFontSize"> & { id: string; name: string; workspaceSourceId?: string };
+export type ReusableComponent = { id: string; name: string; scene: CanvasScene; width: number; height: number; workspaceSourceId?: string };
 export type TemplateParameter = { id: string; name: string; type: "text" | "image" | "color"; defaultValue?: string; required?: boolean; maxLength?: number };
 export type DesignComment = { id: string; pageId?: string; elementId?: string; text: string; createdAt: string; resolved?: boolean };
 export type DesignVersion = Pick<DocumentResources, "styles" | "components" | "colorRoles" | "parameters"> & { id: string; name: string; createdAt: string; format: DesignFormat; pages: DesignPage[]; continuousCanvas?: CanvasScene; caption: string; masterScene?: CanvasScene; customSize?: { width: number; height: number } };
@@ -143,6 +154,8 @@ export type DesignPage = {
   canvas?: CanvasScene;
   label?: string;
   useMaster?: boolean;
+  publicDescription?: string;
+  readingOrder?: string[];
 };
 export type DesignDocument = DocumentResources & {
   id: string;
@@ -180,13 +193,17 @@ export type BrandKit = {
   background: string;
   text: string;
 };
-export type BrandAsset = {
+export type BrandAsset = PhotoMetadata & {
   id: string;
   name: string;
   src: string;
+  previewSrc?: string;
   width: number;
   height: number;
   kind: "logo" | "image";
+  tags?: string[];
+  favorite?: boolean;
+  variant?: "universal" | "light" | "dark";
 };
 export type SavedBrandKit = BrandKit & {
   id: string;
@@ -208,6 +225,8 @@ export type EditorLibrary = {
   brandKits: SavedBrandKit[];
   activeBrandKitId: string;
   folders?: { id: string; name: string }[];
+  workspaceStyles?: TextStyle[];
+  workspaceComponents?: ReusableComponent[];
   /** Workspace decisions for bundled templates; absent in older saved libraries. */
   builtInTemplateStates?: BuiltInTemplateState[];
 };
@@ -236,7 +255,7 @@ export function libraryBrandKits(library: EditorLibrary): SavedBrandKit[] {
   if (library.brandKits?.length) return library.brandKits.map(kit => ({
     ...kit,
     palette: [...kit.palette],
-    assets: kit.assets.map(asset => ({ ...asset })),
+    assets: structuredClone(kit.assets),
   }));
   return [{ ...brandProjection(library.brand), id: DEFAULT_BRAND_KIT_ID, palette: [library.brand.background, library.brand.text], assets: [] }];
 }
@@ -609,6 +628,8 @@ export function duplicateTextTextureIds<T extends CanvasElement>(element: T): T 
 }
 
 export function duplicatePage(source: DesignPage): DesignPage {
+  const canvas=source.canvas?duplicateCanvasScene(source.canvas):undefined;
+  const ids=new Map(source.canvas?.elements.map((element,index)=>[element.id,canvas!.elements[index].id])??[]);
   return {
     ...structuredClone(source),
     id: crypto.randomUUID(),
@@ -616,9 +637,10 @@ export function duplicatePage(source: DesignPage): DesignPage {
     style: { ...source.style },
     ...(source.canvas
       ? {
-          canvas: duplicateCanvasScene(source.canvas),
+          canvas,
         }
       : {}),
+    ...(source.readingOrder?{readingOrder:source.readingOrder.map(id=>ids.get(id)??id)}:{}),
   };
 }
 
@@ -1038,7 +1060,7 @@ function copyResources(source: DocumentResources): DocumentResources {
   return result;
 }
 
-function remapCopiedComponentReferences<T extends DocumentResources & { pages: DesignPage[]; continuousCanvas?: CanvasScene; versions?: DesignVersion[] }>(copy: T, source: DocumentResources): T {
+function remapCopiedComponentReferences<T extends DocumentResources & { pages: DesignPage[]; continuousCanvas?: CanvasScene; versions?: DesignVersion[] }>(copy: T, source: DocumentResources & {pages?:DesignPage[];continuousCanvas?:CanvasScene}): T {
   const references = new Map<string, string>();
   for (const original of source.components ?? []) {
     const duplicated = copy.components?.find(component => component.id === original.id);
@@ -1048,6 +1070,11 @@ function remapCopiedComponentReferences<T extends DocumentResources & { pages: D
   copy.pages.forEach(page => remap(page.canvas)); remap(copy.continuousCanvas); remap(copy.masterScene);
   copy.components?.forEach(component => remap(component.scene));
   copy.versions?.forEach(version => { version.pages.forEach(page => remap(page.canvas)); remap(version.continuousCanvas); remap(version.masterScene); });
+  const ids=new Map<string,string>();
+  const mapScene=(before?:CanvasScene,after?:CanvasScene)=>before?.elements.forEach((element,index)=>{if(after?.elements[index])ids.set(element.id,after.elements[index].id);});
+  mapScene(source.masterScene,copy.masterScene);mapScene(source.continuousCanvas,copy.continuousCanvas);
+  source.pages?.forEach((page,index)=>mapScene(page.canvas,copy.pages[index]?.canvas));
+  source.pages?.forEach((page,index)=>{if(page.readingOrder&&copy.pages[index])copy.pages[index].readingOrder=page.readingOrder.map(id=>ids.get(id)??id);});
   return copy;
 }
 
@@ -1338,9 +1365,10 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
 }
 
 function parseTextExtensions(value: Record<string, unknown>): Partial<TextElement> | null {
+  if (!["autoFitMinFontSize","autoFitMaxFontSize","autoFitFontSize"].every(key=>optional(value,key,candidate=>numberIn(candidate,1,500))) || value.autoFitMinFontSize!==undefined && value.autoFitMaxFontSize!==undefined && Number(value.autoFitMinFontSize)>Number(value.autoFitMaxFontSize)) return null;
   if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "textStyleId", identity)) return null;
   const result: Partial<TextElement> = {};
-  for (const key of ["textMode", "verticalAlign", "listStyle", "padding", "paragraphSpacing", "strikethrough", "textStyleId"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  for (const key of ["textMode", "verticalAlign", "listStyle", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
   if (value.richText !== undefined) {
     const sanitized = sanitizeRichText(value.richText);
     if (sanitized !== undefined) result.richText = sanitized;
@@ -1388,12 +1416,12 @@ function parseResources(value: Record<string, unknown>): DocumentResources | nul
     if (!Array.isArray(value.styles) || value.styles.length > 80) return null;
     const styles: TextStyle[] = [];
     for (const style of value.styles) {
-      if (!object(style) || !identity(style.id) || !string(style.name, 200)) return null;
+      if (!object(style) || !identity(style.id) || !string(style.name, 200) || !optional(style,"workspaceSourceId",identity)) return null;
       const parsed = parseCanvas({ background: "transparent", elements: [{ ...createCanvasElement("text"), ...style, type: "text", text: "", x: 0, y: 0, width: 1, height: 1, rotation: 0, opacity: 1, locked: false }] });
       const element = parsed?.elements[0];
       if (!element || element.type !== "text") return null;
-      const textStyle: Record<string, unknown> = { id: style.id, name: style.name };
-      for (const key of ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill"] as const) if (element[key] !== undefined) textStyle[key] = element[key];
+      const textStyle: Record<string, unknown> = { id: style.id, name: style.name, ...(style.workspaceSourceId !== undefined ? {workspaceSourceId:style.workspaceSourceId} : {}) };
+      for (const key of ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill", "autoFitMinFontSize", "autoFitMaxFontSize"] as const) if (element[key] !== undefined) textStyle[key] = element[key];
       styles.push(textStyle as TextStyle);
     }
     if (!uniqueIds(styles)) return null;
@@ -1413,10 +1441,10 @@ function parseResources(value: Record<string, unknown>): DocumentResources | nul
     if (!Array.isArray(value.components) || value.components.length > 40) return null;
     const components: ReusableComponent[] = [];
     for (const component of value.components) {
-      if (!object(component) || !identity(component.id) || !string(component.name, 200) || !numberIn(component.width, 1, 10_000) || !numberIn(component.height, 1, 10_000)) return null;
+      if (!object(component) || !identity(component.id) || !string(component.name, 200) || !numberIn(component.width, 1, 10_000) || !numberIn(component.height, 1, 10_000) || !optional(component,"workspaceSourceId",identity)) return null;
       const scene = parseCanvas(component.scene);
       if (!scene) return null;
-      components.push({ id: component.id, name: component.name, width: component.width, height: component.height, scene });
+      components.push({ id: component.id, name: component.name, width: component.width, height: component.height, scene, ...(component.workspaceSourceId !== undefined ? {workspaceSourceId:component.workspaceSourceId as string} : {}) });
     }
     if (!uniqueIds(components)) return null;
     resources.components = components;
@@ -1534,7 +1562,9 @@ function parseBrandKits(value: unknown): SavedBrandKit[] | null {
         !string(asset.src, MAX_BRAND_ASSET_CHARS) || !safeImageUrl(asset.src) ||
         !numberIn(asset.width, 1, 100_000) || !numberIn(asset.height, 1, 100_000) ||
         (asset.kind !== "logo" && asset.kind !== "image")) return null;
-      assets.push({ id: asset.id, name: asset.name, src: asset.src, width: asset.width, height: asset.height, kind: asset.kind });
+      const metadata = parsePhotoMetadata(asset);
+      if (!metadata || !optional(asset, "previewSrc", safeImageUrl) || !optional(asset, "favorite", boolean) || !optional(asset, "variant", choice(["universal", "light", "dark"])) || !optional(asset, "tags", candidate => Array.isArray(candidate) && candidate.length <= 20 && candidate.every(tag => string(tag, 40)))) return null;
+      assets.push({ ...metadata, id: asset.id, name: asset.name, src: asset.src, width: asset.width, height: asset.height, kind: asset.kind, ...(asset.previewSrc !== undefined ? { previewSrc: asset.previewSrc as string } : {}), ...(asset.favorite !== undefined ? { favorite: asset.favorite as boolean } : {}), ...(asset.variant !== undefined ? { variant: asset.variant as BrandAsset["variant"] } : {}), ...(asset.tags !== undefined ? { tags: [...asset.tags as string[]] } : {}) });
       assetIds.add(asset.id);
     }
     kits.push({ ...brand, id: candidate.id, palette: [...candidate.palette], assets });
@@ -1545,6 +1575,7 @@ function parseBrandKits(value: unknown): SavedBrandKit[] | null {
 
 function safeImageUrl(value: unknown): value is string {
   if (!string(value, MAX_IMAGE_CHARS) || !value) return false;
+  if (isSafeBrandSvgUrl(value)) return true;
   if (value.startsWith("data:")) {
     const match = value.match(
       /^data:image\/(png|jpeg|webp|gif|avif);base64,([A-Za-z0-9+/]+={0,2})$/,
@@ -1584,9 +1615,10 @@ const numberIn = (value: unknown, min: number, max: number): value is number =>
   value <= max;
 
 function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | null {
+  if (!optional(value,"publicAlt",candidate=>string(candidate,2000)) || !optional(value,"previewSrc",safeImageUrl)) return null;
   if (!optional(value, "directive", candidate => string(candidate, 2000)) || !optional(value, "rightsNote", candidate => string(candidate, 2000))) return null;
   const result: PhotoMetadata = {};
-  for (const key of ["directive", "rightsNote"] as const) if (value[key] !== undefined) result[key] = value[key] as string;
+  for (const key of ["directive", "rightsNote", "publicAlt", "previewSrc"] as const) if (value[key] !== undefined) result[key] = value[key] as string;
   if (value.sourceUrl !== undefined) {
     if (!string(value.sourceUrl, 4000)) return null;
     try { const url = new URL(value.sourceUrl); if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return null; } catch { return null; }
@@ -1603,15 +1635,16 @@ function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | nul
 
 /** Validate nested photo fills with the same URL and crop constraints as image layers. */
 export function parseShapeImageFill(value: unknown): ShapeImageFill | null {
+  if (object(value) && (!optional(value, "previewSrc", safeImageUrl) || !optional(value, "publicAlt", candidate => string(candidate, 2000)))) return null;
   if (!object(value) || !safeImageUrl(value.src) || !choice(["cover", "contain"])(value.objectFit) || !numberIn(value.cropX, 0, 100) || !numberIn(value.cropY, 0, 100) || !optional(value, "alt", candidate => string(candidate, 10_000)) || !optional(value, "cropScale", candidate => numberIn(candidate, .1, 20)) || !optional(value, "flipX", boolean) || !optional(value, "flipY", boolean) || !optional(value, "intrinsicWidth", candidate => numberIn(candidate, 1, 100_000)) || !optional(value, "intrinsicHeight", candidate => numberIn(candidate, 1, 100_000))) return null;
   const metadata = parsePhotoMetadata(value);
   if (!metadata) return null;
   const result: ShapeImageFill = { ...metadata, src: value.src, objectFit: value.objectFit as ShapeImageFill["objectFit"], cropX: value.cropX, cropY: value.cropY };
-  for (const key of ["alt", "cropScale", "flipX", "flipY", "intrinsicWidth", "intrinsicHeight"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  for (const key of ["alt", "publicAlt", "previewSrc", "cropScale", "flipX", "flipY", "intrinsicWidth", "intrinsicHeight"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
   return result;
 }
 
-function parseCanvas(value: unknown): CanvasScene | null {
+export function parseCanvas(value: unknown): CanvasScene | null {
   if (
     !object(value) ||
     !color(value.background) ||
@@ -1629,8 +1662,8 @@ function parseCanvas(value: unknown): CanvasScene | null {
     if (!Array.isArray(value.groups) || value.groups.length > 100) return null;
     const groups: CanvasGroup[] = [];
     for (const group of value.groups) {
-      if (!object(group) || !identity(group.id) || !string(group.name, 200) || !optional(group, "parentId", identity) || !optional(group, "locked", boolean) || !optional(group, "hidden", boolean)) return null;
-      groups.push({ id: group.id, name: group.name, ...(group.parentId !== undefined ? { parentId: group.parentId as string } : {}), ...(group.locked !== undefined ? { locked: group.locked as boolean } : {}), ...(group.hidden !== undefined ? { hidden: group.hidden as boolean } : {}) });
+      if (!object(group) || !identity(group.id) || !string(group.name, 200) || !optional(group, "parentId", identity) || !optional(group, "locked", boolean) || !optional(group, "hidden", boolean) || !optional(group,"opacity",candidate=>numberIn(candidate,0,1))) return null;
+      groups.push({ id: group.id, name: group.name, ...(group.parentId !== undefined ? { parentId: group.parentId as string } : {}), ...(group.locked !== undefined ? { locked: group.locked as boolean } : {}), ...(group.hidden !== undefined ? { hidden: group.hidden as boolean } : {}), ...(group.opacity!==undefined?{opacity:group.opacity as number}:{}) });
     }
     if (!uniqueIds(groups)) return null;
     const map = new Map(groups.map(group => [group.id, group]));
@@ -1711,6 +1744,7 @@ function parseCanvas(value: unknown): CanvasScene | null {
         letterSpacing: element.letterSpacing,
       });
     } else if (element.type === "image") {
+      if (!optional(element, "previewSrc", safeImageUrl) || !optional(element, "publicAlt", candidate => string(candidate, 2000))) return null;
       if (
         !safeImageUrl(element.src) ||
         (element.fit !== "cover" && element.fit !== "contain") ||
@@ -1723,7 +1757,7 @@ function parseCanvas(value: unknown): CanvasScene | null {
       const imageExtensions: Partial<ImageElement> = {};
       const photoMetadata = parsePhotoMetadata(element);
       if (!photoMetadata) return null;
-      for (const key of ["cropScale", "flipX", "flipY", "mask", "intrinsicWidth", "intrinsicHeight"] as const) if (element[key] !== undefined) Object.assign(imageExtensions, { [key]: element[key] });
+      for (const key of ["publicAlt", "previewSrc", "cropScale", "flipX", "flipY", "mask", "intrinsicWidth", "intrinsicHeight"] as const) if (element[key] !== undefined) Object.assign(imageExtensions, { [key]: element[key] });
       scene.elements.push({
         ...photoMetadata,
         ...imageExtensions,
@@ -1811,6 +1845,7 @@ function parsePages(value: unknown): DesignPage[] | null {
     const canvas = p.canvas === undefined ? undefined : parseCanvas(p.canvas);
     if (canvas === null) return null;
     if (!optional(p, "label", candidate => string(candidate, 200)) || !optional(p, "useMaster", boolean)) return null;
+    if (!optional(p, "publicDescription", candidate => string(candidate, 5000)) || !optional(p, "readingOrder", candidate => Array.isArray(candidate) && candidate.length <= 200 && candidate.every(identity) && new Set(candidate).size === candidate.length)) return null;
     const source: StoryImage["source"] = [
       "google",
       "pinterest",
@@ -1827,6 +1862,8 @@ function parsePages(value: unknown): DesignPage[] | null {
       style,
       ...(p.label !== undefined ? { label: p.label as string } : {}),
       ...(p.useMaster !== undefined ? { useMaster: p.useMaster as boolean } : {}),
+      ...(p.publicDescription !== undefined ? { publicDescription: p.publicDescription as string } : {}),
+      ...(p.readingOrder !== undefined ? { readingOrder: [...p.readingOrder as string[]] } : {}),
       ...(canvas ? { canvas } : {}),
       image: {
         id: image.id,
@@ -1852,6 +1889,10 @@ function parsePages(value: unknown): DesignPage[] | null {
     imageIds.add(image.id);
   }
   return pages;
+}
+
+function normalizeReadingOrders(pages:DesignPage[],continuous?:CanvasScene,master?:CanvasScene) {
+  for(const page of pages)if(page.readingOrder){const available=new Set([...(continuous?.elements??page.canvas?.elements??[]),...(master?.elements??[])].map(element=>element.id));page.readingOrder=page.readingOrder.filter(id=>available.has(id));}
 }
 
 /** Validate untrusted imports and browser storage before anything is rendered.
@@ -1911,6 +1952,10 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
       library.builtInTemplateStates = states;
     }
     const designIds = new Set<string>();
+    const workspaceResources = parseResources({ styles: input.workspaceStyles, components: input.workspaceComponents });
+    if (!workspaceResources) return null;
+    if (input.workspaceStyles !== undefined) library.workspaceStyles = workspaceResources.styles;
+    if (input.workspaceComponents !== undefined) library.workspaceComponents = workspaceResources.components;
     const templateIds = new Set<string>();
     for (const d of input.designs) {
       if (
@@ -1969,6 +2014,7 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
           if (version.customSize !== undefined && (!object(version.customSize) || !numberIn(version.customSize.width, 100, 8192) || !numberIn(version.customSize.height, 100, 8192))) return null;
           const versionResources = parseResources(version);
           if (!versionResources) return null;
+          normalizeReadingOrders(versionPages,versionCanvas??undefined,versionMaster??undefined);
           versions.push({ id: version.id, name: version.name, createdAt: version.createdAt, format: version.format, pages: versionPages, caption: version.caption, ...(versionCanvas ? { continuousCanvas: versionCanvas } : {}), ...(versionMaster ? { masterScene: versionMaster } : {}), ...(version.customSize ? { customSize: { width: (version.customSize as {width:number}).width, height: (version.customSize as {height:number}).height } } : {}), ...(versionResources.styles !== undefined ? { styles: versionResources.styles } : {}), ...(versionResources.components !== undefined ? { components: versionResources.components } : {}), ...(versionResources.colorRoles !== undefined ? { colorRoles: versionResources.colorRoles } : {}), ...(versionResources.parameters !== undefined ? { parameters: versionResources.parameters } : {}) });
         }
         if (!uniqueIds(versions)) return null;
@@ -1976,6 +2022,7 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
       }
       const continuousCanvas = d.continuousCanvas === undefined ? undefined : parseCanvas(d.continuousCanvas);
       if (d.continuousCanvas !== undefined && (!continuousCanvas || pages.length < 2)) return null;
+      normalizeReadingOrders(pages,continuousCanvas??undefined,resources.masterScene);
       library.designs.push({
         ...resources,
         ...metadata,
@@ -2013,6 +2060,7 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
       if (!resources) return null;
       const continuousCanvas = t.continuousCanvas === undefined ? undefined : parseCanvas(t.continuousCanvas);
       if (t.continuousCanvas !== undefined && (!continuousCanvas || pages.length < 2)) return null;
+      normalizeReadingOrders(pages,continuousCanvas??undefined,resources.masterScene);
       library.templates.push({
         ...resources,
         id: t.id,
@@ -2030,4 +2078,56 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
   } catch {
     return null;
   }
+}
+
+/** Only the passive vector grammar produced by the Brand importer is accepted.
+ * No script, CSS, links, embedded images, entities or external references. */
+export const BRAND_SVG_PREFIX = "data:image/svg+xml;charset=utf-8,";
+const brandSvgNumeric = (value: string) => /^-?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value) && Number.isFinite(Number(value)) && Math.abs(Number(value)) <= 100_000;
+const brandSvgNumbers = (value: string) => value.trim().split(/[ ,]+/).every(brandSvgNumeric);
+const brandSvgPaint = (value: string) => /^(?:transparent|black|white|none|#(?:[\da-f]{3}|[\da-f]{4}|[\da-f]{6}|[\da-f]{8})|url\(#brand-g\d+\))$/i.test(value);
+const brandSvgAllowed: Record<string, Set<string>> = {
+  svg: new Set(["xmlns", "width", "height", "viewBox"]),
+  defs: new Set(), g: new Set(["transform", "opacity"]),
+  path: new Set(["d", "fill", "stroke", "stroke-width", "fill-rule", "stroke-dasharray", "transform", "opacity"]),
+  linearGradient: new Set(["id", "x1", "y1", "x2", "y2"]), radialGradient: new Set(["id", "cx", "cy", "r"]),
+  stop: new Set(["offset", "stop-color"]),
+};
+export function isSafeBrandSvg(source: string): boolean {
+  if (!source || source.length > 1_000_000 || /<!|<\?|&|[\u0000-\u0008]/.test(source)) return false;
+  const stack: string[] = [], ids = new Set<string>(), references: string[] = [];
+  const tokens = source.match(/<[^>]+>|[^<]+/g) ?? [];
+  let roots = 0;
+  for (const token of tokens) {
+    if (!token.startsWith("<")) { if (token.trim()) return false; continue; }
+    const close = token.match(/^<\/(\w+)>$/);
+    if (close) { if (stack.pop() !== close[1]) return false; continue; }
+    const tag = token.match(/^<(\w+)([\s\S]*?)\s*(\/?)>$/);
+    if (!tag || !brandSvgAllowed[tag[1]]) return false;
+    if (!stack.length) { if (tag[1] !== "svg" || ++roots !== 1) return false; }
+    if (tag[1] === "svg" && stack.length) return false;
+    const attributes = tag[2], seen = new Set<string>();
+    if (attributes.replace(/\s+[\w-]+="[^"]*"/g, "").trim()) return false;
+    for (const attr of attributes.matchAll(/\s+([\w-]+)="([^"]*)"/g)) {
+      const [, name, value] = attr;
+      if (!brandSvgAllowed[tag[1]].has(name) || seen.has(name)) return false;
+      seen.add(name);
+      if (name === "xmlns") { if (value !== "http://www.w3.org/2000/svg") return false; }
+      else if (name === "id") { if (!/^brand-g\d+$/.test(value) || ids.has(value)) return false; ids.add(value); }
+      else if (name === "d") { if (!value || value.length > 20_000 || !/^[MmLlHhVvCcSsQqTtAaZz\d.,+\-eE\s]+$/.test(value)) return false; }
+      else if (["fill", "stroke", "stop-color"].includes(name)) { if (!brandSvgPaint(value)) return false; const ref = value.match(/^url\(#(brand-g\d+)\)$/); if (ref) references.push(ref[1]); }
+      else if (name === "fill-rule") { if (!/^(?:evenodd|nonzero)$/.test(value)) return false; }
+      else if (name === "transform") { if (!value || value.replace(/(?:translate|rotate|scale|matrix)\(([-\d.eE+, ]+)\)/g, "").trim()) return false; for (const values of value.matchAll(/\(([^)]+)\)/g)) if (!brandSvgNumbers(values[1])) return false; }
+      else if (name === "viewBox") { const box = value.trim().split(/[ ,]+/); if (box.length !== 4 || !brandSvgNumbers(value) || Number(box[2]) <= 0 || Number(box[3]) <= 0) return false; }
+      else if (name === "stroke-dasharray") { if (!brandSvgNumbers(value)) return false; }
+      else if (!brandSvgNumeric(value.replace(/%$/, ""))) return false;
+    }
+    if (tag[1] === "svg" && (!seen.has("viewBox") || !seen.has("xmlns"))) return false;
+    if (!tag[3]) stack.push(tag[1]);
+  }
+  return roots === 1 && stack.length === 0 && references.every(id => ids.has(id));
+}
+export function isSafeBrandSvgUrl(value: unknown): boolean {
+  if (typeof value !== "string" || !value.startsWith(BRAND_SVG_PREFIX)) return false;
+  try { return isSafeBrandSvg(decodeURIComponent(value.slice(BRAND_SVG_PREFIX.length))); } catch { return false; }
 }

@@ -1,4 +1,6 @@
 import {imageResolution} from "./property-utils";
+import type {DesignDocument} from './model';
+import type {PdfOptions} from './pdf-options';
 
 /** Export rendered snapshots, with preflight and cancellable downloads. */
 export function saveBlob(blob: Blob, name: string) {
@@ -8,20 +10,25 @@ export function saveBlob(blob: Blob, name: string) {
 }
 export const fileName = (name: string) => name.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 80) || "design";
 export type ExportFormat = "png" | "jpeg" | "webp" | "pdf" | "svg";
-export interface ExportOptions {
+export interface ExportOptions extends PdfOptions {
   format?: ExportFormat;
   /** Pixels per canonical canvas pixel; 3 gives a 1080 px wide post. */
   scale?: number; quality?: number; transparent?: boolean; backgroundColor?: string;
   signal?: AbortSignal; onWarnings?: (warnings: string[]) => void;
+  delivery?:'archive'|'batches';batchSize?:number;
+  document?:DesignDocument;
+  totalFrames?:number;
+  getFrame?:(index:number,signal?:AbortSignal)=>Promise<HTMLElement>;
 }
 export function validateExportOptions(options: ExportOptions = {}) {
   const format = options.format ?? "png", scale = options.scale ?? 3, quality = options.quality ?? .92;
   if (!["png", "jpeg", "webp", "pdf", "svg"].includes(format)) throw new Error("Choose a supported export format.");
-  if (!Number.isFinite(scale) || scale < .25 || scale > 24) throw new Error("Export scale must be between 0.25 and 24.");
+  if (!Number.isFinite(scale) || scale <= 0 || (format !== "pdf" && (scale < .25 || scale > 24))) throw new Error("Export scale must be between 0.25 and 24.");
   if (!Number.isFinite(quality) || quality < .1 || quality > 1) throw new Error("Export quality must be between 10% and 100%.");
+  if(options.delivery!==undefined&&!['archive','batches'].includes(options.delivery)||options.batchSize!==undefined&&(!Number.isInteger(options.batchSize)||options.batchSize<1||options.batchSize>10))throw Error('Choose an archive or batches of 1–10 pages.');
   return {format, scale, quality, transparent: Boolean(options.transparent && format !== "jpeg" && format !== "pdf")};
 }
-async function bounded<T>(task: Promise<T>, signal?: AbortSignal, timeout = 20_000): Promise<T> {
+export async function bounded<T>(task: Promise<T>, signal?: AbortSignal, timeout = 20_000): Promise<T> {
   signal?.throwIfAborted();
   let timer: ReturnType<typeof setTimeout> | undefined, abort: (() => void) | undefined;
   try { return await Promise.race([task, new Promise<never>((_, reject) => {
@@ -30,14 +37,14 @@ async function bounded<T>(task: Promise<T>, signal?: AbortSignal, timeout = 20_0
     signal?.addEventListener("abort", abort, {once: true});
   })]); } finally { clearTimeout(timer); if (abort) signal?.removeEventListener("abort", abort); }
 }
-export async function preflightFrames(frames: HTMLElement[], options: ExportOptions = {}): Promise<string[]> {
+export async function preflightFrames(frames: HTMLElement[], options: ExportOptions & {resourceOnly?:boolean} = {}): Promise<string[]> {
   if (!frames.length) throw new Error("No pages to export.");
   const {scale, format} = validateExportOptions(options);
   await bounded(document.fonts.ready, options.signal);
   const warnings: string[] = [];
   for (const [index, frame] of frames.entries()) {
     options.signal?.throwIfAborted();
-    if (!frame.offsetWidth || !frame.offsetHeight || (format !== "svg" && frame.offsetWidth * frame.offsetHeight * scale * scale > 40_000_000) || Math.max(frame.offsetWidth, frame.offsetHeight) * scale > 16384) throw new Error(`Page ${index + 1} exceeds the export pixel limit. Choose a smaller scale.`);
+    if (!frame.offsetWidth || !frame.offsetHeight || (!options.resourceOnly && format !== "svg" && frame.offsetWidth * frame.offsetHeight * scale * scale > 40_000_000) || !options.resourceOnly && Math.max(frame.offsetWidth, frame.offsetHeight) * scale > 16384) throw new Error(`Page ${index + 1} exceeds the export pixel limit. Choose a smaller scale.`);
     for (const img of Array.from(frame.querySelectorAll("img"))) {
       try { await bounded(img.decode(), options.signal, 15_000); }
       catch (cause) { options.signal?.throwIfAborted(); throw new Error(`Page ${index + 1} has an image that could not load. Replace it and try again.`, {cause}); }
@@ -94,14 +101,21 @@ export function encodeImagePdf(pages: {data: Uint8Array; width: number; height: 
   return new Blob(chunks, {type: "application/pdf"});
 }
 export async function exportFrames(frames: HTMLElement[], name: string, caption: string, progress: (value: number) => void, options: ExportOptions = {}) {
-  const settings = validateExportOptions(options), warnings = await preflightFrames(frames, options);
-  options.onWarnings?.(warnings); options.signal?.throwIfAborted();
+  const settings=validateExportOptions(options),warnings:string[]=[],total=options.totalFrames??frames.length;
+  if(!total)throw Error('No pages to export.');
+  if(settings.format==='pdf'&&options.document){const{exportDocumentPdf}=await import('./pdf-export');return exportDocumentPdf(frames,name,progress,options);}
+  options.signal?.throwIfAborted();
   const {domToBlob, domToForeignObjectSvg} = await import("modern-screenshot"), outputs: Blob[] = [];
   const pdfPages: {data: Uint8Array; width: number; height: number}[] = [];
   const extension = settings.format === "jpeg" ? "jpg" : settings.format;
-  for (let i = 0; i < frames.length; i++) {
+  let outputBytes=0,batch=1;
+  const batchSize=options.delivery==='batches'?options.batchSize??4:total;
+  async function archive(){const JSZip=(await import('jszip')).default,zip=new JSZip();outputs.forEach((blob,index)=>zip.file(`${String((batch-1)*batchSize+index+1).padStart(2,'0')}-${fileName(name)}.${extension}`,blob));if(caption.trim())zip.file('caption.txt',caption.trim());if(warnings.length)zip.file('export-notes.txt',warnings.join('\n'));const blob=await zip.generateAsync({type:'blob',streamFiles:true},()=>options.signal?.throwIfAborted());options.signal?.throwIfAborted();saveBlob(blob,`${fileName(name)}${options.delivery==='batches'?`-part-${batch}`:''}.zip`);outputs.length=0;outputBytes=0;batch++;}
+  for (let i = 0; i < total; i++) {
     options.signal?.throwIfAborted();
-    const width = Number.parseFloat(frames[i].style.width) || frames[i].offsetWidth, height = Number.parseFloat(frames[i].style.height) || frames[i].offsetHeight;
+    const frame=options.getFrame?await bounded(options.getFrame(i,options.signal),options.signal):frames[i];
+    warnings.push(...(await preflightFrames([frame],options)).map(warning=>warning.replace('Page 1',`Page ${i+1}`)));options.onWarnings?.([...new Set(warnings)]);
+    const width = Number.parseFloat(frame.style.width) || frame.offsetWidth, height = Number.parseFloat(frame.style.height) || frame.offsetHeight;
     const outputWidth = Math.round(width * settings.scale), outputHeight = Math.round(height * settings.scale);
     const capture = {
       width: (outputWidth + .000001) / settings.scale, height: (outputHeight + .000001) / settings.scale,
@@ -113,19 +127,22 @@ export async function exportFrames(frames: HTMLElement[], name: string, caption:
     };
     let blob: Blob;
     if (settings.format === "svg") {
-      const svg = await bounded(domToForeignObjectSvg(frames[i], capture), options.signal, 60_000);
+      const svg = await bounded(domToForeignObjectSvg(frame, capture), options.signal, 60_000);
       svg.setAttribute("width", String(outputWidth)); svg.setAttribute("height", String(outputHeight));
       blob = new Blob([new XMLSerializer().serializeToString(svg)], {type: "image/svg+xml"});
-    } else blob = await bounded(domToBlob(frames[i], capture), options.signal, 60_000);
+    } else blob = await bounded(domToBlob(frame, capture), options.signal, 60_000);
     options.signal?.throwIfAborted();
     if (!blob.size) throw new Error(`Could not export page ${i + 1}.`);
+    outputBytes+=blob.size;if(outputBytes>64*1024*1024)throw Error('This export exceeds the 64 MB output budget. Choose smaller images or batch downloads.');
     if (settings.format === "pdf") pdfPages.push({data: new Uint8Array(await blob.arrayBuffer()), width: outputWidth, height: outputHeight});
     else { if (blob.type !== `image/${settings.format}`) throw new Error(`This browser does not support ${settings.format.toUpperCase()} export. Choose PNG.`); outputs.push(blob); }
-    progress(Math.round(((i + 1) / frames.length) * 90));
+    progress(Math.round(((i + 1) / total) * 90));
+    if(options.delivery==='batches'&&settings.format!=='pdf'&&outputs.length>=batchSize){await archive();}
   }
   options.signal?.throwIfAborted();
   const base = fileName(name);
   if (settings.format === "pdf") saveBlob(encodeImagePdf(pdfPages), `${base}.pdf`);
+  else if(options.delivery==='batches'){if(outputs.length)await archive();}
   else if (outputs.length === 1) saveBlob(outputs[0], `${base}.${extension}`);
   else {
     const JSZip = (await import("jszip")).default, zip = new JSZip();

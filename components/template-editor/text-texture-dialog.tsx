@@ -6,6 +6,7 @@ import { getTextWords, applyTextWordTextureToElement } from "@/lib/template-edit
 import { activeTextTextures } from "@/lib/template-editor/text-textures";
 import { proxied } from "@/lib/engine/util";
 import { Modal } from "./controls";
+import {elementWithPreviewAsset} from "@/lib/template-editor/media-preview";
 import { SceneRenderer } from "./canvas";
 import { prepareBrandAsset } from "./brand-workspace";
 import "./dialog-tools.css";
@@ -34,7 +35,7 @@ function TexturePreview({ element, background }: { element: TextElement; backgro
   return <div ref={ref} className="te-texture-preview" aria-label="Text texture preview" style={{ background }}>
     <div style={{ width: element.width * scale, height: element.height * scale }}>
       <div style={{ width: element.width, height: element.height, transform: `scale(${scale})`, transformOrigin: "top left", position: "relative" }}>
-        <SceneRenderer scene={{ background: "transparent", elements: [{ ...element, id: "texture-dialog-preview", x: 0, y: 0, rotation: 0, clipBounds: undefined, hidden: false }] }} />
+        <SceneRenderer scene={{ background: "transparent", elements: [elementWithPreviewAsset({ ...element, id: "texture-dialog-preview", x: 0, y: 0, rotation: 0, clipBounds: undefined, hidden: false })] }} />
       </div>
     </div>
   </div>;
@@ -68,7 +69,7 @@ export function TextTextureDialog({ element, background, photos, initialWords, d
     try {
       const asset = await prepareBrandAsset(file, "image");
       if (!mounted.current) return;
-      const photo: ShapeImageFill = { src: asset.src, alt: asset.name, objectFit: "cover", cropX: 50, cropY: 50, intrinsicWidth: asset.width, intrinsicHeight: asset.height };
+      const photo: ShapeImageFill = { src: asset.src, previewSrc: asset.previewSrc, alt: asset.name, objectFit: "cover", cropX: 50, cropY: 50, intrinsicWidth: asset.width, intrinsicHeight: asset.height };
       setUploads(items => [photo, ...items]); setTexture(photo);
     } catch (reason) { if (mounted.current) setError(reason instanceof Error ? reason.message : "Could not load this image."); }
     finally { if (mounted.current) setUploading(false); }
@@ -90,7 +91,7 @@ export function TextTextureDialog({ element, background, photos, initialWords, d
           <div className="te-texture-photos" role="group" aria-label="Available textures">
             {available.map((photo, index) => <button key={photo.src} type="button" aria-label={`Use ${photo.alt || `image ${index + 1}`} texture`} aria-pressed={texture?.src === photo.src} onClick={() => { setTexture(photo); setError(""); }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
-              <img src={proxied(photo.src)} alt="" loading="lazy" /><span>{photo.alt || `Image ${index + 1}`}</span>
+              <img src={proxied(photo.previewSrc ?? photo.src)} alt="" loading="lazy" /><span>{photo.alt || `Image ${index + 1}`}</span>
             </button>)}
           </div>
         </section>

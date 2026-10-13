@@ -1,5 +1,12 @@
 "use client";
+import { resolveEditorCommand, editorCommandHelp } from "@/lib/template-editor/editor-commands";
+import { saveSelectionTextStyle } from "@/lib/template-editor/editing-actions";
 
+import {ENGINE_CLIPBOARD_TYPE,encodeElementClipboard,decodeElementClipboard,plainClipboardText} from "@/lib/template-editor/clipboard";
+import type {ElementSnapshot} from "@/lib/template-editor/commands";
+import {useDocumentPresence} from "@/lib/template-editor/use-presence";
+import {PageAccessibilitySection} from "./page-accessibility";
+import {prepareRasterAsset} from "@/lib/template-editor/client-media";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeftIcon,
@@ -33,10 +40,18 @@ import {
   duplicateCanvasScene,
   formatDimensions,
 } from "@/lib/template-editor/model";
+import {pdfGeometry} from "@/lib/template-editor/pdf-options";
 import { exportFrames, fileName, saveBlob, type ExportOptions } from "@/lib/template-editor/export";
-import { updateTextStyle, applyTextStyle, updateColorRole, removeColorRole, resizeDesignDocument } from "@/lib/template-editor/advanced";
+import { updateColorRole, removeColorRole, resizeDesignDocument } from "@/lib/template-editor/advanced";
 import { LayoutPanel } from "./layout-panel";
 import { WorkflowPanel } from "./workflow-panel";
+import {WorkspaceResourcesPanel} from "./workspace-resources-panel";
+import {captureBrandImage,brandAssetPhoto} from "@/lib/template-editor/brand-assets";
+import {insertWorkspaceStyle,insertWorkspaceComponent,brandScene} from "@/lib/template-editor/library-workflows";
+import type {EditorLibrary,TextStyle,ReusableComponent} from "@/lib/template-editor/model";
+import {assertDesignExportBudget} from '@/lib/template-editor/export-renditions';
+import {prepareExportDimensions} from '@/lib/template-editor/export-dimensions';
+
 import { ExportDialog } from "./export-dialog";
 import { TemplateApplyDialog } from "./template-apply-dialog";
 import { TextTextureDialog } from "./text-texture-dialog";
@@ -47,7 +62,7 @@ import {applyDesignPatch} from "@/lib/template-editor/document-patch";
 import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type HistoryContext} from "@/lib/template-editor/history";
 import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/preflight";
 import { ColorField, Modal } from "./controls";
-import { CanvasEditor, type CanvasHistoryBridge } from "./canvas";
+import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls } from "./canvas";
 import type { TextFormattingPatch, TextFormatter } from "@/lib/template-editor/rich-text-editing";
 import { findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { PHOTO_DRAG_TYPE, decodePhotoDrag, writePhotoDrag } from "@/lib/template-editor/photo-drag";
@@ -79,7 +94,10 @@ type Tab =
   | "page"
   | "view";
 type Props = {
+  workspaceScope?: string;
   design: DesignDocument;
+  workspaceLibrary?: EditorLibrary;
+  onWorkspaceChange?: (recipe:(library:EditorLibrary)=>EditorLibrary)=>boolean|void;
   templates: DesignTemplate[];
   brand: BrandKit;
   brandKits: SavedBrandKit[];
@@ -96,7 +114,10 @@ type Props = {
 };
 
 export function DesignEditor({
+  workspaceScope,
   design: initial,
+  workspaceLibrary,
+  onWorkspaceChange,
   templates,
   brand,
   brandKits,
@@ -112,6 +133,7 @@ export function DesignEditor({
   onAddDesigns,
 }: Props) {
   const { openMenu } = useContextMenu();
+  const otherEditors=useDocumentPresence(initial.id,workspaceScope,canEdit);
   const [editingRequest, setEditingRequest] = useState<{id: string; serial: number}>();
   const [renameLayer, setRenameLayer] = useState<{id: string; name: string} | null>(null);
   const [design, setDesign] = useState<DesignDocument>(initial);
@@ -153,7 +175,6 @@ export function DesignEditor({
     openPanel("style");
   }
   const [selection, setSelected] = useState<string[]>([]);
-  const copied = useRef<CanvasElement[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [notice, setNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
@@ -167,6 +188,12 @@ export function DesignEditor({
   const [requestedIsolationGroupId,setIsolatedGroupId]=useState<string|null>(null);
   const [cropImageId,setCropImageId]=useState<string|null>(null);
   const [pathTool,setPathTool]=useState(false);
+  const [navigationMode,setNavigationMode]=useState<"select"|"hand"|"nodes">("select");
+  const [penClosed,setPenClosed]=useState(false);
+  const [penPointCount,setPenPointCount]=useState(0);
+  const [nodeToolbarHost,setNodeToolbarHost]=useState<HTMLDivElement|null>(null);
+  const drawingControls=useRef<CanvasDrawingControls|null>(null);
+  const registerDrawingControls=useCallback((controls:CanvasDrawingControls|null)=>{drawingControls.current=controls;},[]);
   const [imageDropTargetId,setImageDropTargetId]=useState<string|null>(null);
   const paletteDrag=useRef<(()=>void)|null>(null);
   const suppressPaletteClick=useRef(false);
@@ -181,6 +208,8 @@ export function DesignEditor({
   const registerFormatter=useCallback((formatter:TextFormatter|null)=>{textFormatter.current=formatter;},[]);
   const formatText=useCallback((patch:TextFormattingPatch)=>textFormatter.current?.(patch)??false,[]);
   const exportAbort=useRef<AbortController|null>(null);
+  const exportPreparation=useRef<AbortController|null>(null);
+  const [preparingExport,setPreparingExport]=useState(false);
   const [job, setJob] = useState<{
     design: DesignDocument;
     pageId?: string;
@@ -188,12 +217,16 @@ export function DesignEditor({
     options?: ExportOptions;
   } | null>(null);
   const [progress, setProgress] = useState(0);
+  const [exportPageIndex,setExportPageIndex]=useState(0);
+  const pendingExportFrame=useRef<{resolve:(frame:HTMLElement)=>void;reject:(error:unknown)=>void;cleanup:()=>void}|null>(null);
+  useLayoutEffect(()=>{if(!pendingExportFrame.current)return;const frame=exportRef.current?.querySelector<HTMLElement>('.te-frame');if(frame){const pending=pendingExportFrame.current;pendingExportFrame.current=null;pending.cleanup();pending.resolve(frame);}},[exportPageIndex,job]);
   const [uploading, setUploading] = useState(false);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      exportPreparation.current?.abort();
     };
   }, []);
   const [removePageId, setRemovePageId] = useState<string | null>(null);
@@ -305,7 +338,17 @@ export function DesignEditor({
       ? "Update template"
       : "Save template"
     : "Save as template";
-  const disabled = !canEdit || Boolean(job);
+  const disabled = !canEdit || Boolean(job) || preparingExport;
+  async function startExport(options:ExportOptions,pageIds:string[]) {
+    if(job||exportPreparation.current)return;
+    const controller=new AbortController();exportPreparation.current=controller;setPreparingExport(true);setExportDialog(false);
+    try {
+      const prepared=await prepareExportDimensions(structuredClone(design),pageIds,options,controller.signal);
+      controller.signal.throwIfAborted();assertDesignExportBudget(prepared,options,pageIds);
+      if(mounted.current)setJob({design:prepared,options,pageIds});
+    }catch(error){if(!controller.signal.aborted&&mounted.current)setNotice(error instanceof Error?error.message:'Export could not start.');}
+    finally{if(exportPreparation.current===controller)exportPreparation.current=null;if(mounted.current)setPreparingExport(false);}
+  }
   const blocked = useRef(disabled);
   useEffect(() => { blocked.current = disabled; }, [disabled]);
 
@@ -380,20 +423,159 @@ export function DesignEditor({
     return result.scene!==live&&!result.limited;
   }
   function applyCommand(command: (live:CanvasScene)=>SceneCommandResult):void { applyCommandChecked(command); }
-  function copyElements(ids: string[], cut = false) {
+  async function upload(file: File, replaceId?: string) {
+    if (disabled || uploading) return;
+    if(!replaceId&&(file.type==='image/svg+xml'||file.name.toLowerCase().endsWith('.svg'))){
+      const targetId=page.id,targetMaster=editingMaster,targetContinuous=Boolean(current.current.continuousCanvas),targetIsolation=isolatedGroupId??undefined;
+      setUploading(true);
+      try{
+        if(file.size>1_000_000)throw new Error('Use an SVG smaller than 1 MB.');
+        const imported=importSVG(await file.text(),file.name.replace(/\.svg$/i,''));
+        if(!mounted.current)return;
+        let inserted:string[]=[];
+        const accepted=commit(d=>{
+          const target=d.pages.find(p=>p.id===targetId);
+          if(!target)throw new Error('The target page was removed. Upload the SVG again.');
+          if(Boolean(d.continuousCanvas)!==targetContinuous)throw new Error('The canvas layout changed. Upload the SVG again.');
+          const live=targetMaster?d.masterScene??{background:'transparent',elements:[]}:d.continuousCanvas??target.canvas??sceneForPage(target,d.format);
+          if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the SVG again.');
+          if(live.elements.length+imported.elements.length>100)throw new Error('This SVG exceeds the page layer limit.');
+          const offset=targetContinuous&&!targetMaster?d.pages.indexOf(target)*FRAME_WIDTH:0;
+          const elements=imported.elements.map(e=>({...e,x:e.x+offset+24,y:e.y+24}));inserted=elements.map(e=>e.id);
+          const next=constrainSceneToIsolation(live,{...live,groups:[...(live.groups??[]),...(imported.groups??[])],elements:[...live.elements,...elements]},targetIsolation);
+          return targetMaster?{...d,masterScene:next}:targetContinuous?{...d,continuousCanvas:next}:{...d,pages:d.pages.map(p=>p.id===targetId?{...p,canvas:next}:p)};
+        });
+        if(accepted&&activePage.current===targetId)setSelected(inserted);
+      }catch(error){setNotice(error instanceof Error?error.message:'Could not import this SVG.');}
+      finally{if(mounted.current)setUploading(false);}
+      return;
+    }
+    const targetId = page.id;
+    const targetMaster=editingMaster;
+    const targetIsolation=isolatedGroupId??undefined;
+    const targetContinuous = Boolean(current.current.continuousCanvas);
+    setUploading(true);
+    try {
+      const {src,previewSrc,width:originalWidth,height:originalHeight} = await prepareRasterAsset(file);
+      if (!mounted.current) return;
+      const targetPage = current.current.pages.find((p) => p.id === targetId);
+      if (!targetPage)
+        throw new Error(
+          "The page was removed. Choose a page and upload again.",
+        );
+      if (targetContinuous !== Boolean(current.current.continuousCanvas)) throw new Error("The canvas layout changed. Please upload the image again.");
+      const targetScene =
+        targetMaster?current.current.masterScene??{background:'transparent',elements:[]}:current.current.continuousCanvas ?? targetPage.canvas ?? sceneForPage(targetPage, current.current.format);
+      if (
+        replaceId &&
+        !targetScene.elements.some(
+          (e) => e.id === replaceId && (e.type === "image"||e.type === "shape") && canEditElement(targetScene,e,'content') && scopeSelection(targetScene,[e.id],targetIsolation).length>0,
+        )
+      )
+        throw new Error(
+          "The image or frame was removed or locked. Select it and try again.",
+        );
+      if (!replaceId && targetScene.elements.length >= 100)
+        throw new Error("Each page supports up to 100 elements.");
+      const w = Math.max(1, Math.min(280, originalWidth / 3)),
+        h = Math.max(
+          1,
+          Math.min(canvasHeight * 0.7, (w * originalHeight) / originalWidth),
+        );
+      const image = createCanvasElement("image", {
+        src,
+        previewSrc,
+        name: file.name.slice(0, 100),
+        x: (targetContinuous ? current.current.pages.indexOf(targetPage) * FRAME_WIDTH : 0) + (FRAME_WIDTH - w) / 2,
+        y: (canvasHeight - h) / 2,
+        width: w,
+        height: h,
+        intrinsicWidth:originalWidth,
+        intrinsicHeight:originalHeight,
+      });
+      const accepted = commit((d) => {
+        const update = (live: CanvasScene): CanvasScene => {
+          if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the image again.');
+          const frame=replaceId?live.elements.find(element=>element.id===replaceId&&element.type==='shape'):undefined;
+          if(frame)return fillShapeWithImage(live,frame.id,{src,previewSrc,alt:file.name.slice(0,200),objectFit:'cover',cropX:50,cropY:50,cropScale:1,intrinsicWidth:originalWidth,intrinsicHeight:originalHeight}).scene;
+          return constrainSceneToIsolation(live,{...live, elements: replaceId
+          ? live.elements.map((element) => element.id === replaceId && element.type === "image" ? {...element, src, previewSrc, intrinsicWidth:originalWidth,intrinsicHeight:originalHeight,name: file.name.slice(0, 100)} : element)
+          : [...live.elements, image]},targetIsolation);
+        };
+        return targetMaster?{...d,masterScene:update(d.masterScene??{background:'transparent',elements:[]})}:d.continuousCanvas ? {...d, continuousCanvas: update(d.continuousCanvas)} : {
+          ...d, pages: d.pages.map((p) => p.id === targetId ? {...p, canvas: update(p.canvas ?? sceneForPage(p, d.format))} : p),
+        };
+      });
+      if (!accepted) return;
+      if (activePage.current === targetId) setSelected([replaceId ?? image.id]);
+      setNotice(
+        replaceId
+          ? "Image replaced."
+          : "Image added. Drag its handles to resize it.",
+      );
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error ? reason.message : "Could not open this image.",
+      );
+    } finally {
+      if (mounted.current) setUploading(false);
+    }
+  }
+  async function copyElements(ids: string[], cut = false, transfer?: DataTransfer) {
     if (cut && blocked.current) return;
     const target = current.current.pages.find((item) => item.id === page.id);
     if (!target) return;
     const live = editingMaster?current.current.masterScene??scene:current.current.continuousCanvas ?? target.canvas ?? sceneForPage(target, current.current.format);
     const scoped = scopeSelection(live, ids, isolatedGroupId ?? undefined);
     const copyIds = cut ? scoped.filter(id => { const element = live.elements.find(item => item.id === id); return element && canEditElement(live, element, "delete"); }) : scoped;
-    copied.current = copySelection(live, copyIds, isolatedGroupId ?? undefined, { x: !editingMaster && current.current.continuousCanvas ? current.current.pages.indexOf(target) * FRAME_WIDTH : 0, y: 0 });
-    if (cut) applyCommand((live) => removeSelection(live, copyIds));
-    setNotice(`${copied.current.length} element${copied.current.length === 1 ? "" : "s"} ${cut ? "cut" : "copied"}. Paste on any page in this design.`);
+    const snapshot = copySelection(live, copyIds, isolatedGroupId ?? undefined, { x: !editingMaster && current.current.continuousCanvas ? current.current.pages.indexOf(target) * FRAME_WIDTH : 0, y: 0 });
+    if (!snapshot.length) return;
+    try {
+      const documentId = current.current.id, pageId = activePage.current;
+      const encoded = encodeElementClipboard(snapshot,documentId);
+      if(transfer) {transfer.setData(ENGINE_CLIPBOARD_TYPE,encoded);transfer.setData("text/plain",encoded);}
+      else await navigator.clipboard.writeText(encoded);
+      if (cut && current.current.id===documentId && activePage.current===pageId) {
+        const latest = editingMaster?current.current.masterScene:current.current.continuousCanvas??current.current.pages.find(p=>p.id===pageId)?.canvas;
+        if(latest===live) applyCommand((latest) => removeSelection(latest, copyIds));
+        else {setNotice("Copied. The page changed while copying, so its objects were kept.");return;}
+      }
+      setNotice(`${snapshot.length} object${snapshot.length === 1 ? "" : "s"} ${cut ? "cut" : "copied"}. Paste into any Engine project.`);
+    } catch {setNotice("Clipboard access was blocked. Focus the canvas and use ⌘/Ctrl C or X. Your objects were kept.");}
   }
-  function pasteElements(live: CanvasScene, position?: { x: number; y: number }) {
+  function pasteElements(live: CanvasScene, snapshot:ElementSnapshot, position?: { x: number; y: number }) {
     const index = current.current.pages.findIndex(item => item.id === page.id);
-    return pasteSelection(live, copied.current, position, { x: !editingMaster && current.current.continuousCanvas ? Math.max(0,index) * FRAME_WIDTH : 0, y: 0 });
+    return pasteSelection(live, snapshot, position, { x: !editingMaster && current.current.continuousCanvas ? Math.max(0,index) * FRAME_WIDTH : 0, y: 0 });
+  }
+  function pasteClipboardText(text:string,position?:{x:number;y:number}) {
+    try {
+      const snapshot=decodeElementClipboard(text,current.current.id);
+      if(snapshot) {applyCommand(live=>pasteElements(live,snapshot,position));return;}
+      const value=plainClipboardText(text);
+      if(value.trim()) {
+        const offset=!editingMaster&&current.current.continuousCanvas?Math.max(0,current.current.pages.findIndex(item=>item.id===page.id))*FRAME_WIDTH:0;
+        const element=createCanvasElement("text",{text:value,name:value.slice(0,100),font:brand.font,color:brand.text,x:position?.x??offset+40,y:position?.y??40,width:280,height:120,textMode:"auto-height"});
+        applyCommand(live=>live.elements.length>=100?{scene:live,selectedIds:[],limited:true}:{scene:{...live,elements:[...live.elements,element]},selectedIds:[element.id],limited:false});
+      }
+    }catch(error){setNotice(error instanceof Error?error.message:"Could not paste the clipboard.");}
+  }
+  async function pasteFromSystemClipboard(position?:{x:number;y:number}) {
+    if(disabled)return;
+    const documentId=current.current.id,pageId=activePage.current;
+    try {
+      if(navigator.clipboard.read) {
+        const items=await navigator.clipboard.read();
+        if(current.current.id!==documentId||activePage.current!==pageId)return;
+        const image=items.find(item=>item.types.some(type=>["image/png","image/jpeg","image/webp"].includes(type)));
+        if(image){const type=image.types.find(type=>["image/png","image/jpeg","image/webp"].includes(type))!;const blob=await image.getType(type);if(current.current.id!==documentId||activePage.current!==pageId)return;await upload(new File([blob],"Pasted image",{type}));return;}
+        const item=items.find(item=>item.types.includes("text/plain"));
+        if(item){const text=await(await item.getType("text/plain")).text();if(current.current.id===documentId&&activePage.current===pageId)pasteClipboardText(text,position);}
+        else setNotice("Copy an image, text, or Engine objects before pasting.");
+      }else {
+        const text=await navigator.clipboard.readText();
+        if(current.current.id===documentId&&activePage.current===pageId)pasteClipboardText(text,position);
+      }
+    }catch {setNotice("Focus the canvas and press ⌘/Ctrl V to paste from your clipboard.");}
   }
   function elementMenu(ids: string[]): ContextMenuItem[] {
     ids = scopeSelection(scene, ids, isolatedGroupId ?? undefined);
@@ -406,7 +588,7 @@ export function DesignEditor({
       {id: "copy", label: "Copy", shortcut: "⌘/Ctrl C", onSelect: () => copyElements(ids)},
       {id: "cut", label: "Cut", shortcut: "⌘/Ctrl X", disabled: disabled || !deletable.length, onSelect: () => copyElements(ids, true)},
       {id: "duplicate", label: "Duplicate", shortcut: "⌘/Ctrl D", disabled: disabled || !editable.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => duplicateSelection(live, ids,undefined,isolatedGroupId??undefined))},
-      {id: "paste", label: "Paste", shortcut: "⌘/Ctrl V", disabled: disabled || !copied.current.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => pasteElements(live))},
+      {id: "paste", label: "Paste", shortcut: "⌘/Ctrl V", disabled: disabled || scene.elements.length >= 100, onSelect: () => {void pasteFromSystemClipboard();}},
       {id:'group',label:'Group selection',shortcut:'⌘/Ctrl G',disabled:disabled||editable.length<2,onSelect:()=>applyCommand(live=>groupSelection(live,ids,"Group",isolatedGroupId??undefined))},
       {id:'ungroup',label:'Ungroup',shortcut:'⌘/Ctrl ⇧ G',disabled:disabled||!editable.some(e=>e.groupId&&e.groupId!==isolatedGroupId),onSelect:()=>applyCommand(live=>ungroupSelection(live,ids,isolatedGroupId??undefined))},
       ...((single?.type==='image'||(single?.type==='shape'&&single.imageFill))?[{id:'crop-image',label:cropImageId===single.id?'Finish crop':'Crop image',disabled:disabled||!canEditElement(scene,single,'style'),onSelect:()=>setCropImageId(cropImageId===single.id?null:single.id)}]:[]),
@@ -420,10 +602,9 @@ export function DesignEditor({
       {id: "visibility", label: elements.some((element) => !element.hidden) ? "Hide layers" : "Show layers", disabled:disabled||!elements.some(e=>!isElementLocked(scene,e)), onSelect: () => applyCommand((live) => ({scene: {...live, elements: live.elements.map((element) => ids.includes(element.id)&&!isElementLocked(live,element) ? {...element, hidden: elements.some((item) => !item.hidden)} : element)}, selectedIds: ids, limited: false}))},
       ...(single ? [{id: "locate", label: "Find on workspace", onSelect: () => locateLayer(single)}] : []),
       ...(single ? [{id: "rename", label: "Rename layer", disabled: disabled || !canEditElement(scene,single,"content"), onSelect: () => setRenameLayer({id: single.id, name: single.name})}] : []),
-      ...(single?.type === "image" ? [{id:"save-brand", label:"Save image to brand kit", disabled:disabled || (brandKits.find((kit) => kit.id === activeBrandKitId)?.assets.length ?? 0) >= 40, onSelect:() => {
+      ...(single?.type === "image" ? [{id:"save-brand", label:"Save image to brand kit", disabled:disabled || (brandKits.find((kit) => kit.id === activeBrandKitId)?.assets.length ?? 0) >= 40, onSelect:async() => {
         if (blocked.current) return;
-        if (onSaveBrandAsset({id:crypto.randomUUID(),name:single.name,src:single.src,width:single.width,height:single.height,kind:"image"}, activeBrandKitId) === false) return;
-        setNotice("Image saved to your brand kit. Reuse it from the Brand tab.");
+        try {const asset=await captureBrandImage(single);if(blocked.current)return;if(onSaveBrandAsset(asset,activeBrandKitId)===false)return;setNotice("Original image saved to your brand kit.");}catch(reason){setNotice(reason instanceof Error?reason.message:"This image could not be saved.");}
       }}] : []),
       {id: "properties", label: "Show properties", onSelect: () => openInspector()},
       {id: "delete", label: "Delete", shortcut: "⌫", separator: true, danger: true, disabled: disabled || !deletable.length, onSelect: () => applyCommand((live) => removeSelection(live, ids))},
@@ -437,7 +618,7 @@ export function DesignEditor({
     openMenu(event, {
       label: ids.length > 1 ? `${ids.length} selected elements` : ids.length ? scene.elements.find((e) => e.id === ids[0])?.name ?? "Element" : "Canvas",
       items: ids.length ? elementMenu(ids) : [
-        {id: "paste", label: "Paste here", shortcut: "⌘/Ctrl V", disabled: disabled || !copied.current.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => pasteElements(live, position))},
+        {id: "paste", label: "Paste here", shortcut: "⌘/Ctrl V", disabled: disabled || scene.elements.length >= 100, onSelect: () => {void pasteFromSystemClipboard(position);}},
         {id: "text", label: "Add text", shortcut: "T", disabled, onSelect: () => addText()},
         {id: "shape", label: "Add rectangle", shortcut: "R", disabled, onSelect: () => addShape("rectangle")},
         {id: "image", label: "Upload image", disabled: disabled || uploading, onSelect: () => fileRef.current?.click()},
@@ -456,7 +637,7 @@ export function DesignEditor({
       {id: "add-page", label: continuous ? "Add slide at end" : "Add blank page after", disabled: disabled || design.pages.length >= 20, onSelect: () => addPage(false, target)},
       {id: "left", label: "Move page left", separator: true, disabled: disabled || continuous || targetIndex === 0, onSelect: () => movePage(targetIndex, targetIndex - 1)},
       {id: "right", label: "Move page right", disabled: disabled || continuous || targetIndex === design.pages.length - 1, onSelect: () => movePage(targetIndex, targetIndex + 1)},
-      {id: "export-page", label: "Download page as PNG", separator: true, disabled: Boolean(job) || uploading, onSelect: () => setJob({design: structuredClone(design), pageId: target.id})},
+      {id: "export-page", label: "Download page as PNG", separator: true, disabled: Boolean(job) || uploading, onSelect: () => {void startExport({},[target.id]);}},
       {id: "delete-page", label: "Delete page", danger: true, separator: true, disabled: disabled || (continuous ? design.pages.length <= 2 || targetIndex !== design.pages.length - 1 : design.pages.length <= 1), onSelect: () => setRemovePageId(target.id)},
     ]});
   }
@@ -464,7 +645,7 @@ export function DesignEditor({
     openMenu(event, {label: design.name || "Design workspace", items: [
       {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", disabled: disabled || !historyState.undo, onSelect: () => travel("undo")},
       {id: "redo", label: "Redo", shortcut: "⌘/Ctrl ⇧ Z", disabled: disabled || !historyState.redo, onSelect: () => travel("redo")},
-      {id: "paste", label: "Paste elements", shortcut: "⌘/Ctrl V", disabled: disabled || !copied.current.length, onSelect: () => applyCommand((live) => pasteElements(live))},
+      {id: "paste", label: "Paste elements", shortcut: "⌘/Ctrl V", disabled: disabled, onSelect: () => {void pasteFromSystemClipboard();}},
       {id: "add", label: "Add blank page", separator: true, disabled: disabled || design.pages.length >= 20, onSelect: () => addPage()},
       {id: "template", label: saveTemplateLabel, disabled, onSelect: () => setTemplateName(design.name)},
       {id: "fit", label: "Fit page", separator: true, onSelect: fitPage},
@@ -528,6 +709,7 @@ export function DesignEditor({
         return;
       const mod = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
+      const command=resolveEditorCommand(event);
       const historyDirection=historyShortcut(event);
       if (historyDirection) {
         event.preventDefault();
@@ -535,39 +717,30 @@ export function DesignEditor({
         return;
       }
       if(!mod&&target.closest('button,a[href],summary,[role="button"]')&&!target.closest('.te-canvas-hit'))return;
-      if (mod && key === "a") {
+      if (command === "select-all") {
         event.preventDefault();
         setSelected(selectable.map(e=>e.id));
         return;
       }
-      if (mod && (key === "c" || key === "x") && selected.length) {
-        event.preventDefault();
-        copyElements(selected, key === "x");
-        return;
-      }
-      if (mod && key === "d" && selected.length) {
+      if (command === "duplicate" && selected.length) {
         event.preventDefault();
         applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined));
         return;
       }
-      if(mod&&key==='g'){event.preventDefault();applyCommand(live=>event.shiftKey?ungroupSelection(live,selected,isolatedGroupId??undefined):groupSelection(live,selected,"Group",isolatedGroupId??undefined));return;}
-      if(!mod&&key===' '){event.preventDefault();setSpacePanning(true);return;}
-      if (mod && key === "v" && copied.current.length) {
-        event.preventDefault();
-        applyCommand((live) => pasteElements(live));
-        return;
-      }
-      if ((key === "delete" || key === "backspace") && selected.length) {
+      if(command==='group'||command==='ungroup'){event.preventDefault();applyCommand(live=>event.shiftKey?ungroupSelection(live,selected,isolatedGroupId??undefined):groupSelection(live,selected,"Group",isolatedGroupId??undefined));return;}
+      if(command==='pan'){event.preventDefault();setSpacePanning(true);return;}
+      if (command === "delete" && selected.length) {
         event.preventDefault();
         applyCommand((live) => removeSelection(live, selected));
         return;
       }
-      if (mod && (key === "]" || key === "[")) {
+      if (["forward","backward","front","back"].includes(command??"")) {
         event.preventDefault();
-        applyCommand((live) => reorderSelection(live, selected, key === "]" ? (event.shiftKey ? "front" : "forward") : (event.shiftKey ? "back" : "backward")));
+        applyCommand((live) => reorderSelection(live, selected, command as "front"|"forward"|"back"|"backward"));
         return;
       }
-      if (key.startsWith("arrow") && selected.length) {
+      if(command==="nudge"&&navigationMode==="hand"){event.preventDefault();const amount=event.shiftKey?100:30;workspaceRef.current?.scrollBy({left:key==="arrowright"?amount:key==="arrowleft"?-amount:0,top:key==="arrowdown"?amount:key==="arrowup"?-amount:0});return;}
+      if (command === "nudge" && selected.length) {
         event.preventDefault();
         const distance = (event.shiftKey ? 10 : 1)/(format.width/FRAME_WIDTH);
         const dx =
@@ -580,20 +753,25 @@ export function DesignEditor({
         );
         return;
       }
-      if (key === "escape") {
+      if (command === "escape") {
         setSelected([]);
         setCropImageId(null);setIsolatedGroupId(null);setPathTool(false);setImageDropTargetId(null);paletteDrag.current?.();
         return;
       }
-      if (!mod && !event.altKey && key === "t") {
+      if(command==="nodes"&&(selected.length!==1||!scene.elements.some(element=>element.id===selected[0]&&element.type==="shape"&&canEditElement(scene,element,"style")&&canEditElement(scene,element,"position")))){event.preventDefault();setNotice("Select an unlocked shape to edit its path nodes.");return;}
+      if(command==="hand"||command==="select"||command==="nodes"){event.preventDefault();setNavigationMode(command==="select"?"select":command);setPathTool(false);setCropImageId(null);return;}
+      if(command==="pen"){event.preventDefault();setPathTool(value=>!value);setNavigationMode("select");setCropImageId(null);return;}
+      if(command==="zoom-in"||command==="zoom-out"){event.preventDefault();setZoom(value=>Math.max(.05,Math.min(32,value*(command==="zoom-in"?1.25:.8))));return;}
+      if(command==="fit"){event.preventDefault();fitPage();return;}
+      if (command === "text") {
         event.preventDefault();
         addText();
       }
-      if (!mod && !event.altKey && key === "r") {
+      if (command === "rectangle") {
         event.preventDefault();
         addShape("rectangle");
       }
-      if (!mod && !event.altKey && key === "o") {
+      if (command === "ellipse") {
         event.preventDefault();
         addShape("ellipse");
       }
@@ -601,6 +779,19 @@ export function DesignEditor({
     window.addEventListener("keydown", handler);
     const release=(e:KeyboardEvent)=>{if(e.key===' ')setSpacePanning(false);};const blur=()=>setSpacePanning(false);window.addEventListener('keyup',release);window.addEventListener('blur',blur);
     return () => {window.removeEventListener("keydown", handler);window.removeEventListener('keyup',release);window.removeEventListener('blur',blur);};
+  });
+  useEffect(() => {
+    const editable=(target:EventTarget|null)=>target instanceof HTMLElement&&Boolean(target.closest("input,textarea,select,[contenteditable=true],dialog,[role=menu]"));
+    const copy=(event:ClipboardEvent)=>{if(event.defaultPrevented||editable(event.target)||Boolean(window.getSelection()?.toString())||!selected.length||!event.clipboardData)return;event.preventDefault();void copyElements(selected,event.type==="cut",event.clipboardData);};
+    const paste=(event:ClipboardEvent)=>{
+      if(event.defaultPrevented||editable(event.target)||disabled||!event.clipboardData)return;
+      const file=Array.from(event.clipboardData.files).find(file=>file.type.startsWith("image/"));
+      if(file){event.preventDefault();void upload(file);return;}
+      const text=event.clipboardData.getData(ENGINE_CLIPBOARD_TYPE)||event.clipboardData.getData("text/plain");
+      if(text){event.preventDefault();pasteClipboardText(text);}
+    };
+    window.addEventListener("copy",copy);window.addEventListener("cut",copy);window.addEventListener("paste",paste);
+    return()=>{window.removeEventListener("copy",copy);window.removeEventListener("cut",copy);window.removeEventListener("paste",paste);};
   });
   useEffect(() => {
     const node = workspaceRef.current;
@@ -624,16 +815,19 @@ export function DesignEditor({
     if (!job) return;
     let ignore = false;
     const abort=new AbortController();exportAbort.current=abort;
+    let exportWarnings:string[]=[];
+    const pageIds=job.design.pages.filter(page=>(!job.pageId||page.id===job.pageId)&&(!job.pageIds||job.pageIds.includes(page.id))).map(page=>page.id);
+    const getFrame=(index:number,signal?:AbortSignal):Promise<HTMLElement>=>{if(index===0){const frame=exportRef.current?.querySelector<HTMLElement>('.te-frame');if(frame)return Promise.resolve(frame);}return new Promise((resolve,reject)=>{const cancel=()=>{pendingExportFrame.current=null;reject(signal?.reason??new DOMException('Export cancelled','AbortError'));};signal?.addEventListener('abort',cancel,{once:true});pendingExportFrame.current={resolve,reject,cleanup:()=>signal?.removeEventListener('abort',cancel)};setExportPageIndex(index);});};
     const frames = Array.from(
       exportRef.current?.querySelectorAll<HTMLElement>(".te-frame") ?? [],
     );
     exportFrames(frames, job.design.name, job.design.caption, (p) => {
       if (!ignore) setProgress(p);
-    },{scale:formatDimensions(job.design).width/FRAME_WIDTH,...job.options,signal:abort.signal})
+    },{scale:formatDimensions(job.design).width/FRAME_WIDTH,...job.options,document:job.design,totalFrames:pageIds.length,getFrame,signal:abort.signal,onWarnings:warnings=>{exportWarnings=warnings;}})
       .then(() => {
         if (!ignore)
           setNotice(
-            `${(job.options?.format??'png').toUpperCase()} downloaded · ${frames.length} page${frames.length===1?'':'s'}.`,
+            `${(job.options?.format??'png').toUpperCase()} downloaded · ${pageIds.length} page${pageIds.length===1?'':'s'}.${exportWarnings.length?' '+exportWarnings.join(' '):''}`,
           );
       })
       .catch((reason) => {
@@ -647,12 +841,12 @@ export function DesignEditor({
       .finally(() => {
         if (!ignore) {
           setJob(null);
-          setProgress(0);
+          setProgress(0);setExportPageIndex(0);
         }
       });
     return () => {
       ignore = true;
-      abort.abort();exportAbort.current=null;
+      abort.abort();exportAbort.current=null;pendingExportFrame.current?.reject(new DOMException('Export cancelled','AbortError'));pendingExportFrame.current?.cleanup();pendingExportFrame.current=null;
     };
   }, [job]);
 
@@ -728,8 +922,8 @@ export function DesignEditor({
     const range = textFormatter.current?.capture();
     const words = range?.elementId === element.id ? getTextWords(element).filter(word => word.end > range.start && word.start < range.end).map(word => word.index) : undefined;
     const scenes = [...current.current.pages.map(item => item.canvas ?? sceneForPage(item,current.current.format)),current.current.continuousCanvas,current.current.masterScene].filter((item):item is CanvasScene => Boolean(item));
-    const photos:ShapeImageFill[] = scenes.flatMap(item => item.elements.flatMap(layer => layer.type === "image" ? [{src:layer.src,alt:layer.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:layer.intrinsicWidth,intrinsicHeight:layer.intrinsicHeight,directive:layer.directive,rightsNote:layer.rightsNote,sourceUrl:layer.sourceUrl,provenance:layer.provenance}] : layer.type === "shape" && layer.imageFill ? [layer.imageFill] : layer.type === "text" ? activeTextTextures(layer) : []));
-    photos.push(...brandKits.flatMap(kit => kit.assets.map(asset => ({src:asset.src,alt:asset.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:asset.width,intrinsicHeight:asset.height}))));
+    const photos:ShapeImageFill[] = scenes.flatMap(item => item.elements.flatMap(layer => layer.type === "image" ? [{src:layer.src,previewSrc:layer.previewSrc,alt:layer.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:layer.intrinsicWidth,intrinsicHeight:layer.intrinsicHeight,directive:layer.directive,rightsNote:layer.rightsNote,sourceUrl:layer.sourceUrl,provenance:layer.provenance}] : layer.type === "shape" && layer.imageFill ? [layer.imageFill] : layer.type === "text" ? activeTextTextures(layer) : []));
+    photos.push(...brandKits.flatMap(kit => kit.assets.map(asset => ({...brandAssetPhoto(asset),objectFit:"cover" as const}))));
     photos.push(...["forest","dunes","coral","folds","orbits","sculpture"].map(name => ({src:`/template-editor/${name}.svg`,alt:`${name} artwork`,objectFit:"cover" as const,cropX:50,cropY:50})));
     setTextureTarget({element:structuredClone(element),context:editorTarget.current,words,photos,background:live.background});
     setEditingRequest(undefined);
@@ -747,136 +941,29 @@ export function DesignEditor({
     if (result.scene !== live && !changeScene(result.scene)) throw new Error("Could not save this texture. Please try again.");
     setNotice(texture ? words === "all" ? "Texture applied to all words." : `Texture applied to ${words.length} selected word${words.length === 1 ? "" : "s"}.` : "Texture removed. You can restore it with Undo.");
   }
-  async function upload(file: File, replaceId?: string) {
-    if (disabled || uploading) return;
-    if(!replaceId&&(file.type==='image/svg+xml'||file.name.toLowerCase().endsWith('.svg'))){
-      const targetId=page.id,targetMaster=editingMaster,targetContinuous=Boolean(current.current.continuousCanvas),targetIsolation=isolatedGroupId??undefined;
-      setUploading(true);
-      try{
-        if(file.size>1_000_000)throw new Error('Use an SVG smaller than 1 MB.');
-        const imported=importSVG(await file.text(),file.name.replace(/\.svg$/i,''));
-        if(!mounted.current)return;
-        let inserted:string[]=[];
-        const accepted=commit(d=>{
-          const target=d.pages.find(p=>p.id===targetId);
-          if(!target)throw new Error('The target page was removed. Upload the SVG again.');
-          if(Boolean(d.continuousCanvas)!==targetContinuous)throw new Error('The canvas layout changed. Upload the SVG again.');
-          const live=targetMaster?d.masterScene??{background:'transparent',elements:[]}:d.continuousCanvas??target.canvas??sceneForPage(target,d.format);
-          if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the SVG again.');
-          if(live.elements.length+imported.elements.length>100)throw new Error('This SVG exceeds the page layer limit.');
-          const offset=targetContinuous&&!targetMaster?d.pages.indexOf(target)*FRAME_WIDTH:0;
-          const elements=imported.elements.map(e=>({...e,x:e.x+offset+24,y:e.y+24}));inserted=elements.map(e=>e.id);
-          const next=constrainSceneToIsolation(live,{...live,groups:[...(live.groups??[]),...(imported.groups??[])],elements:[...live.elements,...elements]},targetIsolation);
-          return targetMaster?{...d,masterScene:next}:targetContinuous?{...d,continuousCanvas:next}:{...d,pages:d.pages.map(p=>p.id===targetId?{...p,canvas:next}:p)};
-        });
-        if(accepted&&activePage.current===targetId)setSelected(inserted);
-      }catch(error){setNotice(error instanceof Error?error.message:'Could not import this SVG.');}
-      finally{if(mounted.current)setUploading(false);}
-      return;
-    }
-    const targetId = page.id;
-    const targetMaster=editingMaster;
-    const targetIsolation=isolatedGroupId??undefined;
-    const targetContinuous = Boolean(current.current.continuousCanvas);
-    setUploading(true);
-    let pendingBitmap:ImageBitmap|null=null;
-    try {
-      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type))
-        throw new Error("Choose a JPG, PNG, or WebP image.");
-      if (file.size > 15 * 1024 * 1024)
-        throw new Error("Choose an image smaller than 15 MB.");
-      const bitmap = await createImageBitmap(file);
-      pendingBitmap=bitmap;
-      if (!mounted.current) {
-        bitmap.close();
-        pendingBitmap=null;
-        return;
-      }
-      const ratio = Math.min(1, (targetContinuous ? Math.min(8192, 1080 * current.current.pages.length) : 1800) / Math.max(bitmap.width, bitmap.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
-      canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
-      const context = canvas.getContext("2d");
-      if (!context) {
-        bitmap.close();
-        pendingBitmap=null;
-        throw new Error("Image processing is unavailable.");
-      }
-      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      bitmap.close();
-      pendingBitmap=null;
-      const src = canvas.toDataURL("image/webp", 0.88);
-      if (src.length > 2_000_000)
-        throw new Error(
-          "This image is too large after processing. Use a smaller image.",
-        );
-      const targetPage = current.current.pages.find((p) => p.id === targetId);
-      if (!targetPage)
-        throw new Error(
-          "The page was removed. Choose a page and upload again.",
-        );
-      if (targetContinuous !== Boolean(current.current.continuousCanvas)) throw new Error("The canvas layout changed. Please upload the image again.");
-      const targetScene =
-        targetMaster?current.current.masterScene??{background:'transparent',elements:[]}:current.current.continuousCanvas ?? targetPage.canvas ?? sceneForPage(targetPage, current.current.format);
-      if (
-        replaceId &&
-        !targetScene.elements.some(
-          (e) => e.id === replaceId && (e.type === "image"||e.type === "shape") && canEditElement(targetScene,e,'content') && scopeSelection(targetScene,[e.id],targetIsolation).length>0,
-        )
-      )
-        throw new Error(
-          "The image or frame was removed or locked. Select it and try again.",
-        );
-      if (!replaceId && targetScene.elements.length >= 100)
-        throw new Error("Each page supports up to 100 elements.");
-      const w = Math.max(1, Math.min(280, canvas.width / 3)),
-        h = Math.max(
-          1,
-          Math.min(canvasHeight * 0.7, (w * canvas.height) / canvas.width),
-        );
-      const image = createCanvasElement("image", {
-        src,
-        name: file.name.slice(0, 100),
-        x: (targetContinuous ? current.current.pages.indexOf(targetPage) * FRAME_WIDTH : 0) + (FRAME_WIDTH - w) / 2,
-        y: (canvasHeight - h) / 2,
-        width: w,
-        height: h,
-        intrinsicWidth:canvas.width,
-        intrinsicHeight:canvas.height,
-      });
-      const accepted = commit((d) => {
-        const update = (live: CanvasScene): CanvasScene => {
-          if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the image again.');
-          const frame=replaceId?live.elements.find(element=>element.id===replaceId&&element.type==='shape'):undefined;
-          if(frame)return fillShapeWithImage(live,frame.id,{src,alt:file.name.slice(0,200),objectFit:'cover',cropX:50,cropY:50,cropScale:1,intrinsicWidth:canvas.width,intrinsicHeight:canvas.height}).scene;
-          return constrainSceneToIsolation(live,{...live, elements: replaceId
-          ? live.elements.map((element) => element.id === replaceId && element.type === "image" ? {...element, src, intrinsicWidth:canvas.width,intrinsicHeight:canvas.height,name: file.name.slice(0, 100)} : element)
-          : [...live.elements, image]},targetIsolation);
-        };
-        return targetMaster?{...d,masterScene:update(d.masterScene??{background:'transparent',elements:[]})}:d.continuousCanvas ? {...d, continuousCanvas: update(d.continuousCanvas)} : {
-          ...d, pages: d.pages.map((p) => p.id === targetId ? {...p, canvas: update(p.canvas ?? sceneForPage(p, d.format))} : p),
-        };
-      });
-      if (!accepted) return;
-      if (activePage.current === targetId) setSelected([replaceId ?? image.id]);
-      setNotice(
-        replaceId
-          ? "Image replaced."
-          : "Image added. Drag its handles to resize it.",
-      );
-    } catch (reason) {
-      setNotice(
-        reason instanceof Error ? reason.message : "Could not open this image.",
-      );
-    } finally {
-      pendingBitmap?.close();
-      if (mounted.current) setUploading(false);
-    }
+  function updateWorkspace(recipe:(library:EditorLibrary)=>EditorLibrary):boolean {
+    if(disabled||!onWorkspaceChange)return false;
+    let updated:DesignDocument|undefined;
+    const accepted=onWorkspaceChange(library=>{const next=recipe(library);updated=next.designs.find(item=>item.id===design.id);return next;});
+    if(accepted===false)return false;
+    if(updated&&JSON.stringify(updated)!==JSON.stringify(design))return commit(live=>applyDesignPatch(design,updated!,live));
+    return true;
+  }
+  function insertSavedWorkspaceStyle(style:TextStyle,linked:boolean):boolean {
+    if(disabled)return false;
+    return commit(live=>{const content=editingMaster?live.masterScene??scene:live.continuousCanvas??live.pages.find(item=>item.id===page.id)?.canvas??scene;return insertWorkspaceStyle(live,content,selected,page.id,style,linked,editingMaster);});
+  }
+  function insertSavedWorkspaceComponent(component:ReusableComponent,linked:boolean):boolean {
+    if(disabled)return false;
+    let inserted:string[]=[];
+    const accepted=commit(live=>{const content=editingMaster?live.masterScene??scene:live.continuousCanvas??live.pages.find(item=>item.id===page.id)?.canvas??scene;const result=insertWorkspaceComponent(live,content,page.id,component,linked,editingMaster,isolatedGroupId??undefined);inserted=result.selectedIds;
+      return result.design;});
+    if(accepted)setSelected(inserted);return accepted;
   }
   function applyBrand(all = true) {
-    const update = (content: CanvasScene): CanvasScene => ({...content,background: brand.background, elements: content.elements.map((element) => element.type === "text" && canEditElement(content,element,'style') ? {...element, font: brand.font, color: brand.text,textStyleId:undefined,colorRoleId:undefined} : element)});
+    const update = (content: CanvasScene): CanvasScene => brandScene(content,brand);
     if (isolatedGroupId) {
-      if (changeScene(update(scene))) setNotice(`Applied ${brand.name || "your brand"} inside this group.`);
+      if (changeScene({...update(scene),background:scene.background})) setNotice(`Applied ${brand.name || "your brand"} inside this group.`);
       return;
     }
     const accepted = commit((d) => editingMaster?{...d,masterScene:{...update(d.masterScene??scene),background:'transparent'}}:d.continuousCanvas ? {...d, continuousCanvas: update(d.continuousCanvas),...(all&&d.masterScene?{masterScene:{...update(d.masterScene),background:'transparent'}}:{})} : ({
@@ -917,7 +1004,7 @@ export function DesignEditor({
       slideBounds={continuous?{x:index*FRAME_WIDTH,y:0,width:FRAME_WIDTH,height:canvasHeight}:undefined}
       textStyles={design.styles}
       outputScale={format.width/FRAME_WIDTH}
-      onSaveTextStyle={style=>commit(d=>{const next=updateTextStyle(d,style);const content=editingMaster?next.masterScene??scene:next.continuousCanvas??next.pages.find(p=>p.id===page.id)?.canvas??scene;const applied=applyTextStyle(content,selected,style).scene;return editingMaster?{...next,masterScene:applied}:next.continuousCanvas?{...next,continuousCanvas:applied}:{...next,pages:next.pages.map(p=>p.id===page.id?{...p,canvas:applied}:p)};})}
+      onSaveTextStyle={style=>commit(d=>saveSelectionTextStyle(d,style,selected,{pageId:page.id,master:editingMaster}))}
       onDeleteTextStyle={id=>commit(d=>({...d,styles:d.styles?.filter(s=>s.id!==id)}))}
       colorRoles={design.colorRoles}
       onSaveColorRole={role=>commit(d=>updateColorRole(d,role))}
@@ -984,7 +1071,7 @@ export function DesignEditor({
           />
           <span role="status">
             {isTemplateDraft ? "Template draft · " : ""}
-            {saveStatus}
+            {saveStatus}{otherEditors>0&&<span className="te-presence-label" title={`This project is also active in ${otherEditors} other tab${otherEditors===1?"":"s"} or device${otherEditors===1?"":"s"}.`}> · Also open elsewhere{otherEditors>1?` (${otherEditors})`:""}</span>}
           </span>
         </div>
         <div className="te-history">
@@ -1121,7 +1208,7 @@ export function DesignEditor({
                   ['polygon','M7 3H17L23 12 17 21H7L1 12Z'],['star','M12 2 15 9 23 10 17 15 19 23 12 18 5 23 7 15 1 10 9 9Z'],
                   ['arrow','M2 8H14V3L23 12 14 21V16H2Z'],
                 ] as const).map(([shape,path])=><button key={shape} onClick={()=>addShape(shape)}><svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path d={path} fill="currentColor"/></svg>{shape[0].toUpperCase()+shape.slice(1)}</button>)}</div>
-                <details className="te-drawer-details"><summary>Drawing & shape tools</summary><button className="te-button te-full" aria-pressed={pathTool} onClick={()=>setPathTool(p=>!p)}>Pen / path</button>                <div className="te-pro-actions">{(['union','intersect','subtract','xor'] as const).map(operation=><button key={operation} className="te-text-button" disabled={selected.length<2||scene.elements.filter(e=>selected.includes(e.id)).some(e=>e.type!=='shape')} onClick={()=>applyCommand(live=>combineShapes(live,selected,operation))}>{operation==='xor'?'Exclude overlap':operation[0].toUpperCase()+operation.slice(1)}</button>)}</div>
+                <details className="te-drawer-details"><summary>Drawing & shape tools</summary><button className="te-button te-full" aria-pressed={pathTool} onClick={()=>{setPathTool(p=>!p);setNavigationMode("select");}}>Pen / path</button>                <div className="te-pro-actions">{(['union','intersect','subtract','xor'] as const).map(operation=><button key={operation} className="te-text-button" disabled={selected.length<2||scene.elements.filter(e=>selected.includes(e.id)).some(e=>e.type!=='shape')} onClick={()=>applyCommand(live=>combineShapes(live,selected,operation))}>{operation==='xor'?'Exclude overlap':operation[0].toUpperCase()+operation.slice(1)}</button>)}</div>
                 <button className="te-button te-full" onClick={()=>fileRef.current?.click()}>Import editable SVG</button></details>
 
               </>
@@ -1236,7 +1323,7 @@ export function DesignEditor({
                 const ratio = Math.min(280 / asset.width, (canvasHeight * .65) / asset.height);
                 const width = Math.max(1, asset.width * ratio);
                 const height = Math.max(1, asset.height * ratio);
-                addElement(createCanvasElement("image", {name:asset.name, src:asset.src, fit:"contain", x:(continuous ? index * FRAME_WIDTH : 0)+(FRAME_WIDTH-width)/2, y:(canvasHeight-height)/2, width,height}));
+                addElement({...createCanvasElement("image", {name:asset.name, src:asset.src, fit:"contain", x:(continuous ? index * FRAME_WIDTH : 0)+(FRAME_WIDTH-width)/2, y:(canvasHeight-height)/2, width,height}),...brandAssetPhoto(asset),fit:"contain"});
               }} />}
             {tab === "layers" && <LayersPanel scene={scene} selectedIds={selected} width={canvasWidth} height={canvasHeight} disabled={disabled}
               isolatedGroupId={isolatedGroupId??undefined} onEnterGroup={enterGroup} onExitGroup={()=>setIsolatedGroupId(null)}
@@ -1338,6 +1425,7 @@ export function DesignEditor({
               <button className="te-text-button" disabled={disabled || selectedImage.locked} onClick={fillImageAcrossSlides}>Fill slides</button>
             </div>}
           </div>}
+              {!editingMaster&&<PageAccessibilitySection design={design} page={page} disabled={disabled} onChange={patch=>commit(d=>({...d,pages:d.pages.map(item=>item.id===page.id?{...item,...patch}:item)}),`page-accessibility:${page.id}`)} onEditImage={(id,master)=>{setEditingMaster(master);setIsolatedGroupId(null);setSelected([id]);openPanel("style");}}/>}
             </div>}
             {tab === "view" && <div className="te-drawer-settings">
               <p className="te-help">Set up your workspace. Guides stay out of downloads.</p>
@@ -1363,7 +1451,21 @@ export function DesignEditor({
           </section>}
         </aside>
         <main className="te-canvas-column">
-          <QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
+          <div className="te-canvas-tools" role="toolbar" aria-label="Canvas tools">
+            <button type="button" aria-pressed={navigationMode==="select"&&!pathTool} title="Select · V" onClick={()=>{setNavigationMode("select");setPathTool(false);}}>Select</button>
+            <button type="button" aria-pressed={navigationMode==="hand"} title="Pan canvas · H" onClick={()=>{setNavigationMode("hand");setPathTool(false);setCropImageId(null);}}>Hand</button>
+            <button type="button" disabled={disabled} aria-pressed={pathTool} title="Draw path · P" onClick={()=>{setPathTool(value=>!value);setNavigationMode("select");setCropImageId(null);}}>Pen</button>
+            <button type="button" disabled={disabled||selected.length!==1||!scene.elements.some(element=>element.id===selected[0]&&element.type==="shape"&&canEditElement(scene,element,"style")&&canEditElement(scene,element,"position"))} aria-pressed={navigationMode==="nodes"} title="Edit path nodes · A" onClick={()=>{setNavigationMode(value=>value==="nodes"?"select":"nodes");setPathTool(false);}}>Nodes</button>
+            {pathTool&&<>
+              <label><input type="checkbox" checked={penClosed} onChange={event=>setPenClosed(event.target.checked)}/>Close path</label>
+              <span className="te-pen-point-status" role="status">{penPointCount} points · Tap canvas to add</span>
+              <button type="button" disabled={disabled||penPointCount<2} onClick={()=>drawingControls.current?.finish()}>Finish path</button>
+              <button type="button" disabled={disabled||!penPointCount} onClick={()=>drawingControls.current?.removeLast()}>Remove last point</button>
+              <button type="button" onClick={()=>drawingControls.current?.cancel()}>Cancel path</button>
+            </>}
+          </div>
+          {navigationMode==="nodes"&&!pathTool&&<div className="te-node-toolbar-host" ref={setNodeToolbarHost}/>}
+          {!pathTool&&navigationMode==="select"&&<QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
             outputScale={format.width/FRAME_WIDTH}
             onFormatText={formatText}
             onTextTexture={openTextTexture}
@@ -1376,7 +1478,7 @@ export function DesignEditor({
             onDuplicate={() => applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined))}
             onDelete={() => applyCommand((live) => removeSelection(live, selected))}
             onMore={(event) => selected.length ? openMenu(event, {label: "Selected elements", items: elementMenu(selected)}) : canvasMenu(event, null)}
-            onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />
+            onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />}
           {(editingMaster||isolatedGroupId||cropImageId)&&<div className="te-isolation-bar"><span>{editingMaster?'Editing shared master':isolatedGroupId?`Inside ${scene.groups?.find(g=>g.id===isolatedGroupId)?.name??'group'}`:'Drag image to crop · Scroll to zoom image'}</span><button className="te-text-button" onClick={()=>{setEditingMaster(false);setIsolatedGroupId(null);setCropImageId(null);setSelected([]);}}>Done</button></div>}
           <div
             className={`te-canvas-space${spacePanning?' is-panning':''}`}
@@ -1399,18 +1501,7 @@ export function DesignEditor({
               const photo=decodePhotoDrag(e.dataTransfer.getData(PHOTO_DRAG_TYPE));
               if(photo){e.preventDefault();dropPhoto(photo,shape?.id);}
             }}
-            onPaste={(e) => {
-              const file = Array.from(e.clipboardData.files).find((f) =>
-                f.type.startsWith("image/"),
-              );
-              if (
-                file &&
-                !(e.target as HTMLElement).closest("[contenteditable=true]")
-              ) {
-                e.preventDefault();
-                void upload(file);
-              }
-            }}
+
           >
             <div className="te-pasteboard" style={{width: pasteboardBounds.width * scale, height: pasteboardBounds.height * scale}}>
             <div
@@ -1460,6 +1551,16 @@ export function DesignEditor({
                     imageDropTargetId={imageDropTargetId??undefined}
                     masterScene={!editingMaster?design.masterScene:undefined}
                     masterPageVisibility={continuous?design.pages.map(p=>p.useMaster!==false):[page.useMaster!==false]}
+                    navigationMode={navigationMode}
+                    onExitNodeEditing={()=>setNavigationMode("select")}
+                    nodeToolbarHost={nodeToolbarHost}
+                    onRequestCrop={id=>{setSelected([id]);setCropImageId(id);}}
+                    penClosed={penClosed} penColor={brand.text}
+                    onCancelDrawing={()=>setPathTool(false)}
+                    onDrawingPointCount={setPenPointCount}
+                    onRegisterDrawingControls={registerDrawingControls}
+                    onPan={delta=>{const node=workspaceRef.current;if(node){node.scrollLeft-=delta.x;node.scrollTop-=delta.y;}}}
+                    onZoom={gesture=>{const node=workspaceRef.current;if(!node)return;const bounds=node.getBoundingClientRect(),screenX=gesture.clientX-bounds.left,screenY=gesture.clientY-bounds.top;zoomAnchor.current={x:(node.scrollLeft+screenX)/scale-workspaceLeft,y:(node.scrollTop+screenY)/scale-workspaceTop,screenX,screenY};setZoom(value=>Math.max(.05,Math.min(32,value*gesture.factor)));}}
                     drawingMode={pathTool?'pen':undefined}
                     onDrawPath={element=>{addElement(element);setPathTool(false);}}
                   />
@@ -1572,8 +1673,9 @@ export function DesignEditor({
         if(!currentTemplates.current.some(template=>template.id===applyingTemplate.id&&!template.deletedAt))throw new Error("This template was deleted. Restore it from Trash before applying it.");
         return commit(live=>applyDesignPatch(design,next,live));
       }} onChangeScene={changeScene} onClose={()=>setApplyingTemplateId(null)}/>}
-      {workflowOpen&&<WorkflowPanel initialTab={workflowTab} design={design} scene={scene} selected={selected} pageId={page.id} disabled={disabled} onChange={next=>commit(live=>applyDesignPatch(design,next,live))} onSceneChange={changeScene} onSelect={setSelected} onAddDesigns={onAddDesigns} canShare={saveStatus.startsWith("Saved")} onMakeMaster={()=>{const promotable=selected.filter(id=>{const element=scene.elements.find(e=>e.id===id);return element&&canEditElement(scene,element,'position')&&canEditElement(scene,element,'delete');});if(!promotable.length)return;if(changeScene({...scene,elements:scene.elements.map(e=>promotable.includes(e.id)?{...e,master:true}:e)})){setSelected([]);setIsolatedGroupId(null);setWorkflowOpen(false);setEditingMaster(true);}}} onEditMaster={()=>{setEditingMaster(true);setIsolatedGroupId(null);setSelected([]);setWorkflowOpen(false);}} onClose={()=>setWorkflowOpen(false)}/>}
-      {exportDialog&&<ExportDialog design={design} pageId={page.id} disabled={disabled} issues={preflightIssues} onClose={()=>setExportDialog(false)} onExport={(options,pageIds)=>{setExportDialog(false);setJob({design:structuredClone(design),options,pageIds});}}/>}
+      {workflowOpen&&<WorkflowPanel workspaceResources={workspaceLibrary&&onWorkspaceChange?<WorkspaceResourcesPanel library={workspaceLibrary} disabled={disabled} design={design} scene={scene} selected={selected} onChange={updateWorkspace} onUseStyle={(style,linked)=>insertSavedWorkspaceStyle(style,linked)} onUseComponent={(component,linked)=>insertSavedWorkspaceComponent(component,linked)}/>:undefined} initialTab={workflowTab} design={design} scene={scene} selected={selected} pageId={page.id} disabled={disabled} onChange={next=>commit(live=>applyDesignPatch(design,next,live))} onSceneChange={changeScene} onSelect={setSelected} onAddDesigns={onAddDesigns} canShare={saveStatus.startsWith("Saved")} onMakeMaster={()=>{const promotable=selected.filter(id=>{const element=scene.elements.find(e=>e.id===id);return element&&canEditElement(scene,element,'position')&&canEditElement(scene,element,'delete');});if(!promotable.length)return;if(changeScene({...scene,elements:scene.elements.map(e=>promotable.includes(e.id)?{...e,master:true}:e)})){setSelected([]);setIsolatedGroupId(null);setWorkflowOpen(false);setEditingMaster(true);}}} onEditMaster={()=>{setEditingMaster(true);setIsolatedGroupId(null);setSelected([]);setWorkflowOpen(false);}} onClose={()=>setWorkflowOpen(false)}/>}
+      {exportDialog&&<ExportDialog design={design} pageId={page.id} disabled={disabled} issues={preflightIssues} onClose={()=>setExportDialog(false)} onExport={(options,pageIds)=>{void startExport(options,pageIds);}}/>}
+      {preparingExport&&<button className="te-button te-export-cancel" onClick={()=>exportPreparation.current?.abort()}>Preparing images · Cancel</button>}
       {job&&<button className="te-button te-export-cancel" onClick={()=>exportAbort.current?.abort()}>Cancel export · {progress}%</button>}
       {renameLayer && <Modal title="Rename layer" onClose={() => setRenameLayer(null)}>
         <form onSubmit={(event) => {
@@ -1592,26 +1694,10 @@ export function DesignEditor({
           onClose={() => setShowShortcuts(false)}
         >
           <div className="te-shortcuts-list">
-            {[
-              ["T", "Add text"],
-              ["R / O", "Rectangle / circle"],
-              ["⌘/Ctrl Z", "Undo"],
-              ["⌘/Ctrl Shift Z", "Redo"],
-              ["⌘/Ctrl D", "Duplicate selected"],
-              ["⌘/Ctrl C / X / V", "Copy / cut / paste elements"],
-              ["⌘/Ctrl [ / ]", "Send backward / bring forward"],
-              ["Shift F10", "Open actions menu"],
-              ["Drag empty canvas", "Select multiple elements"],
-              ["⌘/Ctrl A", "Select all unlocked elements"],
-              ["Arrow keys", "Move selected elements"],
-              ["Shift + arrows", "Move in larger steps"],
-              ["Delete", "Remove selected elements"],
-              ["Shift + click", "Select multiple elements"],
-              ["Escape", "Deselect / cancel gesture"],
-            ].map(([key, action]) => (
-              <div key={key}>
-                <span>{action}</span>
-                <kbd>{key}</kbd>
+            {editorCommandHelp().map(({label,shortcut}) => (
+              <div key={label}>
+                <span>{label}</span>
+                <kbd>{shortcut}</kbd>
               </div>
             ))}
           </div>
@@ -1708,9 +1794,9 @@ export function DesignEditor({
           aria-hidden
         >
           {job.design.pages
-            .filter((p) => (!job.pageId || p.id === job.pageId)&&(!job.pageIds||job.pageIds.includes(p.id)))
+            .filter((p) => (!job.pageId || p.id === job.pageId)&&(!job.pageIds||job.pageIds.includes(p.id))).slice(exportPageIndex,exportPageIndex+1)
             .map((p) => (
-              <DesignFrame key={p.id} design={job.design} page={p} />
+              <DesignFrame key={p.id} design={job.design} page={p} outputScale={job.options?.format==='pdf'?pdfGeometry(formatDimensions(job.design).width,formatDimensions(job.design).height,job.options).rasterScale:job.options?.scale??formatDimensions(job.design).width/FRAME_WIDTH} bleed={job.options?.format==='pdf'?pdfGeometry(formatDimensions(job.design).width,formatDimensions(job.design).height,job.options).bleed/pdfGeometry(formatDimensions(job.design).width,formatDimensions(job.design).height,job.options).scale:0} />
             ))}
         </div>
       )}
