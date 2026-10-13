@@ -2,6 +2,7 @@ import type {Story} from "@/lib/engine/types";
 import {createBlankDesign,duplicatePage,sceneForPage,parseLibrary,EMPTY_LIBRARY,type DesignDocument,type EditorLibrary,type CanvasScene} from "./model";
 import {createLibraryDesign,type CreationOptions} from "./library-workflows";
 import {splitContinuousCarousel,enableContinuousCarousel} from "./continuous-carousel";
+import {replacePhotoSource} from "./advanced";
 import {canEditElement,isElementHidden} from "./commands";
 const KEY="engine:research-transfer";
 export type ResearchTransferOptions=Pick<CreationOptions,'format'|'brandKitId'|'applyBrand'|'template'|'values'>&{imageIds:string[]};
@@ -21,7 +22,7 @@ export function createResearchDesign(story:Story,options?:ResearchTransferOption
   }else{
     design.pages=Array.from({length:Math.max(images.length,patterns.length)},(_,index)=>{const page=duplicatePage(patterns[index%patterns.length]),image=images[index];let content:CanvasScene=page.canvas??sceneForPage(page,design.format);let photoUsed=false,titleUsed=false;
       content={...content,elements:content.elements.map(element=>{if(!canEditElement(content,element,'content')||isElementHidden(content,element))return element;
-        if(image&&!photoUsed&&(element.type==='image'||(element.type==='shape'&&(element.imageFill||element.slot)))){photoUsed=true;const photo={src:image.url,alt:image.description??image.directive,directive:image.directive,rightsNote:image.rightsNote,sourceUrl:image.sourceUrl,intrinsicWidth:image.width,intrinsicHeight:image.height,cropX:50,cropY:50,cropScale:1};return element.type==='image'?{...element,...photo}:{...element,imageFill:{...photo,objectFit:'cover' as const}};}
+        if(image&&!photoUsed&&(element.type==='image'||(element.type==='shape'&&(element.imageFill||element.slot)))){photoUsed=true;const photo={src:image.url,alt:image.description??image.directive,directive:image.directive,rightsNote:image.rightsNote,sourceUrl:image.sourceUrl,intrinsicWidth:image.width,intrinsicHeight:image.height,cropX:50,cropY:50,cropScale:1};return element.type==='image'?{...replacePhotoSource(element,image.url),...photo}:{...element,imageFill:{...(element.imageFill?replacePhotoSource(element.imageFill,image.url):{}),...photo,objectFit:'cover' as const}};}
         if(element.type==='text'&&!titleUsed){titleUsed=true;return {...element,text:index===0?story.caption.titleOverImage.text||story.title:story.curation.slideStyles[image?.id??'']?.heading??'',richText:undefined,wordTextures:undefined};}return element;})};
       if(image&&!photoUsed)throw new Error(`Template page ${index%patterns.length+1} needs an editable photo or photo frame. Choose another template or use Research layouts.`);
       return {...page,...(image?{image:{...image,id:crypto.randomUUID()}}:{}),canvas:content};});

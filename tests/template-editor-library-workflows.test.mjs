@@ -141,3 +141,24 @@ test('Research template mapping skips hidden photo and title layers, including i
  const result=research.createResearchDesign(story(),{imageIds:['a'],format:'portrait',brandKitId:lib.activeBrandKitId,applyBrand:false,template},lib),elements=result.pages[0].canvas.elements;
  assert.equal(elements[0].text,'Hidden title');assert.equal(elements[1].text,'Hero title');assert.equal(elements[2].src,'/hidden.jpg');assert.equal(elements[3].src,'/a.jpg');
 });
+
+test('template photo fields discard stale previews/dimensions/credits for new sources across images, frames and whole/word textures',()=>{
+ const project=doc('Photo fields'),old={src:'/old.jpg',previewSrc:'/old-preview.jpg',objectFit:'cover',cropX:50,cropY:50,intrinsicWidth:6000,intrinsicHeight:4000,publicAlt:'Old subject',rightsNote:'Old license'},wordId=crypto.randomUUID();
+ project.pages[0].canvas.elements=[{...photo(old),slot:'photo-field'},{...model.createCanvasElement('shape'),slot:'photo-field',imageFill:old},{...model.createCanvasElement('text',{text:'Whole title'}),slot:'photo-field',textureFill:old},{...model.createCanvasElement('text',{text:'Word title'}),richText:`<span data-texture-id="${wordId}">Word title</span>`,wordTextures:[{...old,id:wordId,src:'https://images.test/{{slug}}.jpg'}]}];
+ const template=model.designAsTemplate(project,'Photo fields');template.parameters=[{id:'photo-field',name:'photo',type:'image'},{id:'slug-field',name:'slug',type:'text'}];const result=advanced.instantiateTemplate(template,{photo:'/new.jpg',slug:'new'}),elements=result.pages[0].canvas.elements;
+ for(const picture of [elements[0],elements[1].imageFill,elements[2].textureFill,elements[3].wordTextures[0]]){assert.equal(picture.previewSrc,undefined);assert.equal(picture.intrinsicWidth,undefined);assert.equal(picture.publicAlt,undefined);assert.equal(picture.rightsNote,undefined);}
+ assert.equal(elements[0].src,'/new.jpg');assert.equal(elements[3].wordTextures[0].src,'https://images.test/new.jpg');assert.equal(load('lib/template-editor/media-preview.ts').elementWithPreviewAsset(elements[0]).src,'/new.jpg');
+ const same=advanced.instantiateTemplate(template,{photo:'/old.jpg',slug:'{{slug}}'}).pages[0].canvas.elements;for(const picture of [same[0],same[1].imageFill,same[2].textureFill,same[3].wordTextures[0]]){assert.equal(picture.previewSrc,'/old-preview.jpg');assert.equal(picture.intrinsicWidth,6000);assert.equal(picture.rightsNote,'Old license');}
+});
+
+test('linked component updates retain the overridden original, its matching preview and public alt together',()=>{
+ const lib=library(),project=doc('Photo override'),image=photo({previewSrc:'/old-preview.jpg',publicAlt:'Old photo'});project.pages[0].canvas.elements=[image];const component=advanced.componentFromSelection(project.pages[0].canvas,[image.id],'Photo block');lib.workspaceComponents=[component];const linked=work.insertWorkspaceComponent(project,project.pages[0].canvas,project.pages[0].id,component,true).design;
+ const instance=linked.pages[0].canvas.elements.find(element=>element.componentId===linked.components[0].id);instance.src='/manual.jpg';instance.previewSrc='/manual-preview.jpg';instance.publicAlt='Manual subject';lib.designs=[linked];const replacement=structuredClone(component);replacement.scene.elements[0].opacity=.75;
+ const result=work.saveWorkspaceResource(lib,'component',replacement),updated=result.designs[0].pages[0].canvas.elements.find(element=>element.componentId===linked.components[0].id);assert.equal(updated.src,'/manual.jpg');assert.equal(updated.previewSrc,'/manual-preview.jpg');assert.equal(updated.publicAlt,'Manual subject');assert.equal(load('lib/template-editor/media-preview.ts').elementWithPreviewAsset(updated).src,'/manual-preview.jpg');assert.ok(model.parseLibrary(result));
+});
+
+test('Research replacement cannot retain the previous template photo preview but keeps it when the source is unchanged',()=>{
+ const lib=library(),template=model.designAsTemplate(doc(),'Research photo'),image=photo({src:'/old.jpg',previewSrc:'/old-preview.jpg',publicAlt:'Old photo'});template.pages[0].canvas.elements.push(image);lib.templates=[template];
+ const next=research.createResearchDesign(story(),{imageIds:['a'],format:'portrait',brandKitId:lib.activeBrandKitId,applyBrand:false,template},lib).pages[0].canvas.elements.find(element=>element.type==='image');assert.equal(next.src,'/a.jpg');assert.equal(next.previewSrc,undefined);assert.equal(next.publicAlt,undefined);assert.equal(next.intrinsicWidth,2000);
+ const source=story();source.images[0].url='/old.jpg';const same=research.createResearchDesign(source,{imageIds:['a'],format:'portrait',brandKitId:lib.activeBrandKitId,applyBrand:false,template},lib).pages[0].canvas.elements.find(element=>element.type==='image');assert.equal(same.previewSrc,'/old-preview.jpg');assert.equal(same.publicAlt,'Old photo');
+});

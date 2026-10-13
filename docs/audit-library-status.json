@@ -185,5 +185,10 @@
       "Import completion/skipping replaces old notifications."
     ],
     "tests": "4 added regression tests plus the existing suite; TypeScript and ESLint pass."
+  },
+  "integrationPreviewFix": {
+    "behavior": "Changing an image/texture source removes stale preview, dimensions and photo-specific metadata; an unchanged source retains them. Linked manual photo overrides retain their current preview/publicAlt. Research photo replacement uses the same source contract.",
+    "tests": "3 new regressions;32 focused library-workflow tests pass; TypeScript and ESLint pass. No repeat of the full integration suite.",
+    "sharedApi": "advanced.replacePhotoSource(previous,src)"
   }
 }
