@@ -54,7 +54,7 @@ import {applyDesignPatch} from "@/lib/template-editor/document-patch";
 import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type HistoryContext} from "@/lib/template-editor/history";
 import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/preflight";
 import { ColorField, Modal } from "./controls";
-import { CanvasEditor, type CanvasHistoryBridge } from "./canvas";
+import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls } from "./canvas";
 import type { TextFormattingPatch, TextFormatter } from "@/lib/template-editor/rich-text-editing";
 import { findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { PHOTO_DRAG_TYPE, decodePhotoDrag, writePhotoDrag } from "@/lib/template-editor/photo-drag";
@@ -178,6 +178,9 @@ export function DesignEditor({
   const [pathTool,setPathTool]=useState(false);
   const [navigationMode,setNavigationMode]=useState<"select"|"hand"|"nodes">("select");
   const [penClosed,setPenClosed]=useState(false);
+  const [penPointCount,setPenPointCount]=useState(0);
+  const drawingControls=useRef<CanvasDrawingControls|null>(null);
+  const registerDrawingControls=useCallback((controls:CanvasDrawingControls|null)=>{drawingControls.current=controls;},[]);
   const [imageDropTargetId,setImageDropTargetId]=useState<string|null>(null);
   const paletteDrag=useRef<(()=>void)|null>(null);
   const suppressPaletteClick=useRef(false);
@@ -1403,7 +1406,13 @@ export function DesignEditor({
             <button type="button" aria-pressed={navigationMode==="hand"} title="Pan canvas · H" onClick={()=>{setNavigationMode("hand");setPathTool(false);setCropImageId(null);}}>Hand</button>
             <button type="button" disabled={disabled} aria-pressed={pathTool} title="Draw path · P" onClick={()=>{setPathTool(value=>!value);setNavigationMode("select");setCropImageId(null);}}>Pen</button>
             <button type="button" disabled={disabled||selected.length!==1||!scene.elements.some(element=>element.id===selected[0]&&element.type==="shape"&&canEditElement(scene,element,"style")&&canEditElement(scene,element,"position"))} aria-pressed={navigationMode==="nodes"} title="Edit path nodes · A" onClick={()=>{setNavigationMode(value=>value==="nodes"?"select":"nodes");setPathTool(false);}}>Nodes</button>
-            {pathTool&&<label><input type="checkbox" checked={penClosed} onChange={event=>setPenClosed(event.target.checked)}/>Close path</label>}
+            {pathTool&&<>
+              <label><input type="checkbox" checked={penClosed} onChange={event=>setPenClosed(event.target.checked)}/>Close path</label>
+              <span className="te-pen-point-status" role="status">{penPointCount} points · Tap canvas to add</span>
+              <button type="button" disabled={disabled||penPointCount<2} onClick={()=>drawingControls.current?.finish()}>Finish path</button>
+              <button type="button" disabled={disabled||!penPointCount} onClick={()=>drawingControls.current?.removeLast()}>Remove last point</button>
+              <button type="button" onClick={()=>drawingControls.current?.cancel()}>Cancel path</button>
+            </>}
           </div>
           <QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
             outputScale={format.width/FRAME_WIDTH}
@@ -1496,6 +1505,8 @@ export function DesignEditor({
                     onRequestCrop={id=>{setSelected([id]);setCropImageId(id);}}
                     penClosed={penClosed} penColor={brand.text}
                     onCancelDrawing={()=>setPathTool(false)}
+                    onDrawingPointCount={setPenPointCount}
+                    onRegisterDrawingControls={registerDrawingControls}
                     onPan={delta=>{const node=workspaceRef.current;if(node){node.scrollLeft-=delta.x;node.scrollTop-=delta.y;}}}
                     onZoom={gesture=>{const node=workspaceRef.current;if(!node)return;const bounds=node.getBoundingClientRect(),screenX=gesture.clientX-bounds.left,screenY=gesture.clientY-bounds.top;zoomAnchor.current={x:(node.scrollLeft+screenX)/scale-workspaceLeft,y:(node.scrollTop+screenY)/scale-workspaceTop,screenX,screenY};setZoom(value=>Math.max(.05,Math.min(32,value*gesture.factor)));}}
                     drawingMode={pathTool?'pen':undefined}

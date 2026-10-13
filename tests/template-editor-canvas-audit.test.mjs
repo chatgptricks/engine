@@ -146,3 +146,8 @@ test("command execution and shortcut help share one registry, including redo, gr
  assert.equal(registry.resolveEditorCommand(event("a",{isComposing:true})),null);assert.equal(registry.resolveEditorCommand(event("h",{altKey:true})),null);assert.equal(history.historyShortcut(event("y",{ctrlKey:true})),"redo");
  const help=registry.editorCommandHelp();assert.ok(help.some(item=>/Ctrl Y/.test(item.shortcut)));assert.ok(help.some(item=>item.shortcut==="⌘/Ctrl Shift G"));assert.ok(help.some(item=>/Alt \+ drag/.test(item.shortcut)));assert.ok(help.some(item=>/Two fingers/.test(item.shortcut)));assert.ok(help.some(item=>/underneath/.test(item.label)));
 });
+
+test("pen canvas renders only the draft geometry while drawing controls stay outside the stage",()=>{
+ const html=renderToStaticMarkup(React.createElement(canvas.CanvasEditor,{scene:scene([]),width:360,height:480,selectedIds:[],drawingMode:"pen",onSelect(){},onChange(){}}));
+ assert.match(html,/class="te-path-preview"/);assert.doesNotMatch(html,/Draw path controls|Finish path|Remove last point|Click to add points/);
+});

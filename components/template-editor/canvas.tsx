@@ -466,6 +466,7 @@ export function keyboardCanvasTransform(scene:CanvasScene,ids:readonly string[],
 }
 
 export type CanvasHistoryBridge = {flush:()=>boolean};
+export type CanvasDrawingControls = {finish:()=>void;removeLast:()=>void;cancel:()=>void};
 type CanvasEditorProps = {
   scene: CanvasScene;
   width?: number;
@@ -507,6 +508,8 @@ type CanvasEditorProps = {
   onPan?: (delta:ViewPoint)=>void;
   onZoom?: (gesture:{factor:number;clientX:number;clientY:number})=>void;
   onCancelDrawing?:()=>void;
+  onRegisterDrawingControls?: (controls:CanvasDrawingControls|null)=>void;
+  onDrawingPointCount?: (count:number)=>void;
   penClosed?:boolean;
   penColor?:string;
   drawingMode?: 'pen';
@@ -542,7 +545,7 @@ export function CanvasEditor({
   masterScene,
   masterPageVisibility,
   navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,
-  penClosed=false,penColor="#222222",onCancelDrawing,
+  penClosed=false,penColor="#222222",onCancelDrawing,onRegisterDrawingControls,onDrawingPointCount,
   drawingMode,
   onDrawPath,
 }: CanvasEditorProps) {
@@ -569,6 +572,8 @@ export function CanvasEditor({
   const viewPrevious=useRef<ViewPoint[]>([]);
   const touchNavigating=useRef(false);
   const [pathPoints,setPathPoints]=useState<Point[]>([]);
+  useEffect(()=>{onDrawingPointCount?.(drawingMode?pathPoints.length:0);},[drawingMode,pathPoints.length,onDrawingPointCount]);
+  useEffect(()=>{onRegisterDrawingControls?.(drawingMode?{finish:finishPath,removeLast:()=>setPathPoints(points=>points.slice(0,-1)),cancel:()=>{setPathPoints([]);onCancelDrawing?.();}}:null);return()=>onRegisterDrawingControls?.(null);});
   const [keyboardHandle,setKeyboardHandle]=useState<string|null>(null);
   const [fontRevision,setFontRevision]=useState(0);
   useEffect(()=>{const loaded=()=>setFontRevision(revision=>revision+1);document.fonts?.addEventListener("loadingdone",loaded);return()=>document.fonts?.removeEventListener("loadingdone",loaded);},[]);
@@ -1395,8 +1400,7 @@ export function CanvasEditor({
         <span>{selected.length} selected</span>
       </div>}
       <LayoutOverlay outputScale={outputScale} scene={scene} width={width} height={height} slideWidth={slideWidth} scale={viewScale} onChange={onChange} disabled={disabled}/>
-      {drawingMode&&<div className="te-vector-tools" role="toolbar" aria-label="Draw path controls" style={{transform:`scale(${1/viewScale})`,transformOrigin:"top left"}} onPointerDown={event=>event.stopPropagation()}><span>{pathPoints.length} points · {penClosed?"Closed":"Open"} path</span><button type="button" disabled={pathPoints.length<2} onClick={finishPath}>Finish path</button><button type="button" disabled={!pathPoints.length} onClick={()=>setPathPoints(points=>points.slice(0,-1))}>Remove last point</button><button type="button" onClick={()=>{setPathPoints([]);onCancelDrawing?.();}}>Cancel</button></div>}
-      {drawingMode&&<svg className="te-path-preview"><polyline points={pathPoints.map(p=>`${p.x},${p.y}`).join(' ')} fill="none" stroke={penColor} strokeWidth={1/viewScale}/>{pathPoints.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={3/viewScale} fill={penColor}/>)}<text x="8" y="20" fill={penColor} fontSize={12/viewScale}>Click to add points · Enter to finish · Backspace to remove a point</text></svg>}
+      {drawingMode&&<svg className="te-path-preview"><polyline points={pathPoints.map(p=>`${p.x},${p.y}`).join(' ')} fill="none" stroke={penColor} strokeWidth={1/viewScale}/>{pathPoints.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={3/viewScale} fill={penColor}/>)}</svg>}
       {guides.map((guide,i)=><div key={i} className={`te-canvas-guide te-canvas-guide-${guide.axis}`} style={guide.axis==='x'?{left:guide.position,width:1/viewScale}:{top:guide.position,height:1/viewScale}}>{guide.label&&<span style={{fontSize:10/viewScale}}>{guide.label}</span>}</div>)}
       {editingElement&&<div className="te-rich-controls" style={{left:editingElement.x,top:editingElement.y-36/viewScale,transform:`scale(${1/viewScale})`,transformOrigin:'left bottom'}} onPointerDown={e=>{e.preventDefault();e.stopPropagation();}}><button type="button" aria-label="Bold selected text" onClick={()=>toggleRange("fontWeight")}><b>B</b></button><button type="button" aria-label="Italic selected text" onClick={()=>toggleRange("italic")}><i>I</i></button><button type="button" aria-label="Underline selected text" onClick={()=>toggleRange("underline")}><u>U</u></button><button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button><button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button></div>}
       <span className="te-canvas-screen-reader">

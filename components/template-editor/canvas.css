@@ -375,3 +375,5 @@
 .te-canvas-tools label {display:flex;align-items:center;gap:5px;font-size:12px;}
 .te-canvas-keyboard-transform {position:absolute;left:8px;top:8px;padding:8px;background:#24232d;color:#fff;border:1px solid #9a86ff;z-index:50;transform:scale(var(--te-control-scale));transform-origin:top left;}
 .te-canvas-keyboard-transform button {margin-left:8px;}
+
+.te-pen-point-status {font-size:12px;color:inherit;white-space:nowrap;}
