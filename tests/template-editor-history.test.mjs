@@ -274,3 +274,15 @@ test("content comparisons detect nested changes but ignore absent optional field
   assert.equal(sameDocumentContent(doc({pages:[{id:"p",canvas:{elements:[],groups:undefined}}]}),doc({pages:[{id:"p",canvas:{elements:[]}}],updatedAt:"later"})),true);
   assert.equal(sameDocumentContent(doc({pages:[{id:"p",canvas:{elements:[{x:1}]}}]}),doc({pages:[{id:"p",canvas:{elements:[{x:2}]}}]})),false);
 });
+
+// DOM KeyboardEvent fields are getters on the prototype, not enumerable data.
+test("native keyboard event prototype fields retain undo and redo shortcuts",()=>{
+  for(const [shiftKey,expected] of [[false,"undo"],[true,"redo"]]){
+    const values={key:"z",metaKey:true,ctrlKey:false,shiftKey,altKey:false,isComposing:false,defaultPrevented:false};
+    const prototype=Object.create(null);
+    for(const [key,value] of Object.entries(values))Object.defineProperty(prototype,key,{get:()=>value});
+    const event=Object.create(prototype);
+    assert.deepEqual(Object.keys(event),[]);
+    assert.equal(historyShortcut(event),expected);
+  }
+});

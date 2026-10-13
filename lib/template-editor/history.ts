@@ -54,5 +54,5 @@ export function travelHistory<T>(history:DocumentHistory<T>,current:T,context:Hi
 /** Native controls keep Space/letter activation; command history remains global. */
 export function historyShortcut(event:{key:string;ctrlKey:boolean;metaKey:boolean;shiftKey:boolean;altKey?:boolean;isComposing?:boolean;defaultPrevented?:boolean}):HistoryDirection|null {
   if(event.defaultPrevented)return null;
-  const command=resolveEditorCommand({...event,altKey:event.altKey??false});return command==="undo"||command==="redo"?command:null;
+  const command=resolveEditorCommand({key:event.key,ctrlKey:event.ctrlKey,metaKey:event.metaKey,shiftKey:event.shiftKey,altKey:event.altKey??false,isComposing:event.isComposing});return command==="undo"||command==="redo"?command:null;
 }
