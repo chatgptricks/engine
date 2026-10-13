@@ -113,6 +113,18 @@ type Props = {
   onAddDesigns?: (designs: DesignDocument[]) => boolean | void;
 };
 
+const SHAPE_OPERATIONS = [
+  ['union', 'Merge shapes (Union)'],
+  ['intersect', 'Intersect shapes'],
+  ['subtract', 'Subtract front shapes'],
+  ['xor', 'Exclude overlap'],
+] as const;
+
+function canCombineShapeSelection(scene: CanvasScene, ids: string[]) {
+  const elements = scene.elements.filter(element => ids.includes(element.id));
+  return ids.length >= 2 && elements.length === ids.length && elements.every(element => element.type === "shape" && !isElementHidden(scene, element) && canEditElement(scene, element, "position") && canEditElement(scene, element, "delete"));
+}
+
 export function DesignEditor({
   workspaceScope,
   design: initial,
@@ -577,15 +589,23 @@ export function DesignEditor({
       }
     }catch {setNotice("Focus the canvas and press ⌘/Ctrl V to paste from your clipboard.");}
   }
+  function shapeOperationItems(ids: string[]): ContextMenuItem[] {
+    return SHAPE_OPERATIONS.map(([operation, label]) => ({
+      id: `shape-${operation}`, label, disabled: disabled || !canCombineShapeSelection(scene, ids),
+      onSelect: () => applyCommand(live => combineShapes(live, ids, operation)),
+    }));
+  }
   function elementMenu(ids: string[]): ContextMenuItem[] {
     ids = scopeSelection(scene, ids, isolatedGroupId ?? undefined);
     const elements = scene.elements.filter((e) => ids.includes(e.id));
     const editable = elements.filter((e) => canEditElement(scene, e, "position"));
     const deletable = elements.filter((e) => canEditElement(scene, e, "delete"));
     const single = elements.length === 1 ? elements[0] : undefined;
+    const shapeOperations = elements.length > 1 && elements.every(element => element.type === "shape") ? shapeOperationItems(ids) : [];
     return [
+      ...shapeOperations,
       ...(single?.type === "text" ? [{id: "edit-text", label: "Edit text", disabled: disabled || !canEditElement(scene, single, "content") || isElementHidden(scene,single), onSelect: () => setEditingRequest({id: single.id, serial: Date.now()})}] : []),
-      {id: "copy", label: "Copy", shortcut: "⌘/Ctrl C", onSelect: () => copyElements(ids)},
+      {id: "copy", label: "Copy", shortcut: "⌘/Ctrl C", separator: shapeOperations.length > 0, onSelect: () => copyElements(ids)},
       {id: "cut", label: "Cut", shortcut: "⌘/Ctrl X", disabled: disabled || !deletable.length, onSelect: () => copyElements(ids, true)},
       {id: "duplicate", label: "Duplicate", shortcut: "⌘/Ctrl D", disabled: disabled || !editable.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => duplicateSelection(live, ids,undefined,isolatedGroupId??undefined))},
       {id: "paste", label: "Paste", shortcut: "⌘/Ctrl V", disabled: disabled || scene.elements.length >= 100, onSelect: () => {void pasteFromSystemClipboard();}},
@@ -1201,14 +1221,15 @@ export function DesignEditor({
                 </div>
                 <p className="te-help">
                   Drag, resize, and rotate shapes on the canvas. Choose Edit in the toolbar
-                  for photos, fill, and borders.
+                  for photos, fill, and borders. Select two or more shapes to use Merge shapes in the toolbar.
                 </p>
                 <div className="te-shape-picker">{([
                   ['triangle','M12 3 22 21H2Z'],['diamond','M12 2 22 12 12 22 2 12Z'],
                   ['polygon','M7 3H17L23 12 17 21H7L1 12Z'],['star','M12 2 15 9 23 10 17 15 19 23 12 18 5 23 7 15 1 10 9 9Z'],
                   ['arrow','M2 8H14V3L23 12 14 21V16H2Z'],
                 ] as const).map(([shape,path])=><button key={shape} onClick={()=>addShape(shape)}><svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path d={path} fill="currentColor"/></svg>{shape[0].toUpperCase()+shape.slice(1)}</button>)}</div>
-                <details className="te-drawer-details"><summary>Drawing & shape tools</summary><button className="te-button te-full" aria-pressed={pathTool} onClick={()=>{setPathTool(p=>!p);setNavigationMode("select");}}>Pen / path</button>                <div className="te-pro-actions">{(['union','intersect','subtract','xor'] as const).map(operation=><button key={operation} className="te-text-button" disabled={selected.length<2||scene.elements.filter(e=>selected.includes(e.id)).some(e=>e.type!=='shape')} onClick={()=>applyCommand(live=>combineShapes(live,selected,operation))}>{operation==='xor'?'Exclude overlap':operation[0].toUpperCase()+operation.slice(1)}</button>)}</div>
+                <details className="te-drawer-details"><summary>Drawing & shape tools</summary><button className="te-button te-full" aria-pressed={pathTool} onClick={()=>{setPathTool(p=>!p);setNavigationMode("select");}}>Pen / path</button>
+                <div className="te-pro-actions">{SHAPE_OPERATIONS.map(([operation,label])=><button key={operation} className="te-text-button" disabled={disabled||!canCombineShapeSelection(scene,selected)} onClick={()=>applyCommand(live=>combineShapes(live,selected,operation))}>{label}</button>)}</div>
                 <button className="te-button te-full" onClick={()=>fileRef.current?.click()}>Import editable SVG</button></details>
 
               </>
@@ -1475,6 +1496,7 @@ export function DesignEditor({
             onCrop={selectedPhoto&&!disabled&&canEditElement(scene,selectedPhoto,"style")?()=>setCropImageId(cropImageId===selectedPhoto.id?null:selectedPhoto.id):undefined}
             cropping={Boolean(cropImageId)}
             onGroup={selected.length>1?()=>applyCommand(live=>groupSelection(live,selected,"Group",isolatedGroupId??undefined)):undefined}
+            onMergeShapes={()=>applyCommand(live=>combineShapes(live,selected,"union"))}
             onDuplicate={() => applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined))}
             onDelete={() => applyCommand((live) => removeSelection(live, selected))}
             onMore={(event) => selected.length ? openMenu(event, {label: "Selected elements", items: elementMenu(selected)}) : canvasMenu(event, null)}
