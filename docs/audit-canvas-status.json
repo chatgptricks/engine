@@ -140,5 +140,38 @@
     "typecheck": "npx tsc --noEmit --incremental false passed before generated build route validators",
     "productionBuild": "Webpack production compilation passed6s; pre-existing route validator failures prevent final build: forbidden ENGINE_BUILD export in app/api/engine/version/route.ts and GET Request|undefined in app/api/template-editor/route.ts. Root will validate integrated build.",
     "browserQA": "Root runs integrated QA after cherry-pick; no own browser/server launched."
+  },
+  "acceptanceFollowup": {
+    "scope": "Two confirmed regressions only; shared codex/audit-acceptance-followup branch.",
+    "cases": [
+      {
+        "ids": [
+          6,
+          20
+        ],
+        "behavior": "Shared paint tree keeps rendering, depth selection and photo-frame targeting in the same back-to-front order, including nested/interleaved groups, hidden ancestors, group opacity0 and transparent fills.",
+        "test": "group paint order, precise selection and photo-frame targets agree for interleaved and nested artwork"
+      },
+      {
+        "ids": [
+          11,
+          21,
+          24
+        ],
+        "behavior": "Resize/Rotate and keyboard transform controls are available only in Select. Switching to Pen, Hand or Nodes cancels an in-flight transform and releases pointer capture; Select restores handles and Nodes keeps its anchor editor.",
+        "test": [
+          "only Select exposes transform handles; Pen and Hand preserve Nodes anchor editing",
+          "changing to Pen, Hand or Nodes cancels an in-flight resize and releases its pointer capture"
+        ]
+      }
+    ],
+    "verification": {
+      "focusedTestsPassed": 67,
+      "focusedTestsFailed": 0,
+      "focusedLint": "passed",
+      "typecheck": "npx tsc --noEmit --incremental false passed",
+      "browserQA": "Root confirmed Pen/Hand expose no transform handles; Select restores nine controls.",
+      "commit": "No commit or deployment performed."
+    }
   }
 }

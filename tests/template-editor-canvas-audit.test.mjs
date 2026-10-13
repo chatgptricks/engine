@@ -156,3 +156,29 @@ test("node editing keeps anchor geometry inside canvas while its controls render
  const html=renderToStaticMarkup(React.createElement(canvas.CanvasEditor,{scene:scene([element]),width:360,height:480,selectedIds:[element.id],navigationMode:"nodes",onSelect(){},onChange(){}}));
  assert.match(html,/class="te-vector-node-overlay"/);assert.match(html,/data-vector-anchor=/);assert.doesNotMatch(html,/aria-label="Path editing"|Coordinates &amp; handles|>Add after</);
 });
+
+
+test("group paint order, precise selection and photo-frame targets agree for interleaved and nested artwork",()=>{
+ const frames=load("lib/template-editor/photo-frames.ts"),paint=load("lib/template-editor/paint-order.ts");
+ const a=shape("a",{groupId:"outer"}),x=shape("x"),b=shape("b",{groupId:"outer"});
+ const current={...scene([a,x,b]),groups:[{id:"outer",name:"Outer",opacity:.5}]};
+ const order=source=>[...renderToStaticMarkup(React.createElement(canvas.SceneRenderer,{scene:source})).matchAll(/data-element-id="([^"]+)"/g)].map(match=>match[1]);
+ assert.deepEqual(order(current),["a","b","x"]);assert.deepEqual(paint.scenePaintOrder(current).map(e=>e.id),order(current));
+ assert.deepEqual(hit.layersAtPoint(current,{x:50,y:50}).map(e=>e.id),["x","b","a"]);assert.equal(frames.findPhotoFrameAtPoint(current,{x:50,y:50}).id,"x");
+ const ordinary={...current,groups:[{id:"outer",name:"Ordinary"}]};assert.deepEqual(order(ordinary),["a","x","b"]);assert.equal(hit.layersAtPoint(ordinary,{x:50,y:50})[0].id,"b");
+ const nested={...scene([shape("a",{groupId:"inner"}),shape("x"),shape("c",{groupId:"outer"}),shape("y",{groupId:"inner"}),shape("top")]),groups:[{id:"outer",name:"Outer",opacity:.6},{id:"inner",name:"Inner",parentId:"outer",opacity:.8}]};
+ assert.deepEqual(order(nested),["a","y","c","x","top"]);assert.deepEqual(hit.layersAtPoint(nested,{x:50,y:50}).map(e=>e.id),["top","x","c","y","a"]);
+ assert.deepEqual(hit.layersAtPoint(nested,{x:50,y:50},{isolationGroupId:"outer"}).map(e=>e.id),["c","y","a"]);
+ assert.equal(frames.findPhotoFrameAtPoint(nested,{x:50,y:50},{isolationGroupId:"inner"}).id,"y");
+ const zero={...nested,groups:nested.groups.map(g=>g.id==="outer"?{...g,opacity:0}:g)};assert.deepEqual(hit.layersAtPoint(zero,{x:50,y:50}).map(e=>e.id),["top","x"]);
+ const hidden={...nested,groups:nested.groups.map(g=>g.id==="inner"?{...g,hidden:true}:g)};assert.deepEqual(order(hidden),["c","x","top"]);assert.deepEqual(hit.layersAtPoint(hidden,{x:50,y:50}).map(e=>e.id),["top","x","c"]);
+ const transparent={...nested,elements:nested.elements.map(e=>e.id==="top"?{...e,fill:"transparent"}:e)};assert.deepEqual(hit.layersAtPoint(transparent,{x:50,y:50}).map(e=>e.id),["x","c","y","a"]);
+});
+
+test("only Select exposes transform handles; Pen and Hand preserve Nodes anchor editing",()=>{
+ const element=shape("tool-scope");
+ const renderTool=extra=>renderToStaticMarkup(React.createElement(canvas.CanvasEditor,{scene:scene([element]),width:360,height:480,selectedIds:[element.id],onSelect(){},onChange(){},...extra}));
+ assert.match(renderTool({}),/aria-label="Resize right"/);assert.match(renderTool({}),/aria-label="Rotate selection"/);
+ for(const extra of [{drawingMode:"pen"},{navigationMode:"hand"},{navigationMode:"nodes"}])assert.doesNotMatch(renderTool(extra),/aria-label="(?:Resize |Rotate selection)/);
+ assert.match(renderTool({navigationMode:"nodes"}),/data-vector-anchor=/);
+});

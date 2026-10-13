@@ -4,6 +4,7 @@ import { saveSelectionTextStyle } from "@/lib/template-editor/editing-actions";
 
 import {ENGINE_CLIPBOARD_TYPE,encodeElementClipboard,decodeElementClipboard,plainClipboardText} from "@/lib/template-editor/clipboard";
 import type {ElementSnapshot} from "@/lib/template-editor/commands";
+import {resolveDesignPageId, type NavigationHistoryMode} from "@/lib/template-editor/use-studio-navigation";
 import {useDocumentPresence} from "@/lib/template-editor/use-presence";
 import {PageAccessibilitySection} from "./page-accessibility";
 import {prepareRasterAsset} from "@/lib/template-editor/client-media";
@@ -96,6 +97,8 @@ type Tab =
 type Props = {
   workspaceScope?: string;
   design: DesignDocument;
+  currentPageId?: string;
+  onCurrentPageChange?: (id:string,mode:NavigationHistoryMode)=>void;
   workspaceLibrary?: EditorLibrary;
   onWorkspaceChange?: (recipe:(library:EditorLibrary)=>EditorLibrary)=>boolean|void;
   templates: DesignTemplate[];
@@ -128,6 +131,8 @@ function canCombineShapeSelection(scene: CanvasScene, ids: string[]) {
 export function DesignEditor({
   workspaceScope,
   design: initial,
+  currentPageId,
+  onCurrentPageChange,
   workspaceLibrary,
   onWorkspaceChange,
   templates,
@@ -151,7 +156,7 @@ export function DesignEditor({
   const [design, setDesign] = useState<DesignDocument>(initial);
   const current = useRef<DesignDocument>(design);
   const history = useRef(createDocumentHistory<DesignDocument>());
-  const historyContext=useRef<HistoryContext>({pageId:initial.pages[0].id,selectedIds:[],editingMaster:false,isolatedGroupId:null});
+  const historyContext=useRef<HistoryContext>({pageId:resolveDesignPageId(initial,currentPageId),selectedIds:[],editingMaster:false,isolatedGroupId:null});
   const historyBridge=useRef<CanvasHistoryBridge|null>(null);
   const registerHistoryBridge=useCallback((bridge:CanvasHistoryBridge|null)=>{historyBridge.current=bridge;},[]);
   const closeEditingHistory=useCallback(()=>closeHistoryGroup(history.current),[]);
@@ -160,11 +165,12 @@ export function DesignEditor({
     undo: false,
     redo: false,
   });
-  const [pageId, setPageId] = useState(initial.pages[0].id);
+  const [localPageId, setPageId] = useState(()=>resolveDesignPageId(initial,currentPageId));
+  const pageId=resolveDesignPageId(design,currentPageId??localPageId);
+  const previousNavigationPage=useRef(pageId);
+  const restoredNavigationPage=useRef<string|null>(null);
   const activePage = useRef(pageId);
-  useEffect(() => {
-    activePage.current = pageId;
-  }, [pageId]);
+
   const [tab, setTab] = useState<Tab | null>(null);
   const [inspectorSection, setInspectorSection] = useState<"edit" | "position">("edit");
   const [templateSearch, setTemplateSearch] = useState("");
@@ -292,10 +298,26 @@ export function DesignEditor({
   const selectable=scene.elements.filter(e=>(!isolatedIds||isolatedIds.has(e.id))&&!isElementLocked(scene,e)&&!isElementHidden(scene,e));
   const outsideCount = scene.elements.filter((element) => !element.hidden && !elementIntersectsCanvas(element, canvasWidth, canvasHeight)).length;
 
+  useLayoutEffect(()=>{
+    activePage.current=pageId;
+    if(previousNavigationPage.current!==pageId){
+      previousNavigationPage.current=pageId;
+      const restored=restoredNavigationPage.current===pageId;
+      restoredNavigationPage.current=null;
+      if(!restored)queueMicrotask(()=>{if(activePage.current!==pageId)return;setEditingRequest(undefined);setCropImageId(null);setSelected([]);setIsolatedGroupId(null);});
+    }
+    onCurrentPageChange?.(pageId,"replace");
+  },[pageId,onCurrentPageChange,setSelected,setIsolatedGroupId]);
   function selectPage(id: string) {
+    const target=resolveDesignPageId(current.current,id);
+    restoredNavigationPage.current=null;
+    activePage.current=target;
     setEditingRequest(undefined);
     setCropImageId(null);
-    setPageId(id);
+    setSelected([]);
+    setIsolatedGroupId(null);
+    setPageId(target);
+    onCurrentPageChange?.(target,"push");
   }
   function fitPage() {
     zoomAnchor.current=null;
@@ -391,7 +413,11 @@ export function DesignEditor({
       setHistoryState({ undo: h.past.length > 0, redo: h.future.length > 0 });
       current.current = updated;
       setDesign(updated);
-      setPageId(updated.pages.find(page=>page.id===entry.context.pageId)?.id??updated.pages[0].id);
+      const targetPage=resolveDesignPageId(updated,entry.context.pageId);
+      if(targetPage!==activePage.current)restoredNavigationPage.current=targetPage;
+      activePage.current=targetPage;
+      setPageId(targetPage);
+      onCurrentPageChange?.(targetPage,"replace");
       setSelected(entry.context.selectedIds);
       setEditingMaster(entry.context.editingMaster&&Boolean(updated.masterScene));
       setIsolatedGroupId(entry.context.isolatedGroupId);
@@ -400,7 +426,7 @@ export function DesignEditor({
       setHistoryRevision(revision=>revision+1);
       return true;
     },
-    [setSelected,setEditingMaster,setIsolatedGroupId,setNotice],
+    [setSelected,setEditingMaster,setIsolatedGroupId,setNotice,onCurrentPageChange],
   );
   function changeScene(next: CanvasScene, group = "") {
       return commit(

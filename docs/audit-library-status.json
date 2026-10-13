@@ -96,9 +96,10 @@
     {
       "id": 30,
       "status": "implemented",
-      "behavior": "Validated project/view/folder URLs, browser Back/Forward and owner-scoped Continue recent project.",
+      "behavior": "Validated project/view/folder/page URLs, browser Back/Forward and owner-scoped Continue recent project and page. Explicit page URLs take priority over local owner/project memory; deleted pages fall back safely. Navigation does not save the document, and Undo restores its page and selection without adding browser history entries.",
       "tests": [
-        "tests/template-editor-library-workflows.test.mjs"
+        "tests/template-editor-library-workflows.test.mjs",
+        "tests/template-editor-navigation.test.mjs"
       ],
       "risks": []
     },

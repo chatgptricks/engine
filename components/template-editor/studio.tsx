@@ -284,6 +284,8 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
           workspaceScope={libraryScope}
           key={`${active.id}:${documentEpochs[active.id] ?? 0}`}
           design={active}
+          currentPageId={navigation.pageId}
+          onCurrentPageChange={navigation.setPageId}
           templates={templates}
           brand={library.brand}
           workspaceLibrary={library}

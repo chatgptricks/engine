@@ -576,6 +576,13 @@ export function CanvasEditor({
   useEffect(()=>{onDrawingPointCount?.(drawingMode?pathPoints.length:0);},[drawingMode,pathPoints.length,onDrawingPointCount]);
   useEffect(()=>{onRegisterDrawingControls?.(drawingMode?{finish:finishPath,removeLast:()=>setPathPoints(points=>points.slice(0,-1)),cancel:()=>{setPathPoints([]);onCancelDrawing?.();}}:null);return()=>onRegisterDrawingControls?.(null);});
   const [keyboardHandle,setKeyboardHandle]=useState<string|null>(null);
+  const previousTool=useRef({navigationMode,drawingMode});
+  useLayoutEffect(()=>{
+    const previous=previousTool.current;
+    if(previous.navigationMode===navigationMode&&previous.drawingMode===drawingMode)return;
+    previousTool.current={navigationMode,drawingMode};
+    endCrop(true);end(true);endMarquee(true);
+  });
   const [fontRevision,setFontRevision]=useState(0);
   useEffect(()=>{const loaded=()=>setFontRevision(revision=>revision+1);document.fonts?.addEventListener("loadingdone",loaded);return()=>document.fonts?.removeEventListener("loadingdone",loaded);},[]);
   const [dragFrameId,setDragFrameId]=useState<string|null>(null);
@@ -819,7 +826,7 @@ export function CanvasEditor({
     ids: string[],
     handle?: Handle,
   ) {
-    if (disabled || event.button !== 0 || gesture.current || cropGesture.current || marquee.current) return;
+    if (disabled || drawingMode || navigationMode==="hand" || event.button !== 0 || gesture.current || cropGesture.current || marquee.current) return;
     event.preventDefault();
     event.stopPropagation();
     const source = finishEditing();
@@ -1350,7 +1357,7 @@ export function CanvasEditor({
             </span>
           )}
           {!disabled &&
-            !editingId && navigationMode!=="nodes" &&
+            !editingId && !drawingMode && navigationMode==="select" &&
             !selectionArea &&
             selected.every((element) => canEditElement(currentScene,element,"position")) && (
               <>
@@ -1398,7 +1405,7 @@ export function CanvasEditor({
             )}
         </div>
       )}
-      {keyboardHandle&&selectionBox&&<div className="te-canvas-keyboard-transform" role="status" aria-live="polite">{keyboardHandle==="rotate"?"Use arrows to rotate · Shift for 15°":"Use arrows to resize · Shift for larger steps"} · {Math.round(selectionBox.width*outputScale)} × {Math.round(selectionBox.height*outputScale)} px{keyboardHandle==="rotate"&&selected.length===1?` · ${Math.round(selected[0].rotation)}°`:""}<button type="button" onClick={()=>{setKeyboardHandle(null);root.current?.focus();}}>Done</button></div>}
+      {keyboardHandle&&selectionBox&&!drawingMode&&navigationMode==="select"&&<div className="te-canvas-keyboard-transform" role="status" aria-live="polite">{keyboardHandle==="rotate"?"Use arrows to rotate · Shift for 15°":"Use arrows to resize · Shift for larger steps"} · {Math.round(selectionBox.width*outputScale)} × {Math.round(selectionBox.height*outputScale)} px{keyboardHandle==="rotate"&&selected.length===1?` · ${Math.round(selected[0].rotation)}°`:""}<button type="button" onClick={()=>{setKeyboardHandle(null);root.current?.focus();}}>Done</button></div>}
       {selectionArea && <div className="te-canvas-marquee" style={boxStyle(selectionArea)} aria-hidden>
         <span>{selected.length} selected</span>
       </div>}

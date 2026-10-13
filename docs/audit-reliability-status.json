@@ -4,9 +4,12 @@
     {
       "id": 15,
       "status": "implemented",
-      "change": "Recovery drafts store the exact confirmed baseline, deduplicate its assets, and reconcile restored edits without false copies or resurrected deletes. Legacy drafts require explicit recovery.",
+      "change": "Recovery drafts store the exact confirmed baseline, deduplicate its assets, and reconcile restored edits without false copies or resurrected deletes. Legacy drafts require explicit recovery. A corrupt baseline is omitted from automatic-merge input while valid pending artwork and the original stored record remain recoverable.",
       "verification": [
-        "Recovery migration tests; recovery baseline merge/delete regression"
+        "Recovery migration tests; recovery baseline merge/delete regression",
+        "Native IndexedDB acceptance:12/12 passed,0 skipped,Chrome155.0.8059.40;10 migration cases plus reload/baseline/image dedup and corrupt-baseline preservation.",
+        "Corrupt baseline regression:11 passed/1 failed before fix;12/12 passed after fix. Invalid browser path makes the strict command exit1 rather than skip.",
+        "Run npm run test:template-editor:recovery; strict full suite uses ENGINE_REQUIRE_BROWSER=1 and ENGINE_BROWSER_PATH."
       ],
       "risks": []
     },
