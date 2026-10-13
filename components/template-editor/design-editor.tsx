@@ -50,6 +50,7 @@ import {captureBrandImage,brandAssetPhoto} from "@/lib/template-editor/brand-ass
 import {insertWorkspaceStyle,insertWorkspaceComponent,brandScene} from "@/lib/template-editor/library-workflows";
 import type {EditorLibrary,TextStyle,ReusableComponent} from "@/lib/template-editor/model";
 import {assertDesignExportBudget} from '@/lib/template-editor/export-renditions';
+import {prepareExportDimensions} from '@/lib/template-editor/export-dimensions';
 
 import { ExportDialog } from "./export-dialog";
 import { TemplateApplyDialog } from "./template-apply-dialog";
@@ -207,6 +208,8 @@ export function DesignEditor({
   const registerFormatter=useCallback((formatter:TextFormatter|null)=>{textFormatter.current=formatter;},[]);
   const formatText=useCallback((patch:TextFormattingPatch)=>textFormatter.current?.(patch)??false,[]);
   const exportAbort=useRef<AbortController|null>(null);
+  const exportPreparation=useRef<AbortController|null>(null);
+  const [preparingExport,setPreparingExport]=useState(false);
   const [job, setJob] = useState<{
     design: DesignDocument;
     pageId?: string;
@@ -223,6 +226,7 @@ export function DesignEditor({
     mounted.current = true;
     return () => {
       mounted.current = false;
+      exportPreparation.current?.abort();
     };
   }, []);
   const [removePageId, setRemovePageId] = useState<string | null>(null);
@@ -334,7 +338,17 @@ export function DesignEditor({
       ? "Update template"
       : "Save template"
     : "Save as template";
-  const disabled = !canEdit || Boolean(job);
+  const disabled = !canEdit || Boolean(job) || preparingExport;
+  async function startExport(options:ExportOptions,pageIds:string[]) {
+    if(job||exportPreparation.current)return;
+    const controller=new AbortController();exportPreparation.current=controller;setPreparingExport(true);setExportDialog(false);
+    try {
+      const prepared=await prepareExportDimensions(structuredClone(design),pageIds,options,controller.signal);
+      controller.signal.throwIfAborted();assertDesignExportBudget(prepared,options,pageIds);
+      if(mounted.current)setJob({design:prepared,options,pageIds});
+    }catch(error){if(!controller.signal.aborted&&mounted.current)setNotice(error instanceof Error?error.message:'Export could not start.');}
+    finally{if(exportPreparation.current===controller)exportPreparation.current=null;if(mounted.current)setPreparingExport(false);}
+  }
   const blocked = useRef(disabled);
   useEffect(() => { blocked.current = disabled; }, [disabled]);
 
@@ -623,7 +637,7 @@ export function DesignEditor({
       {id: "add-page", label: continuous ? "Add slide at end" : "Add blank page after", disabled: disabled || design.pages.length >= 20, onSelect: () => addPage(false, target)},
       {id: "left", label: "Move page left", separator: true, disabled: disabled || continuous || targetIndex === 0, onSelect: () => movePage(targetIndex, targetIndex - 1)},
       {id: "right", label: "Move page right", disabled: disabled || continuous || targetIndex === design.pages.length - 1, onSelect: () => movePage(targetIndex, targetIndex + 1)},
-      {id: "export-page", label: "Download page as PNG", separator: true, disabled: Boolean(job) || uploading, onSelect: () => {try{assertDesignExportBudget(design,{},[target.id]);setJob({design:structuredClone(design),pageId:target.id});}catch(error){setNotice(error instanceof Error?error.message:'Export could not start.');}}},
+      {id: "export-page", label: "Download page as PNG", separator: true, disabled: Boolean(job) || uploading, onSelect: () => {void startExport({},[target.id]);}},
       {id: "delete-page", label: "Delete page", danger: true, separator: true, disabled: disabled || (continuous ? design.pages.length <= 2 || targetIndex !== design.pages.length - 1 : design.pages.length <= 1), onSelect: () => setRemovePageId(target.id)},
     ]});
   }
@@ -1660,7 +1674,8 @@ export function DesignEditor({
         return commit(live=>applyDesignPatch(design,next,live));
       }} onChangeScene={changeScene} onClose={()=>setApplyingTemplateId(null)}/>}
       {workflowOpen&&<WorkflowPanel workspaceResources={workspaceLibrary&&onWorkspaceChange?<WorkspaceResourcesPanel library={workspaceLibrary} disabled={disabled} design={design} scene={scene} selected={selected} onChange={updateWorkspace} onUseStyle={(style,linked)=>insertSavedWorkspaceStyle(style,linked)} onUseComponent={(component,linked)=>insertSavedWorkspaceComponent(component,linked)}/>:undefined} initialTab={workflowTab} design={design} scene={scene} selected={selected} pageId={page.id} disabled={disabled} onChange={next=>commit(live=>applyDesignPatch(design,next,live))} onSceneChange={changeScene} onSelect={setSelected} onAddDesigns={onAddDesigns} canShare={saveStatus.startsWith("Saved")} onMakeMaster={()=>{const promotable=selected.filter(id=>{const element=scene.elements.find(e=>e.id===id);return element&&canEditElement(scene,element,'position')&&canEditElement(scene,element,'delete');});if(!promotable.length)return;if(changeScene({...scene,elements:scene.elements.map(e=>promotable.includes(e.id)?{...e,master:true}:e)})){setSelected([]);setIsolatedGroupId(null);setWorkflowOpen(false);setEditingMaster(true);}}} onEditMaster={()=>{setEditingMaster(true);setIsolatedGroupId(null);setSelected([]);setWorkflowOpen(false);}} onClose={()=>setWorkflowOpen(false)}/>}
-      {exportDialog&&<ExportDialog design={design} pageId={page.id} disabled={disabled} issues={preflightIssues} onClose={()=>setExportDialog(false)} onExport={(options,pageIds)=>{try{assertDesignExportBudget(design,options,pageIds);setExportDialog(false);setJob({design:structuredClone(design),options,pageIds});}catch(error){setNotice(error instanceof Error?error.message:'Export could not start.');}}}/>}
+      {exportDialog&&<ExportDialog design={design} pageId={page.id} disabled={disabled} issues={preflightIssues} onClose={()=>setExportDialog(false)} onExport={(options,pageIds)=>{void startExport(options,pageIds);}}/>}
+      {preparingExport&&<button className="te-button te-export-cancel" onClick={()=>exportPreparation.current?.abort()}>Preparing images · Cancel</button>}
       {job&&<button className="te-button te-export-cancel" onClick={()=>exportAbort.current?.abort()}>Cancel export · {progress}%</button>}
       {renameLayer && <Modal title="Rename layer" onClose={() => setRenameLayer(null)}>
         <form onSubmit={(event) => {

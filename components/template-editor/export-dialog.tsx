@@ -3,7 +3,6 @@ import {useState} from "react";
 import {Modal} from "./controls";
 import {formatDimensions,type DesignDocument} from "@/lib/template-editor/model";
 import {validateExportOptions,type ExportOptions} from "@/lib/template-editor/export";
-import {assertDesignExportBudget} from '@/lib/template-editor/export-renditions';
 import {pdfGeometry} from '@/lib/template-editor/pdf-options';
 import {preflightDesign,type PreflightIssue} from "@/lib/template-editor/preflight";
 import "./dialog-tools.css";
@@ -41,7 +40,6 @@ export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{d
       validateExportOptions(options);
       if(format==='pdf')pdfGeometry(size.width,size.height,options);
       if(format!=='pdf'&&(Math.max(width,height)>16384||(format!=="svg"&&width*height>40_000_000)))throw new Error("This size is too large to download. Open advanced settings and choose a smaller size.");
-      assertDesignExportBudget(design,options,ids);
       onExport(options,ids);
     }catch(reason){setError(reason instanceof Error?reason.message:"Choose valid download settings.");}
   }

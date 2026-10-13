@@ -77,13 +77,13 @@
     },
     {
       "id": 38,
-      "status": "in_progress",
-      "change": "One rendered page at a time;64MiB output/archive cap;real1\u201310page batches;output/crop-aware private lossless renditions;64MP unique-image budget before mounting and in server PDF batches. Parent integration is adding bounded metadata resolution for valid parameterized images without dimensions.",
+      "status": "implemented",
+      "change": "One rendered page at a time; 64 MiB output/archive cap; real 1\u201310 page batches; output/crop-aware private lossless renditions; 64 MP unique-image budget before mounting and in server PDF batches. Missing dimensions are resolved through a bounded, authenticated metadata endpoint with cancellation before rendering.",
       "verification": [
         "Sequential load/capture/release batching and aggregate output rejection tests",
         "Private6000x4000\u21922025x1350 output-aware source;source dedup/64MP guard/inactive-resource tests",
         "Parent original-rendition auth/lossless/decoder-serialization tests",
-        "Unknown-dimension async preparation pending parent integration"
+        "Unknown-dimension preparation: visible resources only, deduplicated requests, unchanged saved sources, cancellation, pixel limits, owner isolation and private-network rejection; 14 media/clipboard tests passed."
       ],
       "risks": []
     },

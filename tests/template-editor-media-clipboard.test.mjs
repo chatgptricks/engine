@@ -157,3 +157,31 @@ test('presence API checks authentication and workspace identity before recording
   assert.equal((await route.POST(request({...input,padding:'x'.repeat(5000)}))).status,413);
   assert.equal(calls,0);const result=await route.POST(request());assert.equal((await result.json()).others,2);assert.equal(calls,1);
 });
+
+test('export preparation resolves only visible URL photos, deduplicates requests and preserves the saved artwork',async t=>{
+ const previous=globalThis.fetch;t.after(()=>{globalThis.fetch=previous;});
+ const {prepareExportDimensions}=loadCached('lib/template-editor/export-dimensions.ts');
+ const design=model.createBlankDesign('Legacy URL','square'),page=design.pages[0],src='https://example.com/new-photo.png';
+ const first=model.createCanvasElement('image',{src,x:20,y:20,width:100,height:100});
+ page.canvas={background:'#fff',elements:[first,{...first,id:'copy',x:150},{...first,id:'hidden',src:'https://example.com/hidden.png',hidden:true},{...first,id:'offscreen',src:'https://example.com/offscreen.png',x:900}]};
+ let calls=0;globalThis.fetch=async(url,options)=>{calls++;assert.equal(url,'/api/template-editor/assets/metadata');assert.equal(JSON.parse(options.body).src,src);return Response.json({width:6000,height:4000});};
+ const prepared=await prepareExportDimensions(design,[page.id]);assert.equal(calls,1);assert.equal(prepared.pages[0].canvas.elements[0].intrinsicWidth,6000);assert.equal(prepared.pages[0].canvas.elements[1].intrinsicHeight,4000);assert.equal(first.intrinsicWidth,undefined);assert.equal(prepared.pages[0].canvas.elements[0].src,src);
+ const controller=new AbortController();controller.abort();await assert.rejects(prepareExportDimensions(design,[page.id],{},controller.signal),{name:'AbortError'});assert.equal(calls,1);
+ globalThis.fetch=async()=>Response.json({width:50000,height:50000});await assert.rejects(prepareExportDimensions(design,[page.id]),/100-megapixel/);
+});
+test('private metadata endpoint authenticates and bounds requests while preserving original orientation',async()=>{
+ let access=null,fetches=0;
+ const bytes=await sharp({create:{width:40,height:20,channels:3,background:'#abc'}}).jpeg().withMetadata({orientation:6}).toBuffer();
+ const route=load('app/api/template-editor/assets/metadata/route.ts',{'@/lib/engine/member':{resolveEngineAccess:async()=>access},'@/lib/template-editor/media-storage':{readOriginalAsset:async(owner)=>owner==='a'?{width:6000,height:4000}:null},'@/lib/template-editor/review-assets':{fetchOriginalImageBytes:async(src)=>{fetches++;assert.equal(src,'https://example.com/photo.jpg');return bytes;}}});
+ const request=(body={src:'https://example.com/photo.jpg'},origin='https://engine.test')=>new Request('https://engine.test/api/template-editor/assets/metadata',{method:'POST',headers:{origin,'Content-Type':'application/json'},body:JSON.stringify(body)});
+ assert.equal((await route.POST(request())).status,401);access={ownerKey:'a'};
+ assert.equal((await route.POST(request(undefined,'https://other.test'))).status,403);
+ assert.equal((await route.POST(request({src:'x'.repeat(20000)}))).status,413);assert.equal(fetches,0);
+ const response=await route.POST(request());assert.deepEqual(await response.json(),{width:20,height:40});assert.match(response.headers.get('cache-control'),/private.*no-store/);
+ assert.deepEqual(await(await route.POST(request({src:'/api/template-editor/assets/'+'a'.repeat(64)}))).json(),{width:6000,height:4000});access={ownerKey:'b'};assert.equal((await route.POST(request({src:'/api/template-editor/assets/'+'a'.repeat(64)}))).status,404);
+});
+test('metadata fetch rejects private hosts before making an image request',async()=>{
+ const {fetchOriginalImageBytes}=loadCached('lib/template-editor/review-assets.ts');
+ await assert.rejects(fetchOriginalImageBytes('http://127.0.0.1/photo.png'),/private/);
+ await assert.rejects(fetchOriginalImageBytes('https://name:password@example.com/photo.png'),/not supported/);
+});

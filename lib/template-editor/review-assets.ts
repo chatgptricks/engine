@@ -11,7 +11,7 @@ function privateAddress(address: string): boolean {
   }
   return !value.startsWith("2") && !value.startsWith("3"); // IPv6 global unicast only, excludes mapped/private/loopback.
 }
-export async function fetchReviewImage(value: string, redirects = 0, maxDimension=1800): Promise<Buffer> {
+export async function fetchOriginalImageBytes(value: string, redirects = 0): Promise<Buffer> {
   const url = new URL(value);
   if (!["http:","https:"].includes(url.protocol) || url.username || url.password || (url.port && url.port !== "80" && url.port !== "443") || redirects > 3) throw new Error("A review image URL is not supported.");
   const addresses = await lookup(url.hostname.replace(/^\[|\]$/g, ""), {all:true});
@@ -25,11 +25,14 @@ export async function fetchReviewImage(value: string, redirects = 0, maxDimensio
     const timer=setTimeout(()=>request.destroy(new Error("A review image timed out.")),12_000);
     request.once("close",()=>clearTimeout(timer));request.once("error",reject);request.end();
   });
-  if ([301,302,303,307,308].includes(response.statusCode ?? 0) && response.headers.location) {response.resume();return fetchReviewImage(new URL(response.headers.location,url).href,redirects+1,maxDimension);}
+  if ([301,302,303,307,308].includes(response.statusCode ?? 0) && response.headers.location) {response.resume();return fetchOriginalImageBytes(new URL(response.headers.location,url).href,redirects+1);}
   if (response.statusCode !== 200 || !/^image\/(png|jpeg|webp|avif|gif)(;|$)/i.test(response.headers["content-type"] ?? "")) {response.destroy();throw new Error("A review image is unavailable. Replace it with an uploaded image before sharing.");}
   const chunks: Buffer[] = [];let size=0;
   for await (const chunk of response) {const buffer=Buffer.from(chunk);size+=buffer.length;if(size>8*1024*1024){response.destroy();throw new Error("A review image is larger than 8 MB.");}chunks.push(buffer);}
-  const input=sharp(Buffer.concat(chunks),{limitInputPixels:40_000_000}).rotate();if(maxDimension)input.resize({width:maxDimension,height:maxDimension,fit:"inside",withoutEnlargement:true});return input.webp({quality:90}).toBuffer();
+  return Buffer.concat(chunks);
+}
+export async function fetchReviewImage(value: string, redirects = 0, maxDimension=1800): Promise<Buffer> {
+  const input=sharp(await fetchOriginalImageBytes(value,redirects),{limitInputPixels:40_000_000}).rotate();if(maxDimension)input.resize({width:maxDimension,height:maxDimension,fit:"inside",withoutEnlargement:true});return input.webp({quality:90}).toBuffer();
 }
 /** Freeze remote pictures inside an explicitly-created review snapshot. */
 export async function embedReviewImages<T>(value:T,owner?:string):Promise<T>{
