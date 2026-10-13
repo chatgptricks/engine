@@ -1,3 +1,4 @@
+import { resolveEditorCommand } from "./editor-commands";
 export type HistoryDirection = "undo" | "redo";
 export interface HistoryContext {pageId:string;selectedIds:string[];editingMaster:boolean;isolatedGroupId:string|null}
 export interface HistoryEntry<T> {document:T;context:HistoryContext}
@@ -52,6 +53,6 @@ export function travelHistory<T>(history:DocumentHistory<T>,current:T,context:Hi
 }
 /** Native controls keep Space/letter activation; command history remains global. */
 export function historyShortcut(event:{key:string;ctrlKey:boolean;metaKey:boolean;shiftKey:boolean;altKey?:boolean;isComposing?:boolean;defaultPrevented?:boolean}):HistoryDirection|null {
-  if(event.defaultPrevented||event.isComposing||event.altKey||(!event.ctrlKey&&!event.metaKey))return null;
-  const key=event.key.toLowerCase();return key==="y"||key==="z"&&event.shiftKey?"redo":key==="z"?"undo":null;
+  if(event.defaultPrevented)return null;
+  const command=resolveEditorCommand({...event,altKey:event.altKey??false});return command==="undo"||command==="redo"?command:null;
 }

@@ -16,7 +16,8 @@ function load(relative,dependencies={}) {
   vm.runInThisContext(`(function(require,module,exports){${source}\n})`,{filename})(name=>Object.hasOwn(dependencies,name)?dependencies[name]:requireModule(name),unit,unit.exports);
   return unit.exports;
 }
-const history=load("lib/template-editor/history.ts"),model=load("lib/template-editor/model.ts");
+const registry=load("lib/template-editor/editor-commands.ts");
+const history=load("lib/template-editor/history.ts",{"./editor-commands":registry}),model=load("lib/template-editor/model.ts");
 const commands=load("lib/template-editor/commands.ts",{"./model":model});
 const colors=load("lib/template-editor/color-utils.ts");
 const rich=load("lib/template-editor/rich-text-editing.ts",{"./model":model,"./color-utils":colors});

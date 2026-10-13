@@ -119,8 +119,8 @@ function rangeOffsets(collected: ReturnType<typeof collectRuns>, range: Range) {
   return { start: boundary(range.startContainer, range.startOffset), end: boundary(range.endContainer, range.endOffset) };
 }
 
-export function textEditingFingerprint(element:Pick<TextElement,"text"|"richText"|"underline"|"strikethrough">):string {
-  return JSON.stringify([element.text,element.richText,Boolean(element.underline),Boolean(element.strikethrough)]);
+export function textEditingFingerprint(element:Pick<TextElement,"text"|"richText"|"underline"|"strikethrough"> & Partial<Pick<TextElement,"fontSize"|"autoFitFontSize"|"autoFitMinFontSize"|"autoFitMaxFontSize">>):string {
+  return JSON.stringify([element.text,element.richText,Boolean(element.underline),Boolean(element.strikethrough),element.fontSize,element.autoFitFontSize,element.autoFitMinFontSize,element.autoFitMaxFontSize]);
 }
 /** Logical offsets survive DOM replacement, including paragraph separators. */
 export function captureTextSelection(node:HTMLElement,range:Range|null):{start:number;end:number}|null {

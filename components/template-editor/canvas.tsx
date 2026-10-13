@@ -1,4 +1,12 @@
 "use client";
+import { VectorNodeEditor } from "./vector-node-editor";
+import { layersAtPoint,cycleLayerAtPoint } from "@/lib/template-editor/canvas-hit-testing";
+import { textDisplayFontSize,measureFittedText,scaleEditableText } from "@/lib/template-editor/text-fit";
+import { keyboardTransform } from "@/lib/template-editor/editing-actions";
+import { viewGestureDelta,type ViewPoint } from "@/lib/template-editor/view-gestures";
+import {elementEffectiveOpacity} from "@/lib/template-editor/group-opacity";
+import { SceneLayers } from "./scene-layers";
+import { cropAfterDrag } from "@/lib/template-editor/photo-crop-geometry";
 
 import {elementWithPreviewAsset,sceneWithPreviewAssets} from "@/lib/template-editor/media-preview";
 import {
@@ -192,7 +200,7 @@ function boxStyle(element: Box): CSSProperties {
 
 function textStyle(element: TextElement): CSSProperties {
   return {
-    fontSize: element.fontSize,
+    fontSize: textDisplayFontSize(element),
     fontWeight: element.fontWeight,
     fontStyle: element.italic ? "italic" : "normal",
     textDecoration: element.richText ? "none" : [element.underline ? "underline" : "",element.strikethrough ? "line-through" : ""].filter(Boolean).join(" ") || "none",
@@ -237,7 +245,7 @@ function SceneElement({ element }: { element: CanvasElement }) {
   const padding = shadow ? Math.abs(shadow.spread) + shadow.blur * 3 + Math.max(Math.abs(shadow.offsetX), Math.abs(shadow.offsetY)) + 10 : 0;
   const shadowColor = shadow ? parseColor(shadow.color) : null;
   const filter = [shadow ? `url(#${filterId})` : "", element.blur ? `blur(${element.blur}px)` : ""].filter(Boolean).join(" ") || undefined;
-  const lines = element.type === "text" ? splitRichLines(element.richText ? resolveRichDecorations(element.richText, element.underline, element.strikethrough) : undefined, element.text) : [];
+  const lines = element.type === "text" ? splitRichLines(element.richText ? resolveRichDecorations(scaleRichTextFonts(element.richText,textDisplayFontSize(element)/element.fontSize)??element.richText, element.underline, element.strikethrough) : undefined, element.text) : [];
   const gradient = element.gradient;
   const endpoints = gradientEndpoints(gradient?.angle ?? 0, element.width, element.height);
   const radialRadius=Math.hypot(element.width,element.height)/2;
@@ -282,9 +290,7 @@ function SceneElement({ element }: { element: CanvasElement }) {
 export function SceneRenderer({ scene, isolate = true }: { scene: CanvasScene; isolate?: boolean }) {
   return (
     <div className="te-canvas-scene" style={{ background: scene.background, ...(!isolate ? {isolation:"auto" as const} : {}) }}>
-      {scene.elements.filter((element) => !isElementHidden(scene,element)).map((element) => (
-        <SceneElement key={element.id} element={element} />
-      ))}
+      {<SceneLayers scene={scene} render={element => <SceneElement element={element} />} />}
     </div>
   );
 }
@@ -449,6 +455,16 @@ export function resizeGroup(
   });
 }
 
+export function keyboardCanvasTransform(scene:CanvasScene,ids:readonly string[],key:string,amount:number,handle?:Handle):CanvasScene {
+  if(!handle)return keyboardTransform(scene,ids,key,amount);
+  const items=scene.elements.filter(element=>ids.includes(element.id)&&canEditElement(scene,element,"position")&&!isElementHidden(scene,element));
+  if(!items.length)return scene;
+  const delta={x:key==="ArrowLeft"?-amount:key==="ArrowRight"?amount:0,y:key==="ArrowUp"?-amount:key==="ArrowDown"?amount:0};
+  const resized=items.length===1?[resizeSingle(items[0],handle,delta,false)]:resizeGroup(items,selectionBounds(items,false),handle,delta);
+  const changes=new Map(resized.map(element=>[element.id,element]));
+  return mergeGesture(scene,{source:scene,latest:{...scene,elements:scene.elements.map(element=>changes.get(element.id)??element)},ids:[...ids]} as Gesture);
+}
+
 export type CanvasHistoryBridge = {flush:()=>boolean};
 type CanvasEditorProps = {
   scene: CanvasScene;
@@ -485,6 +501,14 @@ type CanvasEditorProps = {
   masterScene?: CanvasScene;
   /** Visibility of the canonical master per slide, including separate-page mode. */
   masterPageVisibility?: boolean[];
+  navigationMode?: "select"|"hand"|"nodes";
+  onExitNodeEditing?: ()=>void;
+  onRequestCrop?: (id:string)=>void;
+  onPan?: (delta:ViewPoint)=>void;
+  onZoom?: (gesture:{factor:number;clientX:number;clientY:number})=>void;
+  onCancelDrawing?:()=>void;
+  penClosed?:boolean;
+  penColor?:string;
   drawingMode?: 'pen';
   onDrawPath?: (element: ShapeElement) => void;
 };
@@ -517,6 +541,8 @@ export function CanvasEditor({
   imageDropTargetId,
   masterScene,
   masterPageVisibility,
+  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,
+  penClosed=false,penColor="#222222",onCancelDrawing,
   drawingMode,
   onDrawPath,
 }: CanvasEditorProps) {
@@ -539,7 +565,13 @@ export function CanvasEditor({
   const [guides, setGuides] = useState<SnapGuide[]>([]);
   const richRange = useRef<Range | null>(null);
   const cropGesture = useRef<CropGesture|null>(null);
+  const viewPointers=useRef(new Map<number,ViewPoint>());
+  const viewPrevious=useRef<ViewPoint[]>([]);
+  const touchNavigating=useRef(false);
   const [pathPoints,setPathPoints]=useState<Point[]>([]);
+  const [keyboardHandle,setKeyboardHandle]=useState<string|null>(null);
+  const [fontRevision,setFontRevision]=useState(0);
+  useEffect(()=>{const loaded=()=>setFontRevision(revision=>revision+1);document.fonts?.addEventListener("loadingdone",loaded);return()=>document.fonts?.removeEventListener("loadingdone",loaded);},[]);
   const [dragFrameId,setDragFrameId]=useState<string|null>(null);
   const currentScene = live ?? scene;
   const isolationIds = useMemo(() => isolatedGroupId ? new Set(groupMemberIds(currentScene, isolatedGroupId)) : null,[currentScene,isolatedGroupId]);
@@ -563,13 +595,16 @@ export function CanvasEditor({
     editingAccepted.current=true;
     const id = editingActive.current;
     if (!id) return scene;
-    const html = editingNode.current ? editorRichHtml(editingNode.current) : undefined;
-    if (!cancel && !extra && html === editingSnapshot.current?.html) return scene;
+    const rawHtml = editingNode.current ? editorRichHtml(editingNode.current) : undefined;
+    if (!cancel && !extra && rawHtml === editingSnapshot.current?.html) return scene;
+    const displayElement=scene.elements.find((element):element is TextElement=>element.id===id&&element.type==="text");
+    const html=displayElement?scaleRichTextFonts(rawHtml,displayElement.fontSize/textDisplayFontSize(displayElement)):rawHtml;
     const value = cancel
       ? (editingOriginal.current?.text ?? "")
       : html === undefined ? editingNode.current?.innerText ?? "" : richTextToPlain(html);
     const previous = scene.elements.find((element) => element.id === id);
     if (previous?.type !== "text" || disabled || !canEditElement(scene,previous,"content") || isElementHidden(scene,previous) || !inScope(previous)) return scene;
+    const fitted=previous.textMode==="auto-fit"&&editingNode.current&&canEditElement(scene,previous,"style")?measureFittedText(editingNode.current,previous):previous.autoFitFontSize;
     const measuredHeight = cancel ? editingOriginal.current?.height ?? previous.height : previous.textMode === "auto-height" && canEditElement(scene,previous,"position") ? clamp(editingNode.current?.scrollHeight ?? previous.height,1,10000) : previous.height;
     // Growing a rotated box keeps its top edge anchored in the same place.
     const shift = rotate(
@@ -587,6 +622,7 @@ export function CanvasEditor({
             wordTextures:wordTextures?.length?wordTextures:undefined,
             text: value.slice(0, 20_000),
             richText: html,
+            autoFitFontSize:fitted,
             height: measuredHeight,
             x: previous.x + shift.x,
             y: previous.y + shift.y - (measuredHeight - previous.height) / 2,
@@ -602,7 +638,8 @@ export function CanvasEditor({
     // Keep the DOM's original React text child stable while editing. Publishing
     // scene changes here drives autosave without replacing the caret/selection.
     if(onChange(next, formatting ? `text-format:${id}:${++formatSerial.current}` : `text:${id}`)===false){editingAccepted.current=false;return scene;}
-    editingSnapshot.current = { source: replacement.type==='text'?textEditingFingerprint(replacement):"", html,node:editingNode.current };
+    if(!cancel&&editingNode.current&&replacement.type==="text")scaleEditableText(editingNode.current,textDisplayFontSize(previous),textDisplayFontSize(replacement));
+    editingSnapshot.current = { source: replacement.type==='text'?textEditingFingerprint(replacement):"", html:editingNode.current?editorRichHtml(editingNode.current):rawHtml,node:editingNode.current };
     return next;
   }
 
@@ -616,7 +653,8 @@ export function CanvasEditor({
     if(!node||!range||disabled||!editingElement||!canEditElement(scene,editingElement,"content")||!canEditElement(scene,editingElement,"style"))return false;
     if(patch.textureFill && (editingElement.wordTextures?.length??0)>=30)throw new Error("A text layer supports up to 30 word textures. Remove a texture before adding another.");
     const textureId=patch.textureFill?crypto.randomUUID():null;
-    if(!formatTextRange(node,range,patch,textureId))return false;
+    const displayPatch=patch.fontSize!==undefined?{...patch,fontSize:patch.fontSize*textDisplayFontSize(editingElement)/editingElement.fontSize}:patch;
+    if(!formatTextRange(node,range,displayPatch,textureId))return false;
     const html=editorRichHtml(node),used=new Set([...html?.matchAll(/data-texture-id="([a-zA-Z0-9_-]+)"/g)??[]].map(match=>match[1]));
     const wordTextures=[...(editingElement.wordTextures??[]),...(patch.textureFill&&textureId?[{...patch.textureFill,id:textureId}]:[])].filter(texture=>used.has(texture.id));
     richRange.current=range.cloneRange();updateEditing(false,true,{wordTextures:wordTextures.length?wordTextures:undefined});return editingAccepted.current;
@@ -646,25 +684,18 @@ export function CanvasEditor({
         changed=true;return {...element,height,x:element.x+shift.x,y:element.y+shift.y-(height-element.height)/2};
       }
       if(!canEditElement(scene,element,"style"))return element;
-      const spans=[...text.querySelectorAll<HTMLElement>("[style]")].filter(node=>Boolean(node.style.fontSize)).map(node=>({node,size:parseFloat(node.style.fontSize)}));
-      const setSize=(size:number)=>{text.style.fontSize=`${size}px`;spans.forEach(span=>{span.node.style.fontSize=`${Math.max(1,span.size*size/element.fontSize)}px`;});};
-      const fits=()=>text.scrollHeight<=element.height+.5&&text.scrollWidth<=element.width+.5;
-      if(fits())return element;
-      let low=1,high=element.fontSize;
-      for(let attempt=0;attempt<12;attempt++){const size=(low+high)/2;setSize(size);if(fits())low=size;else high=size;}
-      const size=Math.floor(low*100)/100;
-      text.style.fontSize=`${element.fontSize}px`;spans.forEach(span=>{span.node.style.fontSize=`${span.size}px`;});
-      if(Math.abs(size-element.fontSize)<.01)return element;
-      changed=true;return {...element,fontSize:size,richText:scaleRichTextFonts(element.richText,size/element.fontSize)};
+      const size=measureFittedText(text,element);
+      if(Math.abs(size-textDisplayFontSize(element))<.01)return element;
+      changed=true;return {...element,autoFitFontSize:size};
     });
     if(changed)onChange({...scene,elements},"text-fit");
-  },[scene,disabled,live,editingId,onChange,isolatedGroupId,inScope]);
+  },[scene,disabled,live,editingId,onChange,isolatedGroupId,inScope,fontRevision]);
 
   useLayoutEffect(() => {
     if (!editingId || !editingNode.current) return;
     const node = editingNode.current;
     const original = editingOriginal.current;
-    if (original) node.innerHTML = splitRichLines(original.richText ? resolveRichDecorations(original.richText, original.underline, original.strikethrough) : undefined, original.text).map(line => `<div>${line || "<br>"}</div>`).join("");
+    if (original) node.innerHTML = splitRichLines(original.richText ? resolveRichDecorations(scaleRichTextFonts(original.richText,textDisplayFontSize(original)/original.fontSize)??original.richText, original.underline, original.strikethrough) : undefined, original.text).map(line => `<div>${line || "<br>"}</div>`).join("");
     if (original) editingSnapshot.current = { source: textEditingFingerprint(original), html: editorRichHtml(node),node };
     node.focus({ preventScroll: true });
     const range = document.createRange();
@@ -686,7 +717,7 @@ export function CanvasEditor({
     const focused=document.activeElement===node,selection=window.getSelection();
     const previousRange=selection?.rangeCount&&node.contains(selection.getRangeAt(0).commonAncestorContainer)?selection.getRangeAt(0):richRange.current;
     const bookmark=captureTextSelection(node,previousRange);
-    node.innerHTML = splitRichLines(element.richText ? resolveRichDecorations(element.richText,element.underline,element.strikethrough) : undefined,element.text).map(line=>`<div>${line || "<br>"}</div>`).join("");
+    node.innerHTML = splitRichLines(element.richText ? resolveRichDecorations(scaleRichTextFonts(element.richText,textDisplayFontSize(element)/element.fontSize)??element.richText,element.underline,element.strikethrough) : undefined,element.text).map(line=>`<div>${line || "<br>"}</div>`).join("");
     editingSnapshot.current = { source, html: editorRichHtml(node),node };
     const range=document.createRange();
     if(bookmark)restoreTextSelection(node,range,bookmark);else{range.selectNodeContents(node);range.collapse(false);}
@@ -736,6 +767,12 @@ export function CanvasEditor({
     return () => { cancelled = true; };
   }, [editingRequest, scene, disabled, onSelect,inScope,onHistoryBoundary]);
 
+  function finishPath(){
+    if(pathPoints.length<2||disabled)return;
+    const x=Math.min(...pathPoints.map(point=>point.x)),y=Math.min(...pathPoints.map(point=>point.y)),w=Math.max(1,Math.max(...pathPoints.map(point=>point.x))-x),h=Math.max(1,Math.max(...pathPoints.map(point=>point.y))-y);
+    onDrawPath?.({id:crypto.randomUUID(),type:"shape",name:"Path",shape:"path",...(isolatedGroupId?{groupId:isolatedGroupId}:{}),x:clamp(x,-10000,10000),y:clamp(y,-10000,10000),width:Math.min(10000,w),height:Math.min(10000,h),rotation:0,opacity:1,locked:false,fill:penClosed&&pathPoints.length>2?penColor:"transparent",stroke:penColor,strokeWidth:1,radius:0,path:`M${pathPoints.map(point=>`${point.x-x} ${point.y-y}`).join(" L")}${penClosed?" Z":""}`,viewBox:`0 0 ${w} ${h}`});setPathPoints([]);
+  }
+
   function position(event: { clientX: number; clientY: number }): Point {
     const bounds = root.current!.getBoundingClientRect();
     return {
@@ -776,7 +813,7 @@ export function CanvasEditor({
     ids: string[],
     handle?: Handle,
   ) {
-    if (disabled || event.button !== 0) return;
+    if (disabled || event.button !== 0 || gesture.current || cropGesture.current || marquee.current) return;
     event.preventDefault();
     event.stopPropagation();
     const source = finishEditing();
@@ -810,6 +847,10 @@ export function CanvasEditor({
     event.stopPropagation();
     if (drawingMode === "pen") { event.preventDefault(); root.current?.focus({preventScroll:true}); setPathPoints(points => [...points,position(event)]); return; }
     if (!inScope(element)) return;
+    const hit=layersAtPoint(scene,position(event),{isolationGroupId:isolatedGroupId,padding:3/viewScale});
+    const target=event.ctrlKey||event.metaKey?cycleLayerAtPoint(hit,selectedIds):hit[0];
+    if(!target){beginMarquee(event as ReactPointerEvent<HTMLDivElement>);return;}
+    element=target;
     if(cropImageId===element.id&&photoContent(element)&&canEditElement(scene,element,'content')&&canEditElement(scene,element,'style')){event.preventDefault();root.current?.focus({preventScroll:true});const capture=event.currentTarget as HTMLElement;capture.setPointerCapture(event.pointerId);cropLatest.current=null;cropGesture.current={pointer:event.pointerId,start:position(event),source:element,capture};return;}
     const ids=expandGroupSelection(scene,[element.id],isolatedGroupId??undefined);
     const exists = selectedIds.includes(element.id);
@@ -867,10 +908,10 @@ export function CanvasEditor({
     end(true);
     endMarquee(true);
     finishEditing();
-    const hitId = target?.closest<HTMLElement>("[data-layer-id]")?.dataset.layerId;
+    const hitId = layersAtPoint(scene,position(event),{isolationGroupId:isolatedGroupId,padding:3/viewScale})[0]?.id;
     const targetId = hitId ?? (target?.closest("[data-canvas-selection]") ? selectedIds[0] : null) ?? null;
     if (targetId && scene.elements.some((element) => element.id === targetId)) {
-      if (!selectedIds.includes(targetId)) onSelect([targetId]);
+      if (!selectedIds.includes(targetId)) onSelect(expandGroupSelection(scene,[targetId],isolatedGroupId??undefined));
     } else onSelect([]);
     onContextMenu(event, targetId);
   }
@@ -913,9 +954,9 @@ export function CanvasEditor({
       const image = scene.elements.find(element => element.id === cropping.source.id);
       const startPhoto = photoContent(cropping.source);
       if (!image || !photoContent(image) || !startPhoto || !canEditElement(scene,image,"content") || !canEditElement(scene,image,"style") || isElementHidden(scene,image) || !inScope(image)) { endCrop(true); return; }
-      const point=position(event), local=rotate({x:point.x-cropping.start.x,y:point.y-cropping.start.y},-image.rotation);
+      const point=position(event); const imageNode=Array.from(root.current?.querySelectorAll<HTMLImageElement>("[data-element-id] img")??[]).find(node=>node.closest<HTMLElement>("[data-element-id]")?.dataset.elementId===image.id); const crop=cropAfterDrag(cropping.source,{x:point.x-cropping.start.x,y:point.y-cropping.start.y},imageNode?.naturalWidth?{width:imageNode.naturalWidth,height:imageNode.naturalHeight}:undefined);
       const liveElement=cropLatest.current?.elements.find(item=>item.id===image.id), livePhoto=liveElement&&photoContent(liveElement);
-      const next = { ...scene, elements:scene.elements.map(element => element.id === image.id ? updatePhotoContent(element,{cropX:clamp(startPhoto.cropX-local.x/image.width*100,0,100),cropY:clamp(startPhoto.cropY-local.y/image.height*100,0,100),...(livePhoto?{cropScale:livePhoto.cropScale}:{})}) : element) };
+      const next = { ...scene, elements:scene.elements.map(element => element.id === image.id ? updatePhotoContent(element,{...crop,...(livePhoto?{cropScale:livePhoto.cropScale}:{})}) : element) };
       cropLatest.current=next; setLive(next); return;
     }
     const selecting = marquee.current;
@@ -1064,7 +1105,26 @@ export function CanvasEditor({
       role="region"
       aria-label="Design canvas"
       tabIndex={0}
-      onPointerDown={beginMarquee}
+      onPointerDownCapture={event=>{
+        if(event.pointerType!=="touch"&&navigationMode!=="hand")return;
+        viewPointers.current.set(event.pointerId,{x:event.clientX,y:event.clientY});
+        if(navigationMode==="hand"||viewPointers.current.size>=2){
+          event.preventDefault();event.stopPropagation();root.current?.focus({preventScroll:true});endCrop(true);end(true);endMarquee(true);touchNavigating.current=true;
+          for(const id of viewPointers.current.keys())event.currentTarget.setPointerCapture(id);
+        }
+        viewPrevious.current=[...viewPointers.current.values()];
+      }}
+      onPointerMoveCapture={event=>{
+        if(!viewPointers.current.has(event.pointerId))return;
+        viewPointers.current.set(event.pointerId,{x:event.clientX,y:event.clientY});
+        if(!touchNavigating.current&&navigationMode!=="hand")return;
+        event.preventDefault();event.stopPropagation();
+        const points=[...viewPointers.current.values()],delta=viewGestureDelta(viewPrevious.current,points);
+        onPan?.(delta.pan);if(delta.factor!==1)onZoom?.({factor:delta.factor,clientX:delta.anchor.x,clientY:delta.anchor.y});
+        viewPrevious.current=points;
+      }}
+      onPointerUpCapture={event=>{viewPointers.current.delete(event.pointerId);viewPrevious.current=[...viewPointers.current.values()];if(!viewPointers.current.size)touchNavigating.current=false;}}
+      onPointerDown={navigationMode==="hand"?undefined:beginMarquee}
       onContextMenu={openContextMenu}
       onPointerMove={move}
       onPointerUp={(event) => {
@@ -1072,10 +1132,12 @@ export function CanvasEditor({
         if (gesture.current?.pointer === event.pointerId) end();
         if (marquee.current?.pointer === event.pointerId) endMarquee();
       }}
-      onPointerCancel={() => { endCrop(true);end(true); endMarquee(true); }}
+      onPointerCancel={event => {viewPointers.current.delete(event.pointerId);viewPrevious.current=[...viewPointers.current.values()];if(!viewPointers.current.size)touchNavigating.current=false;endCrop(true);end(true); endMarquee(true); }}
       onLostPointerCapture={() => { endCrop(true);end(true); endMarquee(true); }}
       onKeyDown={(event) => {
-        if(drawingMode&&!disabled){if(event.key==='Enter'&&pathPoints.length>1){event.preventDefault();event.stopPropagation();const x=Math.min(...pathPoints.map(p=>p.x)),y=Math.min(...pathPoints.map(p=>p.y)),w=Math.max(1,Math.max(...pathPoints.map(p=>p.x))-x),h=Math.max(1,Math.max(...pathPoints.map(p=>p.y))-y);onDrawPath?.({id:crypto.randomUUID(),type:'shape',name:'Path',shape:'path',...(isolatedGroupId?{groupId:isolatedGroupId}:{}),x:clamp(x,-10000,10000),y:clamp(y,-10000,10000),width:Math.min(10000,w),height:Math.min(10000,h),rotation:0,opacity:1,locked:false,fill:pathPoints.length>2?'#ffffff':'transparent',stroke:'#ffffff',strokeWidth:1,radius:0,path:`M${pathPoints.map(p=>`${p.x-x} ${p.y-y}`).join(' L')}${pathPoints.length>2?' Z':''}`,viewBox:`0 0 ${w} ${h}`});setPathPoints([]);return;}if(event.key==='Escape'){event.stopPropagation();setPathPoints([]);return;}if(event.key==='Backspace'){event.preventDefault();event.stopPropagation();setPathPoints(p=>p.slice(0,-1));return;}}
+        if(keyboardHandle&&event.key==="Escape"){event.preventDefault();event.stopPropagation();setKeyboardHandle(null);root.current?.focus();return;}
+        if(drawingMode&&!disabled){if(event.key==="Enter"&&pathPoints.length>1){event.preventDefault();event.stopPropagation();finishPath();return;}if(event.key==="Escape"){event.stopPropagation();if(!pathPoints.length)onCancelDrawing?.();setPathPoints([]);return;}if(event.key==="Backspace"){event.preventDefault();event.stopPropagation();setPathPoints(points=>points.slice(0,-1));return;}}
+
         if (gesture.current || marquee.current || cropGesture.current) {
           event.stopPropagation();
           if (event.key === "Escape") {
@@ -1106,11 +1168,11 @@ export function CanvasEditor({
       )}
       <div className="te-canvas-scene te-canvas-editor-scene" style={{background: onionScene ? "transparent" : displayScene.background}}>
         {masterScene&&Array.from({length:slideCount||1},(_,index)=>masterPageVisibility?.[index]!==false&&<div className="te-canvas-master-page" key={index} data-master-slide={index} style={{left:index*(slideWidth??width),width:slideWidth??width,height}}><SceneRenderer scene={sceneWithPreviewAssets({...masterScene,background:"transparent"})} isolate={false}/></div>)}
-        {displayScene.elements.filter((element) => !isElementHidden(displayScene,element)).map((element) => (
+        {<SceneLayers scene={displayScene} render={(element) => (
           <div key={element.id} className={`te-canvas-page-layer${clippedIds.has(element.id) ? " is-clipped" : ""}${!inScope(element)?" is-outside-isolation":""}`}>
             <SceneElement element={elementWithPreviewAsset(element)} />
           </div>
-        ))}
+        )} />}
       </div>
       <div className="te-canvas-hit-area" aria-label="Canvas layers">
         {currentScene.elements.filter((element) => !isElementHidden(currentScene,element) && inScope(element)).map((element) => (
@@ -1130,23 +1192,27 @@ export function CanvasEditor({
               event.preventDefault();
               event.stopPropagation();
               if(drawingMode)return;
-              if(element.groupId&&element.groupId!==isolatedGroupId){onEnterGroup?.(element.groupId);return;}
-              startEditing(element);
+              const hit=layersAtPoint(scene,position(event),{isolationGroupId:isolatedGroupId,padding:3/viewScale})[0];
+              if(!hit)return;
+              if(hit.groupId&&hit.groupId!==isolatedGroupId){onEnterGroup?.(hit.groupId);return;}
+              if(photoContent(hit)&&canEditElement(scene,hit,"content")&&canEditElement(scene,hit,"style")){onRequestCrop?.(hit.id);return;}
+              startEditing(hit);
             }}
             onKeyDown={(event) => {
               if (disabled || drawingMode) return;
               if (event.key === " " || event.key === "Enter") {
                 event.preventDefault();
                 event.stopPropagation();
-                if (event.key === "Enter" && selectedIds.includes(element.id))
-                  startEditing(element);
+                if (event.key === "Enter" && selectedIds.includes(element.id)) {
+                  if(element.groupId && element.groupId!==isolatedGroupId)onEnterGroup?.(element.groupId);else startEditing(element);
+                }
                 else
                   onSelect(
                     event.shiftKey
                       ? selectedIds.includes(element.id)
-                        ? selectedIds.filter((id) => id !== element.id)
-                        : [...selectedIds, element.id]
-                      : [element.id],
+                        ? selectedIds.filter((id) => !expandGroupSelection(scene,[element.id],isolatedGroupId??undefined).includes(id))
+                        : [...new Set([...selectedIds,...expandGroupSelection(scene,[element.id],isolatedGroupId??undefined)])]
+                      : expandGroupSelection(scene,[element.id],isolatedGroupId??undefined),
                   );
               }
             }}
@@ -1172,7 +1238,7 @@ export function CanvasEditor({
           data-element-id={editingElement.id}
           style={{
             ...boxStyle(editingElement),
-            opacity: editingElement.opacity,
+            opacity: elementEffectiveOpacity(currentScene,editingElement),
             ...textTextureVariables(editingElement),
             justifyContent: editingElement.verticalAlign === "middle" ? "center" : editingElement.verticalAlign === "bottom" ? "flex-end" : "flex-start",
           }}
@@ -1255,6 +1321,7 @@ export function CanvasEditor({
         </div></WorldClip>
         </div>
       )}
+      {navigationMode==="nodes"&&selected.length===1&&selected[0].type==="shape"&&canEditElement(scene,selected[0],"style")&&canEditElement(scene,selected[0],"position")&&<VectorNodeEditor shape={selected[0]} scale={viewScale} outputScale={outputScale} onChange={(shape,group)=>onChange({...scene,elements:scene.elements.map(element=>element.id===shape.id?shape:element)},group)} onClose={()=>onExitNodeEditing?.()}/>}
       {selected.length > 1 &&
         selected.map((element) => (
           <div
@@ -1275,7 +1342,7 @@ export function CanvasEditor({
             </span>
           )}
           {!disabled &&
-            !editingId &&
+            !editingId && navigationMode!=="nodes" &&
             !selectionArea &&
             selected.every((element) => canEditElement(currentScene,element,"position")) && (
               <>
@@ -1285,10 +1352,11 @@ export function CanvasEditor({
                     type="button"
                     className={`te-canvas-handle te-canvas-handle-${handle}`}
                     aria-label={`Resize ${HANDLE_NAMES[handle]}`}
+                    aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+                    onClick={event=>{if(event.detail===0)setKeyboardHandle(handle);}}
                     title={`Resize ${HANDLE_NAMES[handle]} · Shift preserves proportions · Alt resizes from center`}
-                    onPointerDown={(event) =>
-                      begin(event, "resize", selectedIds, handle)
-                    }
+                    onPointerDown={(event) => begin(event, "resize", selectedIds, handle)}
+                    onKeyDown={event=>{if(event.key.startsWith("Arrow")){event.preventDefault();event.stopPropagation();onChange(keyboardCanvasTransform(scene,selectedIds,event.key,(event.shiftKey?10:1)/outputScale,handle),"keyboard-resize");}}}
                   />
                 ))}
                 <span className="te-canvas-rotate-line" />
@@ -1296,8 +1364,11 @@ export function CanvasEditor({
                   type="button"
                   className="te-canvas-rotate"
                   aria-label="Rotate selection"
+                  aria-keyshortcuts="ArrowUp ArrowDown ArrowLeft ArrowRight"
+                  onClick={event=>{if(event.detail===0)setKeyboardHandle("rotate");}}
                   title="Rotate · Shift snaps to 15°"
                   onPointerDown={(event) => begin(event, "rotate", selectedIds)}
+                  onKeyDown={event=>{if(event.key.startsWith("Arrow")){event.preventDefault();event.stopPropagation();onChange(keyboardCanvasTransform(scene,selectedIds,event.key,event.shiftKey?15:1),"keyboard-rotate");}}}
                 >
                   <svg
                     width="10"
@@ -1319,11 +1390,13 @@ export function CanvasEditor({
             )}
         </div>
       )}
+      {keyboardHandle&&selectionBox&&<div className="te-canvas-keyboard-transform" role="status" aria-live="polite">{keyboardHandle==="rotate"?"Use arrows to rotate · Shift for 15°":"Use arrows to resize · Shift for larger steps"} · {Math.round(selectionBox.width*outputScale)} × {Math.round(selectionBox.height*outputScale)} px{keyboardHandle==="rotate"&&selected.length===1?` · ${Math.round(selected[0].rotation)}°`:""}<button type="button" onClick={()=>{setKeyboardHandle(null);root.current?.focus();}}>Done</button></div>}
       {selectionArea && <div className="te-canvas-marquee" style={boxStyle(selectionArea)} aria-hidden>
         <span>{selected.length} selected</span>
       </div>}
       <LayoutOverlay outputScale={outputScale} scene={scene} width={width} height={height} slideWidth={slideWidth} scale={viewScale} onChange={onChange} disabled={disabled}/>
-      {drawingMode&&<svg className="te-path-preview"><polyline points={pathPoints.map(p=>`${p.x},${p.y}`).join(' ')} fill="none" stroke="#fff" strokeWidth={1/viewScale}/>{pathPoints.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={3/viewScale} fill="#fff"/>)}<text x="8" y="20" fill="#fff" fontSize={12/viewScale}>Click to add points · Enter to finish · Backspace to remove a point</text></svg>}
+      {drawingMode&&<div className="te-vector-tools" role="toolbar" aria-label="Draw path controls" style={{transform:`scale(${1/viewScale})`,transformOrigin:"top left"}} onPointerDown={event=>event.stopPropagation()}><span>{pathPoints.length} points · {penClosed?"Closed":"Open"} path</span><button type="button" disabled={pathPoints.length<2} onClick={finishPath}>Finish path</button><button type="button" disabled={!pathPoints.length} onClick={()=>setPathPoints(points=>points.slice(0,-1))}>Remove last point</button><button type="button" onClick={()=>{setPathPoints([]);onCancelDrawing?.();}}>Cancel</button></div>}
+      {drawingMode&&<svg className="te-path-preview"><polyline points={pathPoints.map(p=>`${p.x},${p.y}`).join(' ')} fill="none" stroke={penColor} strokeWidth={1/viewScale}/>{pathPoints.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={3/viewScale} fill={penColor}/>)}<text x="8" y="20" fill={penColor} fontSize={12/viewScale}>Click to add points · Enter to finish · Backspace to remove a point</text></svg>}
       {guides.map((guide,i)=><div key={i} className={`te-canvas-guide te-canvas-guide-${guide.axis}`} style={guide.axis==='x'?{left:guide.position,width:1/viewScale}:{top:guide.position,height:1/viewScale}}>{guide.label&&<span style={{fontSize:10/viewScale}}>{guide.label}</span>}</div>)}
       {editingElement&&<div className="te-rich-controls" style={{left:editingElement.x,top:editingElement.y-36/viewScale,transform:`scale(${1/viewScale})`,transformOrigin:'left bottom'}} onPointerDown={e=>{e.preventDefault();e.stopPropagation();}}><button type="button" aria-label="Bold selected text" onClick={()=>toggleRange("fontWeight")}><b>B</b></button><button type="button" aria-label="Italic selected text" onClick={()=>toggleRange("italic")}><i>I</i></button><button type="button" aria-label="Underline selected text" onClick={()=>toggleRange("underline")}><u>U</u></button><button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button><button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button></div>}
       <span className="te-canvas-screen-reader">

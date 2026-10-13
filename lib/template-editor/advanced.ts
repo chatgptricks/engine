@@ -23,7 +23,7 @@ export function composeScene(design: CompositionSource, page: DesignPage | numbe
   return { ...content, groups: [...(design.masterScene.groups ?? []).map(group => ({ ...group, id: groupIds.get(group.id)!, ...(group.parentId ? { parentId: groupIds.get(group.parentId) } : {}) })), ...(content.groups ?? [])], elements: [...master, ...content.elements] };
 }
 
-const STYLE_KEYS = ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill"] as const;
+const STYLE_KEYS = ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill", "autoFitMinFontSize", "autoFitMaxFontSize"] as const;
 export function textStyleFromElement(element: TextElement, name = "Text style"): TextStyle {
   const style: Record<string, unknown> = { id: crypto.randomUUID(), name: name.trim().slice(0, 200) || "Text style" };
   for (const key of STYLE_KEYS) if (element[key] !== undefined) style[key] = structuredClone(element[key]);

@@ -10,7 +10,7 @@ export type CanvasLayout = {
   grid?: { enabled: boolean; size: number; columns: number; rows: number; gutter: number };
   snapping?: { enabled: boolean; objects: boolean; page: boolean; guides: boolean; grid: boolean; spacing: boolean; tolerance: number };
 };
-export type CanvasGroup = { id: string; name: string; parentId?: string; locked?: boolean; hidden?: boolean };
+export type CanvasGroup = { id: string; name: string; parentId?: string; locked?: boolean; hidden?: boolean; opacity?: number };
 export type CanvasGradient = { type: "linear" | "radial"; angle: number; stops: { color: string; position: number }[] };
 export type CanvasShadow = { color: string; offsetX: number; offsetY: number; blur: number; spread: number };
 export type BlendMode = "normal" | "multiply" | "screen" | "overlay" | "darken" | "lighten" | "color-dodge" | "color-burn" | "hard-light" | "soft-light" | "difference" | "exclusion" | "hue" | "saturation" | "color" | "luminosity";
@@ -69,6 +69,9 @@ export type TextElement = CanvasElementBase & {
   letterSpacing: number;
   richText?: string;
   textMode?: "fixed" | "auto-height" | "auto-fit";
+  autoFitMinFontSize?: number;
+  autoFitMaxFontSize?: number;
+  autoFitFontSize?: number;
   verticalAlign?: "top" | "middle" | "bottom";
   padding?: number;
   paragraphSpacing?: number;
@@ -133,7 +136,7 @@ export type ShapeElement = CanvasElementBase & {
 };
 export type CanvasElement = TextElement | ImageElement | ShapeElement;
 export type CanvasScene = { background: string; elements: CanvasElement[]; groups?: CanvasGroup[]; layout?: CanvasLayout };
-export type TextStyle = Omit<TextElement, keyof CanvasElementBase | "type" | "text" | "richText" | "textStyleId" | "textMode" | "wordTextures"> & { id: string; name: string };
+export type TextStyle = Omit<TextElement, keyof CanvasElementBase | "type" | "text" | "richText" | "textStyleId" | "textMode" | "wordTextures" | "autoFitFontSize"> & { id: string; name: string };
 export type ReusableComponent = { id: string; name: string; scene: CanvasScene; width: number; height: number };
 export type TemplateParameter = { id: string; name: string; type: "text" | "image" | "color"; defaultValue?: string; required?: boolean; maxLength?: number };
 export type DesignComment = { id: string; pageId?: string; elementId?: string; text: string; createdAt: string; resolved?: boolean };
@@ -1344,9 +1347,10 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
 }
 
 function parseTextExtensions(value: Record<string, unknown>): Partial<TextElement> | null {
+  if (!["autoFitMinFontSize","autoFitMaxFontSize","autoFitFontSize"].every(key=>optional(value,key,candidate=>numberIn(candidate,1,500))) || value.autoFitMinFontSize!==undefined && value.autoFitMaxFontSize!==undefined && Number(value.autoFitMinFontSize)>Number(value.autoFitMaxFontSize)) return null;
   if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "textStyleId", identity)) return null;
   const result: Partial<TextElement> = {};
-  for (const key of ["textMode", "verticalAlign", "listStyle", "padding", "paragraphSpacing", "strikethrough", "textStyleId"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  for (const key of ["textMode", "verticalAlign", "listStyle", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
   if (value.richText !== undefined) {
     const sanitized = sanitizeRichText(value.richText);
     if (sanitized !== undefined) result.richText = sanitized;
@@ -1399,7 +1403,7 @@ function parseResources(value: Record<string, unknown>): DocumentResources | nul
       const element = parsed?.elements[0];
       if (!element || element.type !== "text") return null;
       const textStyle: Record<string, unknown> = { id: style.id, name: style.name };
-      for (const key of ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill"] as const) if (element[key] !== undefined) textStyle[key] = element[key];
+      for (const key of ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textureFill", "autoFitMinFontSize", "autoFitMaxFontSize"] as const) if (element[key] !== undefined) textStyle[key] = element[key];
       styles.push(textStyle as TextStyle);
     }
     if (!uniqueIds(styles)) return null;
@@ -1640,8 +1644,8 @@ export function parseCanvas(value: unknown): CanvasScene | null {
     if (!Array.isArray(value.groups) || value.groups.length > 100) return null;
     const groups: CanvasGroup[] = [];
     for (const group of value.groups) {
-      if (!object(group) || !identity(group.id) || !string(group.name, 200) || !optional(group, "parentId", identity) || !optional(group, "locked", boolean) || !optional(group, "hidden", boolean)) return null;
-      groups.push({ id: group.id, name: group.name, ...(group.parentId !== undefined ? { parentId: group.parentId as string } : {}), ...(group.locked !== undefined ? { locked: group.locked as boolean } : {}), ...(group.hidden !== undefined ? { hidden: group.hidden as boolean } : {}) });
+      if (!object(group) || !identity(group.id) || !string(group.name, 200) || !optional(group, "parentId", identity) || !optional(group, "locked", boolean) || !optional(group, "hidden", boolean) || !optional(group, "opacity", candidate => numberIn(candidate,0,1))) return null;
+      groups.push({ id: group.id, name: group.name, ...(group.parentId !== undefined ? { parentId: group.parentId as string } : {}), ...(group.locked !== undefined ? { locked: group.locked as boolean } : {}), ...(group.hidden !== undefined ? { hidden: group.hidden as boolean } : {}), ...(group.opacity !== undefined ? { opacity: group.opacity as number } : {}) });
     }
     if (!uniqueIds(groups)) return null;
     const map = new Map(groups.map(group => [group.id, group]));

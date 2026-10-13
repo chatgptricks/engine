@@ -1,4 +1,6 @@
 "use client";
+import { resolveEditorCommand, editorCommandHelp } from "@/lib/template-editor/editor-commands";
+import { saveSelectionTextStyle } from "@/lib/template-editor/editing-actions";
 
 import {ENGINE_CLIPBOARD_TYPE,encodeElementClipboard,decodeElementClipboard,plainClipboardText} from "@/lib/template-editor/clipboard";
 import type {ElementSnapshot} from "@/lib/template-editor/commands";
@@ -39,7 +41,7 @@ import {
   formatDimensions,
 } from "@/lib/template-editor/model";
 import { exportFrames, fileName, saveBlob, type ExportOptions } from "@/lib/template-editor/export";
-import { updateTextStyle, applyTextStyle, updateColorRole, removeColorRole, resizeDesignDocument } from "@/lib/template-editor/advanced";
+import { updateColorRole, removeColorRole, resizeDesignDocument } from "@/lib/template-editor/advanced";
 import { LayoutPanel } from "./layout-panel";
 import { WorkflowPanel } from "./workflow-panel";
 import { ExportDialog } from "./export-dialog";
@@ -174,6 +176,8 @@ export function DesignEditor({
   const [requestedIsolationGroupId,setIsolatedGroupId]=useState<string|null>(null);
   const [cropImageId,setCropImageId]=useState<string|null>(null);
   const [pathTool,setPathTool]=useState(false);
+  const [navigationMode,setNavigationMode]=useState<"select"|"hand"|"nodes">("select");
+  const [penClosed,setPenClosed]=useState(false);
   const [imageDropTargetId,setImageDropTargetId]=useState<string|null>(null);
   const paletteDrag=useRef<(()=>void)|null>(null);
   const suppressPaletteClick=useRef(false);
@@ -674,6 +678,7 @@ export function DesignEditor({
         return;
       const mod = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
+      const command=resolveEditorCommand(event);
       const historyDirection=historyShortcut(event);
       if (historyDirection) {
         event.preventDefault();
@@ -681,29 +686,30 @@ export function DesignEditor({
         return;
       }
       if(!mod&&target.closest('button,a[href],summary,[role="button"]')&&!target.closest('.te-canvas-hit'))return;
-      if (mod && key === "a") {
+      if (command === "select-all") {
         event.preventDefault();
         setSelected(selectable.map(e=>e.id));
         return;
       }
-      if (mod && key === "d" && selected.length) {
+      if (command === "duplicate" && selected.length) {
         event.preventDefault();
         applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined));
         return;
       }
-      if(mod&&key==='g'){event.preventDefault();applyCommand(live=>event.shiftKey?ungroupSelection(live,selected,isolatedGroupId??undefined):groupSelection(live,selected,"Group",isolatedGroupId??undefined));return;}
-      if(!mod&&key===' '){event.preventDefault();setSpacePanning(true);return;}
-      if ((key === "delete" || key === "backspace") && selected.length) {
+      if(command==='group'||command==='ungroup'){event.preventDefault();applyCommand(live=>event.shiftKey?ungroupSelection(live,selected,isolatedGroupId??undefined):groupSelection(live,selected,"Group",isolatedGroupId??undefined));return;}
+      if(command==='pan'){event.preventDefault();setSpacePanning(true);return;}
+      if (command === "delete" && selected.length) {
         event.preventDefault();
         applyCommand((live) => removeSelection(live, selected));
         return;
       }
-      if (mod && (key === "]" || key === "[")) {
+      if (["forward","backward","front","back"].includes(command??"")) {
         event.preventDefault();
-        applyCommand((live) => reorderSelection(live, selected, key === "]" ? (event.shiftKey ? "front" : "forward") : (event.shiftKey ? "back" : "backward")));
+        applyCommand((live) => reorderSelection(live, selected, command as "front"|"forward"|"back"|"backward"));
         return;
       }
-      if (key.startsWith("arrow") && selected.length) {
+      if(command==="nudge"&&navigationMode==="hand"){event.preventDefault();const amount=event.shiftKey?100:30;workspaceRef.current?.scrollBy({left:key==="arrowright"?amount:key==="arrowleft"?-amount:0,top:key==="arrowdown"?amount:key==="arrowup"?-amount:0});return;}
+      if (command === "nudge" && selected.length) {
         event.preventDefault();
         const distance = (event.shiftKey ? 10 : 1)/(format.width/FRAME_WIDTH);
         const dx =
@@ -716,20 +722,25 @@ export function DesignEditor({
         );
         return;
       }
-      if (key === "escape") {
+      if (command === "escape") {
         setSelected([]);
         setCropImageId(null);setIsolatedGroupId(null);setPathTool(false);setImageDropTargetId(null);paletteDrag.current?.();
         return;
       }
-      if (!mod && !event.altKey && key === "t") {
+      if(command==="nodes"&&(selected.length!==1||!scene.elements.some(element=>element.id===selected[0]&&element.type==="shape"&&canEditElement(scene,element,"style")&&canEditElement(scene,element,"position")))){event.preventDefault();setNotice("Select an unlocked shape to edit its path nodes.");return;}
+      if(command==="hand"||command==="select"||command==="nodes"){event.preventDefault();setNavigationMode(command==="select"?"select":command);setPathTool(false);setCropImageId(null);return;}
+      if(command==="pen"){event.preventDefault();setPathTool(value=>!value);setNavigationMode("select");setCropImageId(null);return;}
+      if(command==="zoom-in"||command==="zoom-out"){event.preventDefault();setZoom(value=>Math.max(.05,Math.min(32,value*(command==="zoom-in"?1.25:.8))));return;}
+      if(command==="fit"){event.preventDefault();fitPage();return;}
+      if (command === "text") {
         event.preventDefault();
         addText();
       }
-      if (!mod && !event.altKey && key === "r") {
+      if (command === "rectangle") {
         event.preventDefault();
         addShape("rectangle");
       }
-      if (!mod && !event.altKey && key === "o") {
+      if (command === "ellipse") {
         event.preventDefault();
         addShape("ellipse");
       }
@@ -940,7 +951,7 @@ export function DesignEditor({
       slideBounds={continuous?{x:index*FRAME_WIDTH,y:0,width:FRAME_WIDTH,height:canvasHeight}:undefined}
       textStyles={design.styles}
       outputScale={format.width/FRAME_WIDTH}
-      onSaveTextStyle={style=>commit(d=>{const next=updateTextStyle(d,style);const content=editingMaster?next.masterScene??scene:next.continuousCanvas??next.pages.find(p=>p.id===page.id)?.canvas??scene;const applied=applyTextStyle(content,selected,style).scene;return editingMaster?{...next,masterScene:applied}:next.continuousCanvas?{...next,continuousCanvas:applied}:{...next,pages:next.pages.map(p=>p.id===page.id?{...p,canvas:applied}:p)};})}
+      onSaveTextStyle={style=>commit(d=>saveSelectionTextStyle(d,style,selected,{pageId:page.id,master:editingMaster}))}
       onDeleteTextStyle={id=>commit(d=>({...d,styles:d.styles?.filter(s=>s.id!==id)}))}
       colorRoles={design.colorRoles}
       onSaveColorRole={role=>commit(d=>updateColorRole(d,role))}
@@ -1144,7 +1155,7 @@ export function DesignEditor({
                   ['polygon','M7 3H17L23 12 17 21H7L1 12Z'],['star','M12 2 15 9 23 10 17 15 19 23 12 18 5 23 7 15 1 10 9 9Z'],
                   ['arrow','M2 8H14V3L23 12 14 21V16H2Z'],
                 ] as const).map(([shape,path])=><button key={shape} onClick={()=>addShape(shape)}><svg width="32" height="32" viewBox="0 0 24 24" aria-hidden="true"><path d={path} fill="currentColor"/></svg>{shape[0].toUpperCase()+shape.slice(1)}</button>)}</div>
-                <details className="te-drawer-details"><summary>Drawing & shape tools</summary><button className="te-button te-full" aria-pressed={pathTool} onClick={()=>setPathTool(p=>!p)}>Pen / path</button>                <div className="te-pro-actions">{(['union','intersect','subtract','xor'] as const).map(operation=><button key={operation} className="te-text-button" disabled={selected.length<2||scene.elements.filter(e=>selected.includes(e.id)).some(e=>e.type!=='shape')} onClick={()=>applyCommand(live=>combineShapes(live,selected,operation))}>{operation==='xor'?'Exclude overlap':operation[0].toUpperCase()+operation.slice(1)}</button>)}</div>
+                <details className="te-drawer-details"><summary>Drawing & shape tools</summary><button className="te-button te-full" aria-pressed={pathTool} onClick={()=>{setPathTool(p=>!p);setNavigationMode("select");}}>Pen / path</button>                <div className="te-pro-actions">{(['union','intersect','subtract','xor'] as const).map(operation=><button key={operation} className="te-text-button" disabled={selected.length<2||scene.elements.filter(e=>selected.includes(e.id)).some(e=>e.type!=='shape')} onClick={()=>applyCommand(live=>combineShapes(live,selected,operation))}>{operation==='xor'?'Exclude overlap':operation[0].toUpperCase()+operation.slice(1)}</button>)}</div>
                 <button className="te-button te-full" onClick={()=>fileRef.current?.click()}>Import editable SVG</button></details>
 
               </>
@@ -1387,6 +1398,13 @@ export function DesignEditor({
           </section>}
         </aside>
         <main className="te-canvas-column">
+          <div className="te-canvas-tools" role="toolbar" aria-label="Canvas tools">
+            <button type="button" aria-pressed={navigationMode==="select"&&!pathTool} title="Select · V" onClick={()=>{setNavigationMode("select");setPathTool(false);}}>Select</button>
+            <button type="button" aria-pressed={navigationMode==="hand"} title="Pan canvas · H" onClick={()=>{setNavigationMode("hand");setPathTool(false);setCropImageId(null);}}>Hand</button>
+            <button type="button" disabled={disabled} aria-pressed={pathTool} title="Draw path · P" onClick={()=>{setPathTool(value=>!value);setNavigationMode("select");setCropImageId(null);}}>Pen</button>
+            <button type="button" disabled={disabled||selected.length!==1||!scene.elements.some(element=>element.id===selected[0]&&element.type==="shape"&&canEditElement(scene,element,"style")&&canEditElement(scene,element,"position"))} aria-pressed={navigationMode==="nodes"} title="Edit path nodes · A" onClick={()=>{setNavigationMode(value=>value==="nodes"?"select":"nodes");setPathTool(false);}}>Nodes</button>
+            {pathTool&&<label><input type="checkbox" checked={penClosed} onChange={event=>setPenClosed(event.target.checked)}/>Close path</label>}
+          </div>
           <QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
             outputScale={format.width/FRAME_WIDTH}
             onFormatText={formatText}
@@ -1473,6 +1491,13 @@ export function DesignEditor({
                     imageDropTargetId={imageDropTargetId??undefined}
                     masterScene={!editingMaster?design.masterScene:undefined}
                     masterPageVisibility={continuous?design.pages.map(p=>p.useMaster!==false):[page.useMaster!==false]}
+                    navigationMode={navigationMode}
+                    onExitNodeEditing={()=>setNavigationMode("select")}
+                    onRequestCrop={id=>{setSelected([id]);setCropImageId(id);}}
+                    penClosed={penClosed} penColor={brand.text}
+                    onCancelDrawing={()=>setPathTool(false)}
+                    onPan={delta=>{const node=workspaceRef.current;if(node){node.scrollLeft-=delta.x;node.scrollTop-=delta.y;}}}
+                    onZoom={gesture=>{const node=workspaceRef.current;if(!node)return;const bounds=node.getBoundingClientRect(),screenX=gesture.clientX-bounds.left,screenY=gesture.clientY-bounds.top;zoomAnchor.current={x:(node.scrollLeft+screenX)/scale-workspaceLeft,y:(node.scrollTop+screenY)/scale-workspaceTop,screenX,screenY};setZoom(value=>Math.max(.05,Math.min(32,value*gesture.factor)));}}
                     drawingMode={pathTool?'pen':undefined}
                     onDrawPath={element=>{addElement(element);setPathTool(false);}}
                   />
@@ -1605,26 +1630,10 @@ export function DesignEditor({
           onClose={() => setShowShortcuts(false)}
         >
           <div className="te-shortcuts-list">
-            {[
-              ["T", "Add text"],
-              ["R / O", "Rectangle / circle"],
-              ["⌘/Ctrl Z", "Undo"],
-              ["⌘/Ctrl Shift Z", "Redo"],
-              ["⌘/Ctrl D", "Duplicate selected"],
-              ["⌘/Ctrl C / X / V", "Copy / cut / paste elements"],
-              ["⌘/Ctrl [ / ]", "Send backward / bring forward"],
-              ["Shift F10", "Open actions menu"],
-              ["Drag empty canvas", "Select multiple elements"],
-              ["⌘/Ctrl A", "Select all unlocked elements"],
-              ["Arrow keys", "Move selected elements"],
-              ["Shift + arrows", "Move in larger steps"],
-              ["Delete", "Remove selected elements"],
-              ["Shift + click", "Select multiple elements"],
-              ["Escape", "Deselect / cancel gesture"],
-            ].map(([key, action]) => (
-              <div key={key}>
-                <span>{action}</span>
-                <kbd>{key}</kbd>
+            {editorCommandHelp().map(({label,shortcut}) => (
+              <div key={label}>
+                <span>{label}</span>
+                <kbd>{shortcut}</kbd>
               </div>
             ))}
           </div>

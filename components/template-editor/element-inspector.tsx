@@ -1,4 +1,5 @@
 "use client";
+import { changeStyledTextCase } from "@/lib/template-editor/editing-actions";
 
 import { useState, type ReactNode } from "react";
 import { CopyIcon, TrashIcon } from "@/components/engine/icons";
@@ -44,10 +45,7 @@ type Props = {
 
 const MAX_ELEMENTS = 100;
 
-export function changeTextCase(element: TextElement, upper: boolean): TextElement {
-  const change=(text:string)=>upper?text.toUpperCase():text.toLowerCase();
-  return {...element,text:change(element.text).slice(0,20_000),richText:element.richText?.replace(/<[^>]+>|&(?:#[0-9]+|#x[0-9a-f]+|[a-z]+);|[^<&]+|[<&]/gi,token=>token.startsWith("<")||token.startsWith("&")?token:change(token))};
-}
+export const changeTextCase = changeStyledTextCase;
 
 function shared<T, K extends keyof T>(items: T[], key: K): T[K] | undefined {
   const first = items[0]?.[key];

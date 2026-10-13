@@ -1,5 +1,6 @@
 import type { CanvasElement, CanvasScene, ImageElement, ShapeElement, ShapeImageFill } from "./model";
 import { canEditElement, isElementHidden } from "./commands";
+import { elementEffectiveOpacity } from "./group-opacity";
 import { groupMemberIds } from "./layer-tree";
 import { shapePath } from "./appearance";
 import { flattenVectorPath } from "./vector";
@@ -63,5 +64,5 @@ export function shapeContainsPoint(shape: ShapeElement, point: {x:number;y:numbe
 export function findPhotoFrameAtPoint(scene: CanvasScene, point:{x:number;y:number}, options:{excludedIds?:readonly string[];isolationGroupId?:string|null} = {}): ShapeElement | null {
   const excluded=new Set(options.excludedIds??[]);
   const scoped=options.isolationGroupId?new Set(groupMemberIds(scene,options.isolationGroupId)):null;
-  return [...scene.elements].reverse().find((element):element is ShapeElement=>element.type==="shape"&&!excluded.has(element.id)&&(!scoped||scoped.has(element.id))&&!isElementHidden(scene,element)&&element.opacity>0&&canEditElement(scene,element,"content")&&shapeContainsPoint(element,point))??null;
+  return [...scene.elements].reverse().find((element):element is ShapeElement=>element.type==="shape"&&!excluded.has(element.id)&&(!scoped||scoped.has(element.id))&&!isElementHidden(scene,element)&&elementEffectiveOpacity(scene,element)>0&&canEditElement(scene,element,"content")&&shapeContainsPoint(element,point))??null;
 }

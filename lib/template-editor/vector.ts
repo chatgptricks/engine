@@ -42,7 +42,7 @@ export function flattenVectorPath(path: string, tolerance = .25): Point[][] {
   const tokens = path.match(/[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d*\.)?\d+(?:[eE][-+]?\d+)?/g) ?? [];
   let index = 0, command = "", current: Point = [0, 0], start: Point = [0, 0], control: Point = [0, 0], previous = "";
   const rings: Point[][] = []; let ring: Point[] = [];
-  const finish = () => { if (ring.length > 1) rings.push(ring); ring = []; };
+  const finish = (closed = false) => { if (ring.length > 1) { Object.defineProperty(ring,"closed",{value:closed}); rings.push(ring); } ring = []; };
   const push = (point: Point) => { if (!ring.length || !equal(ring.at(-1)!, point)) ring.push(point); current = point; if (rings.reduce((sum, item) => sum + item.length, ring.length) > 30_000) throw new Error("This SVG path is too complex to edit."); };
   const read = () => { const value = tokens[index++]; if (value === undefined || /^[a-z]$/i.test(value)) throw new Error("Incomplete SVG path command."); return Number(value); };
   const point = (relative: boolean): Point => { const x = read(), y = read(); return [x + (relative ? current[0] : 0), y + (relative ? current[1] : 0)]; };
@@ -51,7 +51,7 @@ export function flattenVectorPath(path: string, tolerance = .25): Point[][] {
     if (/^[a-z]$/i.test(tokens[index])) command = tokens[index++];
     if (!command) throw new Error("SVG path must begin with a command.");
     const kind = command.toUpperCase(), relative = command !== kind, origin: Point = [...current];
-    if (kind === "Z") { push(start); finish(); current = start; previous = kind; command = ""; continue; }
+    if (kind === "Z") { push(start); finish(true); current = start; previous = kind; command = ""; continue; }
     if (kind === "M") { finish(); start = point(relative); push(start); command = relative ? "l" : "L"; }
     else if (kind === "L") push(point(relative));
     else if (kind === "H") push([read() + (relative ? current[0] : 0), current[1]]);
@@ -84,7 +84,7 @@ export function flattenVectorPath(path: string, tolerance = .25): Point[][] {
 }
 
 function pointsPath(rings: Point[][], close = true): string {
-  return rings.map(ring => ring.length ? `M${round(ring[0][0])} ${round(ring[0][1])}${ring.slice(1).map(point => `L${round(point[0])} ${round(point[1])}`).join("")}${close ? "Z" : ""}` : "").join("");
+  return rings.map(ring => ring.length ? `M${round(ring[0][0])} ${round(ring[0][1])}${ring.slice(1).map(point => `L${round(point[0])} ${round(point[1])}`).join("")}${close && (ring as Point[] & {closed?:boolean}).closed !== false ? "Z" : ""}` : "").join("");
 }
 function bounds(rings: Point[][]) {
   const points = rings.flat(); if (!points.length) throw new Error("This shape has no vector outline.");
@@ -236,22 +236,23 @@ export function importSVG(source: string, name = "Imported SVG"): CanvasScene {
   const walk = (node: SVGNode, parentMatrix: Matrix, inherited: Record<string, string>, parentOpacity: number, groupId?: string) => {
     if (["defs", "lineargradient", "radialgradient", "stop", "title", "desc", "metadata"].includes(node.tag)) return;
     if (!["svg", "g", "path", "rect", "circle", "ellipse", "line", "polygon", "polyline"].includes(node.tag)) throw new Error(`Unsupported SVG element: ${node.tag}. Convert it to paths before importing.`);
-    const attrs = attributes(node, inherited), matrix = multiply(parentMatrix, parseSVGTransform(node.attrs.transform)), opacity = parentOpacity * Math.min(1, Math.max(0, numeric(attributes(node, {}).opacity, 1)));
+    const attrs = attributes(node, inherited), matrix = multiply(parentMatrix, parseSVGTransform(node.attrs.transform)), ownOpacity=Math.min(1,Math.max(0,numeric(attributes(node, {}).opacity,1))), composite=node.tag==="g"||node.tag==="svg"&&ownOpacity!==1, opacity = composite ? parentOpacity : parentOpacity * ownOpacity;
     let nextGroup = groupId;
-    if (node.tag === "g") { nextGroup = crypto.randomUUID(); canvas.groups!.push({ id: nextGroup, name: (node.attrs.id ?? "Group").slice(0, 200), ...(groupId ? { parentId: groupId } : {}) }); if (canvas.groups!.length > 100) throw new Error("An SVG supports up to 100 editable groups."); }
+    if (composite) { nextGroup = crypto.randomUUID(); canvas.groups!.push({ id: nextGroup, name: (node.attrs.id ?? "Group").slice(0, 200), ...(groupId ? { parentId: groupId } : {}), ...(ownOpacity!==1?{opacity:ownOpacity}:{}) }); if (canvas.groups!.length > 100) throw new Error("An SVG supports up to 100 editable groups."); }
     const path = nodePath(node);
     if (path) {
-      const localRings = flattenVectorPath(path), local = bounds(localRings), transformed = localRings.map(ring => ring.map(point => matrixPoint(matrix, point))), world = bounds(transformed);
+      const localRings = flattenVectorPath(path), local = bounds(localRings), transformed = localRings.map(ring => Object.defineProperty(ring.map(point => matrixPoint(matrix, point)),"closed",{value:(ring as Point[] & {closed?:boolean}).closed})), world = bounds(transformed);
       const sx = Math.hypot(matrix[0], matrix[1]), sy = Math.hypot(matrix[2], matrix[3]), orthogonal = Math.abs(matrix[0] * matrix[2] + matrix[1] * matrix[3]) < 1e-7 && matrix[0] * matrix[3] - matrix[1] * matrix[2] > 0;
       const center = matrixPoint(matrix, [local.x + local.width / 2, local.y + local.height / 2]), width = Math.max(1, (orthogonal ? local.width * sx : world.width) * scale), height = Math.max(1, (orthogonal ? local.height * sy : world.height) * scale);
       const x = (orthogonal ? center[0] - width / scale / 2 : world.x) * scale, y = (orthogonal ? center[1] - height / scale / 2 : world.y) * scale;
-      const gradientId = attrs.fill?.match(/^url\(#([\w-]+)\)$/)?.[1], gradient = gradientId ? gradients.get(gradientId) : undefined;
+      const gradientId = attrs.fill?.match(/^url\(#([\w-]+)\)$/)?.[1], gradientSource = gradientId ? gradients.get(gradientId) : undefined;
+      const gradient = gradientSource ? {...gradientSource,stops:gradientSource.stops.map(stop=>({...stop,color:alphaColor(stop.color,numeric(attrs["fill-opacity"],1))}))} : undefined;
       if (gradientId && !gradient) throw new Error("This SVG references an unavailable gradient.");
       if (width > 10_000 || height > 10_000 || Math.abs(x) > 10_000 || Math.abs(y) > 10_000) throw new Error("SVG artwork exceeds editable size limits.");
       const shape = createCanvasElement("shape", { name: (node.attrs.id ?? `${name} ${canvas.elements.length + 1}`).slice(0, 200), x, y, width, height, rotation: orthogonal ? Math.atan2(matrix[1], matrix[0]) * 180 / Math.PI : 0, shape: "path", path: orthogonal ? path : pointsPath(transformed), viewBox: orthogonal ? `${local.x} ${local.y} ${Math.max(.0001, local.width)} ${Math.max(.0001, local.height)}` : `${world.x} ${world.y} ${Math.max(.0001, world.width)} ${Math.max(.0001, world.height)}`, fill: gradient ? gradient.stops[0].color : alphaColor(color(attrs.fill), numeric(attrs["fill-opacity"], 1)), stroke: alphaColor(color(attrs.stroke, "transparent"), numeric(attrs["stroke-opacity"], 1)), strokeWidth: Math.min(200, Math.max(0, numeric(attrs["stroke-width"], 1) * scale * (sx + sy) / 2)), fillRule: attrs["fill-rule"] === "evenodd" ? "evenodd" : "nonzero", opacity, ...(gradient ? { gradient } : {}), ...(groupId || nextGroup ? { groupId: nextGroup } : {}), ...(attrs["stroke-dasharray"] && attrs["stroke-dasharray"] !== "none" ? { strokeDash: attrs["stroke-dasharray"].split(/[\s,]+/).map(value => Math.max(0, numeric(value) * scale)) } : {}), ...(attrs.display === "none" || attrs.visibility === "hidden" ? { hidden: true } : {}) });
       canvas.elements.push(shape); if (canvas.elements.length > 100) throw new Error("An imported SVG supports up to 100 editable objects.");
     }
-    const nextStyles: Record<string, string> = {}; for (const key of ["fill", "stroke", "stroke-width", "stroke-dasharray", "fill-rule", "display", "visibility"]) if (attrs[key]) nextStyles[key] = attrs[key];
+    const nextStyles: Record<string, string> = {}; for (const key of ["fill", "stroke", "stroke-width", "stroke-dasharray", "fill-rule", "fill-opacity", "stroke-opacity", "display", "visibility"]) if (attrs[key]) nextStyles[key] = attrs[key];
     node.children.forEach(child => walk(child, matrix, nextStyles, opacity, nextGroup));
   };
   walk(root, [1, 0, 0, 1, -box[0], -box[1]], {}, 1);
