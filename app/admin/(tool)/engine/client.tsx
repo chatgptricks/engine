@@ -1,1 +1,3 @@
+"use client";
+
 export { default } from "@/components/template-editor/studio";
