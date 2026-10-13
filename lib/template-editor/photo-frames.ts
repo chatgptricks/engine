@@ -7,7 +7,7 @@ import { flattenVectorPath } from "./vector";
 export type PhotoContent = ShapeImageFill & { fit: "cover" | "contain" };
 export function photoContent(element: CanvasElement): PhotoContent | null {
   if (element.type === "shape") return element.imageFill ? { ...element.imageFill, fit: element.imageFill.objectFit } : null;
-  return element.type === "image" ? {src:element.src,previewSrc:element.previewSrc,directive:element.directive,rightsNote:element.rightsNote,sourceUrl:element.sourceUrl,provenance:element.provenance,objectFit:element.fit,fit:element.fit,cropX:element.cropX,cropY:element.cropY,cropScale:element.cropScale,flipX:element.flipX,flipY:element.flipY,intrinsicWidth:element.intrinsicWidth,intrinsicHeight:element.intrinsicHeight} : null;
+  return element.type === "image" ? {src:element.src,previewSrc:element.previewSrc,publicAlt:element.publicAlt,directive:element.directive,rightsNote:element.rightsNote,sourceUrl:element.sourceUrl,provenance:element.provenance,objectFit:element.fit,fit:element.fit,cropX:element.cropX,cropY:element.cropY,cropScale:element.cropScale,flipX:element.flipX,flipY:element.flipY,intrinsicWidth:element.intrinsicWidth,intrinsicHeight:element.intrinsicHeight} : null;
 }
 export function updatePhotoContent(element: CanvasElement, patch: Partial<Pick<ImageElement,"cropX"|"cropY"|"cropScale"|"flipX"|"flipY"|"fit">>): CanvasElement {
   if(element.type === "image")return {...element,...patch};

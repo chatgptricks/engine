@@ -200,7 +200,7 @@ export function ElementInspector({
   ) {
     if (noEdits) return;
     const metadata = ["name", "slot", "master", "anchor", "protection"].includes(group);
-    const property = ["text", "uppercase", "lowercase", "image-fill"].includes(group) ? "content" : ["x", "y", "width", "height", "rotation", "square-shape"].includes(group) ? "position" : "style";
+    const property = ["text", "uppercase", "lowercase", "image-fill", "public-alt"].includes(group) ? "content" : ["x", "y", "width", "height", "rotation", "square-shape"].includes(group) ? "position" : "style";
     const next = scene.elements.map((element) => editableIds.has(element.id) && (metadata || canEditElement(scene, element, property)) ? transform(element) : element);
     if (next.some((element, index) => element !== scene.elements[index])) onChange({ ...scene, elements: next }, `${groupPrefix}:${group}`);
   }
@@ -714,6 +714,10 @@ export function ElementInspector({
                   </Toggle>
                 </div>
                 <p className="te-element-hint">Choose Crop above to reposition the photo on the canvas.</p>
+                <Section title="Accessibility" disclosure>
+                  <label className="te-field">Image description<textarea aria-label="Public image description" rows={3} maxLength={2000} disabled={noEdits||elements.every(element=>!canEditElement(scene,element,"content"))} value={shared(images,"publicAlt")??""} placeholder={images.length>1&&shared(images,"publicAlt")===undefined?"Mixed descriptions":"What should a screen reader say about this image?"} onChange={event=>{const publicAlt=event.target.value;update("public-alt",element=>element.type==="image"?{...element,publicAlt}:element.type==="shape"&&element.imageFill?{...element,imageFill:{...element.imageFill,publicAlt}}:element);}}/></label>
+                  <p className="te-element-hint">Shared in review links. Leave blank for decorative images. Internal image notes stay private.</p>
+                </Section>
                 {standaloneImages.length>0 && <Section title="Image corners" disclosure><NumberField label="Corner radius" unit="px" min={0} max={1080} value={px(shared(standaloneImages,"radius"))} onChange={value=>updateImage({radius:value/OUTPUT_SCALE},"image-radius")} /></Section>}
               </Section>
             )}

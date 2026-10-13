@@ -65,6 +65,7 @@ export function fillShapeWithImage(scene: CanvasScene, shapeId: string, image: I
     ...(photo.flipY !== undefined ? { flipY: photo.flipY } : {}),
     ...(photo.intrinsicWidth !== undefined ? { intrinsicWidth: photo.intrinsicWidth } : {}),
     ...(photo.intrinsicHeight !== undefined ? { intrinsicHeight: photo.intrinsicHeight } : {}),
+    ...(photo.publicAlt !== undefined ? {publicAlt:photo.publicAlt} : {}),
     ...(photo.previewSrc !== undefined ? { previewSrc: photo.previewSrc } : {}),
     ...(photo.directive !== undefined ? { directive: photo.directive } : {}),
     ...(photo.rightsNote !== undefined ? { rightsNote: photo.rightsNote } : {}),

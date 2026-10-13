@@ -79,6 +79,8 @@ export type TextElement = CanvasElementBase & {
   wordTextures?: (ShapeImageFill & { id: string })[];
 };
 export type PhotoMetadata = {
+  /** Intentionally public description; internal directives never become alt text. */
+  publicAlt?: string;
   /** Lightweight editor preview; src always keeps the original. */
   previewSrc?: string;
   directive?: string;
@@ -145,6 +147,8 @@ export type DesignPage = {
   canvas?: CanvasScene;
   label?: string;
   useMaster?: boolean;
+  publicDescription?: string;
+  readingOrder?: string[];
 };
 export type DesignDocument = DocumentResources & {
   id: string;
@@ -1588,6 +1592,7 @@ const numberIn = (value: unknown, min: number, max: number): value is number =>
 function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | null {
   if (!optional(value, "directive", candidate => string(candidate, 2000)) || !optional(value, "rightsNote", candidate => string(candidate, 2000))) return null;
   const result: PhotoMetadata = {};
+  if(value.publicAlt !== undefined) {if(!string(value.publicAlt,2000))return null;result.publicAlt=value.publicAlt;}
   if (value.previewSrc !== undefined) {
     if (!safeImageUrl(value.previewSrc)) return null;
     result.previewSrc = value.previewSrc;
@@ -1816,7 +1821,8 @@ function parsePages(value: unknown): DesignPage[] | null {
     if (!style) return null;
     const canvas = p.canvas === undefined ? undefined : parseCanvas(p.canvas);
     if (canvas === null) return null;
-    if (!optional(p, "label", candidate => string(candidate, 200)) || !optional(p, "useMaster", boolean)) return null;
+    if (!optional(p, "label", candidate => string(candidate, 200)) || !optional(p, "useMaster", boolean) || !optional(p,"publicDescription",candidate=>string(candidate,5000))) return null;
+    if(p.readingOrder!==undefined && (!Array.isArray(p.readingOrder)||p.readingOrder.length>200||!p.readingOrder.every(identity)||new Set(p.readingOrder).size!==p.readingOrder.length))return null;
     const source: StoryImage["source"] = [
       "google",
       "pinterest",
@@ -1833,6 +1839,8 @@ function parsePages(value: unknown): DesignPage[] | null {
       style,
       ...(p.label !== undefined ? { label: p.label as string } : {}),
       ...(p.useMaster !== undefined ? { useMaster: p.useMaster as boolean } : {}),
+      ...(p.publicDescription!==undefined?{publicDescription:p.publicDescription as string}:{}),
+      ...(p.readingOrder!==undefined?{readingOrder:[...p.readingOrder as string[]]}:{}),
       ...(canvas ? { canvas } : {}),
       image: {
         id: image.id,

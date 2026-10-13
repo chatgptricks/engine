@@ -2,6 +2,7 @@
 
 import {ENGINE_CLIPBOARD_TYPE,encodeElementClipboard,decodeElementClipboard,plainClipboardText} from "@/lib/template-editor/clipboard";
 import type {ElementSnapshot} from "@/lib/template-editor/commands";
+import {PageAccessibilitySection} from "./page-accessibility";
 import {prepareRasterAsset} from "@/lib/template-editor/client-media";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
@@ -1356,6 +1357,7 @@ export function DesignEditor({
               <button className="te-text-button" disabled={disabled || selectedImage.locked} onClick={fillImageAcrossSlides}>Fill slides</button>
             </div>}
           </div>}
+              {!editingMaster&&<PageAccessibilitySection design={design} page={page} disabled={disabled} onChange={patch=>commit(d=>({...d,pages:d.pages.map(item=>item.id===page.id?{...item,...patch}:item)}),`page-accessibility:${page.id}`)} onEditImage={(id,master)=>{setEditingMaster(master);setIsolatedGroupId(null);setSelected([id]);openPanel("style");}}/>}
             </div>}
             {tab === "view" && <div className="te-drawer-settings">
               <p className="te-help">Set up your workspace. Guides stay out of downloads.</p>

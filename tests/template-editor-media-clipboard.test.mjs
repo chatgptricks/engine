@@ -96,3 +96,26 @@ test('original-image HTTP endpoints authenticate, enforce origin and streamed by
   owner={ownerKey:'b'};assert.equal((await read.GET(request(),context)).status,404);
   owner={ownerKey:'a'};const original=await read.GET(request(),context);assert.equal(await original.text(),'abc');assert.equal(original.headers.get('x-content-type-options'),'nosniff');
 });
+test('public reading follows authored order and excludes hidden, transparent, off-page and private image notes',()=>{
+  const make=(type,patch)=>({...model.createCanvasElement(type,patch),id:patch.id});
+  const accessibility=loadCached('lib/template-editor/public-accessibility.ts');
+  const design=model.createBlankDesign('Public reading','portrait'),page=design.pages[0];
+  const text=(id,x,y,patch={})=>make('text',{id,name:'Internal '+id,text:id,x,y,width:60,height:25,...patch});
+  const image=make('image',{id:'photo',src:'https://example.com/photo.png',name:'Private filename',directive:'Private directive',rightsNote:'Private contract',publicAlt:'A blue mountain at dawn',x:0,y:80,width:60,height:60});
+  design.masterScene={background:'transparent',elements:[text('master-heading',0,0)]};
+  page.publicDescription='A poster about exploring outdoors';page.readingOrder=['photo','master-heading','heading'];
+  page.canvas={background:'#fff',groups:[{id:'hidden-group',name:'Secret',locked:false,hidden:true},{id:'invisible-group',name:'Invisible',locked:false,opacity:0}],elements:[text('heading',0,35),text('hidden',0,0,{groupId:'hidden-group'}),text('invisible',0,0,{groupId:'invisible-group'}),text('outside',700,0),text('zero',0,0,{opacity:0}),image,make('image',{id:'decorative',src:'https://example.com/photo.png',name:'Private decorative',x:90,y:80,width:40,height:40})]};
+  assert.deepEqual(accessibility.publicReadingSequence(design,page),[{id:'photo',text:'A blue mountain at dawn'},{id:'master-heading',text:'master-heading'},{id:'heading',text:'heading'}]);
+  assert.equal(accessibility.pageReadingItems(design,page).filter(item=>item.missingAlt).length,1);
+  const serialized=JSON.stringify(accessibility.publicReadingSequence(design,page));assert.doesNotMatch(serialized,/Private|outside|hidden|invisible/);
+  const fill=commands.fillShapeWithImage({background:'#fff',elements:[make('shape',{id:'frame'})]},'frame',image).scene.elements[0].imageFill;
+  assert.equal(fill.publicAlt,'A blue mountain at dawn');assert.equal(fill.directive,'Private directive');
+});
+test('explicit public descriptions survive the library parser with bounded text and unique reading order',()=>{
+  const design=model.createBlankDesign('Accessibility','square'),page=design.pages[0];
+  page.publicDescription='A public description';page.readingOrder=['photo'];page.canvas.elements=[{...model.createCanvasElement('image',{src:'https://example.com/photo.png',publicAlt:'A smiling dog'}),id:'photo'}];
+  const library={...model.EMPTY_LIBRARY,designs:[design]};
+  const parsed=model.parseLibrary(library);assert.equal(parsed.designs[0].pages[0].publicDescription,'A public description');assert.equal(parsed.designs[0].pages[0].canvas.elements[0].publicAlt,'A smiling dog');
+  page.readingOrder=['photo','photo'];assert.equal(model.parseLibrary(library),null);
+  page.readingOrder=['photo'];page.publicDescription='x'.repeat(5001);assert.equal(model.parseLibrary(library),null);
+});
