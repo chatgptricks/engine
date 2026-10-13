@@ -150,3 +150,9 @@ test("pen canvas renders only the draft geometry while drawing controls stay out
  const html=renderToStaticMarkup(React.createElement(canvas.CanvasEditor,{scene:scene([]),width:360,height:480,selectedIds:[],drawingMode:"pen",onSelect(){},onChange(){}}));
  assert.match(html,/class="te-path-preview"/);assert.doesNotMatch(html,/Draw path controls|Finish path|Remove last point|Click to add points/);
 });
+
+test("node editing keeps anchor geometry inside canvas while its controls render in the external host",()=>{
+ const element=shape("nodes",{shape:"triangle"});
+ const html=renderToStaticMarkup(React.createElement(canvas.CanvasEditor,{scene:scene([element]),width:360,height:480,selectedIds:[element.id],navigationMode:"nodes",onSelect(){},onChange(){}}));
+ assert.match(html,/class="te-vector-node-overlay"/);assert.match(html,/data-vector-anchor=/);assert.doesNotMatch(html,/aria-label="Path editing"|Coordinates &amp; handles|>Add after</);
+});

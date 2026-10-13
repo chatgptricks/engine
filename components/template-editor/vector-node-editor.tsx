@@ -1,4 +1,5 @@
 "use client";
+import {createPortal} from "react-dom";
 import {useEffect,useMemo,useRef,useState,type PointerEvent as ReactPointerEvent} from "react";
 import type {ShapeElement} from "@/lib/template-editor/model";
 import {shapeViewBox} from "@/lib/template-editor/photo-frames";
@@ -7,8 +8,8 @@ import {vectorGraphForShape,serializeVectorNodes,shapeWithVectorGraph,moveVector
 import {NumberField} from "./controls";
 import "./vector-node-editor.css";
 
-type Props={shape:ShapeElement;scale:number;outputScale:number;onChange:(shape:ShapeElement,group?:string)=>boolean|void;onClose:()=>void};
-export function VectorNodeEditor({shape,scale,outputScale,onChange,onClose}:Props){
+type Props={toolbarHost?:HTMLElement|null;shape:ShapeElement;scale:number;outputScale:number;onChange:(shape:ShapeElement,group?:string)=>boolean|void;onClose:()=>void};
+export function VectorNodeEditor({toolbarHost,shape,scale,outputScale,onChange,onClose}:Props){
   const parsed=useMemo(()=>{try{return {graph:vectorGraphForShape(shape),error:""};}catch(reason){return {graph:null,error:reason instanceof Error?reason.message:"This path could not be edited."};}},[shape]);
   const [draft,setDraft]=useState<VectorGraph|null>(null),[selection,setSelection]=useState({subpath:0,node:0}),[smooth,setSmooth]=useState(false),[error,setError]=useState("");
   const svg=useRef<SVGSVGElement>(null),gesture=useRef<{pointer:number;id:string;handle?:"incoming"|"outgoing";graph:VectorGraph;latest:VectorGraph;capture:Element}|null>(null);
@@ -23,10 +24,10 @@ export function VectorNodeEditor({shape,scale,outputScale,onChange,onClose}:Prop
   const world=(point:VectorPoint)=>{const x=(point.x-view.x)/view.width*shape.width-shape.width/2,y=(point.y-view.y)/view.height*shape.height-shape.height/2,angle=shape.rotation*Math.PI/180;return {x:(shape.x+shape.width/2+x*Math.cos(angle)-y*Math.sin(angle))*outputScale,y:(shape.y+shape.height/2+x*Math.sin(angle)+y*Math.cos(angle))*outputScale};};
   const fromWorld=(point:VectorPoint)=>{const local=elementLocalPoint(shape,{x:point.x/outputScale,y:point.y/outputScale});return {x:view.x+local.x/shape.width*view.width,y:view.y+local.y/shape.height*view.height};};
   const mutate=(action:(graph:VectorGraph)=>VectorGraph)=>{if(graph)commit(action(graph));};
-  if(shape.locked||shape.protected?.some(property=>property==="style"||property==="position"))return <div className="te-vector-tools" role="status">Unlock this path’s position and style to edit its anchors.<button type="button" onClick={onClose}>Done</button></div>;
-  if(!graph||!node)return <div className="te-vector-tools" role="alert">{parsed.error||"This path has no editable anchors."}<button type="button" onClick={onClose}>Done</button></div>;
+  if(shape.locked||shape.protected?.some(property=>property==="style"||property==="position"))return toolbarHost?createPortal(<div className="te-vector-tools" role="status">Unlock this path’s position and style to edit its anchors.<button type="button" onClick={onClose}>Done</button></div>,toolbarHost):null;
+  if(!graph||!node)return toolbarHost?createPortal(<div className="te-vector-tools" role="alert">{parsed.error||"This path has no editable anchors."}<button type="button" onClick={onClose}>Done</button></div>,toolbarHost):null;
   return <>
-    <svg ref={svg} className="te-vector-node-overlay" style={{left:shape.x,top:shape.y,width:shape.width,height:shape.height,transform:`rotate(${shape.rotation}deg)`}} viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} preserveAspectRatio="none" aria-label={`Edit anchors in ${shape.name}`} onPointerMove={event=>{const active=gesture.current;if(!active||active.pointer!==event.pointerId)return;event.preventDefault();event.stopPropagation();const next=moveVectorNode(active.graph,active.id,screenPoint(event),active.handle,smooth||event.shiftKey);active.latest=next;setDraft(next);}} onPointerUp={event=>{if(gesture.current?.pointer===event.pointerId)finish();}} onPointerCancel={event=>{if(gesture.current?.pointer===event.pointerId)finish(true);}} onLostPointerCapture={event=>{if(gesture.current?.pointer===event.pointerId)finish(true);}} onKeyDown={event=>{event.stopPropagation();if(event.key==="Escape"){event.preventDefault();if(gesture.current)finish(true);else onClose();}}}>
+    <svg ref={svg} className="te-vector-node-overlay" style={{left:shape.x,top:shape.y,width:shape.width,height:shape.height,transform:`rotate(${shape.rotation}deg)`}} viewBox={`${view.x} ${view.y} ${view.width} ${view.height}`} preserveAspectRatio="none" aria-label={`Edit anchors in ${shape.name}`} onPointerMove={event=>{const active=gesture.current;if(!active||active.pointer!==event.pointerId)return;event.preventDefault();event.stopPropagation();const next=moveVectorNode(active.graph,active.id,screenPoint(event),active.handle,smooth||event.shiftKey);active.latest=next;setDraft(next);}} onPointerUp={event=>{if(gesture.current?.pointer===event.pointerId)finish();}} onPointerCancel={event=>{if(gesture.current?.pointer===event.pointerId)finish(true);}} onLostPointerCapture={event=>{if(gesture.current?.pointer===event.pointerId)finish(true);}} onKeyDown={event=>{if((event.ctrlKey||event.metaKey)&&["z","y"].includes(event.key.toLowerCase())){if(gesture.current)finish(true);return;}event.stopPropagation();if(event.key==="Escape"){event.preventDefault();if(gesture.current)finish(true);else onClose();}}}>
       <path d={serializeVectorNodes(graph)} fill="none" stroke="#9a86ff" strokeWidth={1/scale} vectorEffect="non-scaling-stroke" className="te-vector-path-preview"/>
       {graph.subpaths.flatMap((part,partIndex)=>part.nodes.map((anchor,index)=>{
         const selected=partIndex===selection.subpath&&index===selection.node;
@@ -34,7 +35,7 @@ export function VectorNodeEditor({shape,scale,outputScale,onChange,onClose}:Prop
         return <g key={anchor.id}>{handle("incoming")}{handle("outgoing")}<ellipse data-vector-anchor={anchor.id} cx={anchor.point.x} cy={anchor.point.y} rx={5/scale*view.width/shape.width} ry={5/scale*view.height/shape.height} fill={selected?"#7967df":"#fff"} stroke="#7967df" strokeWidth={1/scale} vectorEffect="non-scaling-stroke" className="te-vector-anchor" tabIndex={0} role="button" aria-label={`Anchor ${index+1} in subpath ${partIndex+1}`} aria-pressed={selected} onFocus={()=>setSelection({subpath:partIndex,node:index})} onPointerDown={event=>begin(event,anchor.id,partIndex,index)} onKeyDown={event=>{if(event.key===" "||event.key==="Enter"){event.preventDefault();event.stopPropagation();setSelection({subpath:partIndex,node:index});}if(event.key.startsWith("Arrow")){event.preventDefault();event.stopPropagation();const amount=event.shiftKey?10:1,point=world(anchor.point);point.x+=event.key==="ArrowRight"?amount:event.key==="ArrowLeft"?-amount:0;point.y+=event.key==="ArrowDown"?amount:event.key==="ArrowUp"?-amount:0;mutate(graph=>moveVectorNode(graph,anchor.id,fromWorld(point)));}if(event.key==="Delete"||event.key==="Backspace"){event.preventDefault();event.stopPropagation();mutate(graph=>removeVectorNode(graph,anchor.id));}}}/></g>;
       }))}
     </svg>
-    <div className="te-vector-tools" role="toolbar" aria-label="Path editing" style={{transform:`scale(${1/scale})`,transformOrigin:"top left"}} onPointerDown={event=>event.stopPropagation()}>
+    {toolbarHost&&createPortal(<div className="te-vector-tools" role="toolbar" aria-label="Path editing" onPointerDown={event=>event.stopPropagation()} onContextMenu={event=>event.stopPropagation()}>
       <label>Path<select aria-label="Subpath" value={selection.subpath} onChange={event=>setSelection({subpath:Number(event.target.value),node:0})}>{graph.subpaths.map((part,index)=><option key={index} value={index}>{index+1} · {part.nodes.length} anchors</option>)}</select></label>
       <label>Anchor<select aria-label="Selected anchor" value={Math.min(selection.node,subpath!.nodes.length-1)} onChange={event=>setSelection({...selection,node:Number(event.target.value)})}>{subpath!.nodes.map((_,index)=><option key={index} value={index}>{index+1}</option>)}</select></label>
       <button type="button" onClick={()=>mutate(graph=>insertVectorNode(graph,node.id))}>Add after</button><button type="button" disabled={subpath!.nodes.length<=2} onClick={()=>mutate(graph=>removeVectorNode(graph,node.id))}>Delete anchor</button>
@@ -42,6 +43,6 @@ export function VectorNodeEditor({shape,scale,outputScale,onChange,onClose}:Prop
       <button type="button" aria-pressed={subpath!.closed} onClick={()=>mutate(graph=>({...graph,subpaths:graph.subpaths.map((part,index)=>index===selection.subpath?{...part,closed:!part.closed}:part)}))}>{subpath!.closed?"Open path":"Close path"}</button>
       <details><summary>Coordinates & handles</summary><div className="te-vector-coordinate-fields"><NumberField label="Anchor X" unit="px" value={world(node.point).x} onChange={x=>mutate(graph=>moveVectorNode(graph,node.id,fromWorld({...world(node.point),x})))}/><NumberField label="Anchor Y" unit="px" value={world(node.point).y} onChange={y=>mutate(graph=>moveVectorNode(graph,node.id,fromWorld({...world(node.point),y})))}/><label><input type="checkbox" checked={smooth} onChange={event=>setSmooth(event.target.checked)}/>Mirror curve handles</label></div></details>
       <button type="button" onClick={onClose}>Done</button>{error&&<span role="alert">{error}</span>}
-    </div>
+    </div>,toolbarHost)}
   </>;
 }

@@ -504,6 +504,7 @@ type CanvasEditorProps = {
   masterPageVisibility?: boolean[];
   navigationMode?: "select"|"hand"|"nodes";
   onExitNodeEditing?: ()=>void;
+  nodeToolbarHost?: HTMLElement|null;
   onRequestCrop?: (id:string)=>void;
   onPan?: (delta:ViewPoint)=>void;
   onZoom?: (gesture:{factor:number;clientX:number;clientY:number})=>void;
@@ -544,7 +545,7 @@ export function CanvasEditor({
   imageDropTargetId,
   masterScene,
   masterPageVisibility,
-  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,
+  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,nodeToolbarHost,
   penClosed=false,penColor="#222222",onCancelDrawing,onRegisterDrawingControls,onDrawingPointCount,
   drawingMode,
   onDrawPath,
@@ -1111,6 +1112,8 @@ export function CanvasEditor({
       aria-label="Design canvas"
       tabIndex={0}
       onPointerDownCapture={event=>{
+        // Portalled tool controls live outside the stage, though React events bubble through this component.
+        if(!event.currentTarget.contains(event.target as Node))return;
         if(event.pointerType!=="touch"&&navigationMode!=="hand")return;
         viewPointers.current.set(event.pointerId,{x:event.clientX,y:event.clientY});
         if(navigationMode==="hand"||viewPointers.current.size>=2){
@@ -1326,7 +1329,7 @@ export function CanvasEditor({
         </div></WorldClip>
         </div>
       )}
-      {navigationMode==="nodes"&&selected.length===1&&selected[0].type==="shape"&&canEditElement(scene,selected[0],"style")&&canEditElement(scene,selected[0],"position")&&<VectorNodeEditor shape={selected[0]} scale={viewScale} outputScale={outputScale} onChange={(shape,group)=>onChange({...scene,elements:scene.elements.map(element=>element.id===shape.id?shape:element)},group)} onClose={()=>onExitNodeEditing?.()}/>}
+      {navigationMode==="nodes"&&selected.length===1&&selected[0].type==="shape"&&canEditElement(scene,selected[0],"style")&&canEditElement(scene,selected[0],"position")&&<VectorNodeEditor toolbarHost={nodeToolbarHost} shape={selected[0]} scale={viewScale} outputScale={outputScale} onChange={(shape,group)=>onChange({...scene,elements:scene.elements.map(element=>element.id===shape.id?shape:element)},group)} onClose={()=>onExitNodeEditing?.()}/>}
       {selected.length > 1 &&
         selected.map((element) => (
           <div

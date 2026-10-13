@@ -187,6 +187,7 @@ export function DesignEditor({
   const [navigationMode,setNavigationMode]=useState<"select"|"hand"|"nodes">("select");
   const [penClosed,setPenClosed]=useState(false);
   const [penPointCount,setPenPointCount]=useState(0);
+  const [nodeToolbarHost,setNodeToolbarHost]=useState<HTMLDivElement|null>(null);
   const drawingControls=useRef<CanvasDrawingControls|null>(null);
   const registerDrawingControls=useCallback((controls:CanvasDrawingControls|null)=>{drawingControls.current=controls;},[]);
   const [imageDropTargetId,setImageDropTargetId]=useState<string|null>(null);
@@ -1440,7 +1441,8 @@ export function DesignEditor({
               <button type="button" onClick={()=>drawingControls.current?.cancel()}>Cancel path</button>
             </>}
           </div>
-          <QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
+          {navigationMode==="nodes"&&!pathTool&&<div className="te-node-toolbar-host" ref={setNodeToolbarHost}/>}
+          {!pathTool&&navigationMode==="select"&&<QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
             outputScale={format.width/FRAME_WIDTH}
             onFormatText={formatText}
             onTextTexture={openTextTexture}
@@ -1453,7 +1455,7 @@ export function DesignEditor({
             onDuplicate={() => applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined))}
             onDelete={() => applyCommand((live) => removeSelection(live, selected))}
             onMore={(event) => selected.length ? openMenu(event, {label: "Selected elements", items: elementMenu(selected)}) : canvasMenu(event, null)}
-            onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />
+            onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />}
           {(editingMaster||isolatedGroupId||cropImageId)&&<div className="te-isolation-bar"><span>{editingMaster?'Editing shared master':isolatedGroupId?`Inside ${scene.groups?.find(g=>g.id===isolatedGroupId)?.name??'group'}`:'Drag image to crop · Scroll to zoom image'}</span><button className="te-text-button" onClick={()=>{setEditingMaster(false);setIsolatedGroupId(null);setCropImageId(null);setSelected([]);}}>Done</button></div>}
           <div
             className={`te-canvas-space${spacePanning?' is-panning':''}`}
@@ -1528,6 +1530,7 @@ export function DesignEditor({
                     masterPageVisibility={continuous?design.pages.map(p=>p.useMaster!==false):[page.useMaster!==false]}
                     navigationMode={navigationMode}
                     onExitNodeEditing={()=>setNavigationMode("select")}
+                    nodeToolbarHost={nodeToolbarHost}
                     onRequestCrop={id=>{setSelected([id]);setCropImageId(id);}}
                     penClosed={penClosed} penColor={brand.text}
                     onCancelDrawing={()=>setPathTool(false)}
