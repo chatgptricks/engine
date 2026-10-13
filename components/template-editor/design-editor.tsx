@@ -939,7 +939,7 @@ export function DesignEditor({
   function applyBrand(all = true) {
     const update = (content: CanvasScene): CanvasScene => brandScene(content,brand);
     if (isolatedGroupId) {
-      if (changeScene(update(scene))) setNotice(`Applied ${brand.name || "your brand"} inside this group.`);
+      if (changeScene({...update(scene),background:scene.background})) setNotice(`Applied ${brand.name || "your brand"} inside this group.`);
       return;
     }
     const accepted = commit((d) => editingMaster?{...d,masterScene:{...update(d.masterScene??scene),background:'transparent'}}:d.continuousCanvas ? {...d, continuousCanvas: update(d.continuousCanvas),...(all&&d.masterScene?{masterScene:{...update(d.masterScene),background:'transparent'}}:{})} : ({
