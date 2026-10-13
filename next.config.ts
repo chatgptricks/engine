@@ -4,7 +4,7 @@ const nextConfig: NextConfig = {
   turbopack: { root: process.cwd() },
   serverExternalPackages: ['pdfkit', 'svg-to-pdfkit'],
   outputFileTracingIncludes: {
-    '/api/template-editor/export/pdf': ['./app/fonts/**/*', './app/admin/**/typefaces/google/**/*', './public/fonts/licensed/**/*', './public/template-editor/**/*', './node_modules/geist/dist/fonts/geist-sans/**/*'],
+    '/api/template-editor/export/pdf': ['./assets/pdf-fonts/*.ttf', './public/fonts/licensed/**/*', './public/template-editor/**/*', './node_modules/geist/dist/fonts/geist-sans/**/*'],
   },
   redirects() {
     return [

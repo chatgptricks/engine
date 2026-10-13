@@ -17,8 +17,8 @@ const google:Record<string,string>={playfair:'playfair-display',dmserif:'dm-seri
 async function fontBytes(font:string,weight:number,italic:boolean):Promise<Buffer>{
  const bold=weight>=600,key=`${font}:${weight>=700?700:weight>=600?600:weight>=500?500:400}:${italic}`;let found=fontCache.get(key);if(found)return found;
  found=(async()=>{let filename:string;
- if(font==='libre'||font==='serif')filename=path.join(process.cwd(),'app/fonts',`libre-baskerville-latin-${italic?(bold?'700italic':'italic'):(bold?'700':'regular')}.woff2`);
- else if(google[font])filename=path.join(process.cwd(),'app/admin/(tool)/engine/typefaces/google',`${google[font]}-latin-${bold&&font!=='dmserif'&&font!=='bebas'?(font==='plexmono'?'600':'700'):'regular'}.woff2`);
+ if(font==='libre'||font==='serif')filename=path.join(process.cwd(),'assets/pdf-fonts',`libre-baskerville-latin-${italic?(bold?'700italic':'italic'):(bold?'700':'regular')}.ttf`);
+ else if(google[font])filename=path.join(process.cwd(),'assets/pdf-fonts',`${google[font]}-latin-${bold&&font!=='dmserif'&&font!=='bebas'?(font==='plexmono'?'600':'700'):'regular'}.ttf`);
  else if(['walsheim','walsheimcond','kyoto','century'].includes(font)){const names:Record<string,string>={walsheim:`GT-Walsheim-${bold?'Bold':weight>=500?'Medium':'Regular'}-Trial.otf`,walsheimcond:`GT-Walsheim-Condensed-${bold?'Bold':weight>=500?'Medium':'Regular'}-Trial.otf`,kyoto:`PPKyoto-${bold?'Extrabold':weight>=400?'Medium':'Light'}.otf`,century:`Century Gothic${bold?' Bold':''}.otf`};filename=path.join(process.cwd(),'public/fonts/licensed',names[font]);}
  else filename=path.join(process.cwd(),'node_modules/geist/dist/fonts/geist-sans',`Geist-${weight>=700?'Bold':weight>=600?'SemiBold':weight>=500?'Medium':'Regular'}.ttf`);
  try{return await fs.readFile(/*turbopackIgnore: true*/ filename);}catch{return fs.readFile(path.join(process.cwd(),'node_modules/geist/dist/fonts/geist-sans/Geist-Regular.ttf'));}})();fontCache.set(key,found);return found;

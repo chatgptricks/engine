@@ -50,3 +50,18 @@ test('PDF clipping never removes an entire semantic line from a short text box',
   for(const char of ['d','p','a','g'])assert.ok(cmap.includes(char.charCodeAt(0).toString(16).padStart(4,'0')),`${char} was clipped from ${raster?'raster':'vector'} text`);
  }
 });
+
+
+test('all bundled font families embed composite glyphs in regular and bold PDF text',async()=>{
+ const server=renderer();
+ for(const font of ['sans','libre','playfair','dmserif','lora','cormorant','crimson','inter','space','montserrat','bebas','plexmono','caveat','walsheim','walsheimcond','kyoto','century'])for(const fontWeight of [400,700]){
+  const design=basic();design.pages[0].canvas.elements=[{...design.pages[0].canvas.elements[0],font,fontWeight,text:'Café déjà vu — mañana',width:320,height:100}];
+  const bytes=await server.renderDocumentPdf(design,design.pages[0].id,{widthMm:100},'owner'),pdf=await PDFDocument.load(bytes),fonts=pdf.getPage(0).node.Resources().lookup(PDFName.of('Font'),PDFDict),embedded=fonts.lookup(fonts.keys()[0],PDFDict);
+  assert.ok(embedded.get(PDFName.of('ToUnicode')),`${font} ${fontWeight} keeps selectable text`);
+  if(!['sans','walsheim','walsheimcond','kyoto','century'].includes(font))assert.doesNotMatch(embedded.get(PDFName.of('BaseFont')).toString(),/Geist/,`${font} ${fontWeight} keeps its original font`);
+ }
+ for(const fontWeight of [400,700]){
+  const design=basic();design.pages[0].canvas.elements=[{...design.pages[0].canvas.elements[0],font:'libre',fontWeight,italic:true,text:'Café déjà vu'}];
+  const bytes=await server.renderDocumentPdf(design,design.pages[0].id,{widthMm:100},'owner');assert.equal((await PDFDocument.load(bytes)).getPageCount(),1);
+ }
+});
