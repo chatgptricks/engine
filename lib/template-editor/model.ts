@@ -79,6 +79,8 @@ export type TextElement = CanvasElementBase & {
   wordTextures?: (ShapeImageFill & { id: string })[];
 };
 export type PhotoMetadata = {
+  /** Lightweight editor preview; src always keeps the original. */
+  previewSrc?: string;
   directive?: string;
   rightsNote?: string;
   sourceUrl?: string;
@@ -180,7 +182,7 @@ export type BrandKit = {
   background: string;
   text: string;
 };
-export type BrandAsset = {
+export type BrandAsset = PhotoMetadata & {
   id: string;
   name: string;
   src: string;
@@ -1586,6 +1588,10 @@ const numberIn = (value: unknown, min: number, max: number): value is number =>
 function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | null {
   if (!optional(value, "directive", candidate => string(candidate, 2000)) || !optional(value, "rightsNote", candidate => string(candidate, 2000))) return null;
   const result: PhotoMetadata = {};
+  if (value.previewSrc !== undefined) {
+    if (!safeImageUrl(value.previewSrc)) return null;
+    result.previewSrc = value.previewSrc;
+  }
   for (const key of ["directive", "rightsNote"] as const) if (value[key] !== undefined) result[key] = value[key] as string;
   if (value.sourceUrl !== undefined) {
     if (!string(value.sourceUrl, 4000)) return null;
@@ -1611,7 +1617,7 @@ export function parseShapeImageFill(value: unknown): ShapeImageFill | null {
   return result;
 }
 
-function parseCanvas(value: unknown): CanvasScene | null {
+export function parseCanvas(value: unknown): CanvasScene | null {
   if (
     !object(value) ||
     !color(value.background) ||

@@ -1,5 +1,6 @@
 "use client";
 
+import {elementWithPreviewAsset,sceneWithPreviewAssets} from "@/lib/template-editor/media-preview";
 import {
   useEffect,
   useLayoutEffect,
@@ -1100,14 +1101,14 @@ export function CanvasEditor({
       <div className="te-canvas-pasteboard-hit" aria-hidden="true" style={pasteboardBounds ? {left: pasteboardBounds.x, top: pasteboardBounds.y, width: pasteboardBounds.width, height: pasteboardBounds.height} : {inset: 0}} />
       {onionScene && (
         <div className="te-canvas-onion-skin" data-onion-skin="true" aria-hidden="true" style={{opacity: Number.isFinite(onionOpacity) ? clamp(onionOpacity, 0, 1) : 0.2}}>
-          <SceneRenderer scene={{...onionScene, background: "transparent"}} />
+          <SceneRenderer scene={sceneWithPreviewAssets({...onionScene, background: "transparent"})} />
         </div>
       )}
       <div className="te-canvas-scene te-canvas-editor-scene" style={{background: onionScene ? "transparent" : displayScene.background}}>
-        {masterScene&&Array.from({length:slideCount||1},(_,index)=>masterPageVisibility?.[index]!==false&&<div className="te-canvas-master-page" key={index} data-master-slide={index} style={{left:index*(slideWidth??width),width:slideWidth??width,height}}><SceneRenderer scene={{...masterScene,background:"transparent"}} isolate={false}/></div>)}
+        {masterScene&&Array.from({length:slideCount||1},(_,index)=>masterPageVisibility?.[index]!==false&&<div className="te-canvas-master-page" key={index} data-master-slide={index} style={{left:index*(slideWidth??width),width:slideWidth??width,height}}><SceneRenderer scene={sceneWithPreviewAssets({...masterScene,background:"transparent"})} isolate={false}/></div>)}
         {displayScene.elements.filter((element) => !isElementHidden(displayScene,element)).map((element) => (
           <div key={element.id} className={`te-canvas-page-layer${clippedIds.has(element.id) ? " is-clipped" : ""}${!inScope(element)?" is-outside-isolation":""}`}>
-            <SceneElement element={element} />
+            <SceneElement element={elementWithPreviewAsset(element)} />
           </div>
         ))}
       </div>

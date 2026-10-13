@@ -1,5 +1,8 @@
 "use client";
 
+import {ENGINE_CLIPBOARD_TYPE,encodeElementClipboard,decodeElementClipboard,plainClipboardText} from "@/lib/template-editor/clipboard";
+import type {ElementSnapshot} from "@/lib/template-editor/commands";
+import {prepareRasterAsset} from "@/lib/template-editor/client-media";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   ArrowLeftIcon,
@@ -153,7 +156,6 @@ export function DesignEditor({
     openPanel("style");
   }
   const [selection, setSelected] = useState<string[]>([]);
-  const copied = useRef<CanvasElement[]>([]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [notice, setNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
@@ -380,20 +382,158 @@ export function DesignEditor({
     return result.scene!==live&&!result.limited;
   }
   function applyCommand(command: (live:CanvasScene)=>SceneCommandResult):void { applyCommandChecked(command); }
-  function copyElements(ids: string[], cut = false) {
+  async function upload(file: File, replaceId?: string) {
+    if (disabled || uploading) return;
+    if(!replaceId&&(file.type==='image/svg+xml'||file.name.toLowerCase().endsWith('.svg'))){
+      const targetId=page.id,targetMaster=editingMaster,targetContinuous=Boolean(current.current.continuousCanvas),targetIsolation=isolatedGroupId??undefined;
+      setUploading(true);
+      try{
+        if(file.size>1_000_000)throw new Error('Use an SVG smaller than 1 MB.');
+        const imported=importSVG(await file.text(),file.name.replace(/\.svg$/i,''));
+        if(!mounted.current)return;
+        let inserted:string[]=[];
+        const accepted=commit(d=>{
+          const target=d.pages.find(p=>p.id===targetId);
+          if(!target)throw new Error('The target page was removed. Upload the SVG again.');
+          if(Boolean(d.continuousCanvas)!==targetContinuous)throw new Error('The canvas layout changed. Upload the SVG again.');
+          const live=targetMaster?d.masterScene??{background:'transparent',elements:[]}:d.continuousCanvas??target.canvas??sceneForPage(target,d.format);
+          if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the SVG again.');
+          if(live.elements.length+imported.elements.length>100)throw new Error('This SVG exceeds the page layer limit.');
+          const offset=targetContinuous&&!targetMaster?d.pages.indexOf(target)*FRAME_WIDTH:0;
+          const elements=imported.elements.map(e=>({...e,x:e.x+offset+24,y:e.y+24}));inserted=elements.map(e=>e.id);
+          const next=constrainSceneToIsolation(live,{...live,groups:[...(live.groups??[]),...(imported.groups??[])],elements:[...live.elements,...elements]},targetIsolation);
+          return targetMaster?{...d,masterScene:next}:targetContinuous?{...d,continuousCanvas:next}:{...d,pages:d.pages.map(p=>p.id===targetId?{...p,canvas:next}:p)};
+        });
+        if(accepted&&activePage.current===targetId)setSelected(inserted);
+      }catch(error){setNotice(error instanceof Error?error.message:'Could not import this SVG.');}
+      finally{if(mounted.current)setUploading(false);}
+      return;
+    }
+    const targetId = page.id;
+    const targetMaster=editingMaster;
+    const targetIsolation=isolatedGroupId??undefined;
+    const targetContinuous = Boolean(current.current.continuousCanvas);
+    setUploading(true);
+    try {
+      const {src,previewSrc,width:originalWidth,height:originalHeight} = await prepareRasterAsset(file);
+      if (!mounted.current) return;
+      const targetPage = current.current.pages.find((p) => p.id === targetId);
+      if (!targetPage)
+        throw new Error(
+          "The page was removed. Choose a page and upload again.",
+        );
+      if (targetContinuous !== Boolean(current.current.continuousCanvas)) throw new Error("The canvas layout changed. Please upload the image again.");
+      const targetScene =
+        targetMaster?current.current.masterScene??{background:'transparent',elements:[]}:current.current.continuousCanvas ?? targetPage.canvas ?? sceneForPage(targetPage, current.current.format);
+      if (
+        replaceId &&
+        !targetScene.elements.some(
+          (e) => e.id === replaceId && (e.type === "image"||e.type === "shape") && canEditElement(targetScene,e,'content') && scopeSelection(targetScene,[e.id],targetIsolation).length>0,
+        )
+      )
+        throw new Error(
+          "The image or frame was removed or locked. Select it and try again.",
+        );
+      if (!replaceId && targetScene.elements.length >= 100)
+        throw new Error("Each page supports up to 100 elements.");
+      const w = Math.max(1, Math.min(280, originalWidth / 3)),
+        h = Math.max(
+          1,
+          Math.min(canvasHeight * 0.7, (w * originalHeight) / originalWidth),
+        );
+      const image = createCanvasElement("image", {
+        src,
+        previewSrc,
+        name: file.name.slice(0, 100),
+        x: (targetContinuous ? current.current.pages.indexOf(targetPage) * FRAME_WIDTH : 0) + (FRAME_WIDTH - w) / 2,
+        y: (canvasHeight - h) / 2,
+        width: w,
+        height: h,
+        intrinsicWidth:originalWidth,
+        intrinsicHeight:originalHeight,
+      });
+      const accepted = commit((d) => {
+        const update = (live: CanvasScene): CanvasScene => {
+          if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the image again.');
+          const frame=replaceId?live.elements.find(element=>element.id===replaceId&&element.type==='shape'):undefined;
+          if(frame)return fillShapeWithImage(live,frame.id,{src,previewSrc,alt:file.name.slice(0,200),objectFit:'cover',cropX:50,cropY:50,cropScale:1,intrinsicWidth:originalWidth,intrinsicHeight:originalHeight}).scene;
+          return constrainSceneToIsolation(live,{...live, elements: replaceId
+          ? live.elements.map((element) => element.id === replaceId && element.type === "image" ? {...element, src, previewSrc, intrinsicWidth:originalWidth,intrinsicHeight:originalHeight,name: file.name.slice(0, 100)} : element)
+          : [...live.elements, image]},targetIsolation);
+        };
+        return targetMaster?{...d,masterScene:update(d.masterScene??{background:'transparent',elements:[]})}:d.continuousCanvas ? {...d, continuousCanvas: update(d.continuousCanvas)} : {
+          ...d, pages: d.pages.map((p) => p.id === targetId ? {...p, canvas: update(p.canvas ?? sceneForPage(p, d.format))} : p),
+        };
+      });
+      if (!accepted) return;
+      if (activePage.current === targetId) setSelected([replaceId ?? image.id]);
+      setNotice(
+        replaceId
+          ? "Image replaced."
+          : "Image added. Drag its handles to resize it.",
+      );
+    } catch (reason) {
+      setNotice(
+        reason instanceof Error ? reason.message : "Could not open this image.",
+      );
+    } finally {
+      if (mounted.current) setUploading(false);
+    }
+  }
+  async function copyElements(ids: string[], cut = false, transfer?: DataTransfer) {
     if (cut && blocked.current) return;
     const target = current.current.pages.find((item) => item.id === page.id);
     if (!target) return;
     const live = editingMaster?current.current.masterScene??scene:current.current.continuousCanvas ?? target.canvas ?? sceneForPage(target, current.current.format);
     const scoped = scopeSelection(live, ids, isolatedGroupId ?? undefined);
     const copyIds = cut ? scoped.filter(id => { const element = live.elements.find(item => item.id === id); return element && canEditElement(live, element, "delete"); }) : scoped;
-    copied.current = copySelection(live, copyIds, isolatedGroupId ?? undefined, { x: !editingMaster && current.current.continuousCanvas ? current.current.pages.indexOf(target) * FRAME_WIDTH : 0, y: 0 });
-    if (cut) applyCommand((live) => removeSelection(live, copyIds));
-    setNotice(`${copied.current.length} element${copied.current.length === 1 ? "" : "s"} ${cut ? "cut" : "copied"}. Paste on any page in this design.`);
+    const snapshot = copySelection(live, copyIds, isolatedGroupId ?? undefined, { x: !editingMaster && current.current.continuousCanvas ? current.current.pages.indexOf(target) * FRAME_WIDTH : 0, y: 0 });
+    if (!snapshot.length) return;
+    try {
+      const documentId = current.current.id, pageId = activePage.current;
+      const encoded = encodeElementClipboard(snapshot,documentId);
+      if(transfer) {transfer.setData(ENGINE_CLIPBOARD_TYPE,encoded);transfer.setData("text/plain",encoded);}
+      else await navigator.clipboard.writeText(encoded);
+      if (cut && current.current.id===documentId && activePage.current===pageId) {
+        const latest = editingMaster?current.current.masterScene:current.current.continuousCanvas??current.current.pages.find(p=>p.id===pageId)?.canvas;
+        if(latest===live) applyCommand((latest) => removeSelection(latest, copyIds));
+        else {setNotice("Copied. The page changed while copying, so its objects were kept.");return;}
+      }
+      setNotice(`${snapshot.length} object${snapshot.length === 1 ? "" : "s"} ${cut ? "cut" : "copied"}. Paste into any Engine project.`);
+    } catch {setNotice("Clipboard access was blocked. Focus the canvas and use ⌘/Ctrl C or X. Your objects were kept.");}
   }
-  function pasteElements(live: CanvasScene, position?: { x: number; y: number }) {
+  function pasteElements(live: CanvasScene, snapshot:ElementSnapshot, position?: { x: number; y: number }) {
     const index = current.current.pages.findIndex(item => item.id === page.id);
-    return pasteSelection(live, copied.current, position, { x: !editingMaster && current.current.continuousCanvas ? Math.max(0,index) * FRAME_WIDTH : 0, y: 0 });
+    return pasteSelection(live, snapshot, position, { x: !editingMaster && current.current.continuousCanvas ? Math.max(0,index) * FRAME_WIDTH : 0, y: 0 });
+  }
+  function pasteClipboardText(text:string,position?:{x:number;y:number}) {
+    try {
+      const snapshot=decodeElementClipboard(text,current.current.id);
+      if(snapshot) {applyCommand(live=>pasteElements(live,snapshot,position));return;}
+      const value=plainClipboardText(text);
+      if(value.trim()) {
+        const element=createCanvasElement("text",{text:value,name:value.slice(0,100),font:brand.font,color:brand.text,x:position?.x??40,y:position?.y??40,width:280,height:120,textMode:"auto-height"});
+        applyCommand(live=>live.elements.length>=100?{scene:live,selectedIds:[],limited:true}:{scene:{...live,elements:[...live.elements,element]},selectedIds:[element.id],limited:false});
+      }
+    }catch(error){setNotice(error instanceof Error?error.message:"Could not paste the clipboard.");}
+  }
+  async function pasteFromSystemClipboard(position?:{x:number;y:number}) {
+    if(disabled)return;
+    const documentId=current.current.id,pageId=activePage.current;
+    try {
+      if(navigator.clipboard.read) {
+        const items=await navigator.clipboard.read();
+        if(current.current.id!==documentId||activePage.current!==pageId)return;
+        const image=items.find(item=>item.types.some(type=>["image/png","image/jpeg","image/webp"].includes(type)));
+        if(image){const type=image.types.find(type=>["image/png","image/jpeg","image/webp"].includes(type))!;const blob=await image.getType(type);if(current.current.id!==documentId||activePage.current!==pageId)return;await upload(new File([blob],"Pasted image",{type}));return;}
+        const item=items.find(item=>item.types.includes("text/plain"));
+        if(item){const text=await(await item.getType("text/plain")).text();if(current.current.id===documentId&&activePage.current===pageId)pasteClipboardText(text,position);}
+        else setNotice("Copy an image, text, or Engine objects before pasting.");
+      }else {
+        const text=await navigator.clipboard.readText();
+        if(current.current.id===documentId&&activePage.current===pageId)pasteClipboardText(text,position);
+      }
+    }catch {setNotice("Focus the canvas and press ⌘/Ctrl V to paste from your clipboard.");}
   }
   function elementMenu(ids: string[]): ContextMenuItem[] {
     ids = scopeSelection(scene, ids, isolatedGroupId ?? undefined);
@@ -406,7 +546,7 @@ export function DesignEditor({
       {id: "copy", label: "Copy", shortcut: "⌘/Ctrl C", onSelect: () => copyElements(ids)},
       {id: "cut", label: "Cut", shortcut: "⌘/Ctrl X", disabled: disabled || !deletable.length, onSelect: () => copyElements(ids, true)},
       {id: "duplicate", label: "Duplicate", shortcut: "⌘/Ctrl D", disabled: disabled || !editable.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => duplicateSelection(live, ids,undefined,isolatedGroupId??undefined))},
-      {id: "paste", label: "Paste", shortcut: "⌘/Ctrl V", disabled: disabled || !copied.current.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => pasteElements(live))},
+      {id: "paste", label: "Paste", shortcut: "⌘/Ctrl V", disabled: disabled || scene.elements.length >= 100, onSelect: () => {void pasteFromSystemClipboard();}},
       {id:'group',label:'Group selection',shortcut:'⌘/Ctrl G',disabled:disabled||editable.length<2,onSelect:()=>applyCommand(live=>groupSelection(live,ids,"Group",isolatedGroupId??undefined))},
       {id:'ungroup',label:'Ungroup',shortcut:'⌘/Ctrl ⇧ G',disabled:disabled||!editable.some(e=>e.groupId&&e.groupId!==isolatedGroupId),onSelect:()=>applyCommand(live=>ungroupSelection(live,ids,isolatedGroupId??undefined))},
       ...((single?.type==='image'||(single?.type==='shape'&&single.imageFill))?[{id:'crop-image',label:cropImageId===single.id?'Finish crop':'Crop image',disabled:disabled||!canEditElement(scene,single,'style'),onSelect:()=>setCropImageId(cropImageId===single.id?null:single.id)}]:[]),
@@ -437,7 +577,7 @@ export function DesignEditor({
     openMenu(event, {
       label: ids.length > 1 ? `${ids.length} selected elements` : ids.length ? scene.elements.find((e) => e.id === ids[0])?.name ?? "Element" : "Canvas",
       items: ids.length ? elementMenu(ids) : [
-        {id: "paste", label: "Paste here", shortcut: "⌘/Ctrl V", disabled: disabled || !copied.current.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => pasteElements(live, position))},
+        {id: "paste", label: "Paste here", shortcut: "⌘/Ctrl V", disabled: disabled || scene.elements.length >= 100, onSelect: () => {void pasteFromSystemClipboard(position);}},
         {id: "text", label: "Add text", shortcut: "T", disabled, onSelect: () => addText()},
         {id: "shape", label: "Add rectangle", shortcut: "R", disabled, onSelect: () => addShape("rectangle")},
         {id: "image", label: "Upload image", disabled: disabled || uploading, onSelect: () => fileRef.current?.click()},
@@ -464,7 +604,7 @@ export function DesignEditor({
     openMenu(event, {label: design.name || "Design workspace", items: [
       {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", disabled: disabled || !historyState.undo, onSelect: () => travel("undo")},
       {id: "redo", label: "Redo", shortcut: "⌘/Ctrl ⇧ Z", disabled: disabled || !historyState.redo, onSelect: () => travel("redo")},
-      {id: "paste", label: "Paste elements", shortcut: "⌘/Ctrl V", disabled: disabled || !copied.current.length, onSelect: () => applyCommand((live) => pasteElements(live))},
+      {id: "paste", label: "Paste elements", shortcut: "⌘/Ctrl V", disabled: disabled, onSelect: () => {void pasteFromSystemClipboard();}},
       {id: "add", label: "Add blank page", separator: true, disabled: disabled || design.pages.length >= 20, onSelect: () => addPage()},
       {id: "template", label: saveTemplateLabel, disabled, onSelect: () => setTemplateName(design.name)},
       {id: "fit", label: "Fit page", separator: true, onSelect: fitPage},
@@ -540,11 +680,6 @@ export function DesignEditor({
         setSelected(selectable.map(e=>e.id));
         return;
       }
-      if (mod && (key === "c" || key === "x") && selected.length) {
-        event.preventDefault();
-        copyElements(selected, key === "x");
-        return;
-      }
       if (mod && key === "d" && selected.length) {
         event.preventDefault();
         applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined));
@@ -552,11 +687,6 @@ export function DesignEditor({
       }
       if(mod&&key==='g'){event.preventDefault();applyCommand(live=>event.shiftKey?ungroupSelection(live,selected,isolatedGroupId??undefined):groupSelection(live,selected,"Group",isolatedGroupId??undefined));return;}
       if(!mod&&key===' '){event.preventDefault();setSpacePanning(true);return;}
-      if (mod && key === "v" && copied.current.length) {
-        event.preventDefault();
-        applyCommand((live) => pasteElements(live));
-        return;
-      }
       if ((key === "delete" || key === "backspace") && selected.length) {
         event.preventDefault();
         applyCommand((live) => removeSelection(live, selected));
@@ -601,6 +731,19 @@ export function DesignEditor({
     window.addEventListener("keydown", handler);
     const release=(e:KeyboardEvent)=>{if(e.key===' ')setSpacePanning(false);};const blur=()=>setSpacePanning(false);window.addEventListener('keyup',release);window.addEventListener('blur',blur);
     return () => {window.removeEventListener("keydown", handler);window.removeEventListener('keyup',release);window.removeEventListener('blur',blur);};
+  });
+  useEffect(() => {
+    const editable=(target:EventTarget|null)=>target instanceof HTMLElement&&Boolean(target.closest("input,textarea,select,[contenteditable=true],dialog,[role=menu]"));
+    const copy=(event:ClipboardEvent)=>{if(event.defaultPrevented||editable(event.target)||Boolean(window.getSelection()?.toString())||!selected.length||!event.clipboardData)return;event.preventDefault();void copyElements(selected,event.type==="cut",event.clipboardData);};
+    const paste=(event:ClipboardEvent)=>{
+      if(event.defaultPrevented||editable(event.target)||disabled||!event.clipboardData)return;
+      const file=Array.from(event.clipboardData.files).find(file=>file.type.startsWith("image/"));
+      if(file){event.preventDefault();void upload(file);return;}
+      const text=event.clipboardData.getData(ENGINE_CLIPBOARD_TYPE)||event.clipboardData.getData("text/plain");
+      if(text){event.preventDefault();pasteClipboardText(text);}
+    };
+    window.addEventListener("copy",copy);window.addEventListener("cut",copy);window.addEventListener("paste",paste);
+    return()=>{window.removeEventListener("copy",copy);window.removeEventListener("cut",copy);window.removeEventListener("paste",paste);};
   });
   useEffect(() => {
     const node = workspaceRef.current;
@@ -728,7 +871,7 @@ export function DesignEditor({
     const range = textFormatter.current?.capture();
     const words = range?.elementId === element.id ? getTextWords(element).filter(word => word.end > range.start && word.start < range.end).map(word => word.index) : undefined;
     const scenes = [...current.current.pages.map(item => item.canvas ?? sceneForPage(item,current.current.format)),current.current.continuousCanvas,current.current.masterScene].filter((item):item is CanvasScene => Boolean(item));
-    const photos:ShapeImageFill[] = scenes.flatMap(item => item.elements.flatMap(layer => layer.type === "image" ? [{src:layer.src,alt:layer.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:layer.intrinsicWidth,intrinsicHeight:layer.intrinsicHeight,directive:layer.directive,rightsNote:layer.rightsNote,sourceUrl:layer.sourceUrl,provenance:layer.provenance}] : layer.type === "shape" && layer.imageFill ? [layer.imageFill] : layer.type === "text" ? activeTextTextures(layer) : []));
+    const photos:ShapeImageFill[] = scenes.flatMap(item => item.elements.flatMap(layer => layer.type === "image" ? [{src:layer.src,previewSrc:layer.previewSrc,alt:layer.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:layer.intrinsicWidth,intrinsicHeight:layer.intrinsicHeight,directive:layer.directive,rightsNote:layer.rightsNote,sourceUrl:layer.sourceUrl,provenance:layer.provenance}] : layer.type === "shape" && layer.imageFill ? [layer.imageFill] : layer.type === "text" ? activeTextTextures(layer) : []));
     photos.push(...brandKits.flatMap(kit => kit.assets.map(asset => ({src:asset.src,alt:asset.name,objectFit:"cover" as const,cropX:50,cropY:50,intrinsicWidth:asset.width,intrinsicHeight:asset.height}))));
     photos.push(...["forest","dunes","coral","folds","orbits","sculpture"].map(name => ({src:`/template-editor/${name}.svg`,alt:`${name} artwork`,objectFit:"cover" as const,cropX:50,cropY:50})));
     setTextureTarget({element:structuredClone(element),context:editorTarget.current,words,photos,background:live.background});
@@ -746,132 +889,6 @@ export function DesignEditor({
     const result = applyTextWordTexture(live,element.id,words,texture);
     if (result.scene !== live && !changeScene(result.scene)) throw new Error("Could not save this texture. Please try again.");
     setNotice(texture ? words === "all" ? "Texture applied to all words." : `Texture applied to ${words.length} selected word${words.length === 1 ? "" : "s"}.` : "Texture removed. You can restore it with Undo.");
-  }
-  async function upload(file: File, replaceId?: string) {
-    if (disabled || uploading) return;
-    if(!replaceId&&(file.type==='image/svg+xml'||file.name.toLowerCase().endsWith('.svg'))){
-      const targetId=page.id,targetMaster=editingMaster,targetContinuous=Boolean(current.current.continuousCanvas),targetIsolation=isolatedGroupId??undefined;
-      setUploading(true);
-      try{
-        if(file.size>1_000_000)throw new Error('Use an SVG smaller than 1 MB.');
-        const imported=importSVG(await file.text(),file.name.replace(/\.svg$/i,''));
-        if(!mounted.current)return;
-        let inserted:string[]=[];
-        const accepted=commit(d=>{
-          const target=d.pages.find(p=>p.id===targetId);
-          if(!target)throw new Error('The target page was removed. Upload the SVG again.');
-          if(Boolean(d.continuousCanvas)!==targetContinuous)throw new Error('The canvas layout changed. Upload the SVG again.');
-          const live=targetMaster?d.masterScene??{background:'transparent',elements:[]}:d.continuousCanvas??target.canvas??sceneForPage(target,d.format);
-          if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the SVG again.');
-          if(live.elements.length+imported.elements.length>100)throw new Error('This SVG exceeds the page layer limit.');
-          const offset=targetContinuous&&!targetMaster?d.pages.indexOf(target)*FRAME_WIDTH:0;
-          const elements=imported.elements.map(e=>({...e,x:e.x+offset+24,y:e.y+24}));inserted=elements.map(e=>e.id);
-          const next=constrainSceneToIsolation(live,{...live,groups:[...(live.groups??[]),...(imported.groups??[])],elements:[...live.elements,...elements]},targetIsolation);
-          return targetMaster?{...d,masterScene:next}:targetContinuous?{...d,continuousCanvas:next}:{...d,pages:d.pages.map(p=>p.id===targetId?{...p,canvas:next}:p)};
-        });
-        if(accepted&&activePage.current===targetId)setSelected(inserted);
-      }catch(error){setNotice(error instanceof Error?error.message:'Could not import this SVG.');}
-      finally{if(mounted.current)setUploading(false);}
-      return;
-    }
-    const targetId = page.id;
-    const targetMaster=editingMaster;
-    const targetIsolation=isolatedGroupId??undefined;
-    const targetContinuous = Boolean(current.current.continuousCanvas);
-    setUploading(true);
-    let pendingBitmap:ImageBitmap|null=null;
-    try {
-      if (!["image/jpeg", "image/png", "image/webp"].includes(file.type))
-        throw new Error("Choose a JPG, PNG, or WebP image.");
-      if (file.size > 15 * 1024 * 1024)
-        throw new Error("Choose an image smaller than 15 MB.");
-      const bitmap = await createImageBitmap(file);
-      pendingBitmap=bitmap;
-      if (!mounted.current) {
-        bitmap.close();
-        pendingBitmap=null;
-        return;
-      }
-      const ratio = Math.min(1, (targetContinuous ? Math.min(8192, 1080 * current.current.pages.length) : 1800) / Math.max(bitmap.width, bitmap.height));
-      const canvas = document.createElement("canvas");
-      canvas.width = Math.max(1, Math.round(bitmap.width * ratio));
-      canvas.height = Math.max(1, Math.round(bitmap.height * ratio));
-      const context = canvas.getContext("2d");
-      if (!context) {
-        bitmap.close();
-        pendingBitmap=null;
-        throw new Error("Image processing is unavailable.");
-      }
-      context.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
-      bitmap.close();
-      pendingBitmap=null;
-      const src = canvas.toDataURL("image/webp", 0.88);
-      if (src.length > 2_000_000)
-        throw new Error(
-          "This image is too large after processing. Use a smaller image.",
-        );
-      const targetPage = current.current.pages.find((p) => p.id === targetId);
-      if (!targetPage)
-        throw new Error(
-          "The page was removed. Choose a page and upload again.",
-        );
-      if (targetContinuous !== Boolean(current.current.continuousCanvas)) throw new Error("The canvas layout changed. Please upload the image again.");
-      const targetScene =
-        targetMaster?current.current.masterScene??{background:'transparent',elements:[]}:current.current.continuousCanvas ?? targetPage.canvas ?? sceneForPage(targetPage, current.current.format);
-      if (
-        replaceId &&
-        !targetScene.elements.some(
-          (e) => e.id === replaceId && (e.type === "image"||e.type === "shape") && canEditElement(targetScene,e,'content') && scopeSelection(targetScene,[e.id],targetIsolation).length>0,
-        )
-      )
-        throw new Error(
-          "The image or frame was removed or locked. Select it and try again.",
-        );
-      if (!replaceId && targetScene.elements.length >= 100)
-        throw new Error("Each page supports up to 100 elements.");
-      const w = Math.max(1, Math.min(280, canvas.width / 3)),
-        h = Math.max(
-          1,
-          Math.min(canvasHeight * 0.7, (w * canvas.height) / canvas.width),
-        );
-      const image = createCanvasElement("image", {
-        src,
-        name: file.name.slice(0, 100),
-        x: (targetContinuous ? current.current.pages.indexOf(targetPage) * FRAME_WIDTH : 0) + (FRAME_WIDTH - w) / 2,
-        y: (canvasHeight - h) / 2,
-        width: w,
-        height: h,
-        intrinsicWidth:canvas.width,
-        intrinsicHeight:canvas.height,
-      });
-      const accepted = commit((d) => {
-        const update = (live: CanvasScene): CanvasScene => {
-          if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the image again.');
-          const frame=replaceId?live.elements.find(element=>element.id===replaceId&&element.type==='shape'):undefined;
-          if(frame)return fillShapeWithImage(live,frame.id,{src,alt:file.name.slice(0,200),objectFit:'cover',cropX:50,cropY:50,cropScale:1,intrinsicWidth:canvas.width,intrinsicHeight:canvas.height}).scene;
-          return constrainSceneToIsolation(live,{...live, elements: replaceId
-          ? live.elements.map((element) => element.id === replaceId && element.type === "image" ? {...element, src, intrinsicWidth:canvas.width,intrinsicHeight:canvas.height,name: file.name.slice(0, 100)} : element)
-          : [...live.elements, image]},targetIsolation);
-        };
-        return targetMaster?{...d,masterScene:update(d.masterScene??{background:'transparent',elements:[]})}:d.continuousCanvas ? {...d, continuousCanvas: update(d.continuousCanvas)} : {
-          ...d, pages: d.pages.map((p) => p.id === targetId ? {...p, canvas: update(p.canvas ?? sceneForPage(p, d.format))} : p),
-        };
-      });
-      if (!accepted) return;
-      if (activePage.current === targetId) setSelected([replaceId ?? image.id]);
-      setNotice(
-        replaceId
-          ? "Image replaced."
-          : "Image added. Drag its handles to resize it.",
-      );
-    } catch (reason) {
-      setNotice(
-        reason instanceof Error ? reason.message : "Could not open this image.",
-      );
-    } finally {
-      pendingBitmap?.close();
-      if (mounted.current) setUploading(false);
-    }
   }
   function applyBrand(all = true) {
     const update = (content: CanvasScene): CanvasScene => ({...content,background: brand.background, elements: content.elements.map((element) => element.type === "text" && canEditElement(content,element,'style') ? {...element, font: brand.font, color: brand.text,textStyleId:undefined,colorRoleId:undefined} : element)});
@@ -1399,18 +1416,7 @@ export function DesignEditor({
               const photo=decodePhotoDrag(e.dataTransfer.getData(PHOTO_DRAG_TYPE));
               if(photo){e.preventDefault();dropPhoto(photo,shape?.id);}
             }}
-            onPaste={(e) => {
-              const file = Array.from(e.clipboardData.files).find((f) =>
-                f.type.startsWith("image/"),
-              );
-              if (
-                file &&
-                !(e.target as HTMLElement).closest("[contenteditable=true]")
-              ) {
-                e.preventDefault();
-                void upload(file);
-              }
-            }}
+
           >
             <div className="te-pasteboard" style={{width: pasteboardBounds.width * scale, height: pasteboardBounds.height * scale}}>
             <div

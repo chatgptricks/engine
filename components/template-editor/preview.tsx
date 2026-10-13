@@ -8,6 +8,7 @@ import {
   type DesignDocument,
   type DesignPage,
 } from "@/lib/template-editor/model";
+import {sceneWithPreviewAssets} from "@/lib/template-editor/media-preview";
 import { composeScene } from "@/lib/template-editor/advanced";
 import { SceneRenderer } from "./canvas";
 
@@ -17,9 +18,11 @@ export const FRAME_WIDTH = 360;
 export function DesignFrame({
   design,
   page,
+  preview = false,
 }: {
   design: DesignDocument;
   page: DesignPage;
+  preview?: boolean;
 }) {
   const format = formatDimensions(design);
   const scene = design.continuousCanvas||design.masterScene ? composeScene(design,page) : page.canvas;
@@ -32,7 +35,7 @@ export function DesignFrame({
       }}
     >
       {scene ? (
-        <SceneRenderer scene={scene} />
+        <SceneRenderer scene={preview ? sceneWithPreviewAssets(scene) : scene} />
       ) : (
         <SlideFrame
           img={page.image}
@@ -72,7 +75,7 @@ export function DesignPreview(props: Parameters<typeof DesignFrame>[0]) {
       }
     >
       <div className="te-preview-inner">
-        <DesignFrame {...props} />
+        <DesignFrame {...props} preview />
       </div>
     </div>
   );
