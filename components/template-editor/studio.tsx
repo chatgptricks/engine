@@ -185,13 +185,17 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
     const accepted = addDocument(document, template.id);
     if (accepted !== false) setActiveId(document.id);
   }
-  async function importLibrary(event:ChangeEvent<HTMLInputElement>){const file=event.target.files?.[0];event.target.value="";if(!file||!permission.current)return;try{const archive=await readLibraryArchive(file);const imported=parseLibrary(archive.library);if(!imported)throw new Error("This file is not a valid Engine workspace backup.");setImporting({library:imported,restoreMedia:archive.restoreMedia});}catch(reason){setMessage(reason instanceof Error?reason.message:"Could not read this backup.");}}
+  async function importLibrary(event:ChangeEvent<HTMLInputElement>){const file=event.target.files?.[0];event.target.value="";if(!file||!permission.current)return;try{const archive=await readLibraryArchive(file);const imported=parseLibrary(archive.library);if(!imported)throw new Error("This file is not a valid Engine workspace backup.");setMessage("");setImporting({library:imported,restoreMedia:archive.restoreMedia});}catch(reason){setMessage(reason instanceof Error?reason.message:"Could not read this backup.");}}
   async function backup(){try{await downloadPortableLibrary(library,"engine-workspace");}catch(reason){setMessage(reason instanceof Error?reason.message:"Could not export this workspace.");}}
   function toggleSelection(key:LibraryItemKey){setSelected(previous=>previous.includes(key)?previous.filter(item=>item!==key):[...previous,key]);}
   function selectionFor(key:LibraryItemKey){return selectMode?<label className="te-library-select"><input type="checkbox" aria-label={`Select ${key.split(':')[0]}`} checked={selected.includes(key)} onChange={()=>toggleSelection(key)}/>Select</label>:undefined;}
   const visibleKeys:LibraryItemKey[]=view==="designs"?filteredDesigns.map(item=>`design:${item.id}` as const):[...filteredDrafts.map(item=>`design:${item.id}` as const),...filteredTemplates.map(item=>`template:${item.id}` as const)];
   const selectedKeys=selected.filter(key=>key.startsWith('design:')?activeDesigns.some(item=>key===`design:${item.id}`):templates.some(item=>key===`template:${item.id}`));
-  function bulkUpdate(metadata:Parameters<typeof bulkLibraryMetadata>[2]){const accepted=setLibrary(current=>bulkLibraryMetadata(current,selectedKeys,metadata,bulkReplace?'replace':'add'));if(accepted){setMessage(`Updated ${selectedKeys.length} items. Selected starter templates were copied into My templates.`);setBulkOpen(false);setSelected([]);setSelectMode(false);}return accepted;}
+  function bulkUpdate(metadata:Parameters<typeof bulkLibraryMetadata>[2]){
+    let starterCopies=0;const replacements=new Map<LibraryItemKey,LibraryItemKey>();
+    const accepted=setLibrary(current=>{const starters=libraryTemplates(current).filter(item=>!item.custom&&selectedKeys.includes(`template:${item.id}`));const result=bulkLibraryMetadata(current,selectedKeys,metadata,bulkReplace?'replace':'add');starterCopies=starters.length;starters.forEach((item,index)=>replacements.set(`template:${item.id}`,`template:${result.templates[current.templates.length+index].id}`));return result;});
+    if(accepted){setMessage(`Updated ${selectedKeys.length} items.${starterCopies?` Copied ${starterCopies} starter ${starterCopies===1?'template':'templates'} to My templates.`:''}`);setBulkOpen(false);setSelected(previous=>previous.map(key=>replacements.get(key)??key));}return accepted;
+  }
 
   function duplicateDesign(design: DesignDocument) {
     if (!permission.current) return;
@@ -304,11 +308,10 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
               return withBrandKits(current, currentKits.map((kit) => kit.id === kitId ? { ...kit, assets: [...kit.assets, { ...asset, id: crypto.randomUUID() }] } : kit), current.activeBrandKitId);
             });
           }}
-          onManageBrand={() => { setActiveId(null); setView("brand"); }}
+          onManageBrand={() => setView("brand")}
           saveStatus={statusText}
           canEdit={canEdit}
           onExit={() => {
-            setActiveId(null);
             setView(active.purpose === "template" ? "templates" : "designs");
             if (active.purpose === "template") setCategory("My templates");
           }}
@@ -346,7 +349,6 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
             });
             if (accepted === false) throw new Error("This template could not be saved. Check the workspace save message.");
             if (active.purpose === "template") {
-              setActiveId(null);
               setView("templates");
               setCategory("My templates");
               setQuery("");
@@ -483,7 +485,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
         </div>
       )}
       {creation&&<CreateDesignDialog library={library} kind={creation.kind} template={creation.template} disabled={!canEdit} onCreate={createProject} onClose={()=>setCreation(null)}/>}
-      {importing&&<LibraryImportDialog current={library} incoming={importing.library} restoreMedia={importing.restoreMedia} disabled={!canEdit} onImport={setLibrary} onClose={()=>setImporting(null)}/>}
+      {importing&&<LibraryImportDialog current={library} incoming={importing.library} restoreMedia={importing.restoreMedia} disabled={!canEdit} onImport={setLibrary} onComplete={setMessage} onClose={()=>setImporting(null)}/>}
       {bulkOpen&&<Modal title={`Organize ${selectedKeys.length} items`} onClose={()=>setBulkOpen(false)}><form onSubmit={event=>{event.preventDefault();bulkUpdate({folderId:bulkFolder||undefined,tags:bulkTags.split(',').map(tag=>tag.trim()).filter(Boolean)});}}><p>Starter templates are copied into My templates when organized.</p><label className="te-field">Folder<select value={bulkFolder} onChange={event=>setBulkFolder(event.target.value)}><option value="">No folder</option>{(library.folders??[]).map(folder=><option key={folder.id} value={folder.id}>{folder.name}</option>)}</select></label><label className="te-field">Tags (comma separated)<input maxLength={800} value={bulkTags} onChange={event=>setBulkTags(event.target.value)}/></label><label className="te-dialog-check"><input type="checkbox" checked={bulkReplace} onChange={event=>setBulkReplace(event.target.checked)}/>Replace existing tags</label><div className="te-modal-actions"><button type="button" className="te-button" onClick={()=>setBulkOpen(false)}>Cancel</button><button className="te-button te-primary" disabled={!canEdit}>Apply</button></div></form></Modal>}
       {rename && <Modal title={rename.kind === "template" ? "Rename template" : "Rename design"} onClose={() => setRename(null)}>
         <form onSubmit={(event) => {

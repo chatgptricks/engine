@@ -21,7 +21,7 @@ export function useStudioNavigation(scope:string|undefined,ready:boolean,documen
   },[ready,scope]);
   const navigate=useCallback((patch:Partial<Navigation>)=>{
     const next={...current.current,...patch};current.current=next;setNavigation(next);
-    if(typeof window!=="undefined"){const href=studioLink(next,window.location.href);if(href!==window.location.href)window.history.pushState(window.history.state,"",href);}
+    if(typeof window!=="undefined"){const href=studioLink(next,window.location.href);if(href!==window.location.href)window.history.pushState(null,"",href);}
     if(next.designId&&scope)try{localStorage.setItem(`engine:recent-project:${scope}`,next.designId);setRecent(next.designId);}catch{/* URL navigation remains available. */}
   },[scope]);
   const setView=useCallback((view:StudioView)=>navigate({view,designId:null}),[navigate]);

@@ -114,3 +114,30 @@ test('workspace components keep literal artwork while detaching document-only st
 test('workspace style application refuses protected or non-text selection without adding unused resources',()=>{const design=doc(),text=sceneText(design),style=advanced.textStyleFromElement(text,'Style');design.pages[0].canvas.elements[0].protected=['style'];assert.throws(()=>work.insertWorkspaceStyle(design,design.pages[0].canvas,[text.id],design.pages[0].id,style,true),/editable text/);assert.equal(design.styles,undefined);});
 
 test('workspace components insert inside the active continuous slide instead of silently appearing on page one',()=>{const lib=library(),design=work.createLibraryDesign(lib,options({layout:'continuous',applyBrand:false})),source=doc(),component=advanced.componentFromSelection(source.pages[0].canvas,[sceneText(source).id],'Title');const result=work.insertWorkspaceComponent(design,design.continuousCanvas,design.pages[2].id,component,true);const inserted=result.design.continuousCanvas.elements.find(element=>element.id===result.selectedIds[0]);assert.ok(inserted.x>=720);assert.ok(model.parseLibrary({...lib,designs:[result.design]}));});
+
+test('import copies remap workspace links once in live resources and saved versions, and linked updates remain functional',()=>{
+ const current=library(),incoming=library(),project=doc('Linked import'),style=advanced.textStyleFromElement(sceneText(project),'Workspace title');incoming.workspaceStyles=[style];
+ const component=advanced.componentFromSelection(project.pages[0].canvas,[sceneText(project).id],'Workspace block');incoming.workspaceComponents=[component];
+ let linked=work.insertWorkspaceStyle(project,project.pages[0].canvas,[sceneText(project).id],project.pages[0].id,style,true);
+ linked=work.insertWorkspaceComponent(linked,linked.pages[0].canvas,linked.pages[0].id,component,true).design;linked=advanced.saveDesignVersion(linked,'Before import');incoming.designs=[linked];
+ const copied=work.importLibrarySelection(current,incoming,work.allImportItems(incoming),'copies'),imported=copied.designs[0];
+ assert.equal(imported.styles[0].workspaceSourceId,copied.workspaceStyles[0].id);assert.equal(imported.components[0].workspaceSourceId,copied.workspaceComponents[0].id);
+ assert.equal(imported.versions[0].styles[0].workspaceSourceId,copied.workspaceStyles[0].id);assert.equal(imported.versions[0].components[0].workspaceSourceId,copied.workspaceComponents[0].id);
+ const updated=work.saveWorkspaceResource(copied,'style',{...copied.workspaceStyles[0],color:'#123456'});assert.equal(sceneText(updated.designs[0]).color,'#123456');assert.ok(model.parseLibrary(copied));const repeated=work.importLibrarySelection(copied,incoming,work.allImportItems(incoming),'skip');assert.equal(repeated.designs.length,1);assert.equal(repeated.workspaceStyles.length,1);assert.equal(repeated.workspaceComponents.length,1);
+});
+
+test('importing a template draft preserves authoring purpose and maps its source template',()=>{
+ const current=library(),incoming=library(),template=model.designAsTemplate(doc('Source'),'Source template');incoming.templates=[template];incoming.designs=[model.editTemplateDesign(template)];
+ const copied=work.importLibrarySelection(current,incoming,work.allImportItems(incoming),'copies');assert.equal(copied.designs[0].purpose,'template');assert.equal(copied.designs[0].editingTemplateId,copied.templates[0].id);assert.equal(copied.designs[0].templateId,copied.templates[0].id);assert.ok(model.parseLibrary(copied));
+});
+
+test('template import retains custom description, category and organizational metadata',()=>{
+ const current=library(),incoming=library(),template=model.designAsTemplate(doc(),'Editorial');template.description='A carefully authored campaign template';template.category='Editorial launch';template.tags=['launch'];template.favorite=true;incoming.templates=[template];
+ const copied=work.importLibrarySelection(current,incoming,work.allImportItems(incoming),'copies').templates[0];assert.equal(copied.description,template.description);assert.equal(copied.category,template.category);assert.deepEqual(copied.tags,['launch']);assert.equal(copied.favorite,true);assert.ok(work.librarySearchText(copied).includes('editorial launch'));
+});
+
+test('Research template mapping skips hidden photo and title layers, including inherited visibility',()=>{
+ const lib=library(),template=model.designAsTemplate(doc(),'Visible frames'),hiddenTitle={...model.createCanvasElement('text',{text:'Hidden title'}),groupId:'hidden-group'},visibleTitle=model.createCanvasElement('text',{text:'Visible placeholder'}),hiddenPhoto=photo({groupId:'hidden-group',src:'/hidden.jpg'}),visiblePhoto=photo({src:'/visible.jpg'});template.pages[0].canvas={background:'#fff',groups:[{id:'hidden-group',name:'Hidden',hidden:true}],elements:[hiddenTitle,visibleTitle,hiddenPhoto,visiblePhoto]};lib.templates=[template];
+ const result=research.createResearchDesign(story(),{imageIds:['a'],format:'portrait',brandKitId:lib.activeBrandKitId,applyBrand:false,template},lib),elements=result.pages[0].canvas.elements;
+ assert.equal(elements[0].text,'Hidden title');assert.equal(elements[1].text,'Hero title');assert.equal(elements[2].src,'/hidden.jpg');assert.equal(elements[3].src,'/a.jpg');
+});

@@ -5,16 +5,17 @@ import {allImportItems,importLibrarySelection,type ImportMode,type ImportCollect
 import {Modal} from "./controls";
 import "./dialog-tools.css";
 const collections:[ImportCollection,string][]=[["designs","Projects"],["templates","Templates"],["brandKits","Brand kits"],["folders","Folders"],["workspaceStyles","Workspace text styles"],["workspaceComponents","Workspace components"]];
-export function LibraryImportDialog({current,incoming,restoreMedia,disabled,onImport,onClose}:{current:EditorLibrary;incoming:EditorLibrary;restoreMedia:(selected:EditorLibrary)=>Promise<void>;disabled:boolean;onImport:(recipe:(library:EditorLibrary)=>EditorLibrary)=>boolean|void;onClose:()=>void}) {
+export function LibraryImportDialog({current,incoming,restoreMedia,disabled,onImport,onComplete,onClose}:{current:EditorLibrary;incoming:EditorLibrary;restoreMedia:(selected:EditorLibrary)=>Promise<void>;disabled:boolean;onImport:(recipe:(library:EditorLibrary)=>EditorLibrary)=>boolean|void;onComplete?:(message:string)=>void;onClose:()=>void}) {
   const [selection,setSelection]=useState<ImportSelection>(()=>{const selected=allImportItems(incoming);selected.designs=incoming.designs.filter(item=>!item.deletedAt).map(item=>item.id);selected.templates=incoming.templates.filter(item=>!item.deletedAt).map(item=>item.id);return selected;});
   const [mode,setMode]=useState<ImportMode>("skip"),[activateBrand,setActivateBrand]=useState(false),[catalog,setCatalog]=useState(false),[busy,setBusy]=useState(false),[error,setError]=useState("");
   const count=Object.values(selection).reduce((total,ids)=>total+ids.length,0);
   return <Modal title="Review workspace import" onClose={()=>{if(!busy)onClose();}}><form onSubmit={async event=>{event.preventDefault();if(disabled||busy||!count)return;setBusy(true);setError("");try{
     const source={...incoming,...(!catalog?{builtInTemplateStates:undefined}:{})};
-    importLibrarySelection(current,source,selection,mode,activateBrand);
+    const planned=importLibrarySelection(current,source,selection,mode,activateBrand);
+    const newCount=collections.reduce((count,[key])=>count+(planned[key]??[]).filter(item=>!(current[key]??[]).some(existing=>existing.id===item.id)).length,0);
     const selected={...source,...Object.fromEntries(collections.map(([key])=>[key,(source[key]??[]).filter(item=>selection[key].includes(item.id))]))} as EditorLibrary;
     await restoreMedia(selected);
-    if(onImport(live=>importLibrarySelection(live,source,selection,mode,activateBrand))===false)throw new Error("The selected items could not be saved. Your workspace has not changed.");onClose();
+    if(onImport(live=>importLibrarySelection(live,source,selection,mode,activateBrand))===false)throw new Error("The selected items could not be saved. Your workspace has not changed.");onComplete?.(mode==='skip'&&newCount===0?"Existing or identical items were skipped. Import completed.":`Import completed${newCount?` · ${newCount} new ${newCount===1?'item':'items'}`:' · matching items updated'}.`);onClose();
   }catch(cause){setError(cause instanceof Error?cause.message:"Could not import these items.");}finally{setBusy(false);}}}>
     <fieldset disabled={disabled||busy} className="te-pro-panel te-tool-dialog">
       <p>Choose what to bring into this workspace. Existing projects stay available.</p>

@@ -30,7 +30,7 @@ export type LibraryItemKey=`design:${string}`|`template:${string}`;
 export type SearchFilters={folder:string;favorites:boolean;tag:string;format?:DesignFormat|"custom"|"";purpose?:"post"|"template"|"";review?:"draft"|"review"|"approved"|"";sort?:"updated"|"name"|"created"|"pages"};
 export function librarySearchText(item:DesignDocument|DesignTemplate):string {
   const content=item.pages.flatMap(page=>[page.label,page.style.heading,page.style.body,...(page.canvas?.elements??[]).flatMap(element=>[element.name,element.type==="text"?element.text:""])]);
-  return [item.name,...item.tags??[],"caption"in item?item.caption:item.description,...content,...([...(item.continuousCanvas?.elements??[]),...(item.masterScene?.elements??[])]).flatMap(element=>[element.name,element.type==="text"?element.text:""])].filter(Boolean).join(" ").toLocaleLowerCase();
+  return [item.name,...item.tags??[],"caption"in item?item.caption:item.description,"category"in item?item.category:undefined,...content,...([...(item.continuousCanvas?.elements??[]),...(item.masterScene?.elements??[])]).flatMap(element=>[element.name,element.type==="text"?element.text:""])].filter(Boolean).join(" ").toLocaleLowerCase();
 }
 export function matchesLibraryItem(item:DesignDocument|DesignTemplate,filters:SearchFilters,query=""):boolean {
   return !item.deletedAt&&(!filters.folder||item.folderId===filters.folder)&&(!filters.favorites||Boolean(item.favorite))&&(!filters.tag||(item.tags??[]).some(tag=>tag.toLowerCase().includes(filters.tag.trim().toLowerCase())))&&(!filters.format||(filters.format==="custom"?Boolean(item.customSize):!item.customSize&&item.format===filters.format))&&(!filters.purpose||(filters.purpose==="template"?("purpose"in item?item.purpose==="template":true):"caption"in item&&item.purpose!=="template"))&&(!filters.review||("caption"in item?(item.reviewStatus??"draft")===filters.review:false))&&librarySearchText(item).includes(query.trim().toLocaleLowerCase());
@@ -68,14 +68,19 @@ export type ImportSelection=Record<ImportCollection,string[]>;
 export type ImportMode="copies"|"skip"|"merge";
 export function allImportItems(library:EditorLibrary):ImportSelection{return Object.fromEntries((['designs','templates','brandKits','folders','workspaceStyles','workspaceComponents'] as const).map(key=>[key,(library[key]??[]).map(item=>item.id)])) as ImportSelection;}
 function contentIdentity(value:unknown):string {
+  value=structuredClone(value);
+  const resource=(value&&typeof value==='object'?value:{}) as {components?:ReusableComponent[]};
+  const componentSources=new Map((resource.components??[]).map((component,index)=>[component.id,new Map(component.scene.elements.map((element,elementIndex)=>[element.id,`component-source-${index}-${elementIndex}`]))]));
+  const normalizeSources=(item:unknown)=>{if(Array.isArray(item)){item.forEach(normalizeSources);return;}if(!item||typeof item!=='object')return;const record=item as Record<string,unknown>;if(typeof record.componentId==='string'&&typeof record.componentSourceId==='string')record.componentSourceId=componentSources.get(record.componentId)?.get(record.componentSourceId)??record.componentSourceId;for(const [key,child]of Object.entries(record))if(key!=='versions')normalizeSources(child);};normalizeSources(value);
   const ids=new Map<string,string>();
-  const collect=(item:unknown)=>{if(Array.isArray(item)){item.forEach(collect);return;}if(!item||typeof item!=="object")return;const record=item as Record<string,unknown>;for(const field of ["id","componentInstanceId"])if(typeof record[field]==="string"&&!ids.has(record[field] as string))ids.set(record[field] as string,`node-${ids.size}`);for(const key of Object.keys(record).sort())collect(record[key]);};collect(value);
+  const collect=(item:unknown)=>{if(Array.isArray(item)){item.forEach(collect);return;}if(!item||typeof item!=="object")return;const record=item as Record<string,unknown>;for(const field of ["id","componentInstanceId"])if(typeof record[field]==="string"&&!ids.has(record[field] as string))ids.set(record[field] as string,`node-${ids.size}`);for(const key of Object.keys(record).sort())if(key!=="versions"&&key!=="scene")collect(record[key]);};collect(value);
   const references=new Set(["id","groupId","parentId","componentId","componentInstanceId","componentSourceId","textStyleId","workspaceSourceId","slot","readingOrder"]);
-  const visit=(item:unknown,key=""):unknown=>Array.isArray(item)?item.map(child=>visit(child,key)):item&&typeof item==="object"?Object.fromEntries(Object.entries(item).filter(([field])=>!["createdAt","updatedAt","folderId","reviewLinks","versions"].includes(field)).map(([field,child])=>[field,visit(child,field)])):typeof item==="string"&&references.has(key)?ids.get(item)??item:item;
+  const visit=(item:unknown,key=""):unknown=>key==="scene"&&item&&typeof item==="object"?JSON.parse(contentIdentity(item)):Array.isArray(item)?key==="versions"?item.map(child=>JSON.parse(contentIdentity(child))):item.map(child=>visit(child,key)):item&&typeof item==="object"?Object.fromEntries(Object.entries(item).filter(([field])=>!["createdAt","updatedAt","folderId","reviewLinks"].includes(field)).map(([field,child])=>[field,visit(child,field)])):typeof item==="string"&&references.has(key)?ids.get(item)??item:typeof item==="string"&&key==="richText"?item.replace(/data-texture-id="([a-zA-Z0-9_-]+)"/g,(_,id:string)=>`data-texture-id="${ids.get(id)??id}"`):item;
   return stableStringify(visit(value))??"";
 }
 export function importLibrarySelection(current:EditorLibrary,incoming:EditorLibrary,selection:ImportSelection,mode:ImportMode,activateImportedBrand=false):EditorLibrary {
-  let result=structuredClone(current);const ids=new Map<string,string>();
+  let result=structuredClone(current);const ids=new Map<string,string>(),identities=new WeakMap<object,string>();
+  const identityFor=(record:object)=>{let identity=identities.get(record);if(identity===undefined){identity=contentIdentity(record);identities.set(record,identity);}return identity;};
   const include=(key:ImportCollection,id:string)=>selection[key].includes(id);
   for(const key of ["folders","workspaceStyles","workspaceComponents","templates","designs","brandKits"] as const){
     const existing=[...(result[key]??[])],imported=(incoming[key]??[]).filter(item=>include(key,item.id));
@@ -85,20 +90,24 @@ export function importLibrarySelection(current:EditorLibrary,incoming:EditorLibr
         const item=original as DesignDocument|DesignTemplate;
         if("templateId"in item)item.templateId=ids.get(item.templateId)??item.templateId;
         if("editingTemplateId"in item&&item.editingTemplateId)item.editingTemplateId=ids.get(item.editingTemplateId)??item.editingTemplateId;
-        for(const resources of [item.styles,item.components])for(const resource of resources??[])if(resource.workspaceSourceId)resource.workspaceSourceId=ids.get(resource.workspaceSourceId)??resource.workspaceSourceId;
+        const remapWorkspaceLinks=(resources:Pick<DesignDocument,'styles'|'components'>)=>{
+          for(const [field,collection] of [['styles','workspaceStyles'],['components','workspaceComponents']] as const)for(const resource of resources[field]??[])if(resource.workspaceSourceId){const source=resource.workspaceSourceId;resource.workspaceSourceId=ids.get(source)??(current[collection]?.some(existing=>existing.id===source)?source:undefined);}
+        };
+        remapWorkspaceLinks(item);
+        if('versions'in item)for(const version of item.versions??[])remapWorkspaceLinks(version);
       }
-      const same=existing.find(item=>item.id===original.id),identical=existing.find(item=>contentIdentity(item)===contentIdentity(original));
+      const same=existing.find(item=>item.id===original.id),identical=mode==="copies"?undefined:existing.find(item=>identityFor(item)===identityFor(original));
       if(mode!=="copies"&&identical){ids.set(original.id,identical.id);continue;}
       if(mode==="skip"&&same){ids.set(original.id,same.id);continue;}
       let copy=structuredClone(original) as Record<string,unknown>;
       if(key==="designs")copy={...cloneDesign(original as DesignDocument),name:original.name};
-      if(key==="templates"){copy={...designAsTemplate({...original,templateId:original.id,caption:"",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()} as DesignDocument,original.name)};}
+      if(key==="templates"){const template=original as DesignTemplate;copy={...designAsTemplate({...template,templateId:template.id,caption:"",createdAt:new Date().toISOString(),updatedAt:new Date().toISOString()} as DesignDocument,template.name),description:template.description,category:template.category};}
       copy.id=mode==="merge"&&same?original.id:crypto.randomUUID();ids.set(original.id,String(copy.id));
       if(key==="designs"||key==="templates"){
         const document=original as DesignDocument|DesignTemplate;
         copy.folderId=typeof document.folderId==="string"?ids.get(document.folderId)??(current.folders?.some(folder=>folder.id===document.folderId)?document.folderId:undefined):undefined;
-        if(key==="designs"){const doc=original as DesignDocument;copy.templateId=ids.get(doc.templateId)??doc.templateId;copy.deletedAt=undefined;if(doc.editingTemplateId)copy.editingTemplateId=ids.get(doc.editingTemplateId)??doc.editingTemplateId;}
-        for(const resources of ["styles","components"] as const)if(Array.isArray(copy[resources]))copy[resources]=(copy[resources] as (TextStyle|ReusableComponent)[]).map(resource=>({...resource,workspaceSourceId:resource.workspaceSourceId?ids.get(resource.workspaceSourceId)??(current[resources==="styles"?"workspaceStyles":"workspaceComponents"]?.some(item=>item.id===resource.workspaceSourceId)?resource.workspaceSourceId:undefined):undefined}));
+        if(key==="designs"){const doc=original as DesignDocument;copy.templateId=doc.templateId;copy.deletedAt=undefined;if(doc.purpose==="template")copy.purpose="template";if(doc.editingTemplateId)copy.editingTemplateId=doc.editingTemplateId;}
+
       }
       if(key==="brandKits")copy.assets=(copy.assets as BrandAsset[]).map(asset=>({...asset,id:mode==="merge"&&same?((same as EditorLibrary["brandKits"][number]).assets.find(current=>current.id===asset.id||(current.src===asset.src&&current.kind===asset.kind&&(current.variant??"universal")===(asset.variant??"universal")))?.id??crypto.randomUUID()):crypto.randomUUID()}));
       if(same&&mode==="merge"){

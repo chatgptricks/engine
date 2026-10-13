@@ -149,8 +149,8 @@
     "workspaceStyles/workspaceComponents optional; EditorLibrary.version remains 2"
   ],
   "validation": {
-    "focusedTests": "31 passed (25 library workflows +6 Brand upload)",
-    "fullSuite": "297 passed,10 browser-dependent skips",
+    "focusedTests": "35 passed (29 library workflows +6 Brand upload)",
+    "fullSuite": "301 passed,10 browser-dependent skips",
     "typescript": "passed",
     "eslint": "passed",
     "build": "Isolated Turbopack refuses node_modules symlink outside filesystem root; root runs the integrated production build.",
@@ -174,5 +174,16 @@
     "lib/template-editor/media-preview.ts",
     "lib/template-editor/vector.ts",
     "tests/template-editor-vector.test.mjs"
-  ]
+  ],
+  "followup": {
+    "corrected": [
+      "Copy/merge import remaps workspace bindings once, including named versions; retains template-draft purpose and custom template metadata.",
+      "Repeated import compares component blueprint IDs within their own scope and includes independent version snapshots.",
+      "Research mapping skips hidden/inherited-hidden photo and title layers.",
+      "Native History uses pushState(null) so Next16 keeps the canonical URL in sync.",
+      "Bulk operations keep selection, transfer selected starter IDs to the new custom copies and show accurate conditional feedback.",
+      "Import completion/skipping replaces old notifications."
+    ],
+    "tests": "4 added regression tests plus the existing suite; TypeScript and ESLint pass."
+  }
 }
