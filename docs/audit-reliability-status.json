@@ -1,0 +1,108 @@
+{
+  "scope": "Full Engine editor audit",
+  "recommendations": [
+    {
+      "id": 15,
+      "status": "implemented",
+      "change": "Recovery drafts store the exact confirmed baseline, deduplicate its assets, and reconcile restored edits without false copies or resurrected deletes. Legacy drafts require explicit recovery.",
+      "verification": [
+        "Recovery migration tests; recovery baseline merge/delete regression"
+      ],
+      "risks": []
+    },
+    {
+      "id": 16,
+      "status": "implemented",
+      "change": "Checkpoint budget selects the newest entries globally, caps each document at30 and expires purged-document recoveries after7days.",
+      "verification": [
+        "Global recency/budget and active/purged TTL tests"
+      ],
+      "risks": []
+    },
+    {
+      "id": 17,
+      "status": "implemented",
+      "change": "Owner-scoped CAS inventory reserves20active links per design, idempotently activates snapshots, retains revocation decisions across version restore, and fails closed on corruption.",
+      "verification": [
+        "Concurrent20th/21st creation; independent-instance same-operation race; restored-version inventory and revoke regressions"
+      ],
+      "risks": []
+    },
+    {
+      "id": 18,
+      "status": "implemented",
+      "change": "Export scenes omit hidden/group-opacity0/off-frame resources and inactive word textures while retaining visual shadow contributions.",
+      "verification": [
+        "Contributor filtering tests; existing export texture decode/readiness tests"
+      ],
+      "risks": []
+    },
+    {
+      "id": 19,
+      "status": "implemented",
+      "change": "Export warnings recalculate at selected image scale or PDF DPI and flow through final download notices.",
+      "verification": [
+        "Chosen scale/contain/zoom preflight tests; dialog uses preflightDesign(outputScale)"
+      ],
+      "risks": [
+        "Browser verification of combined branch is performed after parent integration."
+      ]
+    },
+    {
+      "id": 35,
+      "status": "implemented",
+      "change": "Autosave retries at most5 with jitter and bounded Retry-After, preserves deadlines during typing, pauses exhausted loops and keeps browser recoveries.",
+      "verification": [
+        "Jitter/count/Retry-After and typing/backoff exhaustion regressions"
+      ],
+      "risks": []
+    },
+    {
+      "id": 36,
+      "status": "implemented",
+      "change": "Verified baselines rebase disjoint page/object fields, preserve inserted-layer anchors, and expose competing edits/order cycles as explicit conflicts. Parent presence leases expose other active editors.",
+      "verification": [
+        "Three-way field/order/delete conflicts and forged baseline tests; parent presence11tests/browser verification commit0fd1a92"
+      ],
+      "risks": []
+    },
+    {
+      "id": 37,
+      "status": "implemented",
+      "change": "Changed entities alone are parsed; immutable reference/cost caches avoid reprocessing unchanged documents. Workers hash assets, prepare patches and serialize bounded save bodies.",
+      "verification": [
+        "Reference retention/invalid entity/budget UTF8 dedup tests; real worker prepare-save regression; large metadata optional-baseline budget test"
+      ],
+      "risks": []
+    },
+    {
+      "id": 38,
+      "status": "in_progress",
+      "change": "One rendered page at a time, bounded64MiB output/archive, real1\u201310page batch downloads, bounded cancellation. Private original renditions and decoded-image aggregate guard follow in a separate commit.",
+      "verification": [
+        "Sequential load/capture/release batch test; aggregate byte rejection before download; original-rendition integration pending"
+      ],
+      "risks": []
+    },
+    {
+      "id": 39,
+      "status": "implemented",
+      "change": "Real tagged multipage PDF with selectable embedded-font text, vector basics, safe original media, physical dimensions/DPI/bleed/crop marks and faithful raster fallback for unsupported effects.",
+      "verification": [
+        "Real PDF structure/font embedding/trim+bleed/multipage reading order tests;48MP original downsample; fallback and cancellation tests"
+      ],
+      "risks": [
+        "Browser verification of combined branch is performed after parent integration."
+      ]
+    },
+    {
+      "id": 40,
+      "status": "in_progress",
+      "change": "Incremental public comments, replies, shared whole-thread resolve/reopen and geometric object/page pins; server inventory and owner review tools.",
+      "verification": [
+        "Thread resolution/revision notModified/owner isolation tests; viewer hit-testing uses shared clip/group-aware geometry; live owner expanded-panel polling followup"
+      ],
+      "risks": []
+    }
+  ]
+}

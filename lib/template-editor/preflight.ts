@@ -1,6 +1,6 @@
 import { formatDimensions, sceneForPage, type CanvasElement, type CanvasScene, type DesignDocument, type TextElement } from "./model";
-import { elementIntersectsCanvas, elementVisualBounds } from "./canvas-geometry";
-import { isElementHidden } from "./commands";
+import { elementVisualBounds } from "./canvas-geometry";
+import {contributesToFrame} from "./export-scene";
 import { imageResolution } from "./property-utils";
 
 export type PreflightIssue = {
@@ -13,6 +13,7 @@ export type PreflightIssue = {
   message: string;
 };
 export type PreflightOptions = {
+  outputScale?:number;
   /** Return undefined when the source has not been checked. Unknown is not failure. */
   imageAvailable?: (src: string, element: CanvasElement) => boolean | undefined;
   fontAvailable?: (font: string) => boolean | undefined;
@@ -27,13 +28,13 @@ export function preflightDesign(design: DesignDocument, options: PreflightOption
   const dimensions = formatDimensions(design);
   const width = 360;
   const height = width * dimensions.height / dimensions.width;
-  const outputScale = dimensions.width / width;
+  const outputScale = options.outputScale??dimensions.width / width;
   const findings: PreflightIssue[] = [];
   design.pages.forEach((page, pageIndex) => {
     const content: CanvasScene = design.continuousCanvas ? { ...design.continuousCanvas, elements: design.continuousCanvas.elements.map(element => ({ ...element, x: element.x - pageIndex * width, ...(element.clipBounds ? {clipBounds:{...element.clipBounds,x:element.clipBounds.x-pageIndex*width}} : {}) })) } : page.canvas ?? sceneForPage(page, design.format);
     const scenes = page.useMaster === false || !design.masterScene ? [content] : [design.masterScene, content];
     for (const scene of scenes) for (const element of scene.elements) {
-      if (isElementHidden(scene, element) || element.opacity === 0 || !elementIntersectsCanvas(element, width, height)) continue;
+      if (!contributesToFrame(scene,element,width,height)) continue;
       const name = element.name.trim() || element.type;
       const add = (code: PreflightIssue["code"], message: string, severity: PreflightIssue["severity"] = "warning", resource = "") => findings.push({ id: `${page.id}:${element.id}:${code}${resource ? `:${resource}` : ""}`, code, message, severity, pageId: page.id, elementId: element.id, ...(scene === design.masterScene ? { master: true } : {}) });
       const photo = element.type === "shape" ? element.imageFill : undefined;

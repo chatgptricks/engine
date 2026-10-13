@@ -8,8 +8,11 @@ import {
   type SetStateAction,
 } from "react";
 import { EMPTY_LIBRARY, parseLibrary, type EditorLibrary } from "./model";
-import {sameContent, createLibraryPatch, packAssets, reconcileLibraries, type LibraryPatch} from "./library-sync";
+import {sameContent, reconcileLibraries, type LibraryPatch} from "./library-sync";
+import {prepareSaveOffThread} from './asset-processing';
 import { checkLibrarySaveBudget } from "./library-budget";
+import {saveRetryDelay,autosaveDelay} from './save-retry';
+import {validateLibraryMutation} from './incremental-validation';
 import {
   getRecoveryDrafts,
   cacheWorkspace,
@@ -86,7 +89,7 @@ export function useEditorLibrary(expectedScope?: string) {
   const current = useRef(library);
   const baseline = useRef(library);
   const knownAssets = useRef(new Set<string>());
-  const pendingSave = useRef<{id: string; library: EditorLibrary; stamp: string; revision: string | null; patch: LibraryPatch; assets: Record<string, string>} | null>(null);
+  const pendingSave = useRef<{id: string; library: EditorLibrary; stamp: string; revision: string | null; patch: LibraryPatch; assets: Record<string, string>; body:string} | null>(null);
   const [syncEpoch, setSyncEpoch] = useState(0);
   const [documentEpochs, setDocumentEpochs] = useState<Record<string, number>>({});
   const bumpChangedDocuments = useCallback((before: EditorLibrary, after: EditorLibrary) => {
@@ -107,6 +110,7 @@ export function useEditorLibrary(expectedScope?: string) {
   const mounted = useRef(false);
   const backupFailure = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const retryAttempts=useRef(0),retryAt=useRef(0),autoRetryPaused=useRef(false);
   const inFlight = useRef<Promise<void> | null>(null);
   const backupQueue = useRef<Promise<unknown>>(Promise.resolve());
   const loadController = useRef<AbortController | null>(null);
@@ -118,6 +122,7 @@ export function useEditorLibrary(expectedScope?: string) {
       key: `${scope.current}:${tabId.current}`,
       scope: scope.current,
       library: current.current,
+      baseline:baseline.current,
       revision: revision.current,
       stamp: stamp.current,
       updatedAt: Date.now(),
@@ -161,7 +166,7 @@ export function useEditorLibrary(expectedScope?: string) {
   }, []);
 
   const save = useCallback(async () => {
-    if (!loaded.current || !dirty.current || conflict.current) return;
+    if (!loaded.current || !dirty.current || conflict.current || autoRetryPaused.current) return;
     if (inFlight.current) return inFlight.current;
     if (typeof navigator !== "undefined" && !navigator.onLine) { setStatus("offline"); return; }
     const sentLibrary = pendingSave.current?.library ?? current.current;
@@ -173,30 +178,26 @@ export function useEditorLibrary(expectedScope?: string) {
         setError(null);
       }
       await persistRecovery();
+      let retryable=false,retryAfter:number|undefined;
       try {
         if (!pendingSave.current) {
-          const packed = await packAssets(await createLibraryPatch(baseline.current, sentLibrary), knownAssets.current);
-          pendingSave.current = {id: crypto.randomUUID(), library: sentLibrary, stamp: sentStamp, revision: expectedRevision, patch: packed.value, assets: packed.assets};
+          const id=crypto.randomUUID(),packed=await prepareSaveOffThread(baseline.current,sentLibrary,knownAssets.current,{revision:expectedRevision,operationId:id,expectedScope:scope.current,clientSchema:3});
+          pendingSave.current={id,library:sentLibrary,stamp:sentStamp,revision:expectedRevision,patch:packed.value,assets:packed.assets,body:packed.body};
         }
         const request = pendingSave.current;
         const result = await fetch(ENDPOINT, {
           signal: AbortSignal.timeout(30_000),
           method: "PUT",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            patch: request.patch,
-            assets: request.assets,
-            revision: request.revision,
-            operationId: request.id,
-            expectedScope: scope.current,
-            clientSchema: 2,
-          }),
+          body:request.body,
         });
         const data = (await result.json().catch(() => null)) as Record<
           string,
           unknown
         > | null;
         if (!result.ok) {
+          retryable=result.status===429||result.status>=500;
+          const header=Number(result.headers.get('retry-after'));retryAfter=Number.isFinite(header)?header:undefined;
           if (result.status === 403 && data?.code === "workspace_owner_changed") { conflict.current = true; if (mounted.current) setCanEdit(false); clearCachedWorkspaceSelection(); }
           if (result.status === 409) {
             const remote = remoteLibrary(data?.remote);
@@ -237,6 +238,7 @@ export function useEditorLibrary(expectedScope?: string) {
           );
         }
         const remote = parseLibrary(data.library) ?? sentLibrary;
+        retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;
         const merged = reconcileLibraries(sentLibrary, current.current, remote).library;
         const changedByServer = !sameContent(merged, current.current);
         const beforeMerge = current.current;
@@ -259,6 +261,10 @@ export function useEditorLibrary(expectedScope?: string) {
           setError(null);
         }
       } catch (cause) {
+        const networkFailure=cause instanceof TypeError||cause instanceof DOMException&&['TimeoutError','NetworkError'].includes(cause.name);
+        const delay=!conflict.current&&(retryable||networkFailure)&&navigator.onLine?saveRetryDelay(retryAttempts.current,Math.random(),retryAfter):null;
+        autoRetryPaused.current=delay===null&&navigator.onLine;retryAt.current=delay===null?0:Date.now()+delay;
+        if(delay!==null){retryAttempts.current++;if(timer.current)clearTimeout(timer.current);timer.current=setTimeout(()=>void saveRef.current(),delay);}
         if (mounted.current) {
           setStatus(typeof navigator !== "undefined" && !navigator.onLine ? "offline" : conflict.current ? "conflict" : "error");
           const message =
@@ -266,15 +272,15 @@ export function useEditorLibrary(expectedScope?: string) {
           const recoveryMessage = backupFailure.current
             ? " Browser recovery also failed. Keep this tab open and export a JSON backup."
             : " Your edits are stored in this browser.";
-          setError(message + recoveryMessage);
+          setError(message + recoveryMessage+(delay!==null?` Retrying automatically (${retryAttempts.current}/5)…`:''));
         }
       }
     })();
     inFlight.current = operation;
     await operation;
     inFlight.current = null;
-    // Only continue automatically after a confirmed save. Network failures and
-    // conflicts require Retry; they never create an unbounded request loop.
+    // Continue newer edits after a confirmed save. Transient failures have their
+    // own bounded retry timer; conflicts require explicit reconciliation.
     if (
       dirty.current &&
       !conflict.current &&
@@ -298,7 +304,7 @@ export function useEditorLibrary(expectedScope?: string) {
     const controller = new AbortController();
     loadController.current = controller;
     if (timer.current) clearTimeout(timer.current);
-    loaded.current = false;
+    loaded.current = false;retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;
     if (mounted.current) {
       setCanEdit(false);
       setStatus("loading");
@@ -378,8 +384,8 @@ export function useEditorLibrary(expectedScope?: string) {
       stamp.current = draft?.stamp ?? crypto.randomUUID();
       backedUpStamp.current = draft?.stamp ?? "";
       conflict.current = Boolean(draft && draft.revision !== remote.revision);
-      if (conflict.current && draft) {
-        const merged = reconcileLibraries(EMPTY_LIBRARY, draft.library, remote.library);
+      if (conflict.current && draft?.baseline) {
+        const merged = reconcileLibraries(draft.baseline??EMPTY_LIBRARY, draft.library, remote.library);
         if (parseLibrary(merged.library) && checkLibrarySaveBudget(merged.library).ok) {current.current = merged.library; conflict.current = false;}
       }
       if (draft && conflict.current) revision.current = draft.revision;
@@ -451,7 +457,7 @@ export function useEditorLibrary(expectedScope?: string) {
         setMutationError(null);
         return true;
       }
-      const parsed = parseLibrary(value);
+      const parsed = validateLibraryMutation(current.current,value);
       if (!parsed) {setMutationError("This change is not a valid document and was not applied. Check dimensions, layout values, images and document limits."); return false;}
       value = parsed;
       const budget = checkLibrarySaveBudget(value);
@@ -466,22 +472,24 @@ export function useEditorLibrary(expectedScope?: string) {
       stamp.current = crypto.randomUUID();
       dirty.current = true;
       updateLibrary(value);
-      if (!conflict.current) {
+      if (!conflict.current && !autoRetryPaused.current && retryAt.current<=Date.now()) {
         setStatus("saving");
         setError(null);
       }
       void persistRecovery();
       if (timer.current) clearTimeout(timer.current);
-      if (!conflict.current)
+      const delay=autosaveDelay(retryAt.current,autoRetryPaused.current);
+      if (!conflict.current && delay!==null)
         timer.current = setTimeout(() => {
           void saveRef.current();
-        }, 600);
+        }, delay);
       return true;
     },
     [persistRecovery],
   );
 
   const retrySave = useCallback(() => {
+    retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;
     if (!loaded.current) {
       void load();
       return;
@@ -512,7 +520,7 @@ export function useEditorLibrary(expectedScope?: string) {
       // cache. Refresh its revision before accepting the next edit.
       if (event.persisted) void load();
     };
-    const online = () => { if (dirty.current) void saveRef.current(); else void load(); };
+    const online = () => { retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;if (dirty.current) void saveRef.current(); else void load(); };
     const offline = () => { if (mounted.current) setStatus("offline"); };
     window.addEventListener("online", online);
     window.addEventListener("offline", offline);

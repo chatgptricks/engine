@@ -48,7 +48,7 @@ function allowedSaveOrigin(request: Request): boolean {
   ].some((value) => httpOrigin(value) === origin);
 }
 
-export async function GET(request?: Request) {
+export async function GET(request: Request) {
   const access = await resolveEngineAccess();
   if (!access)
     return response({ error: "Sign in to open your template library." }, 401);
@@ -122,10 +122,11 @@ export async function PUT(request: Request) {
       error instanceof RangeError ? 413 : 400,
     );
   }
+  if(body.clientSchema !== 3) return response({error: "Refresh the editor before saving this workspace."},426);
   const operationId = body.operationId;
   if (operationId !== undefined && (typeof operationId !== "string" || !/^[a-f0-9-]{36}$/i.test(operationId))) return response({error: "Invalid save operation."}, 400);
   if (body.patch !== undefined) {
-    if (body.clientSchema !== 2) return response({error: "Refresh the editor before saving this workspace."}, 426);
+    if (body.clientSchema !== 3) return response({error: "Refresh the editor before saving this workspace."}, 426);
     if (typeof body.expectedScope !== "string" || !/^[a-f0-9]{64}$/.test(body.expectedScope)) return response({error: "Reload the editor to confirm the signed-in workspace."}, 400);
     if (body.expectedScope !== editorOwnerScope(access.ownerKey)) return response({error: "The signed-in account changed. Your original workspace edits were kept locally. Download a backup or sign in to the original account before reloading.", code: "workspace_owner_changed"}, 403);
     if (typeof operationId !== "string" || !(body.revision === null || (typeof body.revision === "string" && /^[a-f0-9-]{36}$/i.test(body.revision)))) return response({error: "Invalid document save revision."}, 400);

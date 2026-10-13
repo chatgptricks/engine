@@ -1,5 +1,5 @@
 import {resolveEngineAccess} from "@/lib/engine/member";
-import {addReviewComment, createReview, getPublicReview, readOwnerReview, revokeReview} from "@/lib/template-editor/reviews";
+import {addReviewComment,createReview,getPublicReview,getReviewFeedback,listReviewLinks,readOwnerReview,revokeReview,resolveReviewComment} from "@/lib/template-editor/reviews";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const headers = {"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer", "X-Robots-Tag": "noindex, nofollow"};
@@ -20,6 +20,8 @@ async function body(request: Request): Promise<Record<string, unknown>> {
 export async function GET(request: Request) {
   const query = new URL(request.url).searchParams, token = query.get("token") ?? "";
   try {
+    if(query.get('feedback')==='1'){const feedback=await getReviewFeedback(token,query.get('since')??undefined);return feedback?reply(feedback):reply({error:'Review expired or revoked.'},404);}
+    if(query.get('list')==='1'){const access=await resolveEngineAccess();if(!access)return reply({error:'Sign in to manage reviews.'},401);return reply({links:await listReviewLinks(access.ownerKey,query.get('documentId')??undefined)});}
     if (query.get("owner") === "1") { const access = await resolveEngineAccess(); if (!access) return reply({error: "Sign in to manage review feedback."}, 401); const review = await readOwnerReview(access.ownerKey, token); return review ? reply({review}) : reply({error: "Review not found."}, 404); }
     const review = await getPublicReview(token); return review ? reply({review}) : reply({error: "This review link has expired or been revoked."}, 404);
   } catch { return reply({error: "Review is temporarily unavailable."}, 503); }
@@ -29,14 +31,15 @@ export async function POST(request: Request) {
   try {
     const input = await body(request);
     if (typeof input.token === "string") {
-      const comment = await addReviewComment(input.token, {name: input.name as string, text: input.text as string, pageId: input.pageId as string | undefined}); return reply({comment}, 201);
+      const comment=await addReviewComment(input.token,{name:input.name as string,text:input.text as string,pageId:input.pageId as string|undefined,parentId:input.parentId as string|undefined,elementId:input.elementId as string|undefined,anchor:input.anchor as {x:number;y:number}|undefined});return reply({comment},201);
     }
     const access = await resolveEngineAccess(); if (!access) return reply({error: "Sign in to create a review link."}, 401);
     if (typeof input.documentId !== "string") return reply({error: "Choose a saved design."}, 400);
-    const result = await createReview(access.ownerKey, input.documentId, typeof input.days === "number" ? input.days : 7, typeof input.documentUpdatedAt === "string" ? input.documentUpdatedAt : undefined);
+    const result = await createReview(access.ownerKey, input.documentId, typeof input.days === "number" ? input.days : 7, typeof input.documentUpdatedAt === "string" ? input.documentUpdatedAt : undefined,typeof input.operationId==='string'&&/^[a-f0-9-]{36}$/i.test(input.operationId)?input.operationId:undefined);
     return reply({...result, url: `/engine/review/${result.token}`}, 201);
   } catch (cause) { return reply({error: cause instanceof Error ? cause.message : "Review could not be saved."}, 400); }
 }
+export async function PATCH(request:Request){const access=await resolveEngineAccess();if(!access)return reply({error:'Sign in to resolve review comments.'},401);if(!sameOrigin(request))return reply({error:'Open the editor to manage feedback.'},403);try{const input=await body(request);if(typeof input.token!=='string'||typeof input.commentId!=='string'||typeof input.resolved!=='boolean')throw Error('Choose a comment and resolution.');await resolveReviewComment(access.ownerKey,input.token,input.commentId,input.resolved);return reply({ok:true});}catch(error){return reply({error:error instanceof Error?error.message:'Feedback could not be updated.'},400);}}
 export async function DELETE(request: Request) {
   const access = await resolveEngineAccess(); if (!access) return reply({error: "Sign in to revoke a review link."}, 401);
   if (!sameOrigin(request)) return reply({error: "Open the editor to revoke a link."}, 403);

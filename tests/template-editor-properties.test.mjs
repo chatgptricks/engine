@@ -25,7 +25,7 @@ const model = load("lib/template-editor/model.ts");
 const geometry = load("lib/template-editor/canvas-geometry.ts");
 const commands = load("lib/template-editor/commands.ts", { "./model": model });
 const properties = load("lib/template-editor/property-utils.ts");
-const { preflightDesign } = load("lib/template-editor/preflight.ts", { "./model": model, "./canvas-geometry": geometry, "./commands": commands, "./property-utils": properties });
+const { preflightDesign } = load("lib/template-editor/preflight.ts", { "./model": model, "./canvas-geometry": geometry, "./commands": commands, "./export-scene":load("lib/template-editor/export-scene.ts",{"./canvas-geometry":geometry,"./commands":commands}), "./property-utils": properties });
 
 test("color parser expands shorthand and preserves alpha without accepting unsafe CSS", () => {
   assert.deepEqual(colors.parseColor("#AbC"), { rgb: "#aabbcc", alpha: 1 });

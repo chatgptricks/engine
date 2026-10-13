@@ -40,6 +40,7 @@ import {
   duplicateCanvasScene,
   formatDimensions,
 } from "@/lib/template-editor/model";
+import {pdfGeometry} from "@/lib/template-editor/pdf-options";
 import { exportFrames, fileName, saveBlob, type ExportOptions } from "@/lib/template-editor/export";
 import { updateColorRole, removeColorRole, resizeDesignDocument } from "@/lib/template-editor/advanced";
 import { LayoutPanel } from "./layout-panel";
@@ -211,6 +212,9 @@ export function DesignEditor({
     options?: ExportOptions;
   } | null>(null);
   const [progress, setProgress] = useState(0);
+  const [exportPageIndex,setExportPageIndex]=useState(0);
+  const pendingExportFrame=useRef<{resolve:(frame:HTMLElement)=>void;reject:(error:unknown)=>void;cleanup:()=>void}|null>(null);
+  useLayoutEffect(()=>{if(!pendingExportFrame.current)return;const frame=exportRef.current?.querySelector<HTMLElement>('.te-frame');if(frame){const pending=pendingExportFrame.current;pendingExportFrame.current=null;pending.cleanup();pending.resolve(frame);}},[exportPageIndex,job]);
   const [uploading, setUploading] = useState(false);
   const mounted = useRef(true);
   useEffect(() => {
@@ -795,16 +799,19 @@ export function DesignEditor({
     if (!job) return;
     let ignore = false;
     const abort=new AbortController();exportAbort.current=abort;
+    let exportWarnings:string[]=[];
+    const pageIds=job.design.pages.filter(page=>(!job.pageId||page.id===job.pageId)&&(!job.pageIds||job.pageIds.includes(page.id))).map(page=>page.id);
+    const getFrame=(index:number,signal?:AbortSignal):Promise<HTMLElement>=>{if(index===0){const frame=exportRef.current?.querySelector<HTMLElement>('.te-frame');if(frame)return Promise.resolve(frame);}return new Promise((resolve,reject)=>{const cancel=()=>{pendingExportFrame.current=null;reject(signal?.reason??new DOMException('Export cancelled','AbortError'));};signal?.addEventListener('abort',cancel,{once:true});pendingExportFrame.current={resolve,reject,cleanup:()=>signal?.removeEventListener('abort',cancel)};setExportPageIndex(index);});};
     const frames = Array.from(
       exportRef.current?.querySelectorAll<HTMLElement>(".te-frame") ?? [],
     );
     exportFrames(frames, job.design.name, job.design.caption, (p) => {
       if (!ignore) setProgress(p);
-    },{scale:formatDimensions(job.design).width/FRAME_WIDTH,...job.options,signal:abort.signal})
+    },{scale:formatDimensions(job.design).width/FRAME_WIDTH,...job.options,document:job.design,totalFrames:pageIds.length,getFrame,signal:abort.signal,onWarnings:warnings=>{exportWarnings=warnings;}})
       .then(() => {
         if (!ignore)
           setNotice(
-            `${(job.options?.format??'png').toUpperCase()} downloaded · ${frames.length} page${frames.length===1?'':'s'}.`,
+            `${(job.options?.format??'png').toUpperCase()} downloaded · ${pageIds.length} page${pageIds.length===1?'':'s'}.${exportWarnings.length?' '+exportWarnings.join(' '):''}`,
           );
       })
       .catch((reason) => {
@@ -818,12 +825,12 @@ export function DesignEditor({
       .finally(() => {
         if (!ignore) {
           setJob(null);
-          setProgress(0);
+          setProgress(0);setExportPageIndex(0);
         }
       });
     return () => {
       ignore = true;
-      abort.abort();exportAbort.current=null;
+      abort.abort();exportAbort.current=null;pendingExportFrame.current?.reject(new DOMException('Export cancelled','AbortError'));pendingExportFrame.current?.cleanup();pendingExportFrame.current=null;
     };
   }, [job]);
 
@@ -1770,9 +1777,9 @@ export function DesignEditor({
           aria-hidden
         >
           {job.design.pages
-            .filter((p) => (!job.pageId || p.id === job.pageId)&&(!job.pageIds||job.pageIds.includes(p.id)))
+            .filter((p) => (!job.pageId || p.id === job.pageId)&&(!job.pageIds||job.pageIds.includes(p.id))).slice(exportPageIndex,exportPageIndex+1)
             .map((p) => (
-              <DesignFrame key={p.id} design={job.design} page={p} />
+              <DesignFrame key={p.id} design={job.design} page={p} bleed={job.options?.format==='pdf'?pdfGeometry(formatDimensions(job.design).width,formatDimensions(job.design).height,job.options).bleed/pdfGeometry(formatDimensions(job.design).width,formatDimensions(job.design).height,job.options).scale:0} />
             ))}
         </div>
       )}

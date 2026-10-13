@@ -32,7 +32,7 @@ function loadModule(relative, dependencies = {}, environment = process) {
     (name) =>
       Object.hasOwn(dependencies, name)
         ? dependencies[name]
-        : requireModule(name),
+        : name.startsWith('./') ? loadModule(path.relative(root,path.resolve(path.dirname(filename),name+'.ts')),dependencies,environment) : requireModule(name),
     unit,
     unit.exports,
     environment,
@@ -110,6 +110,44 @@ function fakeDatabase() {
     },
   };
 }
+
+test('server review inventory enforces quota across concurrent instances and retries',async()=>{
+ const db=fakeDatabase(),deps={'@/lib/supabase/admin':{getAdminSupabase:()=>db}},one=loadModule('lib/template-editor/review-inventory.ts',deps),two=loadModule('lib/template-editor/review-inventory.ts',deps),expires=new Date(Date.now()+86400000).toISOString();
+ for(let index=0;index<19;index++){const link=await one.reserveReview('owner','design',index.toString(16).padStart(64,'0'),expires,'op-'+index);await one.activateReview('owner',link.id);}
+ const results=await Promise.allSettled([one.reserveReview('owner','design','a'.repeat(64),expires,'concurrent-A'),two.reserveReview('owner','design','b'.repeat(64),expires,'concurrent-B')]);assert.equal(results.filter(result=>result.status==='fulfilled').length,1);assert.match(results.find(result=>result.status==='rejected').reason.message,/20-review/);
+ const winner=results.find(result=>result.status==='fulfilled').value;await two.activateReview('owner',winner.id);const retry=await one.reserveReview('owner','design','c'.repeat(64),expires,winner.operationId);assert.equal(retry.id,winner.id);assert.equal((await one.listReviewLinks('owner','design')).length,20);assert.equal((await one.listReviewLinks('different-owner')).length,0);
+ await one.markReviewRevoked('owner',winner.token);assert.equal(await two.reviewIsActive('owner',winner.id),false);const replacement=await one.reserveReview('owner','design','d'.repeat(64),expires,'replacement');assert.notEqual(replacement.id,winner.id);
+});
+
+test('review inventory corruption fails closed instead of resetting server quota',async()=>{
+ const db=fakeDatabase(),owner='owner',hash=requireModule('node:crypto').createHash('sha256').update(owner).digest('hex');db.rows.set('template-review-index:'+hash,{owner:'template-review-index:'+hash,data:{revision:'bad',links:'damaged'}});
+ const inventory=loadModule('lib/template-editor/review-inventory.ts',{'@/lib/supabase/admin':{getAdminSupabase:()=>db}});await assert.rejects(inventory.listReviewLinks(owner),/damaged/);assert.equal(db.rows.get('template-review-index:'+hash).data.links,'damaged');
+});
+
+test('same review creation operation is atomic across independent server instances',async t=>{
+ const db=fakeDatabase(),store=persistence(t,{db}),design=model.createBlankDesign('Atomic review','portrait');await store.saveEditorLibrary('owner',{...structuredClone(model.EMPTY_LIBRARY),designs:[design]},null);
+ const deps={'@/lib/supabase/admin':{getAdminSupabase:()=>db},'./persistence':store,'./review-assets':{embedReviewImages:async value=>value}},one=loadModule('lib/template-editor/reviews.ts',deps),two=loadModule('lib/template-editor/reviews.ts',deps);
+ const [a,b]=await Promise.all([one.createReview('owner',design.id,7,undefined,'same-operation'),two.createReview('owner',design.id,7,undefined,'same-operation')]);assert.equal(a.token,b.token);assert.ok(await one.getPublicReview(a.token));assert.equal((await one.listReviewLinks('owner',design.id)).length,1);
+});
+
+test('restoring old artwork cannot erase review inventory or reintroduce revoked tokens',async t=>{
+ const db=fakeDatabase(),store=persistence(t,{db}),design=model.createBlankDesign('Inventory retained','portrait'),old={...structuredClone(model.EMPTY_LIBRARY),designs:[design]};let saved=await store.saveEditorLibrary('owner',old,null);
+ const reviews=loadModule('lib/template-editor/reviews.ts',{'@/lib/supabase/admin':{getAdminSupabase:()=>db},'./persistence':store,'./review-assets':{embedReviewImages:async value=>value}}),created=await reviews.createReview('owner',design.id);
+ assert.equal((await store.getEditorLibrary('owner')).library.designs[0].reviewLinks.length,1);saved=await store.saveEditorLibrary('owner',old,saved.revision);assert.equal((await store.getEditorLibrary('owner')).library.designs[0].reviewLinks.length,1);
+ await reviews.revokeReview('owner',created.token);await store.saveEditorLibrary('owner',old,saved.revision);assert.deepEqual((await store.getEditorLibrary('owner')).library.designs[0].reviewLinks,[]);assert.equal(await reviews.getPublicReview(created.token),null);
+});
+
+test('thread resolution affects replies together and incremental feedback uses revisions',async t=>{
+ const db=fakeDatabase(),store=persistence(t,{db}),design=model.createBlankDesign('Threaded review','portrait');await store.saveEditorLibrary('owner',{...structuredClone(model.EMPTY_LIBRARY),designs:[design]},null);
+ const reviews=loadModule('lib/template-editor/reviews.ts',{'@/lib/supabase/admin':{getAdminSupabase:()=>db},'./persistence':store,'./review-assets':{embedReviewImages:async value=>value}}),link=await reviews.createReview('owner',design.id),first=await reviews.addReviewComment(link.token,{name:'A',text:'Move the title',pageId:design.pages[0].id,anchor:{x:.25,y:.75}});
+ const row=[...db.rows.values()].find(row=>row.owner.startsWith('template-review:'));row.data.lastCommentAt=0;const reply=await reviews.addReviewComment(link.token,{name:'B',text:'Agreed',parentId:first.id,pageId:design.pages[0].id});const before=await reviews.getReviewFeedback(link.token);assert.equal((await reviews.getReviewFeedback(link.token,before.revision)).notModified,true);
+ await assert.rejects(reviews.resolveReviewComment('other',link.token,first.id,true),/not found/);await reviews.resolveReviewComment('owner',link.token,reply.id,true);const after=await reviews.getReviewFeedback(link.token,before.revision);assert.ok(after.comments.every(comment=>comment.resolved));assert.equal(after.notModified,undefined);await reviews.resolveReviewComment('owner',link.token,first.id,false);assert.ok((await reviews.getPublicReview(link.token)).comments.every(comment=>!comment.resolved));
+});
+
+test('public reviews retain group compositing and intentional alt text while stripping preview and private metadata',()=>{
+ const design=model.createBlankDesign('Accessible public','portrait'),image={...model.createCanvasElement('image'),src:'/template-editor/folds.svg',publicAlt:'Blue folded paper',previewSrc:'PRIVATE_PREVIEW',directive:'PRIVATE_PROMPT',groupId:'group'};design.pages[0].publicDescription='Cover description';design.pages[0].readingOrder=[image.id];design.pages[0].canvas={background:'#fff',groups:[{id:'group',name:'PRIVATE_GROUP',opacity:.4}],elements:[image]};
+ const snapshot=loadModule('lib/template-editor/review-snapshot.ts').prepareReviewSnapshot(design),publicPage=snapshot.pages[0];assert.equal(publicPage.canvas.groups[0].opacity,.4);assert.equal(publicPage.canvas.elements[0].opacity,image.opacity);assert.equal(publicPage.canvas.elements[0].publicAlt,'Blue folded paper');assert.equal(publicPage.publicDescription,'Cover description');assert.ok(!JSON.stringify(snapshot).includes('PRIVATE_'));
+});
 
 test("development saves persist atomically and are isolated from other owners", async (t) => {
   const store = persistence(t);
@@ -255,7 +293,7 @@ function route(access, store, env = {}) {
 
 test("API rejects unauthenticated reads and writes before touching storage", async () => {
   const api = route(null, {});
-  assert.equal((await api.GET()).status, 401);
+  assert.equal((await api.GET(new Request("https://engine.example/api/template-editor"))).status, 401);
   assert.equal(
     (
       await api.PUT(
@@ -280,6 +318,7 @@ test("API scopes writes to authenticated identity and returns conflicts", async 
         Origin: "http://localhost",
       },
       body: JSON.stringify({
+        clientSchema:3,
         owner: "forged-member",
         library: newLibrary("Private"),
         revision,
@@ -304,7 +343,7 @@ test("API validates actual streamed body size, schemas, and cross-origin writes"
       body,
       headers,
     });
-  assert.equal((await api.PUT(request('{"library":{}}'))).status, 400);
+  assert.equal((await api.PUT(request('{"library":{},"clientSchema":3}'))).status, 400);
   assert.equal((await api.PUT(request("{broken"))).status, 400);
   assert.equal(
     (await api.PUT(request("{}", { Origin: "https://another-site.test" })))
@@ -328,7 +367,7 @@ test("API accepts configured public origins behind a reverse proxy and rejects u
   const request = (origin, headers = {}) => new Request("http://localhost:10000/api/template-editor", {
     method: "PUT",
     headers: { "Content-Type": "application/json", Origin: origin, ...headers },
-    body: JSON.stringify({ library: newLibrary("Behind the proxy"), revision }),
+    body: JSON.stringify({ clientSchema:3, library: newLibrary("Behind the proxy"), revision }),
   });
   for (const origin of ["https://studio.example", "https://your-service.onrender.com", "http://localhost:10000"]) {
     const result = await api.PUT(request(origin));
@@ -527,11 +566,11 @@ test("document save scope prevents a stale owner tab from rebasing its work into
  const local=structuredClone(ownerA.library);local.designs.push(model.createBlankDesign("Private to A","portrait"));
  const packed=await sync.packAssets(await sync.createLibraryPatch(ownerA.library,local));
  const api=route({kind:"member",ownerKey:"owner-b"},store);
- const response=await api.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({patch:packed.value,assets:packed.assets,revision:ownerA.revision,expectedScope:ownerA.scope,clientSchema:2,operationId:crypto.randomUUID()})}));
+ const response=await api.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({patch:packed.value,assets:packed.assets,revision:ownerA.revision,expectedScope:ownerA.scope,clientSchema:3,operationId:crypto.randomUUID()})}));
  assert.equal(response.status,403);assert.equal((await response.json()).code,"workspace_owner_changed");
  assert.equal((await store.getEditorLibrary("owner-b")).library.designs.length,0);
  const ownApi=route({kind:"member",ownerKey:"owner-a"},store);
- const accepted=await ownApi.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({patch:packed.value,assets:packed.assets,revision:ownerA.revision,expectedScope:ownerA.scope,clientSchema:2,operationId:crypto.randomUUID()})}));
+ const accepted=await ownApi.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({patch:packed.value,assets:packed.assets,revision:ownerA.revision,expectedScope:ownerA.scope,clientSchema:3,operationId:crypto.randomUUID()})}));
  assert.equal(accepted.status,200);assert.equal((await store.getEditorLibrary("owner-a")).library.designs[0].name,"Private to A");
 });
 
@@ -539,10 +578,10 @@ test("legacy clients cannot overwrite a schema-two workspace but first legacy im
  const store=persistence(t),library={...structuredClone(model.EMPTY_LIBRARY),designs:[model.createBlankDesign("Keep modern fields","portrait")]};
  library.designs[0].tags=["modern"];const first=await store.saveEditorLibrary("owner",library,null);
  const api=route({kind:"owner",ownerKey:"owner"},store);
- const response=await api.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({library:{...first.library,version:1,designs:[]},revision:first.revision})}));
+ const response=await api.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({clientSchema:3,library:{...first.library,version:1,designs:[]},revision:first.revision})}));
  assert.equal(response.status,426);assert.deepEqual((await store.getEditorLibrary("owner")).library.designs[0].tags,["modern"]);
  const other=route({kind:"owner",ownerKey:"new-owner"},store);
- const migrated=await other.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({library:{...library,version:1},revision:null})}));
+ const migrated=await other.PUT(new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify({clientSchema:3,library:{...library,version:1},revision:null})}));
  assert.equal(migrated.status,200);assert.equal((await store.getEditorLibrary("new-owner")).library.version,2);
 });
 
@@ -579,7 +618,7 @@ test("older schema-two whole-library saves preserve catalog decisions and curren
   assert.equal(model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY)}).builtInTemplateStates,undefined);
   const first=await store.saveEditorLibrary("owner",initial,null),api=route({kind:"owner",ownerKey:"owner"},store);
   const oldLibrary=structuredClone(first.library);delete oldLibrary.builtInTemplateStates;oldLibrary.designs[0].name="Legacy full save";
-  const operationId=crypto.randomUUID(),body={library:oldLibrary,revision:first.revision,operationId};
+  const operationId=crypto.randomUUID(),body={clientSchema:3,library:oldLibrary,revision:first.revision,operationId};
   const request=()=>new Request("http://localhost/api/template-editor",{method:"PUT",body:JSON.stringify(body)});
   const response=await api.PUT(request());assert.equal(response.status,200);
   const saved=await store.getEditorLibrary("owner");assert.deepEqual(saved.library.builtInTemplateStates,initial.builtInTemplateStates);assert.equal(saved.library.designs[0].name,"Legacy full save");
@@ -587,4 +626,10 @@ test("older schema-two whole-library saves preserve catalog decisions and curren
   assert.equal((await store.getEditorLibrary("owner")).revision,saved.revision);
   const restored=structuredClone(saved.library);restored.builtInTemplateStates=[{id:template.id,updatedAt:"2026-10-12T11:01:00.000Z"}];
   const explicit=await store.saveEditorLibrary("owner",restored,saved.revision);assert.deepEqual(explicit.library.builtInTemplateStates,restored.builtInTemplateStates);assert.equal(explicit.library.designs[0].id,initial.designs[0].id);
+});
+
+test('large metadata patch without a merge baseline saves even when virtual review links changed',async t=>{
+ const db=fakeDatabase(),store=persistence(t,{db}),design=model.createBlankDesign('Virtual inventory','portrait'),base={...structuredClone(model.EMPTY_LIBRARY),designs:[design]};const saved=await store.saveEditorLibrary('owner',base,null);
+ const reviews=loadModule('lib/template-editor/reviews.ts',{'@/lib/supabase/admin':{getAdminSupabase:()=>db},'./persistence':store,'./review-assets':{embedReviewImages:async value=>value}});await reviews.createReview('owner',design.id);
+ const visible=(await store.getEditorLibrary('owner')).library,next=structuredClone(visible);next.designs[0].name='Edited';const patch=await librarySync.createLibraryPatch(visible,next);delete patch.collections.designs[0].beforeValue;const result=await store.saveEditorPatch('owner',patch,{},saved.revision,crypto.randomUUID());assert.equal(result.library.designs[0].name,'Edited');
 });

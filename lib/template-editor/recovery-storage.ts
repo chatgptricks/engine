@@ -1,9 +1,13 @@
 import { parseLibrary, type EditorLibrary } from "./model";
+import {unpackAssets} from './library-sync';
+import {packAssetsOffThread} from './asset-processing';
 
 export interface RecoveryDraft {
   key: string;
   scope: string;
   library: EditorLibrary;
+  /** The confirmed base makes offline recovery a genuine three-way merge. */
+  baseline?:EditorLibrary;
   revision: string | null;
   stamp: string;
   updatedAt: number;
@@ -22,14 +26,16 @@ let database: Promise<IDBDatabase> | null = null;
 function validDraft(value: unknown): RecoveryDraft | null {
   if (!value || typeof value !== "object") return null;
   const draft = value as RecoveryDraft;
-  const library = parseLibrary(draft.library);
+  let decoded:RecoveryDraft;
+  try{const stored=draft as RecoveryDraft&{recoveryAssets?:Record<string,string>};decoded=stored.recoveryAssets?unpackAssets(stored,stored.recoveryAssets):draft;}catch{return null;}
+  const library = parseLibrary(decoded.library);
   return library &&
     typeof draft.key === "string" &&
     typeof draft.scope === "string" &&
     typeof draft.stamp === "string" &&
     Number.isFinite(draft.updatedAt) &&
     (draft.revision === null || typeof draft.revision === "string")
-    ? { ...draft, library }
+    ? { ...decoded, library, ...(decoded.baseline&&parseLibrary(decoded.baseline)?{baseline:parseLibrary(decoded.baseline)!}:{}) }
     : null;
 }
 
@@ -238,7 +244,8 @@ function openRecoveryDatabase(): Promise<IDBDatabase> {
 }
 
 export async function saveRecoveryDraft(draft: RecoveryDraft): Promise<void> {
-  await transaction(await openRecoveryDatabase(), "readwrite", (store) => store.put(draft));
+  const packed=await packAssetsOffThread(draft);
+  await transaction(await openRecoveryDatabase(), "readwrite", (store) => store.put({...packed.value,recoveryAssets:packed.assets}));
 }
 
 export async function getRecoveryDrafts(scope: string): Promise<RecoveryDraft[]> {

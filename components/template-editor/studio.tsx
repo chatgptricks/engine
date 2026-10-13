@@ -531,7 +531,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
           </div>
         </Modal>
       )}
-      {recoveriesOpen && <RecoveryPanel scope={libraryScope} canEdit={canEdit} onClose={() => setRecoveriesOpen(false)} onRestore={draft => {if (!permission.current) return false; const accepted = setLibrary(current => reconcileLibraries(EMPTY_LIBRARY, draft, current).library); if (accepted) {setView("designs");changeFilters({folder:"",favorites:false,tag:""});setMessage("Browser recovery restored. Divergent documents are kept as independent conflict copies.");} return accepted;}}/>}
+      {recoveriesOpen && <RecoveryPanel scope={libraryScope} canEdit={canEdit} onClose={() => setRecoveriesOpen(false)} onRestore={(draft,base) => {if (!permission.current) return false; const accepted = setLibrary(current => reconcileLibraries(base??EMPTY_LIBRARY, draft, current).library); if (accepted) {setView("designs");changeFilters({folder:"",favorites:false,tag:""});setMessage("Browser recovery restored. Divergent documents are kept as independent conflict copies.");} return accepted;}}/>}
       {organized && organize && <OrganizeDialog key={organized.id} item={organized} library={library} canEdit={canEdit} onClose={() => setOrganize(null)} onSave={metadata => updateMetadata(organize.kind, organize.id, metadata)}/>}
       {historyId && library.designs.find(item => item.id === historyId) && <DocumentVersions document={library.designs.find(item => item.id === historyId)!} canEdit={canEdit} onClose={() => setHistoryId(null)} onRestore={document => setLibrary(current => ({...current, designs: current.designs.map(item => item.id === document.id ? document : item)}))}/>}
       {conflictOpen && (
