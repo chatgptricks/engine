@@ -67,10 +67,17 @@ export async function originalPreview(asset:OriginalAsset):Promise<string> {
 }
 
 /** A lossless, orientation-correct export rendition; the stored original stays intact. */
+let renditionQueue:Promise<void>=Promise.resolve();
 export async function originalRendition(asset:OriginalAsset,maxDimension:number):Promise<{data:Buffer;mimeType:string;bytes:number}> {
   if(!Number.isInteger(maxDimension)||maxDimension<1||maxDimension>8192) throw new RangeError("Image size must be between 1 and 8192 pixels.");
-  const data=await sharp(asset.data,{limitInputPixels:MAX_PIXELS,failOn:"error"}).rotate()
-    .resize(maxDimension,maxDimension,{fit:"inside",withoutEnlargement:true})
-    .webp({lossless:true}).toBuffer();
-  return {data,mimeType:"image/webp",bytes:data.length};
+  // Browser image loads arrive together; serialize their decoders per process.
+  const previous=renditionQueue;let release!:()=>void;
+  renditionQueue=new Promise<void>(resolve=>{release=resolve;});
+  await previous;
+  try {
+    const data=await sharp(asset.data,{limitInputPixels:MAX_PIXELS,failOn:"error",sequentialRead:true}).rotate()
+      .resize(maxDimension,maxDimension,{fit:"inside",withoutEnlargement:true})
+      .webp({lossless:true}).toBuffer();
+    return {data,mimeType:"image/webp",bytes:data.length};
+  }finally{release();}
 }
