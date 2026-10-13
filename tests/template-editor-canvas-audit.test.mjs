@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
-import { installRichDom } from "./helpers-rich-dom.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requireModule = createRequire(import.meta.url), cache = new Map();
