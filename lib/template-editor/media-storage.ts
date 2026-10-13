@@ -65,3 +65,12 @@ export async function originalPreview(asset:OriginalAsset):Promise<string> {
   }
   throw new Error("Could not create a lightweight image preview.");
 }
+
+/** A lossless, orientation-correct export rendition; the stored original stays intact. */
+export async function originalRendition(asset:OriginalAsset,maxDimension:number):Promise<{data:Buffer;mimeType:string;bytes:number}> {
+  if(!Number.isInteger(maxDimension)||maxDimension<1||maxDimension>8192) throw new RangeError("Image size must be between 1 and 8192 pixels.");
+  const data=await sharp(asset.data,{limitInputPixels:MAX_PIXELS,failOn:"error"}).rotate()
+    .resize(maxDimension,maxDimension,{fit:"inside",withoutEnlargement:true})
+    .webp({lossless:true}).toBuffer();
+  return {data,mimeType:"image/webp",bytes:data.length};
+}

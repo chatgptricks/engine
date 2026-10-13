@@ -50,6 +50,10 @@ test('original uploads preserve exact bytes and dimensions with smaller previews
   assert.equal(await storage.readOriginalAsset('owner-a','../bad'),null);
   const preview=await storage.originalPreview(asset),meta=await sharp(Buffer.from(preview.split(',')[1],'base64')).metadata();
   assert.ok(meta.width<=1440);assert.ok(meta.hasAlpha);assert.ok(preview.length<480100);
+  const rendition=await storage.originalRendition(asset,1200),renditionMeta=await sharp(rendition.data).metadata();
+  assert.equal(renditionMeta.width,1200);assert.equal(renditionMeta.height,800);assert.equal(renditionMeta.hasAlpha,true);
+  assert.deepEqual((await storage.readOriginalAsset('owner-a',asset.id)).data,original);
+  await assert.rejects(storage.originalRendition(asset,8193),/8192/);
   await assert.rejects(storage.inspectOriginalAsset(Buffer.from('<svg/>'),'spoof.png'));
   await assert.rejects(storage.inspectOriginalAsset(Buffer.alloc(15*1024*1024+1),'large.png'),/15 MB/);
   const fill={src:`/api/template-editor/assets/${asset.id}`,previewSrc:preview,objectFit:'cover',cropX:50,cropY:50,intrinsicWidth:asset.width,intrinsicHeight:asset.height};
@@ -95,6 +99,8 @@ test('original-image HTTP endpoints authenticate, enforce origin and streamed by
   owner=null;assert.equal((await read.GET(request(),context)).status,401);
   owner={ownerKey:'b'};assert.equal((await read.GET(request(),context)).status,404);
   owner={ownerKey:'a'};const original=await read.GET(request(),context);assert.equal(await original.text(),'abc');assert.equal(original.headers.get('x-content-type-options'),'nosniff');
+  assert.equal((await read.GET(new Request('https://engine.test/api/template-editor/assets/a?maxDimension=8193'),context)).status,400);
+  assert.equal((await read.GET(new Request('https://engine.test/api/template-editor/assets/a?maxDimension='),context)).status,400);
 });
 test('public reading follows authored order and excludes hidden, transparent, off-page and private image notes',()=>{
   const make=(type,patch)=>({...model.createCanvasElement(type,patch),id:patch.id});
