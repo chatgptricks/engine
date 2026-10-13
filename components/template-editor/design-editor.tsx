@@ -512,7 +512,8 @@ export function DesignEditor({
       if(snapshot) {applyCommand(live=>pasteElements(live,snapshot,position));return;}
       const value=plainClipboardText(text);
       if(value.trim()) {
-        const element=createCanvasElement("text",{text:value,name:value.slice(0,100),font:brand.font,color:brand.text,x:position?.x??40,y:position?.y??40,width:280,height:120,textMode:"auto-height"});
+        const offset=!editingMaster&&current.current.continuousCanvas?Math.max(0,current.current.pages.findIndex(item=>item.id===page.id))*FRAME_WIDTH:0;
+        const element=createCanvasElement("text",{text:value,name:value.slice(0,100),font:brand.font,color:brand.text,x:position?.x??offset+40,y:position?.y??40,width:280,height:120,textMode:"auto-height"});
         applyCommand(live=>live.elements.length>=100?{scene:live,selectedIds:[],limited:true}:{scene:{...live,elements:[...live.elements,element]},selectedIds:[element.id],limited:false});
       }
     }catch(error){setNotice(error instanceof Error?error.message:"Could not paste the clipboard.");}

@@ -6,6 +6,7 @@ import { getTextWords, applyTextWordTextureToElement } from "@/lib/template-edit
 import { activeTextTextures } from "@/lib/template-editor/text-textures";
 import { proxied } from "@/lib/engine/util";
 import { Modal } from "./controls";
+import {elementWithPreviewAsset} from "@/lib/template-editor/media-preview";
 import { SceneRenderer } from "./canvas";
 import { prepareBrandAsset } from "./brand-workspace";
 import "./dialog-tools.css";
@@ -34,7 +35,7 @@ function TexturePreview({ element, background }: { element: TextElement; backgro
   return <div ref={ref} className="te-texture-preview" aria-label="Text texture preview" style={{ background }}>
     <div style={{ width: element.width * scale, height: element.height * scale }}>
       <div style={{ width: element.width, height: element.height, transform: `scale(${scale})`, transformOrigin: "top left", position: "relative" }}>
-        <SceneRenderer scene={{ background: "transparent", elements: [{ ...element, id: "texture-dialog-preview", x: 0, y: 0, rotation: 0, clipBounds: undefined, hidden: false }] }} />
+        <SceneRenderer scene={{ background: "transparent", elements: [elementWithPreviewAsset({ ...element, id: "texture-dialog-preview", x: 0, y: 0, rotation: 0, clipBounds: undefined, hidden: false })] }} />
       </div>
     </div>
   </div>;
