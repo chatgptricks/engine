@@ -25,10 +25,10 @@ function fakeDatabase() {
     from(table) {
       assert.equal(table,"gf_client_state");
       const conditions=new Map();
-      let update, pattern, maximum, range;
+      let update, pattern, maximum, range, projection;
       const orderings=[];
       const query={
-        select(){return query;},
+        select(columns){projection=columns;return query;},
         eq(column,value){conditions.set(column,value);return query;},
         like(column,value){pattern={column,value};return query;},
         order(column,options){orderings.push({column,...options});return query;},
@@ -47,6 +47,7 @@ function fakeDatabase() {
             rows.set(owner,{...row,...update});writes++;
             return {data:{owner},error:null};
           }
+          if(projection==="library:data->library,revision:data->>revision,assets:data->assets")return {data:row?structuredClone({library:row.data.library,revision:row.data.revision,assets:row.data.assets}):null,error:null};
           return {data:row?structuredClone(row):null,error:null};
         },
         then(resolve,reject){

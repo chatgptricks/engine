@@ -1,9 +1,9 @@
 import { resolveEngineAccess } from "@/lib/engine/member";
 import { parseLibrary } from "@/lib/template-editor/model";
 import { jsonByteStream } from "@/lib/template-editor/json-stream";
-import { packAssets } from "@/lib/template-editor/library-sync";
 import {
   getEditorLibrary,
+  getPackedEditorLibrary,
   LibraryConflictError,
   saveEditorLibrary,
   saveEditorPatch,
@@ -58,12 +58,10 @@ export async function GET(request: Request) {
     const url = request ? new URL(request.url) : null;
     const documentId = url?.searchParams.get("documentId");
     if (url?.searchParams.get("history") === "1" && documentId) return response({versions: await getDocumentHistory(access.ownerKey, documentId)});
-    const saved = await getEditorLibrary(access.ownerKey);
     if (url?.searchParams.get("packed") === "1") {
-      const packed = await packAssets(saved.library);
-      return response({...saved, library: packed.value, assets: packed.assets});
+      return response(await getPackedEditorLibrary(access.ownerKey));
     }
-    return response(saved);
+    return response(await getEditorLibrary(access.ownerKey));
   } catch (error) {
     console.error("Template library read failed", error);
     return response(

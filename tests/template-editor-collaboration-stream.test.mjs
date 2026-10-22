@@ -5,10 +5,10 @@ import vm from "node:vm";
 import {createRequire} from "node:module";
 import ts from "typescript";
 
-test("collaboration streams release the initial snapshot and keep presence and document updates working", {timeout: 5000}, async () => {
+test("collaboration streams defer unread updates and keep presence and document updates working after draining", {timeout: 5000}, async () => {
   const native = createRequire(import.meta.url), timers = new Map();
   const scope = "a".repeat(64), documentId = "project", sessionId = crypto.randomUUID();
-  let revision = "first", participants = [], reads = 0;
+  let revision = "first", participants = [], reads = 0, revisionReads = 0;
   const actor = {id: "editor", name: "Editor", color: "#2563eb"};
   const transport = {exports: {}};
   const transportSource = ts.transpileModule(fs.readFileSync(new URL("../lib/template-editor/json-stream.ts", import.meta.url), "utf8"), {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText;
@@ -18,7 +18,7 @@ test("collaboration streams release the initial snapshot and keep presence and d
     "@/lib/engine/member": {resolveEngineAccess: async () => ({ownerKey: "team"})},
     "@/lib/template-editor/persistence": {
       editorOwnerScope: () => scope,
-      getCollaborationRevision: async () => revision,
+      getCollaborationRevision: async () => {revisionReads++;return revision;},
       getCollaborationDocument: async () => {
         reads++;
         return {scope, revision, state: revision, version: reads, epoch: "epoch", storage: "cloud", document: {id: documentId, name: revision}};
@@ -55,19 +55,31 @@ test("collaboration streams release the initial snapshot and keep presence and d
   };
   try {
     assert.equal(response.status, 200);
+    revision = "waiting-for-reader";
+    poll();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(revisionReads,0,"An unread event must block further revision and snapshot loading");
+    assert.equal(reads,1);
+    revision = "latest-while-unread";
+    poll();
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(revisionReads,0,"Repeated polls must not stack updates behind a slow reader");
     assert.match(await nextEvent(), /event: snapshot/);
+    poll();
+    assert.match(await nextEvent(), /"revision":"latest-while-unread"/);
+    assert.equal(reads,2,"Draining resumes with the latest revision without replaying skipped snapshots");
     participants = [{id: "peer", name: "Peer", seenAt: 1}];
     poll();
     const presence = await nextEvent();
     assert.match(presence, /event: presence/);
     assert.match(presence, new RegExp(`"scope":"${scope}"`));
-    assert.equal(reads, 1, "Presence polling must not load the artwork again");
+    assert.equal(reads, 2, "Presence polling must not load the artwork again");
     revision = "second";
     poll();
     const update = await nextEvent();
     assert.match(update, /event: update/);
     assert.match(update, /"revision":"second"/);
-    assert.equal(reads, 2);
+    assert.equal(reads, 3);
   } finally {
     controller.abort();
     await reader.cancel();
