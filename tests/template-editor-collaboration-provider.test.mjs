@@ -75,6 +75,8 @@ function fakeClock() {
 
 function harness(document) {
   const hooks = hookRunner(), clock = fakeClock(), requests = [], streams = [], deliveries = [], errors = [];
+  const originalSignalTimeout = Object.getOwnPropertyDescriptor(AbortSignal,"timeout");
+  Object.defineProperty(AbortSignal,"timeout",{configurable:true,value:delay=>{const controller=new AbortController();clock.setTimeout(()=>controller.abort(new DOMException("Request timed out","TimeoutError")),delay);return controller.signal;}});
   const original = new Map();
   const replace = (key, value) => {original.set(key, Object.getOwnPropertyDescriptor(globalThis, key)); Object.defineProperty(globalThis, key, {value, configurable: true, writable: true});};
   class FakeEventSource {
@@ -89,6 +91,7 @@ function harness(document) {
   for (const key of ["setTimeout", "clearTimeout", "setInterval", "clearInterval"]) replace(key, clock[key]);
   replace("fetch", (url, options = {}) => {
     let resolve, reject; const promise = new Promise((yes, no) => {resolve = yes; reject = no;});
+    if(options.signal?.aborted)reject(options.signal.reason);else options.signal?.addEventListener("abort",()=>reject(options.signal.reason),{once:true});
     const request = {url, options, body: options.body ? JSON.parse(options.body) : null,
       respond(value, status = 200) {resolve({ok: status >= 200 && status < 300, status, json: async () => structuredClone(value)});},
       reject(reason = new TypeError("Connection lost")) {reject(reason);},
@@ -105,9 +108,39 @@ function harness(document) {
     event(type, properties = {}) {windowTarget.dispatchEvent(Object.assign(new Event(type), properties));},
     offline() {navigatorState.onLine = false; windowTarget.dispatchEvent(new Event("offline"));},
     online() {navigatorState.onLine = true; windowTarget.dispatchEvent(new Event("online"));},
-    dispose() {hooks.dispose(); for (const [key, descriptor] of original) if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];},
+    dispose() {hooks.dispose(); Object.defineProperty(AbortSignal,"timeout",originalSignalTimeout); for (const [key, descriptor] of original) if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key];},
   };
 }
+
+test("slow collaboration saves stay single-flight through server work and preserve edits made while waiting",async()=>{
+  const original=fixture(),shared=room(original),client=harness(original);
+  try{
+    await client.start(shared.snapshot());
+    const first=structuredClone(original);first.caption="First pending edit";assert.equal(client.controls.submitDocument(original,first),true);
+    await client.clock.advance(70);const request=client.requests[0];
+    await client.clock.advance(75_000);
+    assert.equal(request.options.signal.aborted,false,"Server read/write time must not trigger a premature retry");assert.equal(client.requests.length,1);
+    const latest=structuredClone(first);latest.caption="Edited again during the slow save";assert.equal(client.controls.submitDocument(first,latest),true);
+    await client.clock.advance(30_000);assert.equal(client.requests.length,1,"Heartbeats and new edits must respect the in-flight request");
+    Y.applyUpdate(shared.doc,protocol.decodeCollaborationUpdate(request.body.update));request.respond(shared.snapshot(2));await settle();client.render();
+    assert.equal(client.visible.caption,latest.caption,"Acknowledging the older batch must not overwrite newer local text");
+    await client.clock.advance(70);const followup=client.requests[1];assert.ok(followup.body.update);
+    Y.applyUpdate(shared.doc,protocol.decodeCollaborationUpdate(followup.body.update));followup.respond(shared.snapshot(3));await settle();client.render();
+    assert.equal(protocol.readCollaborationDocument(shared.doc).caption,latest.caption);assert.equal(client.errors.length,0);assert.ok(client.pendingCount>=2);
+  }finally{client.dispose();shared.doc.destroy();}
+});
+
+test("a stalled collaboration request still times out and retries its unacknowledged update",async()=>{
+  const original=fixture(),shared=room(original),client=harness(original);
+  try{
+    await client.start(shared.snapshot());const local=structuredClone(original);local.caption="Preserve through timeout";client.controls.submitDocument(original,local);
+    await client.clock.advance(70);const request=client.requests[0];await client.clock.advance(180_000);
+    assert.equal(request.options.signal.aborted,true,"The larger request budget must remain bounded");
+    const retry=client.requests.find(item=>item!==request&&item.body?.update);assert.ok(retry);
+    Y.applyUpdate(shared.doc,protocol.decodeCollaborationUpdate(retry.body.update));retry.respond(shared.snapshot(2));await settle();client.render();
+    assert.equal(client.visible.caption,local.caption);assert.equal(client.controls.status,"live");
+  }finally{client.dispose();shared.doc.destroy();}
+});
 
 for (const lateResult of ["success", "network failure"]) test(`a delayed epoch A POST ${lateResult} cannot restore A or mix its updates into epoch B`, async () => {
   const original = fixture(), first = room(original), replacement = structuredClone(original);

@@ -18,7 +18,7 @@ const doc=()=>model.createBlankDesign('Draft','portrait');
 
 // Exercise the hook's asynchronous load path with real parsing and reconciliation.
 // Browser storage and timers stay controlled so no autosave can touch a server.
-async function recoveredWorkspace(t,{remote,drafts,cleanupError=false}){
+async function recoveredWorkspace(t,{remote,drafts,cleanupError=false,saveRequest}){
  const slots=[],effects=[],scheduled=new Map(),requests=[],cached=[],removed=[],persisted=[],stored=new Map(drafts.map(draft=>[draft.key,structuredClone(draft)]));let cursor=0;
  const changed=(slot,deps)=>!slot||!deps||deps.some((value,index)=>!Object.is(value,slot.deps?.[index]));
  const react={
@@ -29,12 +29,12 @@ async function recoveredWorkspace(t,{remote,drafts,cleanupError=false}){
  };
  const previousWindow=globalThis.window;globalThis.window={addEventListener(){},removeEventListener(){}};
  t.after(()=>{slots.forEach(slot=>slot?.cleanup?.());if(previousWindow===undefined)delete globalThis.window;else globalThis.window=previousWindow;});
- t.mock.method(globalThis,'fetch',async(url,options)=>{requests.push({url,...options});return Response.json(remote);});
+ t.mock.method(globalThis,'fetch',async(url,options)=>{requests.push({url,...options});return options?.method==='PUT'&&saveRequest?saveRequest(options):Response.json(remote);});
  t.mock.method(globalThis,'setTimeout',(callback,delay)=>{const handle={};scheduled.set(handle,{callback,delay});return handle;});
  t.mock.method(globalThis,'clearTimeout',handle=>scheduled.delete(handle));
  const {useEditorLibrary:loadWorkspaceHook}=load('lib/template-editor/use-library.ts',{
   react,'./model':model,'./library-sync':sync,'./library-budget':budget,'./incremental-validation':incremental,
-  './asset-processing':{prepareSaveOffThread(){assert.fail('A clean recovery must not prepare a server save.');}},
+  './asset-processing':{async prepareSaveOffThread(base,next,known,metadata){if(!saveRequest)assert.fail('A clean recovery must not prepare a server save.');const packed=await sync.packAssets(await sync.createLibraryPatch(base,next),known);return {...packed,body:JSON.stringify({...metadata,patch:packed.value,assets:packed.assets})};}},
   './recovery-storage':{
    RecoveryMigrationError:class extends Error{},cacheWorkspace:async value=>{cached.push(value);},clearCachedWorkspaceSelection(){},getCachedWorkspace:async()=>null,
    getRecoveryDrafts:async scope=>[...stored.values()].filter(draft=>draft.scope===scope),
@@ -44,8 +44,27 @@ async function recoveredWorkspace(t,{remote,drafts,cleanupError=false}){
  });
  const render=()=>{cursor=0;const state=loadWorkspaceHook(remote.scope);effects.splice(0).forEach(work=>work());return state;};
  render();await new Promise(resolve=>setImmediate(resolve));
- return {state:render(),scheduled,requests,cached,removed,persisted,stored};
+ return {state:render(),render,scheduled,requests,cached,removed,persisted,stored};
 }
+
+test('a slow workspace save stays single-flight and keeps newer browser edits until acknowledged',async t=>{
+ const previousNavigator=Object.getOwnPropertyDescriptor(globalThis,'navigator');Object.defineProperty(globalThis,'navigator',{value:{onLine:true},configurable:true});t.after(()=>{if(previousNavigator)Object.defineProperty(globalThis,'navigator',previousNavigator);else delete globalThis.navigator;});
+ let now=0;const deadlines=[],pending=[];
+ t.mock.method(AbortSignal,'timeout',delay=>{const controller=new AbortController();deadlines.push({controller,at:now+delay});return controller.signal;});
+ const advance=async duration=>{now+=duration;for(const item of deadlines)if(item.at<=now)item.controller.abort(new DOMException('Request timed out','TimeoutError'));await new Promise(resolve=>setImmediate(resolve));};
+ const settle=async condition=>{for(let count=0;count<40&&!condition();count++)await new Promise(resolve=>setImmediate(resolve));assert.ok(condition());};
+ const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),folders:[],designs:[doc()]}),scope='f'.repeat(64);
+ const run=await recoveredWorkspace(t,{remote:{library,revision:'initial',storage:'cloud',scope},drafts:[],saveRequest:options=>new Promise((resolve,reject)=>{pending.push({options,resolve});options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});})});
+ const first=structuredClone(library);first.designs[0].caption='First slow save';assert.equal(run.state.setLibrary(first),true);run.state.retrySave();await settle(()=>pending.length===1);
+ await advance(75_000);assert.equal(pending[0].options.signal.aborted,false,'Allow the server read/write budget before retrying');run.state.retrySave();await advance(0);assert.equal(pending.length,1);
+ const latest=structuredClone(first);latest.designs[0].caption='New text while waiting';assert.equal(run.render().setLibrary(latest),true);await advance(30_000);assert.equal(pending.length,1);
+ assert.ok([...run.stored.values()].some(draft=>draft.library.designs[0].caption===latest.designs[0].caption),'The latest text must already be protected by recovery');
+ pending[0].resolve(Response.json({revision:'first-saved',storage:'cloud',scope,assetKeys:[]}));await settle(()=>run.cached.some(item=>item.revision==='first-saved'));
+ assert.equal(run.render().library.designs[0].caption,latest.designs[0].caption);assert.equal(run.render().status,'saving');
+ run.render().retrySave();await settle(()=>pending.length===2);
+ pending[1].resolve(Response.json({revision:'latest-saved',storage:'cloud',scope,assetKeys:[]}));await settle(()=>run.render().status==='saved');
+ assert.equal(run.render().library.designs[0].caption,latest.designs[0].caption);assert.equal(run.stored.size,0);
+});
 
 test('workspace load opts into packed GET and restores assets before parsing or caching',async t=>{
  const image='data:image/png;base64,iVBORw0KGgo=',library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]});

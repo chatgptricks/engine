@@ -199,7 +199,9 @@ export function useEditorLibrary(expectedScope?: string) {
         }
         const request = pendingSave.current;
         const result = await fetch(ENDPOINT, {
-          signal: AbortSignal.timeout(30_000),
+          // Allow the serialized server read/write and response to finish
+          // before retrying the same idempotent save operation.
+          signal: AbortSignal.timeout(120_000),
           method: "PUT",
           headers: { "Content-Type": "application/json" },
           body:request.body,

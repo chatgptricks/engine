@@ -98,7 +98,9 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
       awarenessDirty = false;
       const payload = {documentId, expectedScope: scope, sessionId, sequence: ++sequence, epoch, awareness: capturedAwareness, ...(localName ? {name: localName} : {}), ...(batch.length ? {update: encodeCollaborationUpdate(Y.mergeUpdates(batch))} : {})};
       try {
-        const response = await fetch(ENDPOINT, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload), signal: AbortSignal.timeout(20_000)});
+        // A preflight read plus the queued read/write can take over 90 seconds.
+        // Keep one request in flight while the server completes that bounded work.
+        const response = await fetch(ENDPOINT, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload), signal: AbortSignal.timeout(120_000)});
         const data = await response.json();
         // A restored/published document may start a new CRDT generation while
         // this request is in flight. receive() already rebased all local work;
