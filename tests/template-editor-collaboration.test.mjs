@@ -94,7 +94,7 @@ function fakeDatabase() {
   const rows = new Map();
   return {rows, from() {
     const conditions = new Map(); let updated, projection = "data";
-    const query = {select(columns = "data") {projection = columns; return query;}, eq(key, value) {conditions.set(key, value); return query;}, update(value) {updated = structuredClone(value); return query;}, async insert(value) {if (rows.has(value.owner)) return {error: {code: "23505"}}; rows.set(value.owner, structuredClone(value)); return {error: null};}, async maybeSingle() {
+    const query = {abortSignal() {return query;}, select(columns = "data") {projection = columns; return query;}, eq(key, value) {conditions.set(key, value); return query;}, update(value) {updated = structuredClone(value); return query;}, insert(value) {return {abortSignal() {return this;}, then(resolve,reject) {return Promise.resolve().then(()=>{if (rows.has(value.owner)) return {error: {code: "23505"}}; rows.set(value.owner, structuredClone(value)); return {error: null};}).then(resolve,reject);}};}, async maybeSingle() {
       const row = rows.get(conditions.get("owner"));
       if (updated) {if (!row || row.data.revision !== conditions.get("data->>revision")) return {data: null, error: null}; rows.set(conditions.get("owner"), {...row, ...updated}); return {data: {owner: conditions.get("owner")}, error: null};}
       const value = row && projection.includes(":data->") ? Object.fromEntries(projection.split(",").map(column=>{const [alias,field] = column.split(":data->");return [alias,row.data[field.replace(/^>/,"")]];})) : row;
