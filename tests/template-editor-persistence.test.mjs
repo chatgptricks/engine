@@ -48,6 +48,78 @@ const newLibrary = (name) => {
   return model.withBrandKits(library, [{ ...model.activeBrandKit(library), name }]);
 };
 
+test("cloud reads, revision polling, inserts and CAS updates receive query-wide deadlines", async t => {
+  const timeout = AbortSignal.timeout.bind(AbortSignal), budgets = [];
+  t.mock.method(AbortSignal, "timeout", milliseconds => {budgets.push(milliseconds); return timeout(milliseconds);});
+  const db = fakeDatabase(), store = persistence(t, {db});
+  const first = await store.saveEditorLibrary("owner", newLibrary("First"), null);
+  await store.getPackedEditorLibrary("owner");
+  await store.getDocumentHistory("owner", "missing");
+  await store.getCollaborationRevision("owner");
+  await store.saveEditorLibrary("owner", newLibrary("Second"), first.revision);
+  assert.deepEqual(budgets, [30_000,45_000,30_000,30_000,30_000,30_000,45_000]);
+  assert.equal(db.stats.signals.length, budgets.length);
+  assert.ok(db.stats.signals.every(signal => signal instanceof AbortSignal && !signal.aborted));
+});
+
+test("real Supabase queries bypass the installed Next response tee when opening the library", async t => {
+  const {createClient} = requireModule("@supabase/supabase-js");
+  const {createDedupeFetch} = requireModule("next/dist/server/lib/dedupe-fetch");
+  const library = newLibrary("No duplicate response"), revision = crypto.randomUUID();
+  let workspaceTees = 0;
+  const mockFetch = async input => {
+    const url = new URL(input), workspace = url.searchParams.get("owner") === "eq.template-editor:owner";
+    const response = Response.json(workspace ? [{library, revision, assets: {}}] : []);
+    if (workspace) {
+      const tee = response.body.tee.bind(response.body);
+      response.body.tee = () => {workspaceTees++; return tee();};
+    }
+    return response;
+  };
+  const db = createClient("https://example.supabase.co", "test", {auth: {persistSession: false, autoRefreshToken: false}, global: {fetch: createDedupeFetch(mockFetch)}});
+  const store = persistence(t, {db}), saved = await store.getPackedEditorLibrary("owner");
+  assert.equal(saved.revision, revision);
+  assert.equal(workspaceTees, 0);
+  // Control: the same installed SDK/Next path without the app's query signal
+  // does tee the response, even outside React memoization's render context.
+  const control = await db.from("gf_client_state").select("library").eq("owner", "template-editor:owner");
+  assert.equal(control.error, null);
+  assert.equal(workspaceTees, 1);
+});
+
+test("a stalled upstream response body times out, logs only safe diagnostics and releases the queue", async t => {
+  const {createClient} = requireModule("@supabase/supabase-js");
+  const {createDedupeFetch} = requireModule("next/dist/server/lib/dedupe-fetch");
+  const timeout = AbortSignal.timeout.bind(AbortSignal);
+  t.mock.method(AbortSignal, "timeout", () => timeout(15));
+  const logs = [];
+  t.mock.method(console, "error", (...values) => logs.push(values));
+  let calls = 0;
+  const mockFetch = async (_input, init) => {
+    calls++;
+    if (calls > 1) return Response.json([]);
+    return new Response(new ReadableStream({start(controller) {
+      init.signal.addEventListener("abort", () => controller.error(new DOMException("PRIVATE_BODY PRIVATE_KEY", "TimeoutError")), {once: true});
+    }}), {status: 200});
+  };
+  const db = createClient("https://example.supabase.co", "test", {auth: {persistSession: false, autoRefreshToken: false}, global: {fetch: createDedupeFetch(mockFetch)}});
+  const store = persistence(t, {db});
+  // Keep the loop alive because AbortSignal.timeout deliberately unrefs its timer.
+  const keepAlive = setInterval(() => {}, 1000);
+  try {
+    const result = await Promise.allSettled([store.getEditorLibrary("owner"), store.getEditorLibrary("owner")]);
+    assert.equal(result[0].status, "rejected");
+    assert.match(result[0].reason.message, /Cloud storage is unavailable/);
+    assert.equal(result[1].status, "fulfilled");
+    assert.equal(result[1].value.revision, null);
+    assert.equal(logs.length, 1);
+    assert.equal(logs[0][1].cause, "TimeoutError");
+    assert.equal(logs[0][1].status, 0);
+    assert.equal(JSON.stringify(logs).includes("PRIVATE_"), false);
+    assert.equal(calls, 3); // stalled read, next read, next review inventory read
+  } finally {clearInterval(keepAlive);}
+});
+
 function persistence(t, options = {}) {
   const directory = fs.mkdtempSync(
     path.join(os.tmpdir(), "engine-editor-test-"),
@@ -71,7 +143,7 @@ function persistence(t, options = {}) {
 
 function fakeDatabase() {
   const rows = new Map();
-  const stats = {reads: 0, projections: []};
+  const stats = {reads: 0, projections: [], signals: []};
   return {
     rows,
     stats,
@@ -81,6 +153,7 @@ function fakeDatabase() {
       let update = null;
       let projection;
       const query = {
+        abortSignal(signal) { stats.signals.push(signal); return query; },
         select(columns) {
           projection = columns;
           return query;
@@ -93,10 +166,14 @@ function fakeDatabase() {
           update = structuredClone(value);
           return query;
         },
-        async insert(value) {
-          if (rows.has(value.owner)) return { error: { code: "23505" } };
-          rows.set(value.owner, structuredClone(value));
-          return { error: null };
+        insert(value) {
+          return {abortSignal(signal) {stats.signals.push(signal); return this;}, then(resolve, reject) {
+            return Promise.resolve().then(() => {
+              if (rows.has(value.owner)) return { error: { code: "23505" } };
+              rows.set(value.owner, structuredClone(value));
+              return { error: null };
+            }).then(resolve, reject);
+          }};
         },
         async maybeSingle() {
           const owner = conditions.get("owner");

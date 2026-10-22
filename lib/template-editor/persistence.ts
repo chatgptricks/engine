@@ -59,6 +59,16 @@ function withPersistenceQueue<T>(operation: () => Promise<T>): Promise<T> {
   return result;
 }
 function assertDevelopmentStorage() { if (process.env.NODE_ENV === "production") throw new Error("Cloud storage is not configured. No changes were saved."); }
+// A query-level signal covers the response body and all SDK retry attempts.
+// It also opts large GET responses out of Next's fetch deduplication/teeing.
+const CLOUD_READ_TIMEOUT_MS = 30_000, CLOUD_WRITE_TIMEOUT_MS = 45_000;
+function logCloudFailure(operation: string, started: number, status: number, error: {code?: string; message?: string; details?: string}) {
+  // Database messages can contain saved values. Log only known error classes,
+  // a bounded provider code, and timing; never a URL, body, owner, or headers.
+  const description = `${error.message ?? ""} ${error.details ?? ""}`;
+  const cause = description.match(/\b(?:UND_ERR_[A-Z_]+|ENOTFOUND|EAI_AGAIN|ECONNRESET|ECONNREFUSED|ETIMEDOUT|AbortError|TimeoutError)\b/)?.[0];
+  console.error("Template storage request failed", {operation, elapsedMs: Date.now() - started, status, code: /^[A-Z0-9_]{1,32}$/.test(error.code ?? "") ? error.code : undefined, cause});
+}
 async function readFile(scope: string): Promise<LibraryEnvelope | null> {
   return readDevelopmentRecord("template-editor",`${scope}.json`,readEnvelope);
 }
@@ -68,13 +78,14 @@ async function readRecord(owner: string, libraryOnly = false): Promise<{record: 
   // Opening the library does not need potentially large CRDT state/history.
   // Project these fields in PostgreSQL, before its HTTP response is parsed.
   let raw: unknown, exists: boolean;
+  const started = Date.now(), signal = AbortSignal.timeout(CLOUD_READ_TIMEOUT_MS);
   if (libraryOnly) {
-    const {data, error} = await db.from("gf_client_state").select("library:data->library,revision:data->>revision,assets:data->assets").eq("owner", storageKey(owner)).maybeSingle();
-    if (error) throw new Error("Cloud storage is unavailable. Your saved library has not been changed.");
+    const {data, error, status} = await db.from("gf_client_state").select("library:data->library,revision:data->>revision,assets:data->assets").eq("owner", storageKey(owner)).abortSignal(signal).maybeSingle();
+    if (error) {logCloudFailure("read-library", started, status, error); throw new Error("Cloud storage is unavailable. Your saved library has not been changed.");}
     raw = data; exists = Boolean(data);
   } else {
-    const {data, error} = await db.from("gf_client_state").select("data").eq("owner", storageKey(owner)).maybeSingle();
-    if (error) throw new Error("Cloud storage is unavailable. Your saved library has not been changed.");
+    const {data, error, status} = await db.from("gf_client_state").select("data").eq("owner", storageKey(owner)).abortSignal(signal).maybeSingle();
+    if (error) {logCloudFailure("read-workspace", started, status, error); throw new Error("Cloud storage is unavailable. Your saved library has not been changed.");}
     raw = data?.data; exists = Boolean(data);
   }
   return {record: exists ? readEnvelope(raw) : null, storage: "cloud", scope};
@@ -144,12 +155,13 @@ async function writeFile(scope: string, envelope: LibraryEnvelope) {
 async function writeCloud(owner: string, envelope: LibraryEnvelope, expectedRevision: string | null) {
   const db = getAdminSupabase(); if (!db) throw new Error("Cloud storage is not configured.");
   const row = {owner: storageKey(owner), data: envelope, updated_at: new Date().toISOString()};
+  const started = Date.now(), signal = AbortSignal.timeout(CLOUD_WRITE_TIMEOUT_MS);
   if (expectedRevision === null) {
-    const {error} = await db.from("gf_client_state").insert(row);
-    if (error?.code === "23505") throw new LibraryConflictError(); if (error) throw new Error("Cloud save failed. Please retry.");
+    const {error, status} = await db.from("gf_client_state").insert(row).abortSignal(signal);
+    if (error?.code === "23505") throw new LibraryConflictError(); if (error) {logCloudFailure("insert-workspace", started, status, error); throw new Error("Cloud save failed. Please retry.");}
   } else {
-    const {data, error} = await db.from("gf_client_state").update({data: envelope, updated_at: row.updated_at}).eq("owner", row.owner).eq("data->>revision", expectedRevision).select("owner").maybeSingle();
-    if (error) throw new Error("Cloud save failed. Please retry."); if (!data) throw new LibraryConflictError();
+    const {data, error, status} = await db.from("gf_client_state").update({data: envelope, updated_at: row.updated_at}).eq("owner", row.owner).eq("data->>revision", expectedRevision).select("owner").abortSignal(signal).maybeSingle();
+    if (error) {logCloudFailure("update-workspace", started, status, error); throw new Error("Cloud save failed. Please retry.");} if (!data) throw new LibraryConflictError();
   }
 }
 export function saveEditorLibrary(owner: string, library: EditorLibrary, expectedRevision: string | null, operationId?: string): Promise<StoredLibrary> {
@@ -267,8 +279,9 @@ export async function getCollaborationDocument(owner: string, documentId: string
 export async function getCollaborationRevision(owner: string): Promise<string | null> {
   const db = getAdminSupabase();
   if (!db) {assertDevelopmentStorage(); return withPersistenceQueue(async () => (await readFile(editorOwnerScope(owner)))?.revision ?? null);}
-  const {data, error} = await db.from("gf_client_state").select("revision:data->>revision").eq("owner", storageKey(owner)).maybeSingle();
-  if (error) throw new Error("Live collaboration storage is unavailable.");
+  const started = Date.now();
+  const {data, error, status} = await db.from("gf_client_state").select("revision:data->>revision").eq("owner", storageKey(owner)).abortSignal(AbortSignal.timeout(CLOUD_READ_TIMEOUT_MS)).maybeSingle();
+  if (error) {logCloudFailure("read-revision", started, status, error); throw new Error("Live collaboration storage is unavailable.");}
   return data?.revision ?? null;
 }
 export async function saveCollaborationDocument(owner: string, documentId: string, update: string, expectedEpoch: string): Promise<StoredCollaborationDocument> {

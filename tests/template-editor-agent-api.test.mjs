@@ -28,6 +28,7 @@ function fakeDatabase() {
       let update, pattern, maximum, range, projection;
       const orderings=[];
       const query={
+        abortSignal(){return query;},
         select(columns){projection=columns;return query;},
         eq(column,value){conditions.set(column,value);return query;},
         like(column,value){pattern={column,value};return query;},
@@ -35,10 +36,12 @@ function fakeDatabase() {
         range(start,end){range={start,end};return query;},
         limit(value){maximum=value;return query;},
         update(value){update=structuredClone(value);return query;},
-        async insert(value){
-          if(rows.has(value.owner))return {error:{code:"23505"}};
-          rows.set(value.owner,structuredClone(value));writes++;
-          return {error:null};
+        insert(value){
+          return {abortSignal(){return this;},then(resolve,reject){return Promise.resolve().then(()=>{
+            if(rows.has(value.owner))return {error:{code:"23505"}};
+            rows.set(value.owner,structuredClone(value));writes++;
+            return {error:null};
+          }).then(resolve,reject);}};
         },
         async maybeSingle(){
           const owner=conditions.get("owner"),row=rows.get(owner);
