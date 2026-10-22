@@ -71,8 +71,10 @@ function persistence(t, options = {}) {
 
 function fakeDatabase() {
   const rows = new Map();
+  const stats = {reads: 0};
   return {
     rows,
+    stats,
     from(table) {
       assert.equal(table, "gf_client_state");
       const conditions = new Map();
@@ -103,6 +105,7 @@ function fakeDatabase() {
             rows.set(owner, { ...row, ...update });
             return { data: { owner }, error: null };
           }
+          stats.reads++;
           return { data: row ? structuredClone(row) : null, error: null };
         },
       };
@@ -285,6 +288,8 @@ function route(access, store, env = {}) {
     {
       "@/lib/engine/member": { resolveEngineAccess: async () => access },
       "@/lib/template-editor/model": model,
+      "@/lib/template-editor/json-stream": loadModule("lib/template-editor/json-stream.ts"),
+      "@/lib/template-editor/library-sync": librarySync,
       "@/lib/template-editor/persistence": store,
     },
     { env },
@@ -305,6 +310,30 @@ test("API rejects unauthenticated reads and writes before touching storage", asy
     ).status,
     401,
   );
+});
+
+test("packed GET is opt-in and round-trips 32 distinct image assets without changing workspace metadata", async t => {
+  const sharp = requireModule("sharp");
+  const images = await Promise.all(Array.from({length:32},async (_,index)=>`data:image/png;base64,${(await sharp({create:{width:2,height:2,channels:4,background:{r:index*7,g:255-index*5,b:index*3,alpha:1}}}).png().toBuffer()).toString("base64")}`));
+  const design = model.createBlankDesign("Native images", "portrait");
+  design.pages[0].image.url = images[0];
+  design.pages[0].canvas.elements = images.map((src,index)=>model.createCanvasElement("image",{src,previewSrc:src,name:`Image ${index+1}`}));
+  const store = persistence(t,{db:fakeDatabase()});
+  await store.saveEditorLibrary("owner",{...structuredClone(model.EMPTY_LIBRARY),designs:[design]},null);
+  const api = route({kind:"owner",ownerKey:"owner"},store);
+  const plainResponse = await api.GET(new Request("https://engine.example/api/template-editor"));
+  const packedResponse = await api.GET(new Request("https://engine.example/api/template-editor?packed=1"));
+  assert.equal(plainResponse.status,200);assert.equal(packedResponse.status,200);
+  assert.equal(packedResponse.headers.get("cache-control"),"private, no-store");
+  const plain = await plainResponse.json(),packed = await packedResponse.json();
+  assert.equal(Object.hasOwn(plain,"assets"),false);
+  assert.deepEqual(plain.library.designs[0].pages[0].canvas.elements.map(element=>element.src),images);
+  assert.equal(Object.keys(packed.assets).length,32);
+  assert.equal(JSON.stringify(packed.library).includes("data:image/"),false);
+  assert.deepEqual(librarySync.unpackAssets(packed.library,packed.assets),plain.library);
+  for (const field of ["revision","storage","scope","assetKeys"]) assert.deepEqual(packed[field],plain[field],field);
+  const history = await api.GET(new Request(`https://engine.example/api/template-editor?packed=1&history=1&documentId=${design.id}`));
+  assert.deepEqual(await history.json(),{versions:[]});
 });
 
 test("API scopes writes to authenticated identity and returns conflicts", async (t) => {
@@ -406,6 +435,43 @@ test("document patches merge concurrent changes to different designs without ove
   assert.equal(results.length, 2);
   const saved = await store.getEditorLibrary("owner");
   assert.deepEqual(saved.library.designs.map(doc => doc.name), ["Changed one", "Changed two"]);
+});
+
+test("cloud patches read once per attempt while CAS preserves concurrent edits and operation retries", async t => {
+  const db = fakeDatabase(), store = persistence(t, {db});
+  const initial = await store.saveEditorLibrary("owner", {...structuredClone(model.EMPTY_LIBRARY), designs: [model.createBlankDesign("One", "portrait"), model.createBlankDesign("Two", "square")]}, null);
+  const left = structuredClone(initial.library), right = structuredClone(initial.library);
+  left.designs[0].name = "Left"; right.designs[1].name = "Right";
+  const a = await librarySync.packAssets(await librarySync.createLibraryPatch(initial.library, left));
+  const b = await librarySync.packAssets(await librarySync.createLibraryPatch(initial.library, right));
+  db.stats.reads = 0;
+  const operation = crypto.randomUUID();
+  await store.saveEditorPatch("owner", a.value, a.assets, initial.revision, operation);
+  assert.equal(db.stats.reads, 1);
+  const saved = await store.saveEditorPatch("owner", b.value, b.assets, initial.revision, crypto.randomUUID());
+  assert.deepEqual(saved.library.designs.map(document => document.name), ["Left", "Right"]);
+  const retried = await store.saveEditorPatch("owner", a.value, a.assets, initial.revision, operation);
+  assert.equal(retried.revision, saved.revision);
+  const nextLeft = structuredClone(saved.library), nextRight = structuredClone(saved.library);
+  nextLeft.designs[0].caption = "First writer"; nextRight.designs[1].caption = "Second writer";
+  const c = await librarySync.packAssets(await librarySync.createLibraryPatch(saved.library, nextLeft));
+  const d = await librarySync.packAssets(await librarySync.createLibraryPatch(saved.library, nextRight));
+  await Promise.all([store.saveEditorPatch("owner", c.value, c.assets, saved.revision, crypto.randomUUID()), store.saveEditorPatch("owner", d.value, d.assets, saved.revision, crypto.randomUUID())]);
+  assert.deepEqual((await store.getEditorLibrary("owner")).library.designs.map(document => document.caption), ["First writer", "Second writer"]);
+});
+
+test("collaboration snapshots retain only the requested document and workspace metadata", async t => {
+  const db = fakeDatabase(), store = persistence(t, {db});
+  const document = model.createBlankDesign("Together", "portrait"), unrelated = model.createBlankDesign("Elsewhere", "square");
+  await store.saveEditorLibrary("owner", {...structuredClone(model.EMPTY_LIBRARY), designs: [document, unrelated]}, null);
+  const snapshot = await store.getCollaborationDocument("owner", document.id);
+  assert.equal(Object.hasOwn(snapshot, "library"), false);
+  assert.equal(Object.hasOwn(snapshot, "assets"), false);
+  assert.equal(Object.hasOwn(snapshot, "history"), false);
+  assert.equal(snapshot.document.id, document.id);
+  assert.equal(snapshot.scope, store.editorOwnerScope("owner"));
+  assert.equal(snapshot.storage, "cloud");
+  assert.ok(snapshot.state && snapshot.epoch && snapshot.revision);
 });
 
 test("patch operation retries are idempotent, same-document conflicts preserve server state, and checkpoints remain durable", async t => {

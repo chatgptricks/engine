@@ -1167,6 +1167,70 @@ const LAYOUTS = new Set([
 ]);
 const MAX_LIBRARY_CHARS = 30 * 1024 * 1024;
 const MAX_IMAGE_CHARS = 12 * 1024 * 1024;
+/** Match JSON's character budget without allocating a second copy of every
+ * embedded image. Stop as soon as the limit is exceeded. */
+export function fitsJsonCharacterLimit(input: unknown, maximum: number): boolean {
+  let length = 0;
+  const ancestors = new Set<object>();
+  const add = (count: number) => (length += count) <= maximum;
+  const omitted = (value: unknown) => value === undefined || typeof value === "function" || typeof value === "symbol";
+  function normalize(value: unknown, key: string): unknown {
+    if (value && typeof value === "object") {
+      const toJSON = (value as {toJSON?: unknown}).toJSON;
+      if (typeof toJSON === "function") value = toJSON.call(value, key);
+      if (value instanceof Number || value instanceof String || value instanceof Boolean) value = value.valueOf();
+    }
+    return value;
+  }
+  function text(value: string): boolean {
+    if (!add(value.length + 2)) return false;
+    for (let index = 0; index < value.length; index++) {
+      const code = value.charCodeAt(index);
+      if (code === 34 || code === 92) { if (!add(1)) return false; }
+      else if (code < 32) { if (!add([8, 9, 10, 12, 13].includes(code) ? 1 : 5)) return false; }
+      else if (code >= 0xd800 && code <= 0xdfff) {
+        const next = value.charCodeAt(index + 1);
+        if (code <= 0xdbff && next >= 0xdc00 && next <= 0xdfff) index++;
+        else if (!add(5)) return false;
+      }
+    }
+    return true;
+  }
+  function visit(value: unknown): boolean {
+    if (value === null) return add(4);
+    if (typeof value === "string") return text(value);
+    if (typeof value === "boolean") return add(value ? 4 : 5);
+    if (typeof value === "number") return add(JSON.stringify(value).length);
+    if (typeof value !== "object") return false;
+    if (ancestors.has(value)) return false;
+    ancestors.add(value);
+    try {
+      if (!add(2)) return false;
+      let first = true;
+      if (Array.isArray(value)) {
+        for (let index = 0; index < value.length; index++) {
+          if (!first && !add(1)) return false;
+          first = false;
+          const child = normalize(value[index], String(index));
+          if (!(omitted(child) ? add(4) : visit(child))) return false;
+        }
+      } else {
+        for (const key of Object.keys(value)) {
+          const child = normalize((value as Record<string, unknown>)[key], key);
+          if (omitted(child)) continue;
+          if (!first && !add(1)) return false;
+          first = false;
+          if (!text(key) || !add(1) || !visit(child)) return false;
+        }
+      }
+      return true;
+    } finally { ancestors.delete(value); }
+  }
+  try {
+    const value = normalize(input, "");
+    return omitted(value) || visit(value);
+  } catch { return false; }
+}
 const object = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
 const string = (value: unknown, max: number): value is string =>
@@ -1919,7 +1983,7 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
     if (typeof input === "string") {
       if (input.length > MAX_LIBRARY_CHARS) return null;
       input = JSON.parse(input);
-    } else if (JSON.stringify(input)?.length > MAX_LIBRARY_CHARS) return null;
+    } else if (!fitsJsonCharacterLimit(input, MAX_LIBRARY_CHARS)) return null;
     if (
       !object(input) ||
       (input.version !== 1 && input.version !== 2) ||
