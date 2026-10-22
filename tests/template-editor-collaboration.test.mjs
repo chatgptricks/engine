@@ -93,8 +93,13 @@ test("concurrent timestamps stay outside individual undo and immutable root meta
 function fakeDatabase() {
   const rows = new Map();
   return {rows, from() {
-    const conditions = new Map(); let updated;
-    const query = {select() {return query;}, eq(key, value) {conditions.set(key, value); return query;}, update(value) {updated = structuredClone(value); return query;}, async insert(value) {if (rows.has(value.owner)) return {error: {code: "23505"}}; rows.set(value.owner, structuredClone(value)); return {error: null};}, async maybeSingle() {const row = rows.get(conditions.get("owner")); if (updated) {if (!row || row.data.revision !== conditions.get("data->>revision")) return {data: null, error: null}; rows.set(conditions.get("owner"), {...row, ...updated}); return {data: {owner: conditions.get("owner")}, error: null};} return {data: row ? structuredClone(row) : null, error: null};}};
+    const conditions = new Map(); let updated, projection = "data";
+    const query = {select(columns = "data") {projection = columns; return query;}, eq(key, value) {conditions.set(key, value); return query;}, update(value) {updated = structuredClone(value); return query;}, async insert(value) {if (rows.has(value.owner)) return {error: {code: "23505"}}; rows.set(value.owner, structuredClone(value)); return {error: null};}, async maybeSingle() {
+      const row = rows.get(conditions.get("owner"));
+      if (updated) {if (!row || row.data.revision !== conditions.get("data->>revision")) return {data: null, error: null}; rows.set(conditions.get("owner"), {...row, ...updated}); return {data: {owner: conditions.get("owner")}, error: null};}
+      const value = row && projection.includes(":data->") ? Object.fromEntries(projection.split(",").map(column=>{const [alias,field] = column.split(":data->");return [alias,row.data[field.replace(/^>/,"")]];})) : row;
+      return {data: value ? structuredClone(value) : null, error: null};
+    }};
     return query;
   }};
 }
@@ -162,4 +167,31 @@ test("collaboration API rejects foreign workspaces and origins before room acces
   const doc = replica(collaboration.decodeCollaborationUpdate(saved.state)), update = collaboration.encodeCollaborationUpdate(edit(doc, value => {value.caption = "Edit";}));
   const conflict = await route.POST(request({...input, epoch: crypto.randomUUID(), update})); assert.equal(conflict.status, 409);
   const data = await conflict.json(); assert.equal(data.code, "generation_changed"); assert.equal(data.snapshot.epoch, saved.epoch); assert.equal(data.snapshot.document.id, document.id); assert.equal((await persistence.getEditorLibrary("team")).library.designs[0].caption, ""); doc.destroy();
+});
+
+test("collaboration POST validates presence before writing and keeps new-layer selection without an unqueued Yjs replay", async t => {
+  const persistence = store(t), document = fixture();
+  await persistence.saveEditorLibrary("team", {...structuredClone(model.EMPTY_LIBRARY), designs:[document]}, null);
+  const initial = await persistence.getCollaborationDocument("team",document.id), replicaDoc = replica(collaboration.decodeCollaborationUpdate(initial.state));
+  t.after(()=>replicaDoc.destroy());
+  const added = model.createCanvasElement("shape"), update = collaboration.encodeCollaborationUpdate(edit(replicaDoc,value=>{value.pages[0].canvas.elements.push(added);}));
+  const {validateCollaborationAwareness} = loader({"@/lib/supabase/admin":{getAdminSupabase:()=>null},"@/lib/supabase/auth-server":{getCurrentAdminUser:async()=>null}})("lib/template-editor/collaboration-server.ts");
+  let saves = 0;const heartbeats = [];
+  const route = loader({
+    "@/lib/engine/member":{resolveEngineAccess:async()=>({kind:"owner",ownerKey:"team"})},
+    "@/lib/template-editor/persistence":{...persistence,saveCollaborationDocument:async(...args)=>{saves++;return persistence.saveCollaborationDocument(...args);}},
+    "@/lib/template-editor/collaboration-document":{...collaboration,createCollaborationDocument(){throw Error("Unexpected unqueued Yjs replay");}},
+    "@/lib/template-editor/json-stream":load("lib/template-editor/json-stream.ts"),
+    "@/lib/template-editor/collaboration-server":{validateCollaborationAwareness,collaborationActor:async()=>({id:"actor",name:"Alice",color:"#2563eb"}),readCollaborationParticipants:async()=>[],heartbeatCollaboration:async(_owner,_document,_session,_actor,awareness)=>{heartbeats.push(awareness);return [];}},
+  })("app/api/template-editor/collaboration/route.ts");
+  const input = {documentId:document.id,sessionId:crypto.randomUUID(),sequence:1,expectedScope:initial.scope,epoch:initial.epoch,update};
+  const post = awareness=>route.POST(new Request("http://localhost/api/template-editor/collaboration",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...input,awareness})}));
+  const invalid = await post({selected:[],cursor:{x:"invalid",y:0}});
+  assert.equal(invalid.status,400);assert.equal(saves,0);assert.equal(heartbeats.length,0);
+  assert.equal((await persistence.getEditorLibrary("team")).revision,initial.revision);
+  const preview={id:added.id,x:added.x,y:added.y,width:added.width,height:added.height,rotation:added.rotation};
+  const valid = await post({pageId:document.pages[0].id,selected:[added.id],cursor:{x:1,y:2},preview:{elements:[preview]}});
+  assert.equal(valid.status,200);assert.equal(saves,1);
+  assert.deepEqual(heartbeats[0].selected,[added.id]);assert.deepEqual(heartbeats[0].preview.elements,[preview]);
+  assert.ok((await valid.json()).document.pages[0].canvas.elements.some(element=>element.id===added.id));
 });

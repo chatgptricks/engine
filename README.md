@@ -212,7 +212,7 @@ The existing production editor is [Engine on Render](https://greatful-independen
 
 For another independent copy, create a **new Supabase project** and run `supabase/migrations/0014` through `0017` in order in its SQL editor. Migration `0017` supplies `gf_client_state` for both the preserved research state and the separately namespaced template library; no additional template-editor table is required. Configure the site URL and allowed redirect URL in Supabase Auth for its one-time sign-in links. Set allowed owner emails with `OWNER_EMAIL`.
 
-The Render **Web Service** uses Node 22, builds with `npm ci && npm run build`, and starts with `npm run start`. Configure these environment variables when setting up a new service:
+The Render **Web Service** uses Node 22, builds with `npm ci && npm run build`, and starts directly with `node --max-old-space-size=192 node_modules/next/dist/bin/next start` to avoid retaining an npm parent process. `npm run start` runs the same Node command locally. This caps V8 old-space at 192 MiB so garbage collection runs before the 512 MiB service limit is exhausted; this leaves room for native buffers and does not constrain the build. Image-heavy workspace operations share one process-wide queue, while database revision checks still protect saves across instances. Configure these environment variables when setting up a new service:
 
 | Variable | Value |
 |---|---|

@@ -1,8 +1,6 @@
-import * as Y from "yjs";
 import {resolveEngineAccess} from "@/lib/engine/member";
 import {editorOwnerScope, getCollaborationDocument, getCollaborationRevision, saveCollaborationDocument, type StoredCollaborationDocument} from "@/lib/template-editor/persistence";
 import {collaborationActor, heartbeatCollaboration, readCollaborationParticipants, validateCollaborationAwareness} from "@/lib/template-editor/collaboration-server";
-import {createCollaborationDocument, decodeCollaborationUpdate, readCollaborationDocument} from "@/lib/template-editor/collaboration-document";
 import type {CollaborationActor, CollaborationParticipant, CollaborationSnapshot} from "@/lib/template-editor/collaboration-types";
 import {jsonByteStream, jsonTextChunks} from "@/lib/template-editor/json-stream";
 
@@ -51,17 +49,20 @@ export async function POST(request: Request) {
   if (!validId(input.documentId) || !validSession(input.sessionId) || typeof input.expectedScope !== "string" || !Number.isSafeInteger(input.sequence) || Number(input.sequence) < 1 || Number(input.sequence) > 1_000_000_000 || (input.update !== undefined && typeof input.update !== "string") || (input.leave !== undefined && typeof input.leave !== "boolean") || (input.name !== undefined && typeof input.name !== "string")) return reply({error: "Invalid collaboration session."}, 400);
   if (input.expectedScope !== editorOwnerScope(access.ownerKey)) return reply({error: "The signed-in workspace changed.", code: "workspace_owner_changed"}, 403);
   try {
-    const current = await getCollaborationDocument(access.ownerKey, input.documentId);
+    let current: StoredCollaborationDocument | null = await getCollaborationDocument(access.ownerKey, input.documentId);
     const actor = await collaborationActor(access, input.sessionId, input.name as string | undefined);
-    let awarenessDocument = current.document;
     if (typeof input.update === "string") {
       if (input.epoch !== current.epoch) return reply({error: "The live document generation changed. Reconnect before sending edits.", code: "generation_changed", snapshot: snapshot(current, actor, await readCollaborationParticipants(access.ownerKey, input.documentId))}, 409);
-      const doc = createCollaborationDocument();
-      try {Y.applyUpdate(doc, decodeCollaborationUpdate(current.state)); Y.applyUpdate(doc, decodeCollaborationUpdate(input.update)); awarenessDocument = readCollaborationDocument(doc);}
-      finally {doc.destroy();}
     }
-    const awareness = validateCollaborationAwareness(input.awareness, awarenessDocument);
-    const saved = typeof input.update === "string" ? await saveCollaborationDocument(access.ownerKey, input.documentId, input.update, String(input.epoch)) : current;
+    // Reject malformed presence before writing, then resolve layer membership
+    // against the saved document. The queued save owns the only Yjs replay.
+    validateCollaborationAwareness(input.awareness, current.document);
+    let saved: StoredCollaborationDocument;
+    if (typeof input.update === "string") {
+      current = null;
+      saved = await saveCollaborationDocument(access.ownerKey, input.documentId, input.update, String(input.epoch));
+    } else saved = current;
+    const awareness = validateCollaborationAwareness(input.awareness, saved.document);
     // A concurrent deletion can make an otherwise valid selection stale. It
     // never changes durable artwork and is cleared on the next heartbeat.
     const participants = await heartbeatCollaboration(access.ownerKey, input.documentId, input.sessionId, actor, awareness, Number(input.sequence), input.leave === true);
@@ -115,6 +116,12 @@ export async function GET(request: Request) {
       initial = null;
       const poll = async () => {
         if (stopped) return;
+        // Slow readers must drain the previous event before another snapshot
+        // is loaded and queued. The next poll still observes the latest revision.
+        if (controller.desiredSize !== null && controller.desiredSize <= 0) {
+          timer = setTimeout(() => {void poll();}, 350);
+          return;
+        }
         try {
           const [nextRevision, participants] = await Promise.all([getCollaborationRevision(access.ownerKey), readCollaborationParticipants(access.ownerKey, documentId)]);
           if (stopped) return;

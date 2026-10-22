@@ -1,4 +1,5 @@
 import {resolveEngineAccess} from "@/lib/engine/member";
+import {PersistenceBusyError} from "@/lib/template-editor/persistence";
 import {addReviewComment,createReview,getPublicReview,getReviewFeedback,listReviewLinks,readOwnerReview,readOwnerFeedback,revokeReview,resolveReviewComment} from "@/lib/template-editor/reviews";
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -38,7 +39,7 @@ export async function POST(request: Request) {
     if (typeof input.documentId !== "string") return reply({error: "Choose a saved design."}, 400);
     const result = await createReview(access.ownerKey, input.documentId, typeof input.days === "number" ? input.days : 7, typeof input.documentUpdatedAt === "string" ? input.documentUpdatedAt : undefined,typeof input.operationId==='string'&&/^[a-f0-9-]{36}$/i.test(input.operationId)?input.operationId:undefined);
     return reply({...result, url: `/engine/review/${result.token}`}, 201);
-  } catch (cause) { return reply({error: cause instanceof Error ? cause.message : "Review could not be saved."}, 400); }
+  } catch (cause) { return reply({error: cause instanceof Error ? cause.message : "Review could not be saved."}, cause instanceof PersistenceBusyError ? 503 : 400); }
 }
 export async function PATCH(request:Request){const access=await resolveEngineAccess();if(!access)return reply({error:'Sign in to resolve review comments.'},401);if(!sameOrigin(request))return reply({error:'Open the editor to manage feedback.'},403);try{const input=await body(request);if(typeof input.token!=='string'||typeof input.commentId!=='string'||typeof input.resolved!=='boolean')throw Error('Choose a comment and resolution.');await resolveReviewComment(access.ownerKey,input.token,input.commentId,input.resolved);return reply({ok:true});}catch(error){return reply({error:error instanceof Error?error.message:'Feedback could not be updated.'},400);}}
 export async function DELETE(request: Request) {

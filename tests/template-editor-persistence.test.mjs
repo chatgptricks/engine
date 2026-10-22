@@ -71,7 +71,7 @@ function persistence(t, options = {}) {
 
 function fakeDatabase() {
   const rows = new Map();
-  const stats = {reads: 0};
+  const stats = {reads: 0, projections: []};
   return {
     rows,
     stats,
@@ -79,8 +79,10 @@ function fakeDatabase() {
       assert.equal(table, "gf_client_state");
       const conditions = new Map();
       let update = null;
+      let projection;
       const query = {
-        select() {
+        select(columns) {
+          projection = columns;
           return query;
         },
         eq(column, value) {
@@ -106,6 +108,8 @@ function fakeDatabase() {
             return { data: { owner }, error: null };
           }
           stats.reads++;
+          stats.projections.push(projection);
+          if (projection === "library:data->library,revision:data->>revision,assets:data->assets") return {data: row ? structuredClone({library: row.data.library, revision: row.data.revision, assets: row.data.assets}) : null, error: null};
           return { data: row ? structuredClone(row) : null, error: null };
         },
       };
@@ -280,6 +284,22 @@ test("unreadable saved cloud data does not silently become an empty library", as
   assert.deepEqual(db.rows.get("template-editor:owner").data, {
     unexpected: true,
   });
+});
+
+test("opening a cloud library projects artwork and assets without downloading CRDT state or history", async t => {
+  const db = fakeDatabase(), store = persistence(t, {db});
+  const document = model.createBlankDesign("Together", "portrait");
+  const initial = await store.saveEditorLibrary("owner", {...structuredClone(model.EMPTY_LIBRARY), designs: [document]}, null);
+  const room = await store.getCollaborationDocument("owner", document.id);
+  db.stats.projections.length = 0;
+  const opened = await store.getPackedEditorLibrary("owner");
+  assert.equal(db.stats.projections[0], "library:data->library,revision:data->>revision,assets:data->assets");
+  assert.equal(opened.revision, room.revision);
+  assert.ok(librarySync.sameContent(librarySync.unpackAssets(opened.library, opened.assets), initial.library));
+  assert.equal(db.rows.get("template-editor:owner").data.collaborationStates[document.id].state, room.state);
+  db.stats.projections.length = 0;
+  await store.getDocumentHistory("owner", document.id);
+  assert.equal(db.stats.projections[0], "data", "History and write paths retain the complete stored envelope");
 });
 
 function route(access, store, env = {}) {
@@ -458,6 +478,88 @@ test("cloud patches read once per attempt while CAS preserves concurrent edits a
   const d = await librarySync.packAssets(await librarySync.createLibraryPatch(saved.library, nextRight));
   await Promise.all([store.saveEditorPatch("owner", c.value, c.assets, saved.revision, crypto.randomUUID()), store.saveEditorPatch("owner", d.value, d.assets, saved.revision, crypto.randomUUID())]);
   assert.deepEqual((await store.getEditorLibrary("owner")).library.designs.map(document => document.caption), ["First writer", "Second writer"]);
+});
+
+test("heavy persistence work is serialized across separately loaded route modules", async t => {
+  const db = fakeDatabase(), one = persistence(t, {db}), two = persistence(t, {db}), three = persistence(t, {db});
+  const document = model.createBlankDesign("Together", "portrait"), other = model.createBlankDesign("Other", "square");
+  await one.saveEditorLibrary("owner", {...structuredClone(model.EMPTY_LIBRARY), designs: [document, other]}, null);
+  const room = await one.getCollaborationDocument("owner", document.id), initial = await one.getEditorLibrary("owner");
+  const changed = structuredClone(initial.library); changed.designs[1].caption = "Queued edit";
+  const patch = await librarySync.packAssets(await librarySync.createLibraryPatch(initial.library, changed));
+  let active = 0, peak = 0;
+  const from = db.from.bind(db);
+  db.from = table => {
+    const query = from(table), execute = query.maybeSingle.bind(query);
+    query.maybeSingle = async () => {
+      active++; peak = Math.max(peak, active);
+      try { await new Promise(resolve => setImmediate(resolve)); return await execute(); }
+      finally { active--; }
+    };
+    return query;
+  };
+  const results = await Promise.all([
+    one.getEditorLibrary("owner"),
+    two.getDocumentHistory("owner", document.id),
+    three.getPackedEditorLibrary("owner"),
+    one.saveEditorLibrary("owner", initial.library, initial.revision),
+    two.saveEditorPatch("owner", patch.value, patch.assets, initial.revision, crypto.randomUUID()),
+    three.getCollaborationDocument("owner", document.id),
+    one.saveCollaborationDocument("owner", document.id, room.state, room.epoch),
+  ]);
+  assert.equal(peak, 1);
+  assert.equal(results[2].scope, initial.scope);
+  assert.ok(librarySync.sameContent(librarySync.unpackAssets(results[2].library, results[2].assets), initial.library));
+  assert.equal((await two.getEditorLibrary("owner")).library.designs[1].caption, "Queued edit");
+});
+
+test("the shared persistence queue rejects excess work and releases slots after failures", async t => {
+  const db = fakeDatabase(), one = persistence(t, {db}), two = persistence(t, {db});
+  let release, entered, blocked = true, calls = 0;
+  const held = new Promise(resolve => {release = resolve;}), started = new Promise(resolve => {entered = resolve;});
+  const from = db.from.bind(db);
+  db.from = table => {
+    const query = from(table), execute = query.maybeSingle.bind(query);
+    query.maybeSingle = async () => {calls++; if (blocked) {blocked = false; entered(); await held;} return execute();};
+    return query;
+  };
+  const first = one.getDocumentHistory("owner", "missing");
+  await started;
+  const waiting = Array.from({length: 7}, (_, index) => (index % 2 ? one : two).getDocumentHistory("owner", "missing"));
+  await assert.rejects(two.getDocumentHistory("owner", "missing"), error => error.name === "PersistenceBusyError" && /Cloud storage is busy/.test(error.message));
+  assert.equal(calls, 1, "Rejected and queued jobs must not start another workspace read");
+  release();
+  await Promise.all([first, ...waiting]);
+  const [failed, recovered] = await Promise.allSettled([one.getCollaborationDocument("owner", "missing"), two.getDocumentHistory("owner", "missing")]);
+  assert.equal(failed.status, "rejected");
+  assert.equal(recovered.status, "fulfilled");
+  assert.deepEqual(recovered.value, []);
+  assert.equal(await globalThis[Symbol.for("engine.template-editor.persistence.queue")].tail, undefined, "The global tail must not retain a workspace result");
+});
+
+test("queued cloud writes still rebase when another process wins the database CAS", async t => {
+  const db = fakeDatabase(), store = persistence(t, {db});
+  const initial = await store.saveEditorLibrary("owner", {...structuredClone(model.EMPTY_LIBRARY), designs: [model.createBlankDesign("Local", "portrait"), model.createBlankDesign("External", "square")]}, null);
+  const changed = structuredClone(initial.library); changed.designs[0].caption = "Local edit";
+  const patch = await librarySync.packAssets(await librarySync.createLibraryPatch(initial.library, changed));
+  const from = db.from.bind(db); let raced = false;
+  db.from = table => {
+    const query = from(table), update = query.update.bind(query);
+    query.update = value => {
+      if (!raced) {
+        raced = true;
+        const external = structuredClone(db.rows.get("template-editor:owner"));
+        external.data.revision = crypto.randomUUID();
+        external.data.library.designs[1].caption = "External edit";
+        db.rows.set("template-editor:owner", external);
+      }
+      return update(value);
+    };
+    return query;
+  };
+  const saved = await store.saveEditorPatch("owner", patch.value, patch.assets, initial.revision, crypto.randomUUID());
+  assert.equal(raced, true);
+  assert.deepEqual(saved.library.designs.map(document => document.caption), ["Local edit", "External edit"]);
 });
 
 test("collaboration snapshots retain only the requested document and workspace metadata", async t => {

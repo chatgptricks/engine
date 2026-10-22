@@ -19,6 +19,9 @@ export type StoredCollaborationDocument = Omit<StoredLibrary, "library"> & Colla
 export class LibraryConflictError extends Error {
   constructor(public ids: string[] = []) { super("This document changed in another tab or device. Your edits have been kept in this browser."); this.name = "LibraryConflictError"; }
 }
+export class PersistenceBusyError extends Error {
+  constructor() { super("Cloud storage is busy. Retry shortly."); this.name = "PersistenceBusyError"; }
+}
 const storageKey = (owner: string) => `template-editor:${owner}`;
 export const editorOwnerScope = (owner: string) => createHash("sha256").update(storageKey(owner)).digest("hex");
 function readEnvelope(value: unknown): LibraryEnvelope {
@@ -36,29 +39,69 @@ function readEnvelope(value: unknown): LibraryEnvelope {
 }
 const FILE_DIRECTORY = developmentDirectory("template-editor");
 let fileLock: Promise<unknown> = Promise.resolve();
-function withFileLock<T>(fn: () => Promise<T>): Promise<T> { const run = fileLock.then(fn, fn); fileLock = run.catch(() => undefined); return run; }
+function withFileLock<T>(fn: () => Promise<T>): Promise<T> { const run = fileLock.then(fn, fn); fileLock = run.then(() => undefined, () => undefined); return run; }
+// Next can load separate copies of this module for different route bundles.
+// Share one process-wide queue so image-heavy reads, writes and CRDT work do
+// not expand multiple complete workspaces at once on a small server instance.
+// Database revision CAS remains the authority across processes/instances.
+const PERSISTENCE_QUEUE = Symbol.for("engine.template-editor.persistence.queue");
+type PersistenceQueue = {tail: Promise<void>; pending: number};
+function withPersistenceQueue<T>(operation: () => Promise<T>): Promise<T> {
+  const shared = globalThis as typeof globalThis & {[PERSISTENCE_QUEUE]?: PersistenceQueue};
+  const queue = shared[PERSISTENCE_QUEUE] ??= {tail: Promise.resolve(), pending: 0};
+  queue.pending ??= 0;
+  if (queue.pending >= 8) return Promise.reject(new PersistenceBusyError());
+  queue.pending++;
+  const result = queue.tail.then(operation);
+  // A fulfilled tail must not retain the last image-heavy result forever.
+  const release = () => { queue.pending--; };
+  queue.tail = result.then(release, release);
+  return result;
+}
 function assertDevelopmentStorage() { if (process.env.NODE_ENV === "production") throw new Error("Cloud storage is not configured. No changes were saved."); }
 async function readFile(scope: string): Promise<LibraryEnvelope | null> {
   return readDevelopmentRecord("template-editor",`${scope}.json`,readEnvelope);
 }
-async function readRecord(owner: string): Promise<{record: LibraryEnvelope | null; storage: "cloud" | "local"; scope: string}> {
+async function readRecord(owner: string, libraryOnly = false): Promise<{record: LibraryEnvelope | null; storage: "cloud" | "local"; scope: string}> {
   const scope = editorOwnerScope(owner), db = getAdminSupabase();
   if (!db) { assertDevelopmentStorage(); return {record: await readFile(scope), storage: "local", scope}; }
-  const {data, error} = await db.from("gf_client_state").select("data").eq("owner", storageKey(owner)).maybeSingle();
-  if (error) throw new Error("Cloud storage is unavailable. Your saved library has not been changed.");
-  return {record: data ? readEnvelope(data.data) : null, storage: "cloud", scope};
+  // Opening the library does not need potentially large CRDT state/history.
+  // Project these fields in PostgreSQL, before its HTTP response is parsed.
+  let raw: unknown, exists: boolean;
+  if (libraryOnly) {
+    const {data, error} = await db.from("gf_client_state").select("library:data->library,revision:data->>revision,assets:data->assets").eq("owner", storageKey(owner)).maybeSingle();
+    if (error) throw new Error("Cloud storage is unavailable. Your saved library has not been changed.");
+    raw = data; exists = Boolean(data);
+  } else {
+    const {data, error} = await db.from("gf_client_state").select("data").eq("owner", storageKey(owner)).maybeSingle();
+    if (error) throw new Error("Cloud storage is unavailable. Your saved library has not been changed.");
+    raw = data?.data; exists = Boolean(data);
+  }
+  return {record: exists ? readEnvelope(raw) : null, storage: "cloud", scope};
 }
 function stored(record: LibraryEnvelope | null, storage: "cloud" | "local", scope: string): StoredLibrary {
   return {library: record?.library ?? EMPTY_LIBRARY, revision: record?.revision ?? null, storage, scope, assetKeys: Object.keys(record?.assets ?? {})};
 }
-export async function getEditorLibrary(owner: string): Promise<StoredLibrary> {
- const state=await readRecord(owner),value=stored(state.record,state.storage,state.scope),links=await listReviewLinks(owner);
+async function readEditorLibrary(owner: string): Promise<StoredLibrary> {
+ const state=await readRecord(owner,true),value=stored(state.record,state.storage,state.scope),links=await listReviewLinks(owner);
  value.library={...value.library,designs:value.library.designs.map(doc=>{const documentLinks=links.filter(link=>link.documentId===doc.id),owned=documentLinks.filter(link=>!link.revokedAt&&Date.parse(link.expiresAt)>Date.now()).map(({id,url,expiresAt})=>({id,url,expiresAt}));return {...doc,reviewLinks:documentLinks.length?owned:doc.reviewLinks};})};return value;
 }
+export function getEditorLibrary(owner: string): Promise<StoredLibrary> {
+  return withPersistenceQueue(() => readEditorLibrary(owner));
+}
+/** Keep response packing inside the same heavy-operation queue as the read. */
+export function getPackedEditorLibrary(owner: string): Promise<StoredLibrary & {assets: Record<string, string>}> {
+  return withPersistenceQueue(async () => {
+    const saved = await readEditorLibrary(owner), packed = await packAssets(saved.library);
+    return {...saved, library: packed.value, assets: packed.assets};
+  });
+}
 export async function getDocumentHistory(owner: string, documentId: string): Promise<DocumentHistoryEntry[]> {
-  const {record} = await readRecord(owner);
-  // Owner is always supplied by the authenticated route, never by the browser.
-  return record?.history?.[documentId] ?? [];
+  return withPersistenceQueue(async () => {
+    const {record} = await readRecord(owner);
+    // Owner is always supplied by the authenticated route, never by the browser.
+    return record?.history?.[documentId] ?? [];
+  });
 }
 async function envelopeFor(current: LibraryEnvelope | null, library: EditorLibrary, operationId?: string, collaboration?: {documentId: string; value: CollaborationState}): Promise<LibraryEnvelope> {
   // Schema-2 clients from before the built-in catalog controls omit this
@@ -109,7 +152,10 @@ async function writeCloud(owner: string, envelope: LibraryEnvelope, expectedRevi
     if (error) throw new Error("Cloud save failed. Please retry."); if (!data) throw new LibraryConflictError();
   }
 }
-export async function saveEditorLibrary(owner: string, library: EditorLibrary, expectedRevision: string | null, operationId?: string): Promise<StoredLibrary> {
+export function saveEditorLibrary(owner: string, library: EditorLibrary, expectedRevision: string | null, operationId?: string): Promise<StoredLibrary> {
+  return withPersistenceQueue(() => saveEditorLibraryInternal(owner, library, expectedRevision, operationId));
+}
+async function saveEditorLibraryInternal(owner: string, library: EditorLibrary, expectedRevision: string | null, operationId?: string): Promise<StoredLibrary> {
   if (!getAdminSupabase()) {
     assertDevelopmentStorage(); const scope = editorOwnerScope(owner);
     return withFileLock(async () => {
@@ -128,6 +174,9 @@ export async function saveEditorLibrary(owner: string, library: EditorLibrary, e
 }
 /** Atomically rebase independent document edits onto the latest workspace. */
 export async function saveEditorPatch(owner: string, packedPatch: LibraryPatch, newAssets: Record<string, string>, expectedRevision: string | null, operationId: string): Promise<StoredLibrary> {
+  return withPersistenceQueue(() => saveEditorPatchInternal(owner, packedPatch, newAssets, expectedRevision, operationId));
+}
+async function saveEditorPatchInternal(owner: string, packedPatch: LibraryPatch, newAssets: Record<string, string>, expectedRevision: string | null, operationId: string): Promise<StoredLibrary> {
   if (!newAssets || typeof newAssets !== "object" || Array.isArray(newAssets)) throw new Error("Invalid assets.");
   for (const [key, asset] of Object.entries(newAssets)) if (!/^[a-f0-9]{64}$/.test(key) || typeof asset !== "string" || !/^data:image\//.test(asset) || await contentHash(asset) !== key) throw new Error("Invalid embedded asset.");
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -149,7 +198,7 @@ export async function saveEditorPatch(owner: string, packedPatch: LibraryPatch, 
         await writeCloud(owner, envelope, record?.revision ?? null);
         saved = stored(readEnvelope(envelope), storage, scope);
       } else {
-        saved = await saveEditorLibrary(owner, library, record?.revision ?? null, operationId);
+        saved = await saveEditorLibraryInternal(owner, library, record?.revision ?? null, operationId);
       }
       return {...saved, reconciled: (record?.revision ?? null) !== expectedRevision};
     } catch (error) { if (!(error instanceof LibraryConflictError) || attempt === 3) throw error; }
@@ -212,17 +261,17 @@ async function collaborationOperation(owner: string, documentId: string, update?
 /** First readers atomically create the room's one shared CRDT baseline. Both
  * CRDT state and materialized artwork are committed in the same CAS envelope. */
 export async function getCollaborationDocument(owner: string, documentId: string): Promise<StoredCollaborationDocument> {
-  return collaborationOperation(owner, documentId);
+  return withPersistenceQueue(() => collaborationOperation(owner, documentId));
 }
 /** Poll only the small revision projection; artwork is fetched when it changes. */
 export async function getCollaborationRevision(owner: string): Promise<string | null> {
   const db = getAdminSupabase();
-  if (!db) {assertDevelopmentStorage(); return (await readFile(editorOwnerScope(owner)))?.revision ?? null;}
+  if (!db) {assertDevelopmentStorage(); return withPersistenceQueue(async () => (await readFile(editorOwnerScope(owner)))?.revision ?? null);}
   const {data, error} = await db.from("gf_client_state").select("revision:data->>revision").eq("owner", storageKey(owner)).maybeSingle();
   if (error) throw new Error("Live collaboration storage is unavailable.");
   return data?.revision ?? null;
 }
 export async function saveCollaborationDocument(owner: string, documentId: string, update: string, expectedEpoch: string): Promise<StoredCollaborationDocument> {
   if (typeof expectedEpoch !== "string" || !/^[a-f0-9-]{36}$/i.test(expectedEpoch)) throw new Error("Reload the live document before sending edits.");
-  return collaborationOperation(owner, documentId, update, expectedEpoch);
+  return withPersistenceQueue(() => collaborationOperation(owner, documentId, update, expectedEpoch));
 }
