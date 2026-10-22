@@ -1,5 +1,7 @@
 import { resolveEngineAccess } from "@/lib/engine/member";
 import { parseLibrary } from "@/lib/template-editor/model";
+import { jsonByteStream } from "@/lib/template-editor/json-stream";
+import { packAssets } from "@/lib/template-editor/library-sync";
 import {
   getEditorLibrary,
   LibraryConflictError,
@@ -15,7 +17,7 @@ const MAX_BODY_BYTES = 12 * 1024 * 1024;
 const PRIVATE_HEADERS = { "Cache-Control": "private, no-store" };
 
 function response(body: unknown, status = 200) {
-  return Response.json(body, { status, headers: PRIVATE_HEADERS });
+  return new Response(jsonByteStream(body), { status, headers: { ...PRIVATE_HEADERS, "Content-Type": "application/json" } });
 }
 
 function httpOrigin(value: string | undefined): string | null {
@@ -56,7 +58,12 @@ export async function GET(request: Request) {
     const url = request ? new URL(request.url) : null;
     const documentId = url?.searchParams.get("documentId");
     if (url?.searchParams.get("history") === "1" && documentId) return response({versions: await getDocumentHistory(access.ownerKey, documentId)});
-    return response(await getEditorLibrary(access.ownerKey));
+    const saved = await getEditorLibrary(access.ownerKey);
+    if (url?.searchParams.get("packed") === "1") {
+      const packed = await packAssets(saved.library);
+      return response({...saved, library: packed.value, assets: packed.assets});
+    }
+    return response(saved);
   } catch (error) {
     console.error("Template library read failed", error);
     return response(

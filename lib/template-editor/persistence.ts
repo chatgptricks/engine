@@ -140,7 +140,17 @@ export async function saveEditorPatch(owner: string, packedPatch: LibraryPatch, 
       const parsed = parseLibrary(changed); if (!parsed) throw new Error("Invalid document changes or workspace limit exceeded."); const budget = checkLibrarySaveBudget(parsed); if (!budget.ok) throw new Error(budget.error); library = parsed;
     } catch (error) { if (error instanceof LibraryPatchConflict) throw new LibraryConflictError(error.ids); if (error instanceof Error && /embedded asset is missing/.test(error.message)) throw new LibraryConflictError(["assets"]); throw error; }
     try {
-      const saved = await saveEditorLibrary(owner, library, record?.revision ?? null, operationId);
+      // The cloud write already compares the exact revision read above. Reuse
+      // that envelope instead of reading and expanding the entire workspace a
+      // second time; a racing save still retries through the CAS failure below.
+      let saved: StoredLibrary;
+      if (storage === "cloud") {
+        const envelope = await envelopeFor(record, library, operationId);
+        await writeCloud(owner, envelope, record?.revision ?? null);
+        saved = stored(readEnvelope(envelope), storage, scope);
+      } else {
+        saved = await saveEditorLibrary(owner, library, record?.revision ?? null, operationId);
+      }
       return {...saved, reconciled: (record?.revision ?? null) !== expectedRevision};
     } catch (error) { if (!(error instanceof LibraryConflictError) || attempt === 3) throw error; }
   }
@@ -150,7 +160,7 @@ export async function saveEditorPatch(owner: string, packedPatch: LibraryPatch, 
 function collaborationStored(record: LibraryEnvelope, documentId: string, storage: "cloud" | "local", scope: string): StoredCollaborationDocument {
   const document = record.library.designs.find(item => item.id === documentId && !item.deletedAt), state = record.collaborationStates?.[documentId];
   if (!document || !state) throw new Error("This document is not available in the signed-in workspace.");
-  return {...stored(record, storage, scope), ...state, document};
+  return {revision: record.revision, storage, scope, assetKeys: Object.keys(record.assets ?? {}), ...state, document};
 }
 
 async function collaborationOperation(owner: string, documentId: string, update?: string, expectedEpoch?: string): Promise<StoredCollaborationDocument> {

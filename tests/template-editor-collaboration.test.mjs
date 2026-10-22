@@ -150,6 +150,7 @@ test("collaboration API rejects foreign workspaces and origins before room acces
     "@/lib/engine/member": {resolveEngineAccess: async () => ({kind: "owner", ownerKey: "team"})},
     "@/lib/template-editor/persistence": {...persistence, getCollaborationDocument: async (...args) => {reads++; return persistence.getCollaborationDocument(...args);}},
     "@/lib/template-editor/collaboration-document": collaboration,
+    "@/lib/template-editor/json-stream": load("lib/template-editor/json-stream.ts"),
     "@/lib/template-editor/collaboration-server": {collaborationActor: async () => actor, readCollaborationParticipants: async () => [], heartbeatCollaboration: async () => [], validateCollaborationAwareness: () => ({selected: [], cursor: null})},
   })("app/api/template-editor/collaboration/route.ts");
   const request = (input, headers = {}) => new Request("http://localhost/api/template-editor/collaboration", {method: "POST", headers: {"Content-Type": "application/json", ...headers}, body: JSON.stringify(input)});

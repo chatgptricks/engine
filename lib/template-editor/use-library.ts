@@ -9,7 +9,7 @@ import {
 } from "react";
 import { EMPTY_LIBRARY, parseLibrary, type EditorLibrary, type DesignDocument } from "./model";
 import type {CollaborationSnapshot} from "./collaboration-types";
-import {sameContent, reconcileLibraries, type LibraryPatch} from "./library-sync";
+import {sameContent, reconcileLibraries, unpackAssets, type LibraryPatch} from "./library-sync";
 import {prepareSaveOffThread} from './asset-processing';
 import { checkLibrarySaveBudget } from "./library-budget";
 import {saveRetryDelay,autosaveDelay} from './save-retry';
@@ -55,7 +55,11 @@ function responseError(value: unknown, fallback: string): string {
 function remoteLibrary(value: unknown): RemoteLibrary | null {
   if (!value || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  const library = parseLibrary(record.library);
+  if (record.assets !== undefined && (!record.assets || typeof record.assets !== "object" || Array.isArray(record.assets))) return null;
+  let library: EditorLibrary | null;
+  try {
+    library = parseLibrary(record.assets === undefined ? record.library : unpackAssets(record.library, record.assets as Record<string, string>));
+  } catch { return null; }
   if (
     !library ||
     !(record.revision === null || typeof record.revision === "string") ||
@@ -337,7 +341,7 @@ export function useEditorLibrary(expectedScope?: string) {
       let remote: RemoteLibrary | null = null;
       let offline = false;
       try {
-        const result = await fetch(ENDPOINT, {cache: "no-store", signal: controller.signal});
+        const result = await fetch(`${ENDPOINT}?packed=1`, {cache: "no-store", signal: controller.signal});
         const body = await result.json();
         if (!result.ok) {
           if (result.status === 401) clearCachedWorkspaceSelection();
@@ -404,7 +408,13 @@ export function useEditorLibrary(expectedScope?: string) {
         if (parseLibrary(merged.library) && checkLibrarySaveBudget(merged.library).ok) {current.current = merged.library; conflict.current = false;}
       }
       if (draft && conflict.current) revision.current = draft.revision;
-      if (draft && !conflict.current) {dirty.current = !sameContent(current.current, remote.library); await persistRecovery();}
+      if (draft && !conflict.current) {
+        dirty.current = !sameContent(current.current, remote.library);
+        if (dirty.current) await persistRecovery();
+        // Reconciliation can prove an older draft landed even when the server
+        // also contains newer edits. Retire only the adopted snapshot.
+        else await clearSavedRecovery(stamp.current);
+      }
       loaded.current = true;
       if (mounted.current) {
         updateLibrary(current.current);
@@ -417,7 +427,7 @@ export function useEditorLibrary(expectedScope?: string) {
             ? "offline"
             : conflict.current
             ? "conflict"
-            : draft
+            : dirty.current
               ? "saving"
               : remote.storage === "cloud"
                 ? "saved"
@@ -431,7 +441,7 @@ export function useEditorLibrary(expectedScope?: string) {
               : null,
         );
       }
-      if (draft && !conflict.current)
+      if (dirty.current && !conflict.current)
         timer.current = setTimeout(() => {
           void saveRef.current();
         }, 600);
@@ -446,7 +456,7 @@ export function useEditorLibrary(expectedScope?: string) {
           : "Your library could not be loaded. Retry before editing.",
       );
     }
-  }, [bumpChangedDocuments, persistRecovery]);
+  }, [bumpChangedDocuments, persistRecovery, clearSavedRecovery]);
 
   useEffect(() => {
     mounted.current = true;

@@ -4,6 +4,7 @@ import {editorOwnerScope, getCollaborationDocument, getCollaborationRevision, sa
 import {collaborationActor, heartbeatCollaboration, readCollaborationParticipants, validateCollaborationAwareness} from "@/lib/template-editor/collaboration-server";
 import {createCollaborationDocument, decodeCollaborationUpdate, readCollaborationDocument} from "@/lib/template-editor/collaboration-document";
 import type {CollaborationActor, CollaborationParticipant, CollaborationSnapshot} from "@/lib/template-editor/collaboration-types";
+import {jsonByteStream, jsonTextChunks} from "@/lib/template-editor/json-stream";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -11,7 +12,7 @@ const PRIVATE = {"Cache-Control": "private, no-store"};
 const MAX_BODY = 25 * 1024 * 1024;
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(value);
 const validSession = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
-const reply = (body: unknown, status = 200) => Response.json(body, {status, headers: PRIVATE});
+const reply = (body: unknown, status = 200) => new Response(jsonByteStream(body), {status, headers: {...PRIVATE, "Content-Type": "application/json"}});
 function originAllowed(request: Request) {
   const origin = request.headers.get("origin");
   if (origin === null) return true;
@@ -84,25 +85,34 @@ export async function GET(request: Request) {
   const query = new URL(request.url).searchParams, documentId = query.get("documentId"), sessionId = query.get("sessionId");
   if (!validId(documentId) || !validSession(sessionId)) return reply({error: "Invalid collaboration session."}, 400);
   if (query.get("expectedScope") !== editorOwnerScope(access.ownerKey)) return reply({error: "The signed-in workspace changed.", code: "workspace_owner_changed"}, 403);
-  let initial: StoredCollaborationDocument, actor: CollaborationActor, peers: CollaborationParticipant[];
+  let initial: StoredCollaborationDocument | null, actor: CollaborationActor, peers: CollaborationParticipant[];
   try {
     initial = await getCollaborationDocument(access.ownerKey, documentId);
     actor = await collaborationActor(access, sessionId, query.get("name") ?? undefined);
     peers = await heartbeatCollaboration(access.ownerKey, documentId, sessionId, actor, {selected: [], cursor: null}, 0);
   } catch (error) {const {message, status} = statusFor(error); return reply({error: message, ...(status === 404 ? {code: "not_found"} : {})}, status);}
-  const encoder = new TextEncoder();
+  const scope = initial.scope, encoder = new TextEncoder();
   let stopped = false, timer: ReturnType<typeof setTimeout> | undefined, rotation: ReturnType<typeof setTimeout> | undefined;
   let cleanup = () => {};
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      let revision = initial.revision;
+      const first = initial!;
+      let revision = first.revision;
       const signature = (participants: CollaborationParticipant[]) => JSON.stringify(participants.map(participant => ({...participant, seenAt: 0})));
       let presenceSignature = signature(peers);
-      const send = (event: string, value: unknown) => {if (!stopped) controller.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(value)}\n\n`));};
+      const send = (event: string, value: unknown) => {
+        if (stopped) return;
+        controller.enqueue(encoder.encode(`event: ${event}\ndata: `));
+        for (const chunk of jsonTextChunks(value)) controller.enqueue(encoder.encode(chunk));
+        controller.enqueue(encoder.encode("\n\n"));
+      };
       const stop = () => {if (stopped) return; stopped = true; if (timer) clearTimeout(timer); if (rotation) clearTimeout(rotation); request.signal.removeEventListener("abort", stop); try {controller.close();} catch { /* Reader already cancelled. */ }};
       cleanup = stop;
       request.signal.addEventListener("abort", stop, {once: true});
-      send("snapshot", snapshot(initial, actor, peers));
+      send("snapshot", snapshot(first, actor, peers));
+      // Polling needs only the scope and revision. Release the image-heavy
+      // initial snapshot instead of retaining it for the life of every stream.
+      initial = null;
       const poll = async () => {
         if (stopped) return;
         try {
@@ -112,7 +122,7 @@ export async function GET(request: Request) {
             const current = await getCollaborationDocument(access.ownerKey, documentId);
             revision = current.revision;
             send("update", snapshot(current, actor, participants));
-          } else if (signature(participants) !== presenceSignature) send("presence", {scope: initial.scope, actor, participants});
+          } else if (signature(participants) !== presenceSignature) send("presence", {scope, actor, participants});
           presenceSignature = signature(participants);
         } catch (error) {const failure = statusFor(error); send("error", {error: failure.message, ...(failure.status === 404 ? {code: "not_found"} : {})}); stop(); return;}
         if (!stopped) timer = setTimeout(() => {void poll();}, 350);

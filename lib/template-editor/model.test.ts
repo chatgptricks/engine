@@ -14,6 +14,7 @@ import {
   duplicatePage,
   editTemplateDesign,
   parseLibrary,
+  fitsJsonCharacterLimit,
   resizeCanvasScene,
   sceneForPage,
   storyForDesign,
@@ -26,6 +27,27 @@ import {
   type CanvasElement,
   type CanvasScene,
 } from "./model";
+
+test("bounded JSON size validation matches escaped characters and shared JSON values", () => {
+  const shared = { image: "data:image/png;base64," + "A".repeat(2_000_000) };
+  const values: unknown[] = [null, true, false, 1e30, NaN, -0, {}, [],
+    {shared, again: shared}, {ignored: undefined, array: [undefined, , null]},
+    {date: new Date("2026-10-22T00:00:00Z")},
+    {"quoted\"key": "\\\b\f\n\r\t\u0000\u001f\ud800\udfff😀\u2028"},
+    Array.from({length: 0x10000}, (_, code) => String.fromCharCode(code)).join("")];
+  for (const value of values) {
+    const length = JSON.stringify(value).length;
+    assert.equal(fitsJsonCharacterLimit(value, length), true);
+    assert.equal(fitsJsonCharacterLimit(value, length - 1), false);
+  }
+  const circular: {self?: unknown} = {}; circular.self = circular;
+  assert.equal(fitsJsonCharacterLimit(circular, 1_000), false);
+  assert.equal(fitsJsonCharacterLimit({value: BigInt(1)}, 1_000), false);
+});
+
+test("library size validation still rejects oversized unknown fields before rendering", () => {
+  assert.equal(parseLibrary({...EMPTY_LIBRARY, unknown: "A".repeat(30 * 1024 * 1024)}), null);
+});
 
 function library(): EditorLibrary {
   return {

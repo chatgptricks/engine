@@ -15,6 +15,88 @@ function load(file,dependencies={}){
 }
 const model=load('lib/template-editor/model.ts'),sync=load('lib/template-editor/library-sync.ts'),merge=load('lib/template-editor/three-way-merge.ts'),budget=load('lib/template-editor/library-budget.ts'),incremental=load('lib/template-editor/incremental-validation.ts');
 const doc=()=>model.createBlankDesign('Draft','portrait');
+
+// Exercise the hook's asynchronous load path with real parsing and reconciliation.
+// Browser storage and timers stay controlled so no autosave can touch a server.
+async function recoveredWorkspace(t,{remote,drafts,cleanupError=false}){
+ const slots=[],effects=[],scheduled=new Map(),requests=[],cached=[],removed=[],persisted=[],stored=new Map(drafts.map(draft=>[draft.key,structuredClone(draft)]));let cursor=0;
+ const changed=(slot,deps)=>!slot||!deps||deps.some((value,index)=>!Object.is(value,slot.deps?.[index]));
+ const react={
+  useRef(initial){const index=cursor++;return slots[index]??(slots[index]={current:initial});},
+  useState(initial){const index=cursor++;slots[index]??={value:typeof initial==='function'?initial():initial};return [slots[index].value,value=>{slots[index].value=typeof value==='function'?value(slots[index].value):value;}];},
+  useCallback(callback,deps){const index=cursor++;if(changed(slots[index],deps))slots[index]={value:callback,deps};return slots[index].value;},
+  useEffect(work,deps){const index=cursor++;if(changed(slots[index],deps)){const previous=slots[index];slots[index]={deps};effects.push(()=>{previous?.cleanup?.();slots[index].cleanup=work();});}},
+ };
+ const previousWindow=globalThis.window;globalThis.window={addEventListener(){},removeEventListener(){}};
+ t.after(()=>{slots.forEach(slot=>slot?.cleanup?.());if(previousWindow===undefined)delete globalThis.window;else globalThis.window=previousWindow;});
+ t.mock.method(globalThis,'fetch',async(url,options)=>{requests.push({url,...options});return Response.json(remote);});
+ t.mock.method(globalThis,'setTimeout',(callback,delay)=>{const handle={};scheduled.set(handle,{callback,delay});return handle;});
+ t.mock.method(globalThis,'clearTimeout',handle=>scheduled.delete(handle));
+ const {useEditorLibrary:loadWorkspaceHook}=load('lib/template-editor/use-library.ts',{
+  react,'./model':model,'./library-sync':sync,'./library-budget':budget,'./incremental-validation':incremental,
+  './asset-processing':{prepareSaveOffThread(){assert.fail('A clean recovery must not prepare a server save.');}},
+  './recovery-storage':{
+   RecoveryMigrationError:class extends Error{},cacheWorkspace:async value=>{cached.push(value);},clearCachedWorkspaceSelection(){},getCachedWorkspace:async()=>null,
+   getRecoveryDrafts:async scope=>[...stored.values()].filter(draft=>draft.scope===scope),
+   saveRecoveryDraft:async draft=>{persisted.push(draft);stored.set(draft.key,structuredClone(draft));},
+   removeExactDraft:async draft=>{removed.push({key:draft.key,stamp:draft.stamp});if(cleanupError)throw Error('Recovery cleanup unavailable');if(stored.get(draft.key)?.stamp===draft.stamp)stored.delete(draft.key);},
+  },
+ });
+ const render=()=>{cursor=0;const state=loadWorkspaceHook(remote.scope);effects.splice(0).forEach(work=>work());return state;};
+ render();await new Promise(resolve=>setImmediate(resolve));
+ return {state:render(),scheduled,requests,cached,removed,persisted,stored};
+}
+
+test('workspace load opts into packed GET and restores assets before parsing or caching',async t=>{
+ const image='data:image/png;base64,iVBORw0KGgo=',library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]});
+ library.designs[0].pages[0].image.url=image;
+ library.designs[0].pages[0].canvas.elements=[model.createCanvasElement('image',{src:image,previewSrc:image})];
+ const packed=await sync.packAssets(library),scope='d'.repeat(64),assetKeys=Object.keys(packed.assets);
+ const run=await recoveredWorkspace(t,{remote:{library:packed.value,assets:packed.assets,assetKeys,revision:'saved-revision',storage:'cloud',scope},drafts:[]});
+ assert.equal(run.requests[0].url,'/api/template-editor?packed=1');assert.equal(run.state.status,'saved');assert.equal(run.state.canEdit,true);
+ assert.deepEqual(run.state.library,model.parseLibrary(library));
+ assert.deepEqual(run.cached,[{library:model.parseLibrary(library),assetKeys,revision:'saved-revision',storage:'cloud',scope}]);
+ assert.equal(run.scheduled.size,0);
+});
+
+test('missing or malformed packed assets fail load without caching partial artwork',async t=>{
+ for(const assets of [{},null,[]])await t.test(JSON.stringify(assets),async t=>{
+  const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]});library.designs[0].pages[0].image.url=`engine-asset:${'a'.repeat(64)}`;
+  const run=await recoveredWorkspace(t,{remote:{library,assets,revision:'saved-revision',storage:'cloud',scope:'e'.repeat(64)},drafts:[]});
+  assert.equal(run.state.ready,true);assert.equal(run.state.canEdit,false);assert.equal(run.state.status,'error');assert.match(run.state.error,/unreadable library/);
+  assert.equal(run.cached.length,0);assert.deepEqual(run.state.library,model.EMPTY_LIBRARY);
+ });
+});
+
+test('a recovered draft already included after reconciliation settles as saved and removes only its exact snapshot',async t=>{
+ for(const storage of ['cloud','local'])await t.test(storage,async t=>{
+  const base=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),folders:[],designs:[doc()]}),local=structuredClone(base);local.designs[0].name='Already saved edit';
+  const remoteLibrary=model.parseLibrary({...structuredClone(local),designs:[...local.designs,doc()]});
+  const scope='a'.repeat(64),adopted={key:`${scope}:closed-tab`,scope,stamp:'adopted-edit',revision:'old',updatedAt:20,baseline:base,library:local},independent={...adopted,key:`${scope}:other-tab`,stamp:'independent-edit',updatedAt:10,library:base};
+  assert.equal(sync.sameContent(local,remoteLibrary),false,'The initial equality shortcut must not handle this fixture');
+  const run=await recoveredWorkspace(t,{remote:{library:remoteLibrary,revision:'new',storage,scope},drafts:[adopted,independent]});
+  assert.equal(run.state.ready,true);assert.equal(run.state.canEdit,true);assert.equal(run.state.status,storage==='cloud'?'saved':'local');assert.equal(run.state.error,null);
+  assert.ok(sync.sameContent(run.state.library,remoteLibrary));assert.equal(run.scheduled.size,0);assert.equal(run.persisted.length,0);
+  assert.deepEqual([...run.stored.values()],[independent]);assert.ok(run.removed.some(item=>item.key===adopted.key&&item.stamp===adopted.stamp));
+  run.state.retrySave();await new Promise(resolve=>setImmediate(resolve));assert.equal(run.requests.length,1,'No PUT is needed for recovered changes already on the server');
+ });
+});
+
+test('unmerged recovered changes remain protected and schedule their save',async t=>{
+ const base=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),folders:[],designs:[doc()]}),local=structuredClone(base),remoteLibrary=model.parseLibrary({...structuredClone(base),designs:[...base.designs,doc()]});local.designs[0].name='Still pending';
+ const scope='b'.repeat(64),draft={key:`${scope}:closed-tab`,scope,stamp:'pending',revision:'old',updatedAt:20,baseline:base,library:local};
+ const run=await recoveredWorkspace(t,{remote:{library:remoteLibrary,revision:'new',storage:'cloud',scope},drafts:[draft]});
+ assert.equal(run.state.status,'saving');assert.equal(run.state.canEdit,true);assert.equal(run.state.library.designs[0].name,'Still pending');assert.equal(run.state.library.designs.length,2);
+ assert.equal(run.removed.length,0);assert.deepEqual(run.stored.get(draft.key),draft);assert.equal(run.persisted.length,1);assert.equal(run.scheduled.size,1);
+});
+
+test('recovery cleanup failure leaves its safe copy without blocking a confirmed saved workspace',async t=>{
+ const base=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),folders:[],designs:[doc()]}),local=structuredClone(base);local.designs[0].name='Landed';const remoteLibrary=model.parseLibrary({...structuredClone(local),designs:[...local.designs,doc()]});
+ const scope='c'.repeat(64),draft={key:`${scope}:closed-tab`,scope,stamp:'landed',revision:'old',updatedAt:20,baseline:base,library:local};
+ const run=await recoveredWorkspace(t,{remote:{library:remoteLibrary,revision:'new',storage:'cloud',scope},drafts:[draft],cleanupError:true});
+ assert.equal(run.state.status,'saved');assert.equal(run.state.error,null);assert.deepEqual(run.stored.get(draft.key),draft);assert.equal(run.scheduled.size,0);
+});
+
 test('recovery baseline merges remote edits without resurrecting a locally deleted document',()=>{
  const base={...structuredClone(model.EMPTY_LIBRARY),designs:[doc(),doc()]},local=structuredClone(base),remote=structuredClone(base);
  local.designs.splice(0,1);remote.designs[1].name='Remote title';
