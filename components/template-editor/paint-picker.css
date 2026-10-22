@@ -1,0 +1,56 @@
+.te-paint-field { display:flex; align-items:center; justify-content:space-between; gap:10px; margin:10px 0; min-width:0; font-size:11px; color:#d7d7dd; }
+.te-paint-label { flex:1; min-width:0; }
+.te-paint-trigger { display:flex; align-items:center; gap:8px; max-width:70%; min-height:34px; padding:5px 8px; border:1px solid #ffffff1c; border-radius:7px; background:#ffffff06; color:inherit; cursor:pointer; font:inherit; }
+.te-paint-trigger:hover { border-color:#ffffff45; background:#ffffff0c; }
+.te-paint-trigger:disabled { opacity:.4; cursor:not-allowed; }
+.te-paint-chip, .te-paint-swatch { display:block; position:relative; flex:none; width:24px; height:24px; overflow:hidden; border-radius:5px; background:repeating-conic-gradient(#92929b 0% 25%,#dedee5 0% 50%) 50% / 8px 8px; box-shadow:inset 0 0 0 1px #ffffff22; }
+.te-paint-chip > span, .te-paint-swatch > span { position:absolute; inset:0; }
+.te-paint-value { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:10px; }
+.te-paint-chevron { color:#9d9da8; }
+.te-paint-field.is-compact { margin:0; flex:none; }
+.te-paint-field.is-compact .te-paint-trigger { max-width:none; min-height:32px; width:32px; padding:3px; }
+.te-paint-field.is-compact .te-paint-chip { width:24px; height:24px; }
+.te-paint-popover { position:fixed; z-index:320; visibility:hidden; width:min(292px,calc(100vw - 24px)); padding:14px; overflow-y:auto; overscroll-behavior:contain; border:1px solid #ffffff24; border-radius:12px; background:#222228; color:#eaeaf0; box-shadow:0 15px 50px #0008; font:12px/1.4 var(--font-geist-sans,Arial,sans-serif); scrollbar-width:thin; box-sizing:border-box; }
+.te-paint-popover *, .te-paint-popover *::before, .te-paint-popover *::after { box-sizing:border-box; }
+.te-paint-popover button, .te-paint-popover input, .te-paint-popover select { font:inherit; color:inherit; }
+.te-paint-popover button { cursor:pointer; }
+.te-paint-popover button:disabled { cursor:not-allowed; opacity:.35; }
+.te-paint-popover :is(button,input,select):focus-visible, .te-paint-trigger:focus-visible { outline:2px solid #b7a1ff; outline-offset:2px; }
+.te-paint-heading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin-bottom:12px; }
+.te-paint-heading strong { font-size:12px; font-weight:600; }
+.te-paint-heading button { display:grid; place-items:center; width:25px; height:25px; padding:0; border:0; border-radius:5px; background:transparent; color:#bdbdc8; font-size:21px; line-height:1; }
+.te-paint-heading button:hover { background:#ffffff12; }
+.te-paint-tabs { display:flex; gap:3px; margin-bottom:14px; padding:3px; border-radius:8px; background:#141418; }
+.te-paint-tabs button { flex:1; padding:6px 8px; border:0; border-radius:5px; background:transparent; color:#b7b7c3; font-size:11px; }
+.te-paint-tabs button[aria-pressed=true] { background:#45414f; color:#fff; }
+.te-paint-popover .te-color-control { margin:0 0 14px; }
+.te-paint-popover .te-color-field { display:flex; align-items:center; justify-content:space-between; gap:5px; padding:0; font-size:10px; }
+.te-paint-popover .te-color-field > span:last-child { display:flex; align-items:center; gap:5px; min-width:0; }
+.te-paint-popover .te-color-swatch { position:relative; display:block; flex:none; width:28px; height:28px; overflow:hidden; border:1px solid #ffffff26; border-radius:5px; }
+.te-paint-popover .te-color-swatch > span { position:absolute; inset:0; }
+.te-paint-popover input[type=color] { position:absolute; inset:0; opacity:0; width:100%; height:100%; cursor:pointer; padding:0; }
+.te-paint-popover .te-color-hex { width:84px; min-width:0; padding:6px; border:1px solid #ffffff1c; border-radius:5px; background:#15151b; text-align:center; font-size:10px; }
+.te-paint-popover .te-color-none { padding:5px; border:1px solid #ffffff1c; border-radius:5px; background:transparent; font-size:10px; }
+.te-paint-popover .te-color-none[aria-pressed=true] { border-color:#b7a1ff; }
+.te-paint-popover .te-color-alpha { display:block; margin-top:12px; }
+.te-paint-popover .te-color-alpha > span { display:flex; justify-content:space-between; color:#a9a9b7; font-size:10px; }
+.te-paint-popover input[type=range] { width:100%; margin:8px 0 0; accent-color:#b7a1ff; }
+.te-paint-swatches { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:9px; }
+.te-paint-popover .te-paint-swatch { width:100%; height:auto; aspect-ratio:1.2; padding:0; border:1px solid #ffffff24; }
+.te-paint-swatch[aria-pressed=true] { outline:2px solid #d4c5ff; outline-offset:2px; }
+.te-paint-gradient-preview { height:42px; margin-bottom:13px; border-radius:7px; border:1px solid #ffffff20; }
+.te-paint-subheading { display:flex; align-items:center; justify-content:space-between; gap:8px; margin:12px 0 9px; color:#a9a9b7; font-size:10px; }
+.te-paint-popover .te-paint-text-button { padding:0; border:0; background:transparent; color:#c8b8fa; font-size:10px; white-space:nowrap; }
+.te-paint-stops { display:flex; gap:7px; overflow:auto; padding:3px 2px 5px; margin-bottom:12px; }
+.te-paint-stop { display:flex; flex:none; flex-direction:column; align-items:center; gap:4px; padding:5px; border:1px solid transparent; border-radius:6px; background:#ffffff05; }
+.te-paint-stop.is-selected { border-color:#b7a1ff; background:#b7a1ff12; }
+.te-paint-stop small { font-size:9px; color:#b7b7c3; }
+.te-paint-stop-position { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.te-paint-stop-position label { display:flex; align-items:center; gap:6px; font-size:10px; color:#a9a9b7; }
+.te-paint-popover input[type=number], .te-paint-popover select { min-width:0; padding:5px 6px; border:1px solid #ffffff1c; border-radius:5px; background:#15151b; }
+.te-paint-popover input[type=number] { width:54px; font-size:11px; }
+.te-paint-direction { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 0 0; }
+.te-paint-direction label { display:flex; align-items:center; gap:6px; font-size:10px; color:#a9a9b7; }
+.te-paint-direction label > span { display:flex; align-items:center; gap:4px; }
+.te-paint-recents { border-top:1px solid #ffffff12; margin-top:15px; }
+.te-paint-popover .is-presets .te-paint-swatch { aspect-ratio:1; }

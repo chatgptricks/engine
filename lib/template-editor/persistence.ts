@@ -8,10 +8,14 @@ import {checkLibrarySaveBudget} from "./library-budget";
 import {listReviewLinks} from './review-inventory';
 import {retainDocumentHistory} from './history-retention';
 import {applyLibraryPatch, contentHash, sameContent, LibraryPatchConflict, packAssets, unpackAssets, type LibraryPatch} from "./library-sync";
+import * as Y from "yjs";
+import {createCollaborationDocument, readCollaborationDocument, writeCollaborationDocument, encodeCollaborationUpdate, decodeCollaborationUpdate} from "./collaboration-document";
 
 export interface StoredLibrary {library: EditorLibrary; revision: string | null; storage: "cloud" | "local"; scope: string; assetKeys?: string[]; reconciled?: boolean}
 export interface DocumentHistoryEntry {id: string; createdAt: string; name: string; document: DesignDocument}
-interface LibraryEnvelope {library: EditorLibrary; revision: string; assets?: Record<string, string>; operations?: string[]; history?: Record<string, DocumentHistoryEntry[]>}
+type CollaborationState = {state: string; version: number; epoch: string};
+interface LibraryEnvelope {library: EditorLibrary; revision: string; assets?: Record<string, string>; operations?: string[]; history?: Record<string, DocumentHistoryEntry[]>; collaborationStates?: Record<string, CollaborationState>}
+export type StoredCollaborationDocument = Omit<StoredLibrary, "library"> & CollaborationState & {document: DesignDocument};
 export class LibraryConflictError extends Error {
   constructor(public ids: string[] = []) { super("This document changed in another tab or device. Your edits have been kept in this browser."); this.name = "LibraryConflictError"; }
 }
@@ -25,7 +29,10 @@ function readEnvelope(value: unknown): LibraryEnvelope {
   const library = parseLibrary(unpackAssets(candidate.library, assets));
   if (!library || typeof candidate.revision !== "string" || !candidate.revision) throw new Error("The saved library could not be read. It has not been overwritten.");
   const history = candidate.history ? unpackAssets(candidate.history, assets) : {};
-  return {library, revision: candidate.revision, assets, operations: Array.isArray(candidate.operations) ? candidate.operations.filter(id => typeof id === "string") : [], history};
+  const collaborationStates = candidate.collaborationStates ?? {};
+  if (!collaborationStates || typeof collaborationStates !== "object" || Array.isArray(collaborationStates) || Object.keys(collaborationStates).length > 150) throw new Error("Saved collaboration state could not be read.");
+  for (const [id, value] of Object.entries(collaborationStates)) if (!library.designs.some(document => document.id === id) || !value || typeof value.state !== "string" || value.state.length > 24 * 1024 * 1024 || !Number.isSafeInteger(value.version) || value.version < 0 || typeof value.epoch !== "string") throw new Error("Saved collaboration state could not be read.");
+  return {library, revision: candidate.revision, assets, operations: Array.isArray(candidate.operations) ? candidate.operations.filter(id => typeof id === "string") : [], history, collaborationStates};
 }
 const FILE_DIRECTORY = developmentDirectory("template-editor");
 let fileLock: Promise<unknown> = Promise.resolve();
@@ -53,7 +60,7 @@ export async function getDocumentHistory(owner: string, documentId: string): Pro
   // Owner is always supplied by the authenticated route, never by the browser.
   return record?.history?.[documentId] ?? [];
 }
-async function envelopeFor(current: LibraryEnvelope | null, library: EditorLibrary, operationId?: string): Promise<LibraryEnvelope> {
+async function envelopeFor(current: LibraryEnvelope | null, library: EditorLibrary, operationId?: string, collaboration?: {documentId: string; value: CollaborationState}): Promise<LibraryEnvelope> {
   // Schema-2 clients from before the built-in catalog controls omit this
   // collection in whole-library saves. Omission leaves current choices intact;
   // explicit catalog decisions remain available to current clients.
@@ -75,7 +82,15 @@ async function envelopeFor(current: LibraryEnvelope | null, library: EditorLibra
   // checkpoints for recovery; cap the total history to a practical shared budget.
   const retained=retainDocumentHistory(history,new Set(savedLibrary.designs.map(doc=>doc.id)),now);
   const packed = await packAssets({library:savedLibrary, history:retained});
-  return {...packed.value, revision: randomUUID(), assets: packed.assets, operations: [...new Set([...(current?.operations ?? []), ...(operationId ? [operationId] : [])])].slice(-100)};
+  const collaborationStates: Record<string, CollaborationState> = {};
+  for (const [id, state] of Object.entries(current?.collaborationStates ?? {})) {
+    const before = current?.library.designs.find(document => document.id === id), after = savedLibrary.designs.find(document => document.id === id);
+    // Ordinary saves invalidate the old room generation. Reconnecting clients
+    // receive a new epoch instead of merging incompatible independently seeded roots.
+    if (after && sameContent(before, after)) collaborationStates[id] = state;
+  }
+  if (collaboration) collaborationStates[collaboration.documentId] = collaboration.value;
+  return {...packed.value, revision: randomUUID(), assets: packed.assets, operations: [...new Set([...(current?.operations ?? []), ...(operationId ? [operationId] : [])])].slice(-100), collaborationStates};
 }
 async function writeFile(scope: string, envelope: LibraryEnvelope) {
   await fs.mkdir(FILE_DIRECTORY, {recursive: true, mode: 0o700});
@@ -130,4 +145,74 @@ export async function saveEditorPatch(owner: string, packedPatch: LibraryPatch, 
     } catch (error) { if (!(error instanceof LibraryConflictError) || attempt === 3) throw error; }
   }
   throw new LibraryConflictError();
+}
+
+function collaborationStored(record: LibraryEnvelope, documentId: string, storage: "cloud" | "local", scope: string): StoredCollaborationDocument {
+  const document = record.library.designs.find(item => item.id === documentId && !item.deletedAt), state = record.collaborationStates?.[documentId];
+  if (!document || !state) throw new Error("This document is not available in the signed-in workspace.");
+  return {...stored(record, storage, scope), ...state, document};
+}
+
+async function collaborationOperation(owner: string, documentId: string, update?: string, expectedEpoch?: string): Promise<StoredCollaborationDocument> {
+  const decoded = update === undefined ? undefined : decodeCollaborationUpdate(update);
+  const run = async () => {
+    for (let attempt = 0; attempt < 8; attempt++) {
+      const {record, storage, scope} = await readRecord(owner);
+      const before = record?.library.designs.find(document => document.id === documentId && !document.deletedAt);
+      if (!record || !before) throw new Error("This document is not available in the signed-in workspace.");
+      const cached = record.collaborationStates?.[documentId];
+      if (cached && expectedEpoch !== undefined && expectedEpoch !== cached.epoch) throw new Error("The live document generation changed. Reconnect before sending edits.");
+      if (!cached && decoded) throw new Error("The live document generation changed. Reconnect before sending edits.");
+      if (cached && !decoded) return collaborationStored(record, documentId, storage, scope);
+      const doc = createCollaborationDocument();
+      try {
+        if (cached) Y.applyUpdate(doc, decodeCollaborationUpdate(cached.state));
+        else {
+          const seed = createCollaborationDocument(before);
+          try {Y.applyUpdate(doc, Y.encodeStateAsUpdate(seed));} finally {seed.destroy();}
+        }
+        if (decoded) Y.applyUpdate(doc, decoded, "engine-collaboration-server");
+        const raw = readCollaborationDocument(doc);
+        if (raw.id !== documentId) throw new Error("A collaboration room cannot change document identity.");
+        const contentChanged = !sameContent({...before, updatedAt: undefined}, {...raw, createdAt: before.createdAt, updatedAt: undefined});
+        const canonical = {...raw, createdAt: before.createdAt, updatedAt: contentChanged ? new Date().toISOString() : before.updatedAt};
+        const candidate = {...record.library, designs: record.library.designs.map(document => document.id === documentId ? canonical : document)};
+        const parsed = parseLibrary(candidate);
+        if (!parsed) throw new Error("Invalid collaboration document or workspace limit exceeded.");
+        const budget = checkLibrarySaveBudget(parsed);
+        if (!budget.ok) throw new Error(budget.error);
+        const document = parsed.designs.find(item => item.id === documentId)!;
+        if (!sameContent(raw, document)) writeCollaborationDocument(doc, raw, document, "engine-collaboration-normalize");
+        const state = encodeCollaborationUpdate(Y.encodeStateAsUpdate(doc));
+        if (state.length > 24 * 1024 * 1024) throw new Error("Live collaboration exceeds its document size limit.");
+        if (cached && state === cached.state) return collaborationStored(record, documentId, storage, scope);
+        const value = {state, version: (cached?.version ?? 0) + 1, epoch: cached?.epoch ?? randomUUID()};
+        const envelope = await envelopeFor(record, parsed, undefined, {documentId, value});
+        try {
+          if (storage === "local") await writeFile(scope, envelope); else await writeCloud(owner, envelope, record.revision);
+          return collaborationStored(readEnvelope(envelope), documentId, storage, scope);
+        } catch (error) {if (!(error instanceof LibraryConflictError) || attempt === 7) throw error;}
+      } finally {doc.destroy();}
+    }
+    throw new LibraryConflictError([documentId]);
+  };
+  return getAdminSupabase() ? run() : withFileLock(run);
+}
+
+/** First readers atomically create the room's one shared CRDT baseline. Both
+ * CRDT state and materialized artwork are committed in the same CAS envelope. */
+export async function getCollaborationDocument(owner: string, documentId: string): Promise<StoredCollaborationDocument> {
+  return collaborationOperation(owner, documentId);
+}
+/** Poll only the small revision projection; artwork is fetched when it changes. */
+export async function getCollaborationRevision(owner: string): Promise<string | null> {
+  const db = getAdminSupabase();
+  if (!db) {assertDevelopmentStorage(); return (await readFile(editorOwnerScope(owner)))?.revision ?? null;}
+  const {data, error} = await db.from("gf_client_state").select("revision:data->>revision").eq("owner", storageKey(owner)).maybeSingle();
+  if (error) throw new Error("Live collaboration storage is unavailable.");
+  return data?.revision ?? null;
+}
+export async function saveCollaborationDocument(owner: string, documentId: string, update: string, expectedEpoch: string): Promise<StoredCollaborationDocument> {
+  if (typeof expectedEpoch !== "string" || !/^[a-f0-9-]{36}$/i.test(expectedEpoch)) throw new Error("Reload the live document before sending edits.");
+  return collaborationOperation(owner, documentId, update, expectedEpoch);
 }

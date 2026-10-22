@@ -1,0 +1,88 @@
+/* Editor chrome only. Authored canvas elements retain their own styles. */
+.te-guided-editor {
+  --te-ui-panel: #1c1c24;
+  --te-ui-surface: #292933;
+  --te-ui-field: #25252f;
+  --te-ui-border: #494754;
+  --te-ui-border-hover: #777081;
+  --te-ui-muted: #b6b1c2;
+  --te-ui-radius: 9px;
+}
+.te-guided-editor .te-tool-tabs button { border-color: transparent; background: transparent; border-radius: 12px; }
+.te-guided-editor .te-tool-tabs button.is-active { background: #b89ae522; border-color: transparent; box-shadow: none; color: #e8d8ff; }
+.te-guided-editor .te-tool-tabs button:hover:not(:disabled) { border-color: transparent; }
+.te-guided-editor .te-editor-header { border-bottom-color: #ffffff12; }
+.te-guided-editor .te-editor-header :is(.te-icon, .te-header-menu) { background: transparent; border-color: transparent; }
+.te-guided-editor .te-editor-header :is(.te-icon, .te-header-menu):hover:not(:disabled) { background: var(--te-ui-hover); border-color: transparent; }
+.te-guided-editor .te-document-title input { border-color: transparent; background: transparent; }
+.te-guided-editor .te-editor-toolbar { padding-block: 7px; border-bottom-color: #ffffff12; }
+.te-guided-editor .te-canvas-tools button { border-color: transparent; background: transparent; }
+.te-guided-editor .te-quick-toolbar :is(.te-context-action, .te-quick-format-button) { border-color: transparent; background: transparent; }
+.te-guided-editor .te-editor-toolbar button[aria-pressed=true] { background: #b89ae522; border-color: #b89ae54d; }
+.te-guided-editor .te-editor-toolbar button:hover:not(:disabled) { background: var(--te-ui-hover); }
+.te-guided-editor .te-drawer-heading { border-bottom-color: #ffffff0d; }
+.te-guided-editor .te-element-heading { margin-bottom: 12px; }
+.te-guided-editor .te-element-heading h2 { margin-top: 5px; font-size: 14px; }
+.te-guided-editor .te-element-heading .te-icon { background: transparent; border-color: transparent; }
+.te-guided-editor .te-inspector-tabs { display: flex; flex-wrap: nowrap; gap: 2px; overflow-x: auto; padding-bottom: 6px; margin-bottom: 4px; scrollbar-width: thin; }
+.te-guided-editor .te-inspector-tabs button { flex: none; padding-inline: 9px; border-color: transparent; background: transparent; font-size: 12px !important; white-space: nowrap; }
+.te-guided-editor .te-inspector-tabs button[aria-pressed=true] { border-color: transparent; background: #b89ae522; box-shadow: none; color: #e8d8ff; }
+.te-guided-editor .te-element-section { border-top-color: #ffffff0d; padding-block: 14px; }
+.te-guided-editor .te-element-section h3 { font-size: 13px; font-weight: 600; margin-bottom: 12px; }
+.te-guided-editor .te-element-section .te-element-section { margin-top: 8px; padding-bottom: 0; }
+.te-guided-editor details.te-advanced-section > summary { min-height: 32px; border: 0; background: transparent; padding: 0; font-size: 12px; color: var(--te-ui-muted); }
+.te-guided-editor details.te-advanced-section > summary:hover { color: var(--te-ui-text); }
+.te-guided-editor details.te-advanced-section > summary::after { content: "⌄"; float: none; font-size: 16px; color: inherit; transition: transform 120ms ease; }
+.te-guided-editor details.te-advanced-section[open] > summary::after { transform: rotate(180deg); }
+.te-guided-editor details.te-advanced-section > div { padding-top: 12px; }
+.te-guided-editor .te-element-segments { border-color: transparent; background: var(--te-ui-field); gap: 2px; padding: 3px; }
+.te-guided-editor .te-element-segments button { border-color: transparent; background: transparent; padding-inline: 5px; }
+.te-guided-editor .te-element-segments button.is-active { border-color: transparent; background: #b89ae52e; box-shadow: none; }
+.te-guided-editor .te-insert-text { width: 100%; justify-content: center; gap: 10px; min-height: 44px; }
+.te-guided-editor .te-shortcut-hint { margin-left: auto; padding: 1px 5px; border: 1px solid currentColor; border-radius: 4px; font-size: 10px; opacity: .6; }
+.te-guided-editor .te-panel-heading { margin: 24px 0 12px; }
+.te-guided-editor .te-panel-heading h2 { margin: 0; font-size: 13px; font-weight: 600; }
+.te-guided-editor .te-effect-presets { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 7px; margin-bottom: 14px; }
+.te-guided-editor .te-effect-presets button { display: flex; flex-direction: column; align-items: center; gap: 10px; min-width: 0; border: 1px solid var(--te-ui-border); border-radius: 9px; background: var(--te-ui-field); color: var(--te-ui-muted); padding: 12px 3px 8px; font: inherit; font-size: 11px; cursor: pointer; }
+.te-guided-editor .te-effect-presets button:hover:not(:disabled) { background: var(--te-ui-hover); color: var(--te-ui-text); }
+.te-guided-editor .te-effect-presets button[aria-pressed=true] { background: #b89ae522; border-color: var(--te-ui-accent); color: var(--te-ui-text); }
+.te-guided-editor .te-effect-presets button:focus-visible { outline: 2px solid var(--te-ui-focus); outline-offset: 2px; }
+.te-guided-editor .te-effect-preview { color: #fff; font-size: 22px; line-height: 1; font-weight: 700; }
+.te-guided-editor .te-effect-preview.is-soft { text-shadow: 0 3px 8px #000; }
+.te-guided-editor .te-effect-preview.is-lift { text-shadow: 0 5px 2px #000; }
+.te-guided-editor .te-effect-preview.is-glow { text-shadow: 0 0 8px #fff; }
+@media (max-width: 760px) {
+  .te-guided-editor .te-inspector-tabs { margin-bottom: 0; }
+  .te-guided-editor details.te-advanced-section > summary { min-height: 44px; }
+  .te-guided-editor .te-editor-toolbar { padding-inline: 8px; }
+  .te-guided-editor .te-effect-presets button { min-height: 68px; }
+}
+/* While typing, font, paint and range formatting share one contextual toolbar. */
+.te-guided-editor .te-editor-toolbar > .te-text-toolbar-host { flex: 1 1 300px; min-width: 0; }
+.te-guided-editor .te-editor-toolbar > .te-text-toolbar-host:empty { display: none; }
+.te-guided-editor .te-editor-toolbar .te-rich-controls.te-rich-controls-docked { min-height: var(--te-ui-target); padding: 0; border: 0; background: transparent; color: var(--te-ui-text); gap: 4px; }
+.te-guided-editor .te-editor-toolbar .te-rich-controls-label { display: none; }
+.te-guided-editor .te-editor-toolbar .te-rich-controls button { border-color: transparent; background: transparent; }
+.te-guided-editor .te-editor-toolbar .te-rich-controls button:hover:not(:disabled) { background: var(--te-ui-hover); }
+.te-guided-editor .te-editor-toolbar .te-rich-controls-done { background: #b89ae522; color: #e8d8ff; }
+.te-guided-editor .te-editor-toolbar:has(.te-text-toolbar-host:not(:empty)) { column-gap: 8px; row-gap: 6px; }
+.te-guided-editor .te-editor-toolbar:has(.te-text-toolbar-host:not(:empty)) > .te-canvas-tools { display: none; }
+.te-guided-editor .te-editor-toolbar:has(.te-text-toolbar-host:not(:empty)) > .te-quick-toolbar { flex: 0 1 auto; }
+.te-guided-editor .te-editor-toolbar:has(.te-text-toolbar-host:not(:empty)) .te-quick-toolbar :is(.te-quick-format-button, .te-quick-actions, .te-quick-object-actions, .te-quick-label, .te-quick-spacer, button[aria-label="More canvas actions"]) { display: none; }
+/* The normal mobile inspector rule hides duplicate quick fields; keep them here
+   because the active text toolbar is the editing surface. */
+.te-guided-editor .te-editor-toolbar:has(.te-text-toolbar-host:not(:empty)) .te-quick-toolbar.is-compact .te-quick-basics { display: flex; width: auto; }
+@media (max-width: 760px) {
+  .te-guided-editor .te-editor-toolbar:has(.te-text-toolbar-host:not(:empty)) > .te-quick-toolbar { flex: 1 1 100%; }
+  .te-guided-editor .te-editor-toolbar:has(.te-text-toolbar-host:not(:empty)) .te-quick-toolbar.is-compact .te-quick-basics { width: 100%; }
+  .te-guided-editor .te-editor-toolbar > .te-text-toolbar-host { flex-basis: 100%; }
+  .te-guided-editor .te-editor-toolbar .te-rich-controls.te-rich-controls-docked { padding: 0; }
+}
+@media (max-width: 760px) {
+  /* Object selection needs formatting first. Clearing the selection exposes
+     Select / Hand / Draw again; active drawing and point tools keep their row. */
+  .te-guided-editor .te-editor-toolbar:has(> .te-quick-toolbar.has-selection) > .te-canvas-tools { display: none; }
+  .te-guided-editor .te-quick-toolbar.has-selection > .te-quick-object-actions { display: none; }
+  .te-guided-editor .te-quick-toolbar .te-quick-actions > button:is([aria-label="Text texture"], [aria-label="Effects"]) { display: none; }
+  .te-guided-editor .te-quick-toolbar.is-compact.has-selection > .te-quick-actions { border-right: 0; padding-right: 0; }
+}

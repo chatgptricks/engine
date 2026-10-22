@@ -1,7 +1,7 @@
 "use client";
 import { changeStyledTextCase } from "@/lib/template-editor/editing-actions";
 
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { CopyIcon, TrashIcon } from "@/components/engine/icons";
 import type {
   CanvasElement,
@@ -12,12 +12,17 @@ import type {
   TextStyle,
 } from "@/lib/template-editor/model";
 import type { TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
-import { ColorField, FontSelect, NumberField } from "./controls";
+import { FontSelect, NumberField } from "./controls";
+import { PaintPicker } from "./paint-picker";
+import { applyElementPaint, commonElementPaint, paintTextFormattingPatch } from "@/lib/template-editor/paint";
 import { AdvancedProperties, ColorRolesPanel, type ColorRoleOption } from "./advanced-properties";
 import { updatePhotoContent } from "@/lib/template-editor/photo-frames";
 import { boldState, booleanState } from "@/lib/template-editor/property-utils";
+import { historyShortcut } from "@/lib/template-editor/history";
 import { alignSelectionTo, distributeSelection, matchSelectionSize, copyAppearance, pasteAppearance, applyTextTexture, duplicateSelection, removeSelection, reorderSelection, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
 import "./element-inspector.css";
+
+export type InspectorSection = "edit"|"outline"|"photo"|"position"|"effects"|"advanced";
 
 type Props = {
   scene: CanvasScene;
@@ -29,7 +34,8 @@ type Props = {
   height: number;
   disabled?: boolean;
   outputScale?: number;
-  initialSection?: "edit"|"position";
+  initialSection?: InspectorSection;
+  onSectionChange?: (section:InspectorSection)=>void;
   slideBounds?: { x: number; y: number; width: number; height: number };
   textStyles?: TextStyle[];
   onSaveTextStyle?: (style: TextStyle) => void;
@@ -159,9 +165,11 @@ export function ElementInspector({
   onSelect,
   width,
   height,
-  disabled = false, outputScale = 3, initialSection = "edit",
+  disabled = false, outputScale = 3, initialSection = "edit",onSectionChange,
   slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onTextTexture, onUploadTextTexture, onUploadFramePhoto,
 }: Props) {
+  const [section,setSection]=useState<InspectorSection>(initialSection);
+  const [sectionRequest,setSectionRequest]=useState(initialSection);
   const OUTPUT_SCALE = outputScale;
   const px = (value: number | undefined) => value === undefined ? undefined : Number((value * OUTPUT_SCALE).toFixed(2));
   const [alignmentScope, setAlignmentScope] = useState<"page" | "slide" | "selection" | "key-object">("page");
@@ -204,7 +212,8 @@ export function ElementInspector({
   }
 
   function updateText(patch: Partial<TextElement>, group: string) {
-    if (!noEdits && onFormatText?.(patch)) return;
+    if (noEdits || !texts.some(element=>canEditElement(scene,element,group==="text"?"content":"style")))return;
+    if (group!=="text" && onFormatText?.(patch)) return;
     update(group, (element) =>
       element.type === "text" ? { ...element, ...patch } : element,
     );
@@ -233,7 +242,7 @@ export function ElementInspector({
     if (result.scene !== scene) onChange(result.scene, "align-selection");
   }
   function reorder(direction: "forward" | "backward") {
-    const result = reorderSelection(scene, selectedIds, direction);
+    const result = reorderSelection(scene, editable.filter(element=>canEditElement(scene,element,"position")).map(element=>element.id), direction);
     if (!noEdits && result.scene !== scene) onChange(result.scene);
   }
   function duplicate() {
@@ -294,8 +303,60 @@ export function ElementInspector({
 
   const advancedProps={outputScale,elements:displayed,update,textStyles,onSaveTextStyle,onDeleteTextStyle,colorRoles,onSaveColorRole,onDeleteColorRole,onUploadTextTexture,onClearTextTexture:()=>{if(noEdits||onFormatText?.({textureFill:null}))return;const result=applyTextTexture(scene,selectedIds,null);if(result.scene!==scene)onChange(result.scene,"remove-text-texture");}};
   const outlineAlignment=shapes.every(shape=>(shape.strokeAlign??"center")===(shapes[0]?.strokeAlign??"center"))?(shapes[0]?.strokeAlign??"center"):"";
+  const styleDisabled=noEdits||displayed.every(element=>!canEditElement(scene,element,"style"));
+  const positionDisabled=noEdits||displayed.every(element=>!canEditElement(scene,element,"position"));
+  const textStyleDisabled=noEdits||texts.every(element=>!canEditElement(scene,element,"style"));
+  const textContentDisabled=noEdits||texts.every(element=>!canEditElement(scene,element,"content"));
+  const shapeStyleDisabled=noEdits||shapes.every(element=>!canEditElement(scene,element,"style"));
+  const photoStyleDisabled=noEdits||images.every(element=>!canEditElement(scene,element,"style"));
+  const photoContentDisabled=noEdits||images.every(element=>!canEditElement(scene,element,"content"));
+  const categories:{id:InspectorSection;label:string}[]=[
+    ...(texts.length||shapes.length?[{id:"edit" as const,label:texts.length&&!shapes.length?"Text":shapes.length&&!texts.length?"Fill":"Edit"}]:[]),
+    ...(shapes.length?[{id:"outline" as const,label:"Outline"}]:[]),
+    ...(images.length?[{id:"photo" as const,label:"Photo"}]:[]),
+    {id:"position",label:"Position"},{id:"effects",label:"Effects"},{id:"advanced",label:"Advanced"},
+  ];
+  // With a callback, the parent owns the category; selection changes cannot retain a stale local tab.
+  const requestedSection=onSectionChange?initialSection:sectionRequest!==initialSection?initialSection:section;
+  const effectiveSection=categories.some(category=>category.id===requestedSection)?requestedSection:categories[0].id;
+  if(!onSectionChange&&elements.length&&(sectionRequest!==initialSection||section!==effectiveSection)){setSectionRequest(initialSection);setSection(effectiveSection);}
+  const categoryKey=categories.map(category=>category.id).join(",");
+  useEffect(()=>{if(elements.length&&!categoryKey.split(",").includes(initialSection))onSectionChange?.(effectiveSection);},[initialSection,effectiveSection,categoryKey,elements.length,onSectionChange]);
+  const advancedFor=(section:"text"|"texture"|"photo"|"shape"|"path"|"outline"|"effects"|"brand"|"constraints")=>({...advancedProps,sections:[section],onFormatText,styleDisabled:section==="text"||section==="texture"?textStyleDisabled:section==="photo"?photoStyleDisabled:section==="shape"||section==="path"||section==="outline"?shapeStyleDisabled:styleDisabled,contentDisabled:section==="texture"?textContentDisabled:photoContentDisabled,positionDisabled});
+  const framePhotoControl=onUploadFramePhoto&&shapes.length===1?<label className="te-frame-photo-upload">{frameUploading?"Loading photo…":shapes[0].imageFill?"Replace frame photo":"Add photo to shape"}<input type="file" aria-label="Choose shape frame photo" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" disabled={noEdits||frameUploading||!canEditElement(scene,shapes[0],"content")} onChange={async event=>{const file=event.target.files?.[0];event.target.value="";if(!file||noEdits||!canEditElement(scene,shapes[0],"content"))return;setFrameUploading(true);setFrameError("");try{await onUploadFramePhoto(file,shapes[0].id);}catch(error){setFrameError(error instanceof Error?error.message:"Could not load this photo.");}finally{setFrameUploading(false);}}}/></label>:null;
   const positionSection=(
-            <Section key={`position-${initialSection}`} title="Position & size" disclosure defaultOpen={initialSection==="position"}>
+            <Section title="Align"><fieldset disabled={positionDisabled}>
+              <label className="te-field">Align relative to<select aria-label="Alignment reference" value={effectiveAlignmentScope} onChange={event => { const value = event.target.value as typeof alignmentScope; setAlignmentScope(value); setAlignmentMode(value === "selection" || value === "key-object" ? "individual" : "group"); }}><option value="page">Canvas</option>{slideBounds && <option value="slide">Current slide</option>}<option value="selection" disabled={elements.length < 2}>Selection bounds</option><option value="key-object" disabled={elements.length < 2}>Key object</option></select></label>
+              {displayed.length>1&&<label className="te-field">Selection behavior<select aria-label="Alignment behavior" value={alignmentMode} onChange={event => setAlignmentMode(event.target.value as typeof alignmentMode)}><option value="group">Keep arrangement together</option><option value="individual">Align each object</option></select></label>}
+              {elements.length > 1 && effectiveAlignmentScope === "key-object" && <label className="te-field">Key / reference object<select aria-label="Key object" value={keyObjectId || elements[0].id} onChange={event => setKeyObjectId(event.target.value)}>{elements.map(item => <option key={item.id} value={item.id}>{item.name || item.type}</option>)}</select></label>}
+              <span className="te-element-label">Align selection</span>
+              <div
+                className="te-element-segments te-element-align"
+                role="group"
+                aria-label="Align selection"
+              >
+                {(
+                  [
+                    "left",
+                    "center",
+                    "right",
+                    "top",
+                    "middle",
+                    "bottom",
+                  ] as const
+                ).map((align) => (
+                  <button
+                    key={align}
+                    type="button"
+                    aria-label={pageAlignLabels[align]}
+                    title={pageAlignLabels[align]}
+                    onClick={() => alignToPage(align)}
+                  >
+                    <PageAlignIcon align={align} />
+                  </button>
+                ))}
+              </div>
+              <Section title="Size & coordinates" disclosure>
               <div className="te-element-grid">
                 <NumberField
                   label="X"
@@ -359,501 +420,108 @@ export function ElementInspector({
                     update("rotation", (element) => ({ ...element, rotation }))
                   }
                 />
-                <NumberField
-                  label="Opacity"
-                  unit="%"
-                  min={0}
-                  max={100}
-                  value={
-                    shared(displayed, "opacity") === undefined
-                      ? undefined
-                      : shared(displayed, "opacity")! * 100
-                  }
-                  onChange={(value) =>
-                    update("opacity", (element) => ({
-                      ...element,
-                      opacity: value / 100,
-                    }))
-                  }
-                />
               </div>
-              <label className="te-field">Align relative to<select aria-label="Alignment reference" value={effectiveAlignmentScope} onChange={event => { const value = event.target.value as typeof alignmentScope; setAlignmentScope(value); setAlignmentMode(value === "selection" || value === "key-object" ? "individual" : "group"); }}><option value="page">Canvas</option>{slideBounds && <option value="slide">Current slide</option>}<option value="selection" disabled={elements.length < 2}>Selection bounds</option><option value="key-object" disabled={elements.length < 2}>Key object</option></select></label>
-              {displayed.length>1&&<label className="te-field">Selection behavior<select aria-label="Alignment behavior" value={alignmentMode} onChange={event => setAlignmentMode(event.target.value as typeof alignmentMode)}><option value="group">Keep arrangement together</option><option value="individual">Align each object</option></select></label>}
-              {elements.length > 1 && <label className="te-field">Key / reference object<select aria-label="Key object" value={keyObjectId || elements[0].id} onChange={event => setKeyObjectId(event.target.value)}>{elements.map(item => <option key={item.id} value={item.id}>{item.name || item.type}</option>)}</select></label>}
-              <span className="te-element-label">Align selection</span>
-              <div
-                className="te-element-segments te-element-align"
-                role="group"
-                aria-label="Align selection"
-              >
-                {(
-                  [
-                    "left",
-                    "center",
-                    "right",
-                    "top",
-                    "middle",
-                    "bottom",
-                  ] as const
-                ).map((align) => (
-                  <button
-                    key={align}
-                    type="button"
-                    aria-label={pageAlignLabels[align]}
-                    title={pageAlignLabels[align]}
-                    onClick={() => alignToPage(align)}
-                  >
-                    <PageAlignIcon align={align} />
-                  </button>
-                ))}
-              </div>
-            </Section>
+              </Section>
+            </fieldset></Section>
   );
 
   return (
-    <aside
-      className="te-element-inspector"
-      aria-label="Element properties"
-      onKeyDown={(event) => event.stopPropagation()}
-    >
+    <aside className="te-element-inspector" aria-label="Element properties" onKeyDown={event=>{
+      if (!event.nativeEvent.isComposing) {
+        if (event.key === "Escape") return;
+        const editing = (event.target as HTMLElement).closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
+        if (!editing && historyShortcut(event)) return;
+      }
+      event.stopPropagation();
+    }}>
       <header className="te-element-heading">
-        <div>
-          <span className="te-eyebrow">
-            {elements.length ? "SELECTION" : "CANVAS"}
-          </span>
-          <h2>
-            {elements.length > 1
-              ? `${elements.length} elements`
-              : elements[0]?.name || "Page settings"}
-          </h2>
-        </div>
-        {elements.length > 0 && (
-          <div className="te-element-heading-actions">
-            <button
-              type="button"
-              className="te-icon"
-              aria-label={
-                allLocked
-                  ? "Unlock selected elements"
-                  : "Lock selected elements"
-              }
-              title={allLocked ? "Unlock selection" : "Lock selection"}
-              disabled={disabled || inheritedLock}
-              onClick={toggleLock}
-            >
-              <LockIcon locked={allLocked} />
-            </button>
-            <button
-              type="button"
-              className="te-icon"
-              aria-label="Clear selection"
-              title="Clear selection"
-              onClick={() => onSelect([])}
-            >
-              ×
-            </button>
-          </div>
-        )}
+        <div><span className="te-eyebrow">{elements.length?"SELECTION":"CANVAS"}</span><h2>{elements.length>1?`${elements.length} elements`:elements[0]?.name||"Page settings"}</h2></div>
+        {elements.length>0&&<div className="te-element-heading-actions">
+          <button type="button" className="te-icon" aria-label={allLocked?"Unlock selected elements":"Lock selected elements"} title={allLocked?"Unlock selection":"Lock selection"} disabled={disabled||inheritedLock} onClick={toggleLock}><LockIcon locked={allLocked}/></button>
+          <button type="button" className="te-icon" aria-label="Clear selection" title="Clear selection" onClick={()=>onSelect([])}>×</button>
+        </div>}
       </header>
-
-      {!elements.length ? (
-        <>
-          <fieldset disabled={disabled}>
-            <Section title="Page">
-              <ColorField
-                label="Background"
-                value={scene.background}
-                onChange={(background) =>
-                  onChange({ ...scene, background }, "page-background")
-                }
-              />
-              <p className="te-element-hint">
-                {Math.round(width * OUTPUT_SCALE)} ×{" "}
-                {Math.round(height * OUTPUT_SCALE)} px
-              </p>
-            </Section>
-            <ColorRolesPanel roles={colorRoles ?? []} onSave={onSaveColorRole} onDelete={onDeleteColorRole} />
-          </fieldset>
-          <div className="te-element-empty">
-            <svg
-              width="28"
-              height="28"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="1.2"
-              aria-hidden
-            >
-              <path d="m5 3 14 10-7 1-3 7z" />
-            </svg>
-            <strong>Make it yours</strong>
-            <p>
-              Select an element to edit its style, size, and position.
-              Double-click text to write directly on the canvas.
-            </p>
-            <p>
-              Shift-click to select more. Drag to move; use the corner handles
-              to resize.
-            </p>
-          </div>
-        </>
-      ) : (
-        <>
-          {hasLocked && (
-            <p className="te-element-lock-note">
-              <LockIcon locked />
-              {allLocked
-                ? inheritedLock ? "Unlock the parent group in Layers to edit this selection." : "Unlock to edit this selection."
-                : "Locked elements stay unchanged."}
-            </p>
-          )}
-
+      {!elements.length?<>
+        <fieldset disabled={disabled}><Section title="Page"><PaintPicker label="Background" value={{type:"solid",color:scene.background}} allowGradient={false} disabled={disabled} onChange={paint=>{if(!disabled&&paint.type==="solid")onChange({...scene,background:paint.color},"page-background");}}/><p className="te-element-hint">{Math.round(width*OUTPUT_SCALE)} × {Math.round(height*OUTPUT_SCALE)} px</p></Section><ColorRolesPanel roles={colorRoles??[]} onSave={onSaveColorRole} onDelete={onDeleteColorRole}/></fieldset>
+        <div className="te-element-empty"><strong>Make it yours</strong><p>Select an element to edit its style, size, and position. Double-click text to write directly on the canvas.</p><p>Shift-click to select more. Drag to move; use the corner handles to resize.</p></div>
+      </>:<>
+        <div className="te-inspector-tabs" role="group" aria-label="Property categories">{categories.map(category=><button type="button" key={category.id} data-section={category.id} aria-pressed={effectiveSection===category.id} onClick={()=>{if(onSectionChange)onSectionChange(category.id);else setSection(category.id);}}>{category.label}</button>)}</div>
+        {hasLocked&&<p className="te-element-lock-note"><LockIcon locked/>{allLocked?inheritedLock?"Unlock the parent group in Layers to edit this selection.":"Unlock to edit this selection.":"Locked elements stay unchanged."}</p>}
+        {displayed.some(element=>element.protected?.length)&&<p className="te-element-hint">Protected properties stay unchanged. Manage protection in Advanced.</p>}
+        <div className="te-inspector-content" data-section={effectiveSection}>
           <fieldset disabled={noEdits}>
-            {initialSection==="position"&&positionSection}
-
-
-            {texts.length > 0 && (
-              <Section
-                title={
-                  texts.length === elements.length
-                    ? "Text"
-                    : `Text · ${texts.length}`
-                }
-              >
-                <FontSelect
-                  value={commonFont ?? ""}
-                  onChange={(font) => updateText({ font }, "font")}
-                />
-                {commonFont === undefined && (
-                  <p className="te-element-mixed">Multiple typefaces</p>
-                )}
-                <div className="te-element-grid">
-                  <NumberField
-                    label="Font size"
-                    unit="px"
-                    min={OUTPUT_SCALE}
-                    max={500 * OUTPUT_SCALE}
-                    value={px(shared(texts, "fontSize"))}
-                    onChange={(value) =>
-                      updateText(
-                        { fontSize: value / OUTPUT_SCALE },
-                        "font-size",
-                      )
-                    }
-                  />
-                </div>
-                <div
-                  className="te-element-segments te-element-type-tools"
-                  role="group"
-                  aria-label="Text styling"
-                >
-                  <Toggle
-                    label="Bold"
-                    active={boldState(texts)}
-                    onClick={() =>
-                      updateText(
-                        {
-                          fontWeight:
-                            boldState(texts) === true
-                              ? 400
-                              : 700,
-                        },
-                        "bold",
-                      )
-                    }
-                  >
-                    <b>B</b>
-                  </Toggle>
-                  <Toggle
-                    label="Italic"
-                    active={booleanState(texts, "italic")}
-                    onClick={() =>
-                      updateText({ italic: commonItalic !== true }, "italic")
-                    }
-                  >
-                    <i>I</i>
-                  </Toggle>
-                </div>
-                <div
-                  className="te-element-segments"
-                  role="group"
-                  aria-label="Text alignment"
-                >
-                  {(["left", "center", "right"] as const).map((align) => (
-                    <Toggle
-                      key={align}
-                      label={`Align text ${align}`}
-                      active={shared(texts, "align") === align}
-                      onClick={() => updateText({ align }, "text-align")}
-                    >
-                      <AlignIcon align={align} />
-                    </Toggle>
-                  ))}
-                </div>
-                <ColorField
-                  label="Text color"
-                  value={shared(texts, "color") ?? "Mixed"}
-                  onChange={(color) => updateText({ color, colorRoleId: undefined }, "text-color")}
-                />
-                <Section title="Spacing & text formatting" disclosure>
-                  <NumberField
-                    label="Line spacing"
-                    min={0.5}
-                    max={5}
-                    step={0.05}
-                    value={shared(texts, "lineHeight")}
-                    onChange={(lineHeight) =>
-                      updateText({ lineHeight }, "line-height")
-                    }
-                  />
-                <NumberField
-                  label="Letter spacing"
-                  unit="px"
-                  min={-20 * OUTPUT_SCALE}
-                  max={100 * OUTPUT_SCALE}
-                  step={0.1}
-                  value={px(shared(texts, "letterSpacing"))}
-                  onChange={(value) =>
-                    updateText(
-                      { letterSpacing: value / OUTPUT_SCALE },
-                      "letter-spacing",
-                    )
-                  }
-                />
-                  <div className="te-element-segments te-element-type-tools" role="group" aria-label="Additional text styling">
-                  <Toggle
-                    label="Underline"
-                    active={booleanState(texts, "underline")}
-                    onClick={() =>
-                      updateText(
-                        { underline: commonUnderline !== true },
-                        "underline",
-                      )
-                    }
-                  >
-                    <u>U</u>
-                  </Toggle>
-                  <button
-                    type="button"
-                    aria-label="Uppercase"
-                    title="Uppercase"
-                    onClick={() =>
-                      update("uppercase", (element) =>
-                        element.type === "text"
-                          ? changeTextCase(element,true)
-                          : element,
-                      )
-                    }
-                  >
-                    AA
-                  </button>
-                  <button
-                    type="button"
-                    aria-label="Lowercase"
-                    title="Lowercase"
-                    onClick={() =>
-                      update("lowercase", (element) =>
-                        element.type === "text"
-                          ? changeTextCase(element,false)
-                          : element,
-                      )
-                    }
-                  >
-                    aa
-                  </button>
-                  </div>
+            {effectiveSection==="edit"&&<>
+              {texts.length>0&&<>
+                <Section title={texts.length===elements.length?"Text":`Text · ${texts.length}`}>
+                  <fieldset disabled={textStyleDisabled}>
+                    <FontSelect value={commonFont??""} onChange={font=>updateText({font},"font")}/>
+                    {commonFont===undefined&&<p className="te-element-mixed">Multiple typefaces</p>}
+                    <NumberField label="Font size" unit="px" min={OUTPUT_SCALE} max={500*OUTPUT_SCALE} value={px(shared(texts,"fontSize"))} onChange={value=>updateText({fontSize:value/OUTPUT_SCALE},"font-size")}/>
+                    <div className="te-element-segments te-element-type-tools" role="group" aria-label="Text styling">
+                      <Toggle label="Bold" active={boldState(texts)} onClick={()=>updateText({fontWeight:boldState(texts)===true?400:700},"bold")}><b>B</b></Toggle>
+                      <Toggle label="Italic" active={booleanState(texts,"italic")} onClick={()=>updateText({italic:commonItalic!==true},"italic")}><i>I</i></Toggle>
+                      <Toggle label="Underline" active={booleanState(texts,"underline")} onClick={()=>updateText({underline:commonUnderline!==true},"underline")}><u>U</u></Toggle>
+                    </div>
+                    <div className="te-element-segments" role="group" aria-label="Text alignment">{(["left","center","right"] as const).map(align=><Toggle key={align} label={`Align text ${align}`} active={shared(texts,"align")===align} onClick={()=>updateText({align},"text-align")}><AlignIcon align={align}/></Toggle>)}</div>
+                    <PaintPicker key={`text:${texts.map(element=>element.id).join(":")}`} label="Text color" value={commonElementPaint(texts)} disabled={textStyleDisabled} onChange={paint=>{if(textStyleDisabled)return;const patch=paintTextFormattingPatch(paint);if(patch&&onFormatText?.(patch))return;update("text-color",element=>element.type==="text"?applyElementPaint(element,paint):element);}}/>
+                    <Section title="Spacing" disclosure>
+                    <div className="te-element-grid"><NumberField label="Line spacing" min={.5} max={5} step={.05} value={shared(texts,"lineHeight")} onChange={lineHeight=>updateText({lineHeight},"line-height")}/><NumberField label="Letter spacing" unit="px" min={-20*OUTPUT_SCALE} max={100*OUTPUT_SCALE} step={.1} value={px(shared(texts,"letterSpacing"))} onChange={value=>updateText({letterSpacing:value/OUTPUT_SCALE},"letter-spacing")}/></div></Section>
+                  </fieldset>
                 </Section>
-                {texts.length===1&&<Section title="Text content" disclosure>
-                {texts.length === 1 && (
-                  <label className="te-field">
-                    Text content
-                    <p className="te-element-hint">Double-click on the canvas to keep individual word styles.</p>
-                    <textarea
-                      rows={3}
-                      maxLength={20000}
-                      value={texts[0].text}
-                      onChange={(event) =>
-                        updateText({ text: event.target.value, richText: undefined, wordTextures: undefined }, "text")
-                      }
-                    />
-                  </label>
-                )}
-                </Section>}
-                {onTextTexture&&texts.length===1?<button type="button" className="te-property-action" disabled={noEdits||!canEditElement(scene,texts[0],"content")} onMouseDown={event=>event.preventDefault()} onClick={onTextTexture}>Image texture · choose words</button>:<AdvancedProperties {...advancedProps} sections={["texture"]} />}
-              </Section>
-            )}
-
-            {images.length > 0 && (
-              <Section
-                title={
-                  images.length === elements.length
-                    ? "Image"
-                    : `Images · ${images.length}`
-                }
-              >
-                <div
-                  className="te-element-segments"
-                  role="group"
-                  aria-label="Image fit"
-                >
-                  <Toggle
-                    label="Fill image frame"
-                    active={shared(images, "fit") === "cover"}
-                    onClick={() => updateImage({ fit: "cover" }, "image-fit")}
-                  >
-                    Fill frame
-                  </Toggle>
-                  <Toggle
-                    label="Fit entire image"
-                    active={shared(images, "fit") === "contain"}
-                    onClick={() => updateImage({ fit: "contain" }, "image-fit")}
-                  >
-                    Fit image
-                  </Toggle>
-                </div>
-                <p className="te-element-hint">Choose Crop above to reposition the photo on the canvas.</p>
-                <Section title="Accessibility" disclosure>
-                  <label className="te-field">Image description<textarea aria-label="Public image description" rows={3} maxLength={2000} disabled={noEdits||elements.every(element=>!canEditElement(scene,element,"content"))} value={shared(images,"publicAlt")??""} placeholder={images.length>1&&shared(images,"publicAlt")===undefined?"Mixed descriptions":"What should a screen reader say about this image?"} onChange={event=>{const publicAlt=event.target.value;update("public-alt",element=>element.type==="image"?{...element,publicAlt}:element.type==="shape"&&element.imageFill?{...element,imageFill:{...element.imageFill,publicAlt}}:element);}}/></label>
-                  <p className="te-element-hint">Shared in review links. Leave blank for decorative images. Internal image notes stay private.</p>
-                </Section>
-                {standaloneImages.length>0 && <Section title="Image corners" disclosure><NumberField label="Corner radius" unit="px" min={0} max={1080} value={px(shared(standaloneImages,"radius"))} onChange={value=>updateImage({radius:value/OUTPUT_SCALE},"image-radius")} /></Section>}
-              </Section>
-            )}
-
-            {shapes.length > 0 && (
-              <Section
-                title={
-                  shapes.length === elements.length
-                    ? "Shape"
-                    : `Shapes · ${shapes.length}`
-                }
-              >
-                {onUploadFramePhoto&&shapes.length===1&&<label className="te-frame-photo-upload">{frameUploading?"Loading photo…":shapes[0].imageFill?"Replace frame photo":"Add photo to shape"}<input type="file" aria-label="Choose shape frame photo" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" disabled={frameUploading||!canEditElement(scene,shapes[0],"content")} onChange={async event=>{const file=event.target.files?.[0];event.target.value="";if(!file)return;setFrameUploading(true);setFrameError("");try{await onUploadFramePhoto(file,shapes[0].id);}catch(error){setFrameError(error instanceof Error?error.message:"Could not load this photo.");}finally{setFrameUploading(false);}}} /></label>}
-                {frameError&&<p className="te-element-hint" role="alert">{frameError}</p>}
-                {!shapes.every(shape=>shape.imageFill)&&<ColorField
-                  label="Fill"
-                  value={shared(shapes, "fill") ?? "Mixed"}
-                  onChange={(fill) => updateShape({ fill, colorRoleId: undefined }, "shape-fill")}
-                />}
-                <Section title="Border & corners" disclosure defaultOpen={shapes.some(shape=>shape.strokeWidth>0)}>
-                <ColorField
-                  label="Border color"
-                  value={shared(shapes, "stroke") ?? "Mixed"}
-                  onChange={(stroke) => updateShape({ stroke }, "shape-stroke")}
-                />
-                <div className="te-element-grid">
-                  <NumberField
-                    label="Border width"
-                    unit="px"
-                    min={0}
-                    max={90}
-                    value={px(shared(shapes, "strokeWidth"))}
-                    onChange={(value) =>
-                      updateShape(
-                        { strokeWidth: value / OUTPUT_SCALE },
-                        "stroke-width",
-                      )
-                    }
-                  />
-                  {shapes.some(shape=>shape.shape==="rectangle")&&<NumberField
-                    label="Corner radius"
-                    unit="px"
-                    min={0}
-                    max={1080}
-                    value={px(shared(shapes, "radius"))}
-                    onChange={(value) =>
-                      updateShape(
-                        { radius: value / OUTPUT_SCALE },
-                        "shape-radius",
-                      )
-                    }
-                  />}
-                </div>
-                <label className="te-field">Outline alignment<select aria-label="Outline alignment" value={outlineAlignment} onChange={event=>updateShape({strokeAlign:event.target.value as ShapeElement["strokeAlign"]},"stroke-alignment")}>{!outlineAlignment&&<option value="" disabled>Mixed</option>}<option value="inside">Inside</option><option value="center">Center</option><option value="outside">Outside</option></select></label>
-                </Section>
-              </Section>
-            )}
-
-            {initialSection!=="position"&&positionSection}
-
-            <Section title="More options" disclosure>
-              <AdvancedProperties {...advancedProps} sections={[...(texts.length?["text"] as const:[]),...(images.length?["photo"] as const:[]),...(shapes.length?["shape"] as const:[]),"effects","brand","constraints"]} />
-            </Section>
-            <Section title="Arrange & appearance" disclosure>
-              {editable.length > 1 && <>
-                <label className="te-field">Distribute<select aria-label="Distribution method" value={distributionMode} onChange={event => setDistributionMode(event.target.value as typeof distributionMode)}><option value="gaps">Equal gaps</option><option value="centers">Equal centers</option></select></label>
-                <label className="te-property-check"><input type="checkbox" checked={useGap} onChange={event => setUseGap(event.target.checked)} />Set an exact gap</label>
-                {useGap && <NumberField label="Distribution gap" unit="px" min={0} max={3000} value={gap} onChange={setGap} />}
-                <div className="te-element-grid te-element-actions"><button type="button" onClick={() => distribute("horizontal")}>Distribute ↔</button><button type="button" onClick={() => distribute("vertical")}>Distribute ↕</button><button type="button" onClick={() => matchSize("width")}>Match width</button><button type="button" onClick={() => matchSize("height")}>Match height</button><button type="button" onClick={() => matchSize("both")}>Match size</button></div>
+                <AdvancedProperties {...advancedFor("text")}/>
+                {onTextTexture&&texts.length===1?<Section title="Image texture" disclosure><button type="button" className="te-property-action" disabled={textStyleDisabled||textContentDisabled} onMouseDown={event=>event.preventDefault()} onClick={()=>{if(!textStyleDisabled&&!textContentDisabled)onTextTexture();}}>Image texture · choose words</button></Section>:<AdvancedProperties {...advancedFor("texture")}/>}
+                {texts.length===1&&<Section title="Text content" disclosure><fieldset disabled={textContentDisabled}>
+                  <label className="te-field">Text content<p className="te-element-hint">Double-click on the canvas to keep individual word styles.</p><textarea rows={3} maxLength={20000} value={texts[0].text} onChange={event=>updateText({text:event.target.value,richText:undefined,wordTextures:undefined},"text")}/></label>
+                  <div className="te-element-segments"><button type="button" aria-label="Uppercase" title="Uppercase" onClick={()=>update("uppercase",element=>element.type==="text"?changeTextCase(element,true):element)}>AA</button><button type="button" aria-label="Lowercase" title="Lowercase" onClick={()=>update("lowercase",element=>element.type==="text"?changeTextCase(element,false):element)}>aa</button></div>
+                </fieldset></Section>}
               </>}
-              <div className="te-element-grid te-element-actions"><button type="button" disabled={displayed.length !== 1} onClick={() => setAppearance(copyAppearance(displayed[0]))}>Copy appearance</button><button type="button" disabled={!appearance} onClick={() => { if (appearance) { const result = pasteAppearance(scene, selectedIds, appearance); if (result.scene !== scene) onChange(result.scene); } }}>Paste appearance</button></div>
-              <div className="te-element-grid te-element-actions">
-                <button
-                  type="button"
-                  disabled={!canBackward}
-                  onClick={() => reorder("backward")}
-                  title="Send backward one layer"
-                >
-                  <span aria-hidden>↓</span> Backward
-                </button>
-                <button
-                  type="button"
-                  disabled={!canForward}
-                  onClick={() => reorder("forward")}
-                  title="Bring forward one layer"
-                >
-                  <span aria-hidden>↑</span> Forward
-                </button>
-                <button
-                  type="button"
-                  disabled={!canDuplicate}
-                  title={
-                    canDuplicate
-                      ? "Duplicate selection"
-                      : "A page can contain up to 100 elements"
-                  }
-                  onClick={duplicate}
-                >
-                  <CopyIcon /> Duplicate
-                </button>
-                <button
-                  type="button"
-                  className="te-element-delete"
-                  onClick={remove}
-                >
-                  <TrashIcon /> Delete
-                </button>
-              </div>
-            </Section>
+              {shapes.length>0&&<>
+                <Section title={shapes.length===elements.length?"Shape":`Shapes · ${shapes.length}`}>
+                  {framePhotoControl}{frameError&&<p className="te-element-hint" role="alert">{frameError}</p>}
+                  {shapes.some(shape=>shape.imageFill)&&<p className="te-element-hint">Photo in shape. Use Outline or Photo above to edit it.</p>}
+                  <fieldset disabled={shapeStyleDisabled}><PaintPicker key={`fill:${shapes.map(element=>element.id).join(":")}`} label="Fill" value={commonElementPaint(shapes)} disabled={shapeStyleDisabled} onChange={paint=>update("shape-fill",element=>element.type==="shape"?applyElementPaint(element,paint):element)}/></fieldset>
+                </Section>
+                <AdvancedProperties {...advancedFor("shape")}/>
+              </>}
+            </>}
+            {effectiveSection==="outline"&&<>
+              <Section title="Border & corners"><fieldset disabled={shapeStyleDisabled}>
+                <PaintPicker key={`border:${shapes.map(element=>element.id).join(":")}`} label="Border color" value={shared(shapes,"stroke")===undefined?undefined:{type:"solid",color:shared(shapes,"stroke")!}} allowGradient={false} disabled={shapeStyleDisabled} onChange={paint=>{if(paint.type==="solid")update("shape-stroke",element=>element.type==="shape"?{...element,stroke:paint.color,strokeWidth:element.strokeWidth>0?element.strokeWidth:1}:element);}}/>
+                <div className="te-element-grid"><NumberField label="Border width" unit="px" min={0} max={200*OUTPUT_SCALE} value={px(shared(shapes,"strokeWidth"))} onChange={value=>updateShape({strokeWidth:value/OUTPUT_SCALE},"stroke-width")}/>{shapes.some(shape=>shape.shape==="rectangle")&&<NumberField label="Corner radius" unit="px" min={0} max={1080} value={px(shared(shapes,"radius"))} onChange={value=>updateShape({radius:value/OUTPUT_SCALE},"shape-radius")}/>}</div>
+                <Section title="Outline alignment" disclosure><label className="te-field">Outline alignment<select aria-label="Outline alignment" value={outlineAlignment} onChange={event=>updateShape({strokeAlign:event.target.value as ShapeElement["strokeAlign"]},"stroke-alignment")}>{!outlineAlignment&&<option value="" disabled>Mixed</option>}<option value="inside">Inside</option><option value="center">Center</option><option value="outside">Outside</option></select></label></Section>
+              </fieldset></Section>
+              <AdvancedProperties {...advancedFor("outline")}/>
+            </>}
+            {effectiveSection==="photo"&&<>
+              <Section title={images.length===elements.length?"Image":`Images · ${images.length}`}>
+                {framePhotoControl}{frameError&&<p className="te-element-hint" role="alert">{frameError}</p>}
+                <fieldset disabled={photoStyleDisabled}><div className="te-element-segments" role="group" aria-label="Image fit"><Toggle label="Fill image frame" active={shared(images,"fit")==="cover"} onClick={()=>updateImage({fit:"cover"},"image-fit")}>Fill frame</Toggle><Toggle label="Fit entire image" active={shared(images,"fit")==="contain"} onClick={()=>updateImage({fit:"contain"},"image-fit")}>Fit image</Toggle></div><div className="te-element-segments" role="group" aria-label="Image orientation"><Toggle label="Flip photo horizontally" active={images.every(image=>image.flipX)} onClick={()=>updateImage({flipX:!images.every(image=>image.flipX)},"image-flip")}>Flip horizontal</Toggle><Toggle label="Flip photo vertically" active={images.every(image=>image.flipY)} onClick={()=>updateImage({flipY:!images.every(image=>image.flipY)},"image-flip")}>Flip vertical</Toggle></div></fieldset>
+                <p className="te-element-hint">Choose Crop above to reposition the photo on the canvas.</p>
+              </Section>
+              <AdvancedProperties {...advancedFor("photo")} photoFitControls={false}/>
+              {standaloneImages.length>0&&<Section title="Image corners"><fieldset disabled={photoStyleDisabled}><NumberField label="Corner radius" unit="px" min={0} max={1080} value={px(shared(standaloneImages,"radius"))} onChange={value=>updateImage({radius:value/OUTPUT_SCALE},"image-radius")}/></fieldset></Section>}
+            </>}
+            {effectiveSection==="position"&&<>
+              {positionSection}
+              <Section title="Arrange"><fieldset disabled={positionDisabled}>
+                {editable.length>1&&<Section title="Distribute & match size" disclosure><label className="te-field">Distribute<select aria-label="Distribution method" value={distributionMode} onChange={event=>setDistributionMode(event.target.value as typeof distributionMode)}><option value="gaps">Equal gaps</option><option value="centers">Equal centers</option></select></label><label className="te-property-check"><input type="checkbox" checked={useGap} onChange={event=>setUseGap(event.target.checked)}/>Set an exact gap</label>{useGap&&<NumberField label="Distribution gap" unit="px" min={0} max={3000} value={gap} onChange={setGap}/>}<div className="te-element-grid te-element-actions"><button type="button" onClick={()=>distribute("horizontal")}>Distribute ↔</button><button type="button" onClick={()=>distribute("vertical")}>Distribute ↕</button><button type="button" onClick={()=>matchSize("width")}>Match width</button><button type="button" onClick={()=>matchSize("height")}>Match height</button><button type="button" onClick={()=>matchSize("both")}>Match size</button></div></Section>}
+                <div className="te-element-grid te-element-actions"><button type="button" disabled={!canBackward} onClick={()=>reorder("backward")} title="Send backward one layer"><span aria-hidden>↓</span> Backward</button><button type="button" disabled={!canForward} onClick={()=>reorder("forward")} title="Bring forward one layer"><span aria-hidden>↑</span> Forward</button></div>
+              </fieldset>
+              <div className="te-element-grid te-element-actions"><button type="button" disabled={!canDuplicate} title={canDuplicate?"Duplicate selection":"A page can contain up to 100 elements"} onClick={duplicate}><CopyIcon/> Duplicate</button><button type="button" disabled={editable.every(element=>!canEditElement(scene,element,"delete"))} className="te-element-delete" onClick={remove}><TrashIcon/> Delete</button></div></Section>
+            </>}
+            {effectiveSection==="effects"&&<>
+              <Section title="Opacity"><fieldset disabled={styleDisabled}><NumberField label="Opacity" unit="%" min={0} max={100} value={shared(displayed,"opacity")===undefined?undefined:shared(displayed,"opacity")!*100} onChange={value=>update("opacity",element=>({...element,opacity:value/100}))}/></fieldset></Section>
+              <AdvancedProperties {...advancedFor("effects")}/>
+            </>}
+            {effectiveSection==="advanced"&&<>
+              <AdvancedProperties {...advancedFor("brand")}/><AdvancedProperties {...advancedFor("constraints")}/><AdvancedProperties {...advancedFor("path")}/>
+              {images.length>0&&<Section title="Accessibility" disclosure><fieldset disabled={photoContentDisabled}><label className="te-field">Image description<textarea aria-label="Public image description" rows={3} maxLength={2000} value={shared(images,"publicAlt")??""} placeholder={images.length>1&&shared(images,"publicAlt")===undefined?"Mixed descriptions":"What should a screen reader say about this image?"} onChange={event=>{const publicAlt=event.target.value;update("public-alt",element=>element.type==="image"?{...element,publicAlt}:element.type==="shape"&&element.imageFill?{...element,imageFill:{...element.imageFill,publicAlt}}:element);}}/></label><p className="te-element-hint">Shared in review links. Leave blank for decorative images. Internal image notes stay private.</p></fieldset></Section>}
+              <Section title="Copy appearance" disclosure><div className="te-element-grid te-element-actions"><button type="button" disabled={displayed.length!==1} onClick={()=>setAppearance(copyAppearance(displayed[0]))}>Copy appearance</button><button type="button" disabled={!appearance||styleDisabled} onClick={()=>{if(noEdits||styleDisabled||!appearance)return;const result=pasteAppearance(scene,selectedIds,appearance);if(result.scene!==scene)onChange(result.scene);}}>Paste appearance</button></div></Section>
+              {elements.length===1&&<Section title="Layer options"><label className="te-field te-element-name">Layer name<input value={elements[0].name} maxLength={120} onChange={event=>update("name",element=>({...element,name:event.target.value}))}/></label></Section>}
+            </>}
           </fieldset>
-          <Section title="Layer options" disclosure>
-            {elements.length === 1 && (
-              <label className="te-field te-element-name">
-                Layer name
-                <input
-                  value={elements[0].name}
-                  disabled={noEdits}
-                  maxLength={120}
-                  onChange={(event) =>
-                    update("name", (element) => ({
-                      ...element,
-                      name: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-            )}          <button
-            type="button"
-            className="te-element-lock"
-            disabled={disabled || inheritedLock}
-            onClick={toggleLock}
-          >
-            <LockIcon locked={allLocked} />
-            {allLocked ? "Unlock selection" : "Lock selection"}
-          </button>
-          </Section>
-        </>
-      )}
+        </div>
+      </>}
     </aside>
   );
 }

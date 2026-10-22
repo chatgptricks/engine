@@ -1,10 +1,11 @@
 "use client";
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type InputHTMLAttributes, type ReactNode } from "react";
 import { CloseIcon } from "@/components/engine/icons";
 import { parseColor, colorWithAlpha } from "@/lib/template-editor/color-utils";
 
 export const FONTS = [
   ["geist", "Geist Sans"],
+  ["sfpro", "SF Pro Display"],
   ["inter", "Inter"],
   ["space", "Space Grotesk"],
   ["montserrat", "Montserrat"],
@@ -15,6 +16,7 @@ export const FONTS = [
   ["cormorant", "Cormorant"],
   ["crimson", "Crimson Text"],
   ["bebas", "Bebas Neue"],
+  ["bebascanva", "Bebas Neue Bold (Canva)"],
   ["plexmono", "IBM Plex Mono"],
   ["caveat", "Caveat"],
 ];
@@ -126,16 +128,30 @@ export function Range({
   );
 }
 
+type NumberInputProps = Omit<InputHTMLAttributes<HTMLInputElement>, "type" | "value"> & { value: number | string };
+
+/** Keep incomplete numeric text local while callers validate committed values. */
+export function NumberInput({ value, onChange, onFocus, onBlur, onKeyDown, ...props }: NumberInputProps) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  return <input {...props} type="number" value={editing ? draft : value}
+    onFocus={event => { setDraft(String(value)); setEditing(true); onFocus?.(event); }}
+    onBlur={event => { setEditing(false); onBlur?.(event); }}
+    onChange={event => { setDraft(event.target.value); onChange?.(event); }}
+    onKeyDown={event => {
+      onKeyDown?.(event);
+      if (!event.defaultPrevented && event.key === "Enter" && !event.nativeEvent.isComposing) event.currentTarget.blur();
+      // Escape belongs to the surrounding drawer; other keys retain native input behavior.
+      if (event.key !== "Escape" || event.nativeEvent.isComposing) event.stopPropagation();
+    }} />;
+}
+
 export function NumberField({ label, value, min = -30000, max = 30000, step = 1, unit, onChange }: {
   label: string; value: number | undefined; min?: number; max?: number; step?: number; unit?: string; onChange: (value: number) => void;
 }) {
-  const [editing, setEditing] = useState(false);
-  const [draft, setDraft] = useState("");
   const formatted = value === undefined ? "" : String(Number(value.toFixed(2)));
-  return <label className="te-field te-element-number"><span>{label}{unit && <small>{unit}</small>}</span><input type="number" aria-label={label} placeholder="Mixed" value={editing ? draft : formatted} min={min} max={max} step={step}
-    onFocus={() => { setDraft(formatted); setEditing(true); }} onBlur={() => setEditing(false)}
-    onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); event.stopPropagation(); }}
-    onChange={(event) => { setDraft(event.target.value); if (event.target.value !== "" && Number.isFinite(event.target.valueAsNumber)) onChange(Math.min(max, Math.max(min, event.target.valueAsNumber))); }} /></label>;
+  return <label className="te-field te-element-number"><span>{label}{unit && <small>{unit}</small>}</span><NumberInput aria-label={label} placeholder="Mixed" value={formatted} min={min} max={max} step={step}
+    onChange={(event) => { if (event.target.value !== "" && Number.isFinite(event.target.valueAsNumber)) onChange(Math.min(max, Math.max(min, event.target.valueAsNumber))); }} /></label>;
 }
 export function Modal({
   title,

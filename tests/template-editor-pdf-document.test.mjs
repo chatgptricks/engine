@@ -65,3 +65,35 @@ test('all bundled font families embed composite glyphs in regular and bold PDF t
   const bytes=await server.renderDocumentPdf(design,design.pages[0].id,{widthMm:100},'owner');assert.equal((await PDFDocument.load(bytes)).getPageCount(),1);
  }
 });
+
+const referenceFaces = [
+ {font:'sfpro',fontWeight:400,italic:false,file:'SF-Pro-Display-Canva-Regular.ttf',name:/SFProDisplayCanva-Regular/},
+ {font:'sfpro',fontWeight:700,italic:false,file:'SF-Pro-Display-Canva-Bold.ttf',name:/SFProDisplayCanva-Bold/},
+ {font:'sfpro',fontWeight:400,italic:true,file:'SF-Pro-Display-RegularItalic.otf',name:/SFProDisplay-RegularItalic/},
+ {font:'sfpro',fontWeight:700,italic:true,file:'SF-Pro-Display-BoldItalic.otf',name:/SFProDisplay-BoldItalic/},
+ {font:'bebascanva',fontWeight:400,italic:false,file:'BebasNeueBold-Canva.woff2',name:/BebasNeueBold/},
+ {font:'bebascanva',fontWeight:700,italic:false,file:'BebasNeueBold-Canva.woff2',name:/BebasNeueBold/},
+];
+test('installed reference fonts retain their exact embedded faces and selectable text',{
+ skip:!referenceFaces.every(face=>fs.existsSync(path.join(root,'public/fonts/licensed',face.file))),
+},async()=>{
+ const server=renderer();
+ for(const face of referenceFaces){
+  const design=basic();design.pages[0].canvas.elements=[{...design.pages[0].canvas.elements[0],font:face.font,fontWeight:face.fontWeight,italic:face.italic,text:'EDIT',width:320,height:100}];
+  const bytes=await server.renderDocumentPdf(design,design.pages[0].id,{},'owner'),pdf=await PDFDocument.load(bytes),fonts=pdf.getPage(0).node.Resources().lookup(PDFName.of('Font'),PDFDict),embedded=fonts.lookup(fonts.keys()[0],PDFDict);
+  assert.match(embedded.get(PDFName.of('BaseFont')).toString(),face.name);
+  assert.ok(embedded.get(PDFName.of('ToUnicode')));
+ }
+});
+
+test('reference SF text falls back per character for new editable glyphs in PDF',{
+ skip:!['SF-Pro-Display-Canva-Regular.ttf','SF-Pro-Display-Regular.otf'].every(file=>fs.existsSync(path.join(root,'public/fonts/licensed',file))),
+},async()=>{
+ const design=basic();design.pages[0].canvas.elements=[{...design.pages[0].canvas.elements[0],font:'sfpro',fontWeight:400,text:'EDIT ZQJé EDIT',width:320,height:100}];
+ const bytes=await renderer().renderDocumentPdf(design,design.pages[0].id,{},'owner'),pdf=await PDFDocument.load(bytes),fonts=pdf.getPage(0).node.Resources().lookup(PDFName.of('Font'),PDFDict),embedded=fonts.keys().map(key=>fonts.lookup(key,PDFDict));
+ const names=embedded.map(font=>font.get(PDFName.of('BaseFont')).toString());
+ assert.ok(names.some(name=>name.includes('SFProDisplayCanva-Regular')));
+ assert.ok(names.some(name=>name.includes('SFProDisplay-Regular')));
+ const unicode=embedded.map(font=>inflateSync(font.lookup(PDFName.of('ToUnicode')).contents).toString()).join('\n');
+ for(const character of ['Z','Q','J','é'])assert.ok(unicode.includes(character.charCodeAt(0).toString(16).padStart(4,'0')),`${character} remains selectable`);
+});

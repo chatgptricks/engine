@@ -176,6 +176,8 @@ export type DesignDocument = DocumentResources & {
   comments?: DesignComment[];
   versions?: DesignVersion[];
   reviewLinks?: { id: string; url: string; expiresAt: string }[];
+  /** Bounded receipts make agent retries safe without replacing later artwork. */
+  agentOperations?: {id: string; inputHash: string}[];
 };
 export type DesignTemplate = DocumentResources & {
   id: string;
@@ -605,6 +607,18 @@ export function createCanvasElement(
     type,
     id: crypto.randomUUID(),
   } as CanvasElement;
+}
+
+/** New user-created text grows with its content; imported/template geometry stays unchanged. */
+export function createTextBox(options: Partial<Omit<TextElement, "type" | "id">> = {}): TextElement {
+  const fontSize = options.fontSize ?? 32, lineHeight = options.lineHeight ?? 1.2, padding = options.padding ?? 2;
+  return createCanvasElement("text", {
+    textMode: "auto-height",
+    verticalAlign: "top",
+    padding,
+    height: Math.ceil(fontSize * lineHeight + padding * 2),
+    ...options,
+  });
 }
 
 export function duplicateCanvasScene(source: CanvasScene): CanvasScene {
@@ -1126,6 +1140,7 @@ const FONT_IDS = new Set([
   "century",
   "libre",
   "geist",
+  "sfpro",
   "playfair",
   "dmserif",
   "lora",
@@ -1135,6 +1150,7 @@ const FONT_IDS = new Set([
   "space",
   "montserrat",
   "bebas",
+  "bebascanva",
   "plexmono",
   "caveat",
 ]);
@@ -1979,7 +1995,17 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
       if (!pages) return null;
       const resources = parseResources(d);
       if (!resources || !optional(d, "reviewStatus", choice(["draft", "review", "approved"]))) return null;
-      const metadata: Pick<DesignDocument, "reviewStatus" | "comments" | "versions"> = {};
+      const metadata: Pick<DesignDocument, "reviewStatus" | "comments" | "versions" | "agentOperations"> = {};
+      if (d.agentOperations !== undefined) {
+        if (!Array.isArray(d.agentOperations) || d.agentOperations.length > 20) return null;
+        const operations: NonNullable<DesignDocument["agentOperations"]> = [];
+        for (const operation of d.agentOperations) {
+          if (!object(operation) || typeof operation.id !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(operation.id) || typeof operation.inputHash !== "string" || !/^[a-f0-9]{64}$/.test(operation.inputHash)) return null;
+          operations.push({id: operation.id, inputHash: operation.inputHash});
+        }
+        if (!uniqueIds(operations)) return null;
+        metadata.agentOperations = operations;
+      }
       const reviewLinks: NonNullable<DesignDocument["reviewLinks"]> = [];
       if (d.reviewLinks !== undefined) {
         if (!Array.isArray(d.reviewLinks) || d.reviewLinks.length > 20) return null;

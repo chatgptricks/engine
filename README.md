@@ -8,6 +8,12 @@ This repository is an independent copy with its own Git history. Configure servi
 
 Built with Next.js 16, React 19, and Tailwind v4. The editor retains the established Engine fonts, artwork, image handling, authentication, and persistence. One shared canvas renderer powers editing, library previews, and PNG exports.
 
+## Build slides with an AI agent
+
+Choose **Connect agent** in the library header to create a revocable, workspace-scoped access token and download the MCP bridge. Any MCP or HTTP-capable agent can create decks, reuse templates, inspect layers, revise slides, and return a link to continue editing in Engine. Text, images, and shapes remain native editable layers. No AI provider key is required for this workflow.
+
+The agent API is `/api/agent/slides`; the local MCP entry point is `npm run agent:mcp` with `ENGINE_URL` and `ENGINE_AGENT_TOKEN` configured. Start with the capabilities tool for JSON Schemas, layout presets, fonts, and examples. Updates require the current document hash and retain retry receipts to protect concurrent edits. Editable handoff uses `.engine.json`; the editor also provides rendered exports and portable media ZIP backups. See [the agent guide](docs/agent-slides.md) for setup, examples, and the complete tool contract.
+
 ## Create a post
 
 1. Choose **New design** for a blank canvas, pick one of eight built-in templates, or start from **My templates**.
@@ -50,7 +56,9 @@ The current editor supports up to 100 elements per scene, 20 pages per design, 1
 
 ## Finding tools
 
-The library opens on **Projects**. Use **Create** for a blank post, carousel or template; **Templates** for a starting layout; and **Brand** for saved assets. Search stays visible while folder, tag and favorite filters open only when needed. Every card has a **⋯** menu, including delete for all templates. **Library tools** contains Trash, backups and browser recoveries.
+The library opens on **Projects**. Use **Create** for a blank post, carousel or template; **Templates** for a starting layout; and **Brand** for saved assets. Search and sorting stay visible, and active filters can be removed individually. Project type and review filters are remembered when browsing Templates without hiding available layouts. Every card has a **⋯** menu, including delete for all templates. **Library tools** contains Trash, backups and browser recoveries.
+
+Use **Select items → Folder and tags** to organize several projects or templates. **Keep current folders** lets you add tags without moving anything; choose a folder to move the selection, or **No folder** to remove it from folders. On phones, all four workspace tabs remain visible and the link icon opens **Connect agent**.
 
 The editor starts with the canvas and a compact tool rail. One optional drawer opens at a time; click an active tool again or use its close button to return to the canvas. **File** contains saving as a template, captions, review/version history and advanced design tools. **Resize** contains page format, custom sizing and carousel layout. **View** contains rulers, guides, margins and clipping/onion-skin options. The page counter toggles thumbnails; page menus contain duplication, ordering and deletion. On small screens the rail sits below the canvas and tools open in a closable bottom sheet.
 
@@ -101,6 +109,29 @@ Browser drafts use the `engine-template-editor` recovery database. Existing reco
 
 ## Organize, versions, and review
 
+Posts and template drafts support live collaboration with two or more people.
+Open **Live collaboration** in the editor header, copy the editing link, and
+open it with other people who have access to the workspace. Their names,
+cursors, selections, and object movements appear on the canvas; saved text,
+layer, and page changes arrive automatically without reloading. Each person
+undoes their own edits. Concurrent plain-text insertions merge, and reconnecting
+retains local operations alongside changes made by other participants.
+
+Cloud participants use their authenticated identity. This owner deployment
+shares its editing workspace with the addresses configured in `OWNER_EMAIL`;
+an editing link does not grant access to someone outside that workspace. The
+separate public review link continues to provide snapshot comments. Local
+development permits a display name in the collaboration dialog so independent
+browser sessions can be distinguished.
+
+Live changes and their shared document state save atomically in the existing
+`gf_client_state` record, with no additional database migration. Ordinary
+workspace saves retain independent brand/template changes. Publishing a template
+keeps its shared draft available so other editors can continue working. Formatted
+HTML edits remain atomic to preserve valid styling; unformatted text supports
+character-level merging. Named versions, backups, image permissions and review
+links keep using the authenticated workspace.
+
 Use folder, favorite and tag filters in the library. Design/template menus open **Folder and tags**; folder management supports adding, renaming and removal without deleting its contents. Deleting an item moves it to **Trash**, where it can be restored or permanently removed. Built-in templates can also be deleted, restored or permanently removed. These choices are saved per workspace and included in backups; deleting a template leaves posts already created from it intact. Built-in template states do not consume the 80-custom-template limit.
 
 **Version history** opens durable server checkpoints. Autosave records a baseline and then checkpoints at most every 30 seconds, up to 30 per design within a shared 20 MiB raw history budget spent on the newest checkpoints globally. Checkpoints for permanently removed documents expire after seven days. Named versions remain part of the document, up to 20 per design. Undo/redo remains the working history while a design is open.
@@ -126,6 +157,7 @@ Research uses `gpt-5.4` by default; chat and image review use `gpt-5.4-mini`. Ov
 ```sh
 npm run test:template-editor
 npm run test:template-editor:recovery
+npm run test:template-editor:collaboration
 npm run lint
 npm run build
 ```
@@ -143,6 +175,16 @@ ENGINE_REQUIRE_BROWSER=1 ENGINE_BROWSER_PATH='/Applications/Google Chrome.app/Co
 The twelve recovery cases cover migration races, owner isolation, failed writes, unreadable records, a baseline and shared image surviving reload, and preserving valid pending artwork when its baseline is corrupt. A corrupt baseline is excluded from automatic merge input; the original stored record remains intact. The general unit command can still report browser checks as skipped on environments without browser tooling, so release acceptance also requires the strict command above.
 
 For a browser check, create a carousel, edit text and imagery, reorder pages, reopen the design after a reload, save it as a template, and export each of the three formats. Check the exported dimensions and appearance as well as the save status.
+
+**Live collaboration acceptance** uses three independent real browser contexts
+against the actual application. Start an isolated server with a disposable
+`ENGINE_DEV_STORAGE_DIR`, Supabase disabled, and `NEXT_PUBLIC_SITE_URL` matching
+the loopback origin, then run `npm run test:template-editor:collaboration`.
+The default origin is `http://127.0.0.1:3121`; override it with
+`ENGINE_COLLABORATION_BASE_URL`. The strict test checks posts and template drafts,
+live cursors/selections and canvas changes, concurrent text edits, individual
+undo/redo, offline reconnection, durable reload and owner-scope rejection. A real
+Chrome/Chromium is required; unavailable tooling fails instead of skipping.
 
 ## Architecture
 
@@ -166,9 +208,11 @@ For a browser check, create a carousel, edit text and imagery, reorder pages, re
 
 ## Deploy this independent copy on Render
 
-Create a **new Supabase project** for this copy. Run `supabase/migrations/0014` through `0017` in order in its SQL editor. Migration `0017` supplies `gf_client_state` for both the preserved research state and the separately namespaced template library; no additional template-editor table is required. Configure the site URL and allowed redirect URL in Supabase Auth for its one-time sign-in links. Set allowed owner emails with `OWNER_EMAIL`.
+The existing production editor is [Engine on Render](https://greatful-independent.onrender.com/admin/engine). Its Render service follows `chatgptricks/engine`, branch `main`, with automatic deployments. Update that service to deploy this project; a second service is unnecessary.
 
-Create a Render **Web Service** from `chatgptricks/engine`, branch `main`, using Node 22. Build with `npm ci && npm run build` and start with `npm run start`. Configure these environment variables before deployment:
+For another independent copy, create a **new Supabase project** and run `supabase/migrations/0014` through `0017` in order in its SQL editor. Migration `0017` supplies `gf_client_state` for both the preserved research state and the separately namespaced template library; no additional template-editor table is required. Configure the site URL and allowed redirect URL in Supabase Auth for its one-time sign-in links. Set allowed owner emails with `OWNER_EMAIL`.
+
+The Render **Web Service** uses Node 22, builds with `npm ci && npm run build`, and starts with `npm run start`. Configure these environment variables when setting up a new service:
 
 | Variable | Value |
 |---|---|
@@ -178,6 +222,8 @@ Create a Render **Web Service** from `chatgptricks/engine`, branch `main`, using
 | `OWNER_EMAIL` | Allowed owner email, such as `esteban@sentientagency.io`; commas separate multiple addresses |
 | `NEXT_PUBLIC_SITE_URL` | This service's public URL, such as `https://your-service.onrender.com` |
 | `OPENAI_API_KEY` | Separate secret API key for optional research, chat, and image review |
+
+The build restores licensed fonts from the encrypted `assets/licensed-fonts.enc` before Next.js compiles. Provide its 32-byte key encoded as base64 in a Render secret file named `engine-fonts-key` (mounted at `/etc/secrets/engine-fonts-key`), or in the secret environment variable `ENGINE_FONT_BUNDLE_KEY`. The configured production service uses the secret file. Keep the key and raw fonts out of Git. Render builds fail if the key is missing, invalid, or cannot authenticate the bundle; local builds without a key retain installed fonts or use system fallbacks. See [font provisioning](public/fonts/licensed/README.md) for the bundle format.
 
 Production requires Supabase Auth and durable cloud storage. A missing configuration does not open the studio publicly or enable local-file saving. Owners share the owner workspace; optional members have separate workspace partitions. Render's service filesystem is temporary, so it is not the production design store. Subscription access remains disabled unless explicitly enabled.
 
@@ -195,7 +241,7 @@ See `.env.example` for configuration. These are not required for template editin
 
 ## Fonts
 
-Four slide fonts—GT Walsheim, GT Walsheim Condensed, PP Kyoto, and Century Gothic—are commercial, so their files are not in this repository. Put your licensed copies in `public/fonts/licensed/`, using the filenames documented there. Without them, those options fall back to system fonts. The other fonts are open source and included locally.
+Licensed font files stay outside Git in `public/fonts/licensed/`, using the filenames documented there. The production build privately provisions SF Pro Display and the reference Canva faces from an authenticated encrypted bundle. GT Walsheim, GT Walsheim Condensed, PP Kyoto, and Century Gothic can also use separately supplied licensed copies; missing faces fall back to system fonts. Open-source fonts are included locally.
 
 ## Working together
 

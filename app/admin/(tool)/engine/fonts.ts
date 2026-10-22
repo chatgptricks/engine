@@ -131,6 +131,7 @@ export const ENGINE_FONTS: Array<{ id: string; label: string }> = [
   { id: "century", label: "Century Gothic" },
   { id: "libre", label: "Libre Baskerville" },
   { id: "geist", label: "Geist Sans" },
+  { id: "sfpro", label: "SF Pro Display" },
   { id: "playfair", label: "Playfair Display" },
   { id: "dmserif", label: "DM Serif Display" },
   { id: "lora", label: "Lora" },
@@ -140,6 +141,7 @@ export const ENGINE_FONTS: Array<{ id: string; label: string }> = [
   { id: "space", label: "Space Grotesk" },
   { id: "montserrat", label: "Montserrat" },
   { id: "bebas", label: "Bebas Neue" },
+  { id: "bebascanva", label: "Bebas Neue Bold (Canva)" },
   { id: "plexmono", label: "IBM Plex Mono" },
   { id: "caveat", label: "Caveat" },
 ];

@@ -121,6 +121,27 @@ test("autofit measures rich sizes relatively and restores exact DOM styles after
  near(fit.measureFittedText(node,source),20.16,.01);assert.equal(node.style.fontSize,"20px");assert.equal(span.style.fontSize,"30px");fit.scaleEditableText(node,20,30);assert.equal(span.style.fontSize,"45px");assert.equal(node.style.fontSize,"30px");
  const markup=renderToStaticMarkup(React.createElement(canvas.SceneRenderer,{scene:scene([{...source,richText:'<span style="font-size:60px">Large</span>',text:"Large"}])}));assert.match(markup,/font-size:20px/);assert.match(markup,/font-size:30px/);
 });
+test("new text boxes use a small inset and automatic height without changing template defaults",()=>{
+ const created=model.createTextBox({fontSize:20,lineHeight:1.25});
+ assert.equal(created.textMode,"auto-height");assert.equal(created.padding,2);assert.equal(created.verticalAlign,"top");assert.equal(created.height,29);
+ const explicit=model.createTextBox({padding:0,textMode:"fixed",height:100});assert.equal(explicit.padding,0);assert.equal(explicit.textMode,"fixed");assert.equal(explicit.height,100);
+ const legacy=model.createCanvasElement("text");assert.equal(legacy.textMode,undefined);assert.equal(legacy.padding,undefined);
+ const design=designOf([legacy]);const parsed=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[design]});assert.equal(parsed.designs[0].pages[0].canvas.elements[0].padding,undefined);
+});
+test("natural text height shrinks, includes fractional layout, and restores measurement styles",()=>{
+ const style={height:"200px",minHeight:"100%",maxHeight:"300px"};let natural=28.4;
+ const node={style,ownerDocument:{defaultView:{getComputedStyle:()=>({height:`${natural}px`})}},get scrollHeight(){assert.equal(style.height,"auto");assert.equal(style.minHeight,"0");assert.equal(style.maxHeight,"none");return Math.round(natural);}};
+ assert.equal(fit.measureTextHeight(node),29);assert.deepEqual(style,{height:"200px",minHeight:"100%",maxHeight:"300px"});
+ natural=96.2;assert.equal(fit.measureTextHeight(node),97);natural=24;assert.equal(fit.measureTextHeight(node),24);
+ Object.defineProperty(node,"scrollHeight",{get(){throw Error("measurement unavailable");}});assert.throws(()=>fit.measureTextHeight(node),/measurement unavailable/);assert.deepEqual(style,{height:"200px",minHeight:"100%",maxHeight:"300px"});
+});
+test("automatic text height keeps the top edge anchored when growing or shrinking rotated boxes",()=>{
+ const source=text("anchored",{x:30,y:40,width:160,height:40,rotation:37});
+ const topCenter=element=>{const angle=element.rotation*Math.PI/180;return {x:element.x+element.width/2+element.height/2*Math.sin(angle),y:element.y+element.height/2-element.height/2*Math.cos(angle)};};
+ const before=topCenter(source);
+ for(const height of [100,20]){const resized=fit.resizeTextHeight(source,height),after=topCenter(resized);near(after.x,before.x);near(after.y,before.y);assert.equal(resized.height,height);assert.equal(resized.width,source.width);}
+ assert.equal(fit.resizeTextHeight(source,40.1),source);assert.equal(source.height,40);
+});
 test("node parser preserves cubic, smooth, quadratic, arc and open/closed subpath semantics",()=>{
  const graph=nodes.parseVectorNodes("M0 0 C10 0 20 20 30 20 S50 0 60 0 Q70 20 80 0 T100 0 M0 50A50 50 0 0 1 100 50Z");assert.equal(graph.subpaths.length,2);assert.equal(graph.subpaths[0].closed,false);assert.equal(graph.subpaths[1].closed,true);assert.deepEqual(graph.subpaths[0].nodes[1].outgoing,{x:40,y:20});
  const path=nodes.serializeVectorNodes(graph);assert.ok(model.isSafeVectorPath(path));assert.equal((path.match(/Z/g)||[]).length,1);assert.doesNotMatch(path,/[QSTA]/);assert.ok(nodes.parseVectorNodes(path).subpaths[1].nodes.length>4);

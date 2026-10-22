@@ -21,9 +21,24 @@
 @font-face { font-family: "GF Century Gothic"; src: url("/fonts/licensed/Century Gothic.otf") format("opentype"); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: "GF Century Gothic"; src: url("/fonts/licensed/Century Gothic Bold.otf") format("opentype"); font-weight: 700; font-style: normal; font-display: swap; }
 
+@font-face { font-family: "GF SF Pro Display"; src: url("/fonts/licensed/SF-Pro-Display-Regular.otf") format("opentype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GF SF Pro Display"; src: url("/fonts/licensed/SF-Pro-Display-Bold.otf") format("opentype"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "GF SF Pro Display"; src: url("/fonts/licensed/SF-Pro-Display-RegularItalic.otf") format("opentype"); font-weight: 400; font-style: italic; font-display: swap; }
+@font-face { font-family: "GF SF Pro Display"; src: url("/fonts/licensed/SF-Pro-Display-BoldItalic.otf") format("opentype"); font-weight: 700; font-style: italic; font-display: swap; }
+
+/* Later unicode ranges use exact source glyphs; all other characters retain the full face above. */
+@font-face { font-family: "GF SF Pro Display"; src: url("/fonts/licensed/SF-Pro-Display-Canva-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; unicode-range: U+20,U+27,U+2D,U+33,U+41,U+42,U+43,U+44,U+45,U+46,U+47,U+49,U+4B,U+4C,U+4D,U+4E,U+4F,U+50,U+52,U+53,U+54,U+55,U+57,U+59,U+61,U+65,U+67,U+68,U+6E,U+6F,U+70,U+72,U+74,U+75,U+78,U+2011; }
+@font-face { font-family: "GF SF Pro Display"; src: url("/fonts/licensed/SF-Pro-Display-Canva-Bold.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; unicode-range: U+20,U+23,U+2C,U+2E,U+30,U+31,U+32,U+34,U+35,U+37,U+38,U+39,U+41,U+44,U+45,U+46,U+47,U+49,U+4C,U+4D,U+4E,U+53,U+54,U+57,U+59,U+61,U+62,U+63,U+64,U+65,U+66,U+67,U+68,U+69,U+6B,U+6C,U+6D,U+6E,U+6F,U+70,U+72,U+73,U+74,U+75,U+76,U+77,U+78; }
+
+/* Canva's Bold face has different metrics from the bundled Google regular. */
+@font-face { font-family: "GF Bebas Neue Canva"; src: url("/fonts/licensed/BebasNeueBold-Canva.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GF Bebas Neue Canva"; src: url("/fonts/licensed/BebasNeueBold-Canva.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+
 .gf-root {
   --gf-f-walsheim: "GF GT Walsheim";
   --gf-f-walsheimcond: "GF GT Walsheim Condensed";
   --gf-f-kyoto: "GF PP Kyoto";
   --gf-f-century: "GF Century Gothic";
+  --gf-f-sfpro: "GF SF Pro Display";
+  --gf-f-bebascanva: "GF Bebas Neue Canva";
 }

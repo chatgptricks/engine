@@ -383,16 +383,19 @@ function findReactElement(node,predicate){
   for(const child of React.Children.toArray(node.props?.children)){const found=findReactElement(child,predicate);if(found)return found;}
 }
 const quickDefaults={disabled:false,onDuplicate(){},onDelete(){},onMore(){},onAddText(){},onUpload(){}};
-test("choosing a quick border adds a visible outline and revives transparent fills without losing partial alpha",()=>{
+test("choosing a quick border adds a visible outline and solid paint applies its explicit alpha",()=>{
   const outline=shape({id:"outlined",stroke:"transparent",strokeWidth:0,strokeAlign:"outside"});
   let changed;
   const toolbar=quick.QuickToolbar({...quickDefaults,scene:{background:"#fff",elements:[outline]},selectedIds:[outline.id],onChange:scene=>changed=scene});
-  findReactElement(toolbar,node=>node.props?.label==="Quick shape border").props.onChange("#123456");
+  findReactElement(toolbar,node=>node.props?.label==="Quick shape border").props.onChange({type:"solid",color:"#123456"});
   assert.equal(changed.elements[0].stroke,"#123456");assert.equal(changed.elements[0].strokeWidth,1);assert.equal(changed.elements[0].strokeAlign,"outside");
   const items=[shape({id:"transparent",fill:"#ff000000"}),shape({id:"alpha",fill:"#ff000080"}),shape({id:"protected",fill:"#aabbcc",protected:["style"]})];
   const colors=quick.QuickToolbar({...quickDefaults,scene:{background:"#fff",elements:items},selectedIds:items.map(item=>item.id),onChange:scene=>changed=scene});
-  findReactElement(colors,node=>node.props?.label==="Quick shape fill").props.onChange("#123456");
-  assert.equal(changed.elements[0].fill,"#123456");assert.equal(changed.elements[1].fill,"#12345680");assert.equal(changed.elements[2],items[2]);
+  const fillPicker=findReactElement(colors,node=>node.props?.label==="Quick shape fill");
+  fillPicker.props.onChange({type:"solid",color:"#123456"});
+  assert.equal(changed.elements[0].fill,"#123456");assert.equal(changed.elements[1].fill,"#123456");assert.equal(changed.elements[2],items[2]);
+  fillPicker.props.onChange({type:"solid",color:"#12345680"});
+  assert.equal(changed.elements[0].fill,"#12345680");assert.equal(changed.elements[1].fill,"#12345680");assert.equal(changed.elements[2],items[2]);
 });
 test("quick photo fit preserves shape geometry, texture source and inherited protection",()=>{
   const frame=shape({id:"frame",imageFill:photo}),locked=shape({id:"locked",imageFill:photo,groupId:"g"});let changed;

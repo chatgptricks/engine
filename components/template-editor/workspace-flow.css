@@ -1,0 +1,72 @@
+/* Workspace and creation use the same quiet surfaces as the contextual editor. */
+.te-home{background:#111113}
+.te-home .te-home-header{height:72px;padding:0 24px;border-bottom:1px solid #ffffff0c;background:#18181b}
+.te-home .te-header-right{gap:12px}
+.te-home .te-button{border-radius:8px;min-height:40px;font-size:13px!important}
+.te-home .te-button.te-primary{background:#aa82f5;color:#171023;font-weight:650!important}
+.te-home .te-button.te-primary:hover{background:#bb9cf7}
+.te-home .te-home-sidebar{width:206px;padding:24px 14px 20px;border-right:1px solid #ffffff0b;background:#18181b;gap:22px}
+.te-home .te-home-sidebar nav button{min-height:44px;font-size:13px;gap:12px;border-radius:8px}
+.te-home .te-home-sidebar nav button.is-active{background:#ad83f51c;color:#d6beff}
+.te-home .te-home-main{padding:28px 32px 48px}
+.te-home .te-sidebar-shortcuts{display:grid;gap:4px;border-top:1px solid #ffffff0d;padding-top:16px;min-width:0}
+.te-sidebar-shortcuts button,.te-sidebar-shortcuts summary{display:flex;align-items:center;gap:10px;padding:10px 14px;font-size:12px;color:#afafb7;background:none;border:0;border-radius:8px;min-width:0;text-align:left}
+.te-sidebar-shortcuts button{width:100%;overflow:hidden;text-overflow:ellipsis}
+.te-sidebar-shortcuts button>span:last-child{margin-left:auto}
+.te-sidebar-shortcuts button:hover,.te-sidebar-shortcuts button.is-active{background:#ffffff08;color:#eee}
+.te-sidebar-shortcuts summary{cursor:pointer;font-weight:600}
+.te-sidebar-shortcuts details button{padding-left:22px}
+.te-home .te-sidebar-bottom{padding:0 14px;margin-top:auto}
+.te-start-design{margin:0 0 28px}
+.te-start-heading{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:16px}
+.te-start-heading h2{margin:0;font-size:24px;font-weight:650;letter-spacing:-.6px}
+.te-start-heading .te-text-button{font-size:13px!important;color:#c7acfc}
+.te-start-formats{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;max-width:1000px}
+.te-start-formats>button{display:flex;align-items:center;gap:14px;min-width:0;padding:16px;border:1px solid #ffffff13;background:#1c1c20;color:#eaeaf0;text-align:left;border-radius:12px;transition:background .15s,border-color .15s}
+.te-start-formats>button:hover{background:#25212f;border-color:#ac84f580}
+.te-start-formats strong{display:block;font-size:13px;font-weight:550;line-height:1.5}
+.te-start-formats small{display:block;color:#9999a4;font-size:11px;margin-top:2px}
+.te-start-formats>button>svg{margin-left:auto;color:#a5a0af;flex-shrink:0}
+.te-format-icon{display:block;height:35px;max-width:35px;flex-shrink:0;border:1.5px solid #c7a3ff;border-radius:3px;background:linear-gradient(135deg,#ad83f52b,#89d6e52b);box-shadow:3px 3px 0 #ad83f50c}
+.te-home .te-gallery-heading{margin-bottom:18px;align-items:center}
+.te-home .te-gallery-heading h1{font-size:24px;letter-spacing:-.6px}
+.te-home .te-gallery-heading p{font-size:13px;margin-top:5px}
+.te-home .te-gallery-controls{gap:10px}
+.te-home .te-search{border-radius:8px;background:#1e1e22;border:1px solid #ffffff12;min-height:40px}
+.te-home .te-search input{font-size:13px}
+.te-home .te-gallery-summary{margin:0 0 16px;gap:16px;min-height:36px}
+.te-home .te-gallery-sort{margin-left:0}
+.te-home .te-selection-toggle{margin-left:auto;font-size:12px!important;padding:8px}
+.te-home .te-selection-toggle.is-active{color:#ceadff}
+.te-home .te-bulk-bar[hidden]{display:none}
+.te-home .te-bulk-bar:not([hidden]){padding:12px 16px;border:1px solid #b88bf53b;background:#b88bf50a;border-radius:10px;margin-bottom:18px}
+.te-home .te-template-grid{grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:24px 20px}
+.te-home .te-template-card{min-width:0}
+.te-home .te-template-art{border:1px solid #ffffff0d;border-radius:10px;background:#222226}
+.te-home .te-card-name{font-size:13px;margin-top:10px}
+.te-home .te-card-description{font-size:11px;margin-top:3px}
+.te-home .te-page-count{border-radius:5px}
+.te-home .te-card-menu{opacity:0;transition:opacity .15s}
+.te-home .te-template-card:hover .te-card-menu,.te-home .te-template-card:focus-within .te-card-menu{opacity:1}
+.te-home .te-section-heading h1,.te-home .te-workspace-resources h2{font-size:26px;letter-spacing:-.5px}
+.te-home .te-section-heading .te-eyebrow{display:none}
+.te-create-flow{gap:18px!important}
+.te-create-presets{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}
+.te-create-presets button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;min-height:126px;border:1px solid #ffffff1a;border-radius:10px;color:#dedee7;background:#ffffff04;padding:12px 6px}
+.te-create-presets button:hover{background:#ffffff09}
+.te-create-presets button[aria-pressed=true]{border-color:#b28bf8;background:#ad83f516;box-shadow:0 0 0 1px #b28bf8}
+.te-create-presets strong{font-size:12px;font-weight:550;text-align:center}
+.te-create-presets small{font-size:10px;color:#aaa}
+.te-create-flow .te-custom-size-toggle{text-align:left;align-self:start;color:#ceb2ff;padding:0;font-size:12px!important}
+.te-create-more{border-top:1px solid #ffffff13;padding-top:14px}
+.te-create-more>summary{font-size:13px;color:#b0b0bb;cursor:pointer}
+.te-create-dimensions{color:#9696a3;font-size:12px;margin-right:auto}
+.te-template-choice{display:flex;align-items:center;gap:18px;padding:16px;background:#ffffff05;border:1px solid #ffffff0b;border-radius:10px}
+.te-template-choice>.te-preview{width:70px;flex-shrink:0}
+.te-template-choice>div:last-child>strong,.te-template-choice>div:last-child>span{display:block}
+.te-template-choice>div:last-child>strong{font-size:15px}
+.te-template-choice>div:last-child>span{font-size:12px;color:#aaa;margin-top:6px}
+@media(hover:none){.te-home .te-card-menu{opacity:1}}
+@media(max-width:1050px){.te-start-formats{grid-template-columns:repeat(2,minmax(0,1fr))}.te-home .te-gallery-heading{align-items:flex-start}.te-home .te-gallery-controls{flex-wrap:wrap;justify-content:flex-end}.te-home .te-save-status{display:none}}
+@media(max-width:768px){.te-home .te-home-header{padding:0 16px;height:66px}.te-home .te-home-sidebar{width:auto;flex-direction:row;padding:8px 12px;border-right:0;border-bottom:1px solid #ffffff0b;gap:0}.te-home .te-home-sidebar nav{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));width:100%;gap:4px}.te-home .te-home-sidebar nav button{padding:8px;justify-content:center;font-size:11px;gap:6px;min-width:0}.te-home .te-sidebar-shortcuts,.te-home .te-sidebar-bottom{display:none}.te-home .te-home-main{padding:22px 18px}.te-home .te-gallery-heading{gap:16px}.te-home .te-gallery-heading h1{font-size:22px}.te-home .te-gallery-heading p{display:none}.te-home .te-gallery-controls{width:100%;justify-content:flex-start}.te-home .te-search{flex:1;min-width:140px}.te-home .te-template-grid{grid-template-columns:repeat(auto-fill,minmax(155px,1fr));gap:20px 14px}.te-start-heading h2{font-size:22px}.te-start-formats>button{padding:12px;gap:10px}.te-start-formats>button>svg{display:none}.te-home .te-card-menu{opacity:1}.te-create-presets{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:460px){.te-home .te-home-header{gap:10px;padding:0 12px}.te-home .te-wordmark{font-size:18px;gap:7px}.te-home .te-logo{width:30px;height:30px;font-size:25px}.te-home .te-header-right{gap:7px}.te-home .te-create-design{padding:8px 10px;font-size:11px!important;gap:6px}.te-home .te-library-menu{min-width:34px;padding:8px}.te-home .te-library-menu .te-menu-short-label{display:none}.te-home .te-home-main{padding:20px 12px}.te-start-design{margin-bottom:24px}.te-start-heading h2{font-size:20px}.te-start-formats{gap:8px}.te-start-formats strong{font-size:11px}.te-start-formats small{font-size:10px}.te-format-icon{height:29px;max-width:29px}.te-home .te-template-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:18px 10px}.te-home .te-gallery-sort>span{display:none}.te-home .te-gallery-sort select{max-width:140px}.te-home .te-gallery-summary{gap:8px}.te-home .te-selection-toggle{padding:6px 0}.te-create-dimensions{display:none}}

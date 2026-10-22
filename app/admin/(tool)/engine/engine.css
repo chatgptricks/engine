@@ -547,6 +547,7 @@
 .gf-font-walsheimcond { font-family: var(--gf-f-walsheimcond), system-ui, sans-serif; }
 .gf-font-kyoto { font-family: var(--gf-f-kyoto), Georgia, serif; }
 .gf-font-century { font-family: var(--gf-f-century), system-ui, sans-serif; }
+.gf-font-sfpro { font-family: var(--gf-f-sfpro), system-ui, sans-serif; }
 .gf-font-playfair { font-family: var(--gf-f-playfair), Georgia, serif; }
 .gf-font-dmserif { font-family: var(--gf-f-dmserif), Georgia, serif; }
 .gf-font-lora { font-family: var(--gf-f-lora), Georgia, serif; }
@@ -556,6 +557,7 @@
 .gf-font-space { font-family: var(--gf-f-space), system-ui, sans-serif; }
 .gf-font-montserrat { font-family: var(--gf-f-montserrat), system-ui, sans-serif; }
 .gf-font-bebas { font-family: var(--gf-f-bebas), system-ui, sans-serif; }
+.gf-font-bebascanva { font-family: var(--gf-f-bebascanva), var(--gf-f-bebas), system-ui, sans-serif; }
 .gf-font-plexmono { font-family: var(--gf-f-plexmono), ui-monospace, monospace; }
 .gf-font-caveat { font-family: var(--gf-f-caveat), cursive; }
 /* Free-form text block: draggable on the slide (translate composes with the
