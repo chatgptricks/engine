@@ -1,11 +1,13 @@
 "use client";
 import { VectorNodeEditor } from "./vector-node-editor";
 import { layersAtPoint,cycleLayerAtPoint } from "@/lib/template-editor/canvas-hit-testing";
-import { textDisplayFontSize,measureFittedText,scaleEditableText } from "@/lib/template-editor/text-fit";
+import { textDisplayFontSize,measureFittedText,measureTextHeight,resizeTextHeight,scaleEditableText } from "@/lib/template-editor/text-fit";
 import { keyboardTransform } from "@/lib/template-editor/editing-actions";
 import { viewGestureDelta,type ViewPoint } from "@/lib/template-editor/view-gestures";
 import {elementEffectiveOpacity} from "@/lib/template-editor/group-opacity";
 import { SceneLayers } from "./scene-layers";
+import { CollaborationOverlay } from "./collaboration-overlay";
+import type { CollaborationPeer } from "./collaboration-bar";
 import { cropAfterDrag } from "@/lib/template-editor/photo-crop-geometry";
 
 import {elementWithPreviewAsset,sceneWithPreviewAssets} from "@/lib/template-editor/media-preview";
@@ -23,6 +25,7 @@ import {
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
+import { createPortal } from "react-dom";
 import type {
   CanvasElement,
   CanvasScene,
@@ -44,6 +47,7 @@ import { LayoutOverlay } from "./layout-panel";
 import {historyShortcut} from "@/lib/template-editor/history";
 import { proxied } from "@/lib/engine/util";
 import "./canvas.css";
+import "./text-editing.css";
 
 type Point = { x: number; y: number };
 type Box = Point & { width: number; height: number; rotation: number };
@@ -106,6 +110,23 @@ const RAD = Math.PI / 180;
 const round = (value: number) => Math.round(value * 100) / 100;
 const clamp = (value: number, min: number, max: number) =>
   Math.max(min, Math.min(max, value));
+
+/** Keep a logical caret attached to its text when a peer inserts before it. */
+export function rebaseCollaboratorTextSelection(selection:{start:number;end:number},before:string,after:string):{start:number;end:number} {
+  let prefix = 0, suffix = 0;
+  while (prefix < before.length && prefix < after.length && before[prefix] === after[prefix]) prefix++;
+  while (suffix < before.length-prefix && suffix < after.length-prefix && before[before.length-suffix-1] === after[after.length-suffix-1]) suffix++;
+  const beforeEnd = before.length-suffix, afterEnd = after.length-suffix;
+  const offset = (value:number,right:boolean) => {
+    if (value < prefix) return value;
+    if (value > beforeEnd) return value + after.length-before.length;
+    if (value === prefix && !right) return prefix;
+    if (value === beforeEnd) return afterEnd;
+    return Math.min(afterEnd,prefix+Math.max(0,value-prefix));
+  };
+  const collapsed = selection.start === selection.end;
+  return {start:offset(selection.start,collapsed),end:offset(selection.end,true)};
+}
 const center = (box: Box): Point => ({
   x: box.x + box.width / 2,
   y: box.y + box.height / 2,
@@ -474,6 +495,11 @@ type CanvasEditorProps = {
   selectedIds: string[];
   onSelect: (ids: string[]) => void;
   onChange: (scene: CanvasScene, group?: string) => boolean | void;
+  /** Transient gesture geometry is shared as awareness, outside saved history. */
+  onScenePreview?: (scene: CanvasScene | null) => void;
+  peers?: CollaborationPeer[];
+  collaborationPageId?: string;
+  onCursorChange?: (point: Point | null) => void;
   /** The document journal also owns typing and rich-range formatting history. */
   onHistory?: (direction: "undo" | "redo") => boolean | void;
   onRegisterHistoryBridge?: (bridge:CanvasHistoryBridge|null)=>void;
@@ -505,6 +531,8 @@ type CanvasEditorProps = {
   navigationMode?: "select"|"hand"|"nodes";
   onExitNodeEditing?: ()=>void;
   nodeToolbarHost?: HTMLElement|null;
+  /** Host outside the transformed canvas, keeping formatting clear of the typing area. */
+  textToolbarHost?: HTMLElement|null;
   onRequestCrop?: (id:string)=>void;
   onPan?: (delta:ViewPoint)=>void;
   onZoom?: (gesture:{factor:number;clientX:number;clientY:number})=>void;
@@ -524,6 +552,10 @@ export function CanvasEditor({
   selectedIds,
   onSelect,
   onChange,
+  onScenePreview,
+  peers = [],
+  collaborationPageId,
+  onCursorChange,
   onHistory,
   onRegisterHistoryBridge,
   onHistoryBoundary,
@@ -545,7 +577,7 @@ export function CanvasEditor({
   imageDropTargetId,
   masterScene,
   masterPageVisibility,
-  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,nodeToolbarHost,
+  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,nodeToolbarHost,textToolbarHost,
   penClosed=false,penColor="#222222",onCancelDrawing,onRegisterDrawingControls,onDrawingPointCount,
   drawingMode,
   onDrawPath,
@@ -564,6 +596,10 @@ export function CanvasEditor({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingSeed, setEditingSeed] = useState("");
   const [live, setLive] = useState<CanvasScene | null>(null);
+  const awarenessCallbacks = useRef({onScenePreview,onCursorChange});
+  useLayoutEffect(() => { awarenessCallbacks.current = {onScenePreview,onCursorChange}; });
+  useEffect(() => { onScenePreview?.(live); }, [live, onScenePreview]);
+  useEffect(() => () => { awarenessCallbacks.current.onScenePreview?.(null); awarenessCallbacks.current.onCursorChange?.(null); }, []);
   const [previewSelectedIds,setPreviewSelectedIds]=useState<string[]|null>(null);
   const [selectionArea, setSelectionArea] = useState<Box | null>(null);
   const [guides, setGuides] = useState<SnapGuide[]>([]);
@@ -609,7 +645,6 @@ export function CanvasEditor({
     const id = editingActive.current;
     if (!id) return scene;
     const rawHtml = editingNode.current ? editorRichHtml(editingNode.current) : undefined;
-    if (!cancel && !extra && rawHtml === editingSnapshot.current?.html) return scene;
     const displayElement=scene.elements.find((element):element is TextElement=>element.id===id&&element.type==="text");
     const html=displayElement?scaleRichTextFonts(rawHtml,displayElement.fontSize/textDisplayFontSize(displayElement)):rawHtml;
     const value = cancel
@@ -618,27 +653,20 @@ export function CanvasEditor({
     const previous = scene.elements.find((element) => element.id === id);
     if (previous?.type !== "text" || disabled || !canEditElement(scene,previous,"content") || isElementHidden(scene,previous) || !inScope(previous)) return scene;
     const fitted=previous.textMode==="auto-fit"&&editingNode.current&&canEditElement(scene,previous,"style")?measureFittedText(editingNode.current,previous):previous.autoFitFontSize;
-    const measuredHeight = cancel ? editingOriginal.current?.height ?? previous.height : previous.textMode === "auto-height" && canEditElement(scene,previous,"position") ? clamp(editingNode.current?.scrollHeight ?? previous.height,1,10000) : previous.height;
-    // Growing a rotated box keeps its top edge anchored in the same place.
-    const shift = rotate(
-      { x: 0, y: (measuredHeight - previous.height) / 2 },
-      previous.rotation,
-    );
+    const measuredHeight = !cancel && previous.textMode === "auto-height" && editingNode.current && canEditElement(scene,previous,"position") ? measureTextHeight(editingNode.current) : previous.height;
+    if (!cancel && !extra && rawHtml === editingSnapshot.current?.html && Math.abs(measuredHeight - previous.height) < .5 && fitted === previous.autoFitFontSize) return scene;
     const usedTextures=new Set([...html?.matchAll(/data-texture-id="([a-zA-Z0-9_-]+)"/g)??[]].map(match=>match[1]));
     const wordTextures=(extra?.wordTextures??previous.wordTextures)?.filter(texture=>usedTextures.has(texture.id));
     const replacement = bounded(
       cancel && editingOriginal.current
         ? editingOriginal.current
         : {
-            ...previous,
+            ...resizeTextHeight(previous, measuredHeight),
             ...extra,
             wordTextures:wordTextures?.length?wordTextures:undefined,
             text: value.slice(0, 20_000),
             richText: html,
             autoFitFontSize:fitted,
-            height: measuredHeight,
-            x: previous.x + shift.x,
-            y: previous.y + shift.y - (measuredHeight - previous.height) / 2,
           },
     );
     if (JSON.stringify(previous) === JSON.stringify(replacement)) return scene;
@@ -691,10 +719,9 @@ export function CanvasEditor({
       if(!text)return element;
       if(element.textMode==="auto-height"){
         if(!canEditElement(scene,element,"position"))return element;
-        const height=clamp(text.scrollHeight,1,10000);
-        if(Math.abs(height-element.height)<.5)return element;
-        const shift=rotate({x:0,y:(height-element.height)/2},element.rotation);
-        changed=true;return {...element,height,x:element.x+shift.x,y:element.y+shift.y-(height-element.height)/2};
+        const fitted=resizeTextHeight(element,measureTextHeight(text));
+        if(fitted===element)return element;
+        changed=true;return fitted;
       }
       if(!canEditElement(scene,element,"style"))return element;
       const size=measureFittedText(text,element);
@@ -729,14 +756,21 @@ export function CanvasEditor({
     // ordinary input has already recorded this snapshot and keeps its caret.
     const focused=document.activeElement===node,selection=window.getSelection();
     const previousRange=selection?.rangeCount&&node.contains(selection.getRangeAt(0).commonAncestorContainer)?selection.getRangeAt(0):richRange.current;
-    const bookmark=captureTextSelection(node,previousRange);
+    const captured=captureTextSelection(node,previousRange);
+    const oldText=collaborationPageId ? richTextToPlain(editorRichHtml(node) ?? "") : "";
+    const bookmark=captured&&collaborationPageId ? rebaseCollaboratorTextSelection(captured,oldText,element.text) : captured;
     node.innerHTML = splitRichLines(element.richText ? resolveRichDecorations(scaleRichTextFonts(element.richText,textDisplayFontSize(element)/element.fontSize)??element.richText,element.underline,element.strikethrough) : undefined,element.text).map(line=>`<div>${line || "<br>"}</div>`).join("");
     editingSnapshot.current = { source, html: editorRichHtml(node),node };
+    // Escape must preserve edits already received from other participants.
+    if(collaborationPageId)editingOriginal.current=element;
     const range=document.createRange();
     if(bookmark)restoreTextSelection(node,range,bookmark);else{range.selectNodeContents(node);range.collapse(false);}
     richRange.current=range.collapsed?null:range.cloneRange();
     if(focused){selection?.removeAllRanges();selection?.addRange(range);}
-  }, [scene,editingId]);
+  }, [scene,editingId,collaborationPageId]);
+  useLayoutEffect(()=>{
+    if (editingId && editingNode.current && editingElement?.textMode === "auto-height") updateEditing();
+  });
   useLayoutEffect(()=>{
     if(observedHistoryRevision.current===historyRevision)return;
     observedHistoryRevision.current=historyRevision;
@@ -796,7 +830,7 @@ export function CanvasEditor({
 
   function finishEditing(cancel = false): CanvasScene {
     const next = updateEditing(cancel);
-    if(!editingAccepted.current&&!cancel)return next;
+    if(!editingAccepted.current)return next;
     editingActive.current = null;
     editingOriginal.current = null;
     editingSnapshot.current = null;
@@ -1101,14 +1135,22 @@ export function CanvasEditor({
   // Editing uses the same typography and box styles as the saved renderer.
   // Hide only the saved text beneath the plaintext contenteditable surface.
   const dropFrame=currentScene.elements.find((element):element is ShapeElement=>element.id===(imageDropTargetId??dragFrameId)&&element.type==="shape"&&!isElementHidden(currentScene,element)&&inScope(element));
+  // Peer gestures affect the artwork preview only; interactions and persistence
+  // continue to use the committed scene until that person's gesture ends.
+  const remoteGeometry = new Map(peers.filter(peer => peer.pageId === collaborationPageId).flatMap(peer => peer.preview?.elements ?? []).map(element => [element.id, element]));
+  const presentedScene = remoteGeometry.size ? { ...currentScene, elements: currentScene.elements.map(element => {
+    if (live && (gesture.current?.ids.includes(element.id) || cropGesture.current?.source.id === element.id)) return element;
+    const preview = remoteGeometry.get(element.id);
+    return preview ? { ...element, ...preview } : element;
+  }) } as CanvasScene : currentScene;
   const displayScene = editingId
     ? {
-        ...currentScene,
-        elements: currentScene.elements.map((element) =>
+        ...presentedScene,
+        elements: presentedScene.elements.map((element) =>
           element.id === editingId ? { ...element, opacity: 0 } : element,
         ),
       }
-    : currentScene;
+    : presentedScene;
 
   return (
     <div
@@ -1121,6 +1163,7 @@ export function CanvasEditor({
       onPointerDownCapture={event=>{
         // Portalled tool controls live outside the stage, though React events bubble through this component.
         if(!event.currentTarget.contains(event.target as Node))return;
+        if (!(event.target instanceof Element) || !event.target.closest(".te-rich-controls,.te-vector-tools,button,input,select")) onCursorChange?.(position(event));
         if(event.pointerType!=="touch"&&navigationMode!=="hand")return;
         viewPointers.current.set(event.pointerId,{x:event.clientX,y:event.clientY});
         if(navigationMode==="hand"||viewPointers.current.size>=2){
@@ -1130,6 +1173,7 @@ export function CanvasEditor({
         viewPrevious.current=[...viewPointers.current.values()];
       }}
       onPointerMoveCapture={event=>{
+        if(event.currentTarget.contains(event.target as Node) && (!(event.target instanceof Element) || !event.target.closest(".te-rich-controls,.te-vector-tools,button,input,select"))) onCursorChange?.(position(event));
         if(!viewPointers.current.has(event.pointerId))return;
         viewPointers.current.set(event.pointerId,{x:event.clientX,y:event.clientY});
         if(!touchNavigating.current&&navigationMode!=="hand")return;
@@ -1142,6 +1186,7 @@ export function CanvasEditor({
       onPointerDown={navigationMode==="hand"?undefined:beginMarquee}
       onContextMenu={openContextMenu}
       onPointerMove={move}
+      onPointerLeave={() => onCursorChange?.(null)}
       onPointerUp={(event) => {
         if(cropGesture.current?.pointer===event.pointerId)endCrop();
         if (gesture.current?.pointer === event.pointerId) end();
@@ -1274,7 +1319,7 @@ export function CanvasEditor({
             spellCheck
             onInput={() => updateEditing()}
             onBlur={(event) => {
-              if (event.relatedTarget instanceof Element && event.relatedTarget.closest('[role="menu"],.te-element-inspector,.te-quick-toolbar,.te-rich-controls')) return;
+              if (event.relatedTarget instanceof Element && event.relatedTarget.closest('[role="menu"],.te-element-inspector,.te-quick-toolbar,.te-rich-controls,.te-paint-popover')) return;
               finishEditing();
             }}
             onKeyDown={(event) => {
@@ -1351,7 +1396,7 @@ export function CanvasEditor({
           data-canvas-selection="true"
           style={boxStyle(selectionBox)}
         >
-          {!selectionArea && (
+          {!selectionArea && !editingId && (
             <span className="te-canvas-layer-label">
               {selected.length === 1 ? `${isElementLocked(currentScene,selected[0]) ? "Locked · " : ""}${selected[0].name || selected[0].type}` : `${selected.length} layers selected`}
             </span>
@@ -1409,10 +1454,19 @@ export function CanvasEditor({
       {selectionArea && <div className="te-canvas-marquee" style={boxStyle(selectionArea)} aria-hidden>
         <span>{selected.length} selected</span>
       </div>}
+      {collaborationPageId && <CollaborationOverlay peers={peers} pageId={collaborationPageId} scene={presentedScene} viewScale={viewScale} />}
       <LayoutOverlay outputScale={outputScale} scene={scene} width={width} height={height} slideWidth={slideWidth} scale={viewScale} onChange={onChange} disabled={disabled}/>
       {drawingMode&&<svg className="te-path-preview"><polyline points={pathPoints.map(p=>`${p.x},${p.y}`).join(' ')} fill="none" stroke={penColor} strokeWidth={1/viewScale}/>{pathPoints.map((p,i)=><circle key={i} cx={p.x} cy={p.y} r={3/viewScale} fill={penColor}/>)}</svg>}
       {guides.map((guide,i)=><div key={i} className={`te-canvas-guide te-canvas-guide-${guide.axis}`} style={guide.axis==='x'?{left:guide.position,width:1/viewScale}:{top:guide.position,height:1/viewScale}}>{guide.label&&<span style={{fontSize:10/viewScale}}>{guide.label}</span>}</div>)}
-      {editingElement&&<div className="te-rich-controls" style={{left:editingElement.x,top:editingElement.y-36/viewScale,transform:`scale(${1/viewScale})`,transformOrigin:'left bottom'}} onPointerDown={e=>{e.preventDefault();e.stopPropagation();}}><button type="button" aria-label="Bold selected text" onClick={()=>toggleRange("fontWeight")}><b>B</b></button><button type="button" aria-label="Italic selected text" onClick={()=>toggleRange("italic")}><i>I</i></button><button type="button" aria-label="Underline selected text" onClick={()=>toggleRange("underline")}><u>U</u></button><button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button><button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button></div>}
+      {editingElement&&textToolbarHost&&createPortal(<div className="te-rich-controls te-rich-controls-docked" role="toolbar" aria-label="Selected text formatting" onPointerDown={event=>{event.preventDefault();event.stopPropagation();}} onKeyDown={event=>{if(event.key==="Escape"&&!event.nativeEvent.isComposing){event.preventDefault();event.stopPropagation();finishEditing(true);if(!editingActive.current)root.current?.focus({preventScroll:true});}}}>
+        <span className="te-rich-controls-label">Editing text</span>
+        <button type="button" aria-label="Bold selected text" title="Bold · ⌘/Ctrl B" onClick={()=>toggleRange("fontWeight")}><b>B</b></button>
+        <button type="button" aria-label="Italic selected text" title="Italic · ⌘/Ctrl I" onClick={()=>toggleRange("italic")}><i>I</i></button>
+        <button type="button" aria-label="Underline selected text" title="Underline · ⌘/Ctrl U" onClick={()=>toggleRange("underline")}><u>U</u></button>
+        <button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button>
+        <button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button>
+        <button type="button" className="te-rich-controls-done" onClick={()=>{finishEditing();if(!editingActive.current)root.current?.focus({preventScroll:true});}}>Done</button>
+      </div>,textToolbarHost)}
       <span className="te-canvas-screen-reader">
         Drag layers to move them. Drag empty canvas to select layers. Hold Shift
         to add to the selection. Double-click text to edit. Right-click for

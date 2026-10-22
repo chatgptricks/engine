@@ -7,7 +7,8 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { EMPTY_LIBRARY, parseLibrary, type EditorLibrary } from "./model";
+import { EMPTY_LIBRARY, parseLibrary, type EditorLibrary, type DesignDocument } from "./model";
+import type {CollaborationSnapshot} from "./collaboration-types";
 import {sameContent, reconcileLibraries, type LibraryPatch} from "./library-sync";
 import {prepareSaveOffThread} from './asset-processing';
 import { checkLibrarySaveBudget } from "./library-budget";
@@ -115,6 +116,7 @@ export function useEditorLibrary(expectedScope?: string) {
   const backupQueue = useRef<Promise<unknown>>(Promise.resolve());
   const loadController = useRef<AbortController | null>(null);
   const saveRef = useRef<() => Promise<void>>(async () => undefined);
+  const liveDocumentId = useRef<string | undefined>(undefined);
 
   const persistRecovery = useCallback((): Promise<boolean> => {
     if (!scope.current || !dirty.current) return Promise.resolve(true);
@@ -169,7 +171,14 @@ export function useEditorLibrary(expectedScope?: string) {
     if (!loaded.current || !dirty.current || conflict.current || autoRetryPaused.current) return;
     if (inFlight.current) return inFlight.current;
     if (typeof navigator !== "undefined" && !navigator.onLine) { setStatus("offline"); return; }
-    const sentLibrary = pendingSave.current?.library ?? current.current;
+    // Live document operations have their own atomic CRDT persistence. Ordinary
+    // workspace autosave still handles templates, brand kits and other designs,
+    // but must never replace live artwork with a parallel snapshot writer.
+    const ordinary = liveDocumentId.current ? {...current.current, designs: current.current.designs.map(document => document.id === liveDocumentId.current ? baseline.current.designs.find(saved => saved.id === document.id) ?? document : document)} : current.current;
+    if (!pendingSave.current && sameContent(ordinary, baseline.current)) return;
+    const sentLibrary = pendingSave.current?.library ?? ordinary;
+    const sentBaseline = baseline.current;
+    const sentAssetKeys = new Set(knownAssets.current);
     const sentStamp = pendingSave.current?.stamp ?? stamp.current;
     const expectedRevision = pendingSave.current?.revision ?? revision.current;
     const operation = (async () => {
@@ -181,7 +190,7 @@ export function useEditorLibrary(expectedScope?: string) {
       let retryable=false,retryAfter:number|undefined;
       try {
         if (!pendingSave.current) {
-          const id=crypto.randomUUID(),packed=await prepareSaveOffThread(baseline.current,sentLibrary,knownAssets.current,{revision:expectedRevision,operationId:id,expectedScope:scope.current,clientSchema:3});
+          const id=crypto.randomUUID(),packed=await prepareSaveOffThread(sentBaseline,sentLibrary,sentAssetKeys,{revision:expectedRevision,operationId:id,expectedScope:scope.current,clientSchema:3});
           pendingSave.current={id,library:sentLibrary,stamp:sentStamp,revision:expectedRevision,patch:packed.value,assets:packed.assets,body:packed.body};
         }
         const request = pendingSave.current;
@@ -202,7 +211,10 @@ export function useEditorLibrary(expectedScope?: string) {
           if (result.status === 409) {
             const remote = remoteLibrary(data?.remote);
             if (remote && remote.scope === scope.current) {
-              const merged = reconcileLibraries(baseline.current, current.current, remote.library);
+              const localLive = current.current.designs.find(document => document.id === liveDocumentId.current);
+              const localOrdinary = localLive ? {...current.current, designs: current.current.designs.map(document => document.id === localLive.id ? baseline.current.designs.find(saved => saved.id === document.id) ?? document : document)} : current.current;
+              const merged = reconcileLibraries(baseline.current, localOrdinary, remote.library);
+              if (localLive && remote.library.designs.some(document => document.id === localLive.id)) merged.library.designs = merged.library.designs.map(document => document.id === localLive.id ? localLive : document);
               if (!parseLibrary(merged.library) || !checkLibrarySaveBudget(merged.library).ok) {
                 conflict.current = true; if (mounted.current) setCanEdit(false);
                 throw new Error("Concurrent edits need more workspace space. Download a backup, then load the saved workspace and remove older items before importing your local work.");
@@ -239,7 +251,10 @@ export function useEditorLibrary(expectedScope?: string) {
         }
         const remote = parseLibrary(data.library) ?? sentLibrary;
         retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;
-        const merged = reconcileLibraries(sentLibrary, current.current, remote).library;
+        const localLive = current.current.designs.find(document => document.id === liveDocumentId.current);
+        const localOrdinary = localLive ? {...current.current, designs: current.current.designs.map(document => document.id === localLive.id ? sentLibrary.designs.find(saved => saved.id === document.id) ?? document : document)} : current.current;
+        const merged = reconcileLibraries(sentLibrary, localOrdinary, remote).library;
+        if (localLive && remote.designs.some(document => document.id === localLive.id)) merged.designs = merged.designs.map(document => document.id === localLive.id ? localLive : document);
         const changedByServer = !sameContent(merged, current.current);
         const beforeMerge = current.current;
         baseline.current = remote; current.current = merged; pendingSave.current = null;
@@ -501,6 +516,35 @@ export function useEditorLibrary(expectedScope?: string) {
 
   const reloadServer = useCallback(() => load(true), [load]);
 
+  const setLiveDocument = useCallback((id: string | undefined) => {
+    liveDocumentId.current = id;
+    if (dirty.current && !inFlight.current) {if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => void saveRef.current(), 600);}
+  }, []);
+
+  const receiveLiveDocument = useCallback((saved: DesignDocument, visible: DesignDocument, snapshot: CollaborationSnapshot) => {
+    if (!loaded.current || snapshot.scope !== scope.current || saved.id !== visible.id) return;
+    const next = {...current.current, designs: current.current.designs.map(document => document.id === visible.id ? visible : document)};
+    const parsed = validateLibraryMutation(current.current, next);
+    if (!parsed || !checkLibrarySaveBudget(parsed).ok) {setMutationError("Live edits exceed this workspace's limits. Your browser recovery remains available."); return;}
+    baseline.current = {...baseline.current, designs: baseline.current.designs.map(document => document.id === saved.id ? saved : document)};
+    current.current = parsed;
+    revision.current = snapshot.revision; storage.current = snapshot.storage;
+    if (snapshot.assetKeys) knownAssets.current = new Set(snapshot.assetKeys);
+    // Retrying an old ordinary payload after a live acknowledgment is unsafe.
+    // A request already in flight is reconciled when its response arrives.
+    if (!inFlight.current) pendingSave.current = null;
+    dirty.current = !sameContent(current.current, baseline.current);
+    updateLibrary(parsed);
+    if (dirty.current) {stamp.current = crypto.randomUUID(); void persistRecovery();}
+    else void clearSavedRecovery(stamp.current);
+    void cacheWorkspace({library: baseline.current, revision: snapshot.revision, storage: snapshot.storage, scope: scope.current, assetKeys: [...knownAssets.current]}).catch(() => undefined);
+    if (mounted.current) {setStatus(dirty.current ? "saving" : snapshot.storage === "cloud" ? "saved" : "local"); setError(null);}
+  }, [persistRecovery, clearSavedRecovery]);
+
+  const livePending = useCallback(() => {if (mounted.current) setStatus(navigator.onLine ? "saving" : "offline");}, []);
+  const liveError = useCallback((message: string) => {if (mounted.current) {setStatus(navigator.onLine ? "error" : "offline"); setError(message);}}, []);
+  const confirmedDocument = useCallback((id: string | undefined) => baseline.current.designs.find(document => document.id === id), []);
+
   useEffect(() => {
     const flush = () => {
       if (!loaded.current || !dirty.current) return;
@@ -548,5 +592,10 @@ export function useEditorLibrary(expectedScope?: string) {
     syncEpoch,
     documentEpochs,
     scope: workspaceScope,
+    setLiveDocument,
+    receiveLiveDocument,
+    livePending,
+    liveError,
+    confirmedDocument,
   };
 }

@@ -1,0 +1,34 @@
+.te-simple-editor .te-collaboration-trigger{display:inline-flex;align-items:center;gap:7px;min-height:38px;padding:6px 9px;border:1px solid #ffffff24;border-radius:9px;background:#ffffff06;color:#e9e9ef;font:500 12px/1.2 var(--font-sans),system-ui,sans-serif;white-space:nowrap;cursor:pointer}
+.te-simple-editor .te-collaboration-trigger:hover{background:#ffffff10;border-color:#ffffff40}
+.te-collaboration-status-dot{width:7px;height:7px;flex:none;border-radius:50%;background:#b8a5e9}
+.is-live .te-collaboration-status-dot{background:#63d9a2;box-shadow:0 0 0 3px #63d9a214}
+.is-offline .te-collaboration-status-dot,.is-error .te-collaboration-status-dot{background:#f2b15a}
+.te-collaboration-avatars{display:flex;align-items:center;padding-left:4px}
+.te-collaboration-avatar{display:inline-flex;align-items:center;justify-content:center;flex:none;width:26px;height:26px;border-radius:50%;background:var(--te-peer-color,#8573d7);color:#fff;font:600 10px/1 var(--font-sans),system-ui,sans-serif;box-shadow:0 0 0 2px #222229}
+.te-collaboration-avatars .te-collaboration-avatar{margin-left:-4px}
+.te-collaboration-count{color:#d1cbdf;font-variant-numeric:tabular-nums}
+.te-collaboration-dialog{max-width:580px;display:flex;flex-direction:column;gap:16px}
+.te-collaboration-dialog>p{margin:0;color:#b9b5c4;font-size:13px;line-height:1.6}
+.te-collaboration-link{display:flex;align-items:center;gap:8px}
+.te-collaboration-link input{flex:1;min-width:0;font-size:12px}
+.te-collaboration-link button{white-space:nowrap;flex:none}
+.te-collaboration-connection{display:flex;align-items:center;gap:8px;font-size:12px;line-height:1.5;color:#c8c3d4}
+.te-collaboration-people{list-style:none;max-height:260px;overflow:auto;padding:0;margin:0;display:flex;flex-direction:column;gap:13px}
+.te-collaboration-people li{display:flex;align-items:center;gap:10px;font-size:13px;min-width:0}
+.te-collaboration-people li>span:nth-child(2){flex:1;min-width:0;overflow-wrap:anywhere}
+.te-collaboration-people small{margin-left:7px;color:#aaa3ba;font-size:11px}
+.te-collaboration-person-state{font-size:11px;color:#aaa3ba}
+.te-collaboration-name{display:flex;align-items:flex-end;gap:8px;padding-top:14px;border-top:1px solid #ffffff15}
+.te-collaboration-name label{display:flex;flex:1;min-width:0;flex-direction:column;gap:8px;font-size:12px;color:#c8c3d4}
+.te-collaboration-name button{flex:none}
+.te-collaboration-overlay{position:absolute;inset:0;z-index:12;pointer-events:none;user-select:none;overflow:visible}
+.te-collaboration-peer{pointer-events:none;color:var(--te-peer-color,#8573d7)}
+.te-collaboration-selection{position:absolute;box-sizing:border-box;border:solid var(--te-peer-color,#8573d7);transform-origin:center;pointer-events:none}
+.te-collaboration-selection-name{position:absolute;left:-1px;bottom:100%;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--te-peer-color,#8573d7);color:#fff;padding:3px 6px;border-radius:3px 3px 0 0;font:500 10px/1.2 var(--font-sans),system-ui,sans-serif;transform:scale(var(--te-peer-scale,1));transform-origin:left bottom}
+.te-collaboration-cursor{position:absolute;display:flex;align-items:flex-start;gap:2px;pointer-events:none;transform-origin:top left;transition:left 80ms linear,top 80ms linear}
+.te-collaboration-cursor svg{flex:none;filter:drop-shadow(0 1px 2px #0004)}
+.te-collaboration-cursor>span{margin-top:18px;max-width:180px;padding:4px 7px;border-radius:0 4px 4px 4px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;background:var(--te-peer-color,#8573d7);color:white;font:500 11px/1.2 var(--font-sans),system-ui,sans-serif;box-shadow:0 2px 6px #0002}
+@media(max-width:1100px){.te-simple-editor .te-collaboration-trigger{gap:5px;padding-inline:7px}.te-collaboration-avatars{display:none}}
+@media(max-width:760px){.te-simple-editor .te-collaboration-trigger{margin-left:auto}.te-collaboration-avatars{display:flex}.te-collaboration-dialog{gap:13px}.te-collaboration-person-state{display:none}.te-collaboration-link{flex-wrap:wrap}.te-collaboration-link input{flex-basis:100%}}
+@media(max-width:480px){.te-simple-editor .te-editor-header-actions:has(.te-collaboration-trigger){flex-wrap:wrap;justify-content:flex-start}.te-simple-editor .te-collaboration-trigger{margin-left:0;min-width:44px;min-height:44px;justify-content:center;flex:none}.te-collaboration-trigger .te-collaboration-avatars{display:none}.te-collaboration-trigger .te-collaboration-status{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}}
+@media(prefers-reduced-motion:reduce){.te-collaboration-cursor{transition:none}}

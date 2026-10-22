@@ -513,6 +513,7 @@ const FONT_IDS = new Set([
   "century",
   "libre",
   "geist",
+  "sfpro",
   "playfair",
   "dmserif",
   "lora",
@@ -522,6 +523,7 @@ const FONT_IDS = new Set([
   "space",
   "montserrat",
   "bebas",
+  "bebascanva",
   "plexmono",
   "caveat",
 ]);

@@ -65,6 +65,58 @@ test('content search spans canvas text, captions, page labels and names while fi
  const result=work.bulkLibraryMetadata(lib,lib.designs.map(item=>`design:${item.id}`),{folderId:'campaign-folder',favorite:true,tags:['new']});assert.ok(result.designs.every(item=>item.favorite&&item.folderId==='campaign-folder'&&item.tags.includes('new')));assert.ok(result.designs[0].tags.includes('campaign'));assert.ok(model.parseLibrary(result));assert.equal(work.sortLibraryItems(lib.designs,'name')[0].name,'Another');
 });
 
+test('bulk tag edits preserve different folders unless moving or removing folders is explicit',()=>{
+ const lib=library(),first=doc('First'),second=doc('Second'),untouched=doc('Unselected');
+ lib.folders=[{id:'campaign-a',name:'Campaign A'},{id:'campaign-b',name:'Campaign B'}];
+ first.folderId='campaign-a';second.folderId='campaign-b';untouched.folderId='campaign-a';first.tags=['existing'];
+ const template={...model.designAsTemplate(doc(),'Reusable'),folderId:'campaign-b',tags:['template']};
+ lib.designs=[first,second,untouched];lib.templates=[template];
+ const selected=[`design:${first.id}`,`design:${second.id}`,`template:${template.id}`];
+ const metadata=work.bulkOrganizationMetadata(null,' launch, ready ');
+ assert.equal(Object.hasOwn(metadata,'folderId'),false);
+ const tagged=work.bulkLibraryMetadata(lib,selected,metadata);
+ assert.deepEqual(tagged.designs.map(item=>item.folderId),['campaign-a','campaign-b','campaign-a']);
+ assert.equal(tagged.templates[0].folderId,'campaign-b');
+ assert.deepEqual(tagged.designs[0].tags,['existing','launch','ready']);
+ assert.deepEqual(tagged.templates[0].tags,['template','launch','ready']);
+ assert.deepEqual(tagged.designs[2],untouched);
+ const moved=work.bulkLibraryMetadata(tagged,selected,work.bulkOrganizationMetadata('campaign-a',''));
+ assert.equal(moved.designs[1].folderId,'campaign-a');assert.equal(moved.templates[0].folderId,'campaign-a');
+ const removed=work.bulkLibraryMetadata(moved,selected,work.bulkOrganizationMetadata('',''));
+ assert.equal(removed.designs[0].folderId,undefined);assert.equal(removed.designs[1].folderId,undefined);assert.equal(removed.templates[0].folderId,undefined);
+ assert.equal(removed.designs[2].folderId,'campaign-a');assert.deepEqual(removed.designs[0].tags,['existing','launch','ready']);
+ assert.ok(model.parseLibrary(tagged));assert.ok(model.parseLibrary(removed));
+});
+
+test('template browsing ignores project-only filters and preserves the project filter choices',()=>{
+ const project={...doc('Approved post'),folderId:'campaign',favorite:true,tags:['launch'],reviewStatus:'approved'};
+ const template={...model.designAsTemplate(project,'Reusable'),folderId:'campaign',favorite:true,tags:['launch']};
+ const draft={...doc('Template draft'),purpose:'template',folderId:'campaign',favorite:true,tags:['launch']};
+ const remembered={folder:'campaign',favorites:true,tag:'launch',format:'portrait',purpose:'post',review:'approved',sort:'name'};
+ const original=structuredClone(remembered),forTemplates=work.libraryFiltersForView(remembered,'templates');
+ assert.ok(work.matchesLibraryItem(template,forTemplates));assert.ok(work.matchesLibraryItem(draft,forTemplates));
+ assert.equal(work.matchesLibraryItem({...template,folderId:'other'},forTemplates),false);
+ assert.equal(work.matchesLibraryItem({...template,favorite:false},forTemplates),false);
+ assert.equal(work.matchesLibraryItem({...template,tags:[]},forTemplates),false);
+ assert.equal(work.matchesLibraryItem({...template,format:'story'},forTemplates),false);
+ const forProjects=work.libraryFiltersForView(remembered,'designs');
+ assert.ok(work.matchesLibraryItem(project,forProjects));assert.equal(work.matchesLibraryItem(template,forProjects),false);assert.equal(work.matchesLibraryItem(draft,forProjects),false);
+ assert.deepEqual(remembered,original);assert.deepEqual(forProjects,original);assert.equal(forTemplates.sort,'name');
+});
+
+test('clearing gallery filters retains sort and hidden project choices while removing applicable constraints',()=>{
+ const remembered={folder:'campaign',favorites:true,tag:'launch',format:'portrait',purpose:'post',review:'approved',sort:'pages'};
+ const templateReset=work.clearLibraryFiltersForView(remembered,'templates');
+ assert.deepEqual(templateReset,{folder:'',favorites:false,tag:'',purpose:'post',review:'approved',sort:'pages'});
+ const template=model.designAsTemplate(doc(),'Any template');
+ assert.ok(work.matchesLibraryItem(template,work.libraryFiltersForView(templateReset,'templates')));
+ const project=doc('Draft project');
+ assert.equal(work.matchesLibraryItem(project,work.libraryFiltersForView(templateReset,'designs')),false);
+ const projectReset=work.clearLibraryFiltersForView(remembered,'designs');
+ assert.deepEqual(projectReset,{folder:'',favorites:false,tag:'',sort:'pages'});
+ assert.ok(work.matchesLibraryItem(project,projectReset));assert.equal(remembered.folder,'campaign');
+});
+
 test('selected export includes only referenced originals/resources instead of unrelated private assets',()=>{
  const lib=library(),first=doc('Selected'),second=doc('Secret');first.pages[0].canvas.elements.push(photo({src:'/used.jpg'}));lib.designs=[first,second];lib.brandKits[0].assets=[{...brand.imageAsBrandAsset(photo({src:'/used.jpg'})),name:'Used'},{...brand.imageAsBrandAsset(photo({src:'/secret.jpg'})),name:'Secret'}];lib.workspaceStyles=[{...advanced.textStyleFromElement(sceneText(first),'Secret style'),id:'secret-style'}];const bundle=work.selectedLibrary(lib,[`design:${first.id}`]);assert.equal(bundle.designs.length,1);assert.equal(bundle.brandKits[0].assets.length,1);assert.equal(bundle.brandKits[0].assets[0].name,'Used');assert.equal(bundle.workspaceStyles.length,0);assert.ok(model.parseLibrary(bundle));
 });
@@ -161,4 +213,15 @@ test('Research replacement cannot retain the previous template photo preview but
  const lib=library(),template=model.designAsTemplate(doc(),'Research photo'),image=photo({src:'/old.jpg',previewSrc:'/old-preview.jpg',publicAlt:'Old photo'});template.pages[0].canvas.elements.push(image);lib.templates=[template];
  const next=research.createResearchDesign(story(),{imageIds:['a'],format:'portrait',brandKitId:lib.activeBrandKitId,applyBrand:false,template},lib).pages[0].canvas.elements.find(element=>element.type==='image');assert.equal(next.src,'/a.jpg');assert.equal(next.previewSrc,undefined);assert.equal(next.publicAlt,undefined);assert.equal(next.intrinsicWidth,2000);
  const source=story();source.images[0].url='/old.jpg';const same=research.createResearchDesign(source,{imageIds:['a'],format:'portrait',brandKitId:lib.activeBrandKitId,applyBrand:false,template},lib).pages[0].canvas.elements.find(element=>element.type==='image');assert.equal(same.previewSrc,'/old-preview.jpg');assert.equal(same.publicAlt,'Old photo');
+});
+
+test('one-click template creation keeps custom dimensions, artwork and the original template',()=>{
+ const {templateCreationOptions}=load('lib/template-editor/creation-presets.ts');
+ const lib=library(),source=doc('Canva portrait');source.customSize={width:1080,height:1440};
+ const template=model.designAsTemplate(source,'Canva portrait');lib.templates=[template];
+ const before=structuredClone(template),settings=templateCreationOptions(template,lib),copy=work.createLibraryDesign(lib,settings);
+ assert.equal(settings.applyBrand,false);assert.deepEqual(copy.customSize,{width:1080,height:1440});
+ assert.equal(copy.pages.length,template.pages.length);assert.equal(sceneText(copy).font,sceneText(source).font);
+ assert.equal(sceneText(copy).text,'Original title');assert.deepEqual(template,before);
+ assert.notEqual(copy.pages[0].id,template.pages[0].id);
 });

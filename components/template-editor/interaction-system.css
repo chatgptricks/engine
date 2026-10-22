@@ -1,0 +1,378 @@
+/*
+ * Editor interaction layer. Import after the component styles.
+ * Only shell controls are targeted: artwork, previews and thumbnail contents keep
+ * their authored typography, fills and geometry. Canva's clear action surfaces
+ * meet Affinity's compact contextual controls; violet marks the active tool.
+ * Targets are 36px on desktop and 44px on narrow/coarse-pointer screens. A single
+ * 320px drawer scrolls internally; its heading and close action stay visible.
+ * On mobile the drawer occupies at most 40% in document flow, so the canvas
+ * measures its visible area and fits artwork above the panel instead of behind it.
+ */
+.te-simple-editor,
+.te-context-menu,
+.te-context-notice {
+  --te-ui-panel: #1b1b22;
+  --te-ui-surface: #2b2b35;
+  --te-ui-hover: #373744;
+  --te-ui-pressed: #22222b;
+  --te-ui-field: #23232d;
+  --te-ui-border: #737383;
+  --te-ui-border-hover: #828292;
+  --te-ui-text: #f0eef7;
+  --te-ui-muted: #b8b4c7;
+  --te-ui-accent: #c3a6ff;
+  --te-ui-accent-surface: #403154;
+  --te-ui-focus: #d6c2ff;
+  --te-ui-danger: #ffb3b8;
+  --te-ui-target: 36px;
+  --te-ui-radius: 8px;
+  --te-ui-drawer-width: 320px;
+  --te-ui-rail-height: 68px;
+}
+
+/* Enumerated control hosts avoid inheriting button styles into canvas artwork. */
+.te-simple-editor :is(.te-button, .te-icon, .te-text-button, .te-property-action, .te-element-lock, .te-color-none),
+.te-simple-editor :is(.te-editor-header, .te-drawer-heading, .te-quick-toolbar, .te-canvas-tools, .te-vector-tools, .te-canvas-bottom, .te-element-segments, .te-element-actions, .te-layer-toolbar, .te-layer-row-tools, .te-layer-selection-summary, .te-color-role, .te-focal-grid, .te-rich-controls, .te-inspector-tabs) button,
+.te-simple-editor .te-context-action,
+.te-context-menu button,
+.te-context-notice button {
+  min-height: var(--te-ui-target);
+  border: 1px solid var(--te-ui-border);
+  border-radius: var(--te-ui-radius);
+  background: var(--te-ui-surface);
+  color: var(--te-ui-text);
+  font-size: 13px !important;
+  font-family: inherit;
+  font-weight: 500;
+  line-height: 1.35;
+  padding: 7px 10px;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease;
+  touch-action: manipulation;
+}
+
+.te-simple-editor :is(.te-button, .te-icon, .te-text-button, .te-property-action, .te-element-lock, .te-color-none):hover:not(:disabled):not([aria-disabled="true"]),
+.te-simple-editor :is(.te-editor-header, .te-drawer-heading, .te-quick-toolbar, .te-canvas-tools, .te-vector-tools, .te-canvas-bottom, .te-element-segments, .te-element-actions, .te-layer-toolbar, .te-layer-row-tools, .te-layer-selection-summary, .te-color-role, .te-focal-grid, .te-rich-controls, .te-inspector-tabs) button:hover:not(:disabled):not([aria-disabled="true"]),
+.te-simple-editor .te-context-action:hover:not(:disabled):not([aria-disabled="true"]),
+.te-context-menu button:hover:not(:disabled),
+.te-context-notice button:hover:not(:disabled) {
+  background: var(--te-ui-hover);
+  border-color: var(--te-ui-border-hover);
+  color: #fff;
+}
+
+.te-simple-editor :is(.te-button, .te-icon, .te-text-button, .te-property-action, .te-element-lock, .te-color-none):active:not(:disabled),
+.te-simple-editor :is(.te-editor-header, .te-drawer-heading, .te-quick-toolbar, .te-canvas-tools, .te-vector-tools, .te-canvas-bottom, .te-element-segments, .te-element-actions, .te-layer-toolbar, .te-layer-row-tools, .te-layer-selection-summary, .te-color-role, .te-focal-grid, .te-rich-controls, .te-inspector-tabs) button:active:not(:disabled),
+.te-context-menu button:active:not(:disabled) {
+  background: var(--te-ui-pressed);
+  border-color: var(--te-ui-accent);
+}
+
+.te-simple-editor :is(.te-editor-header, .te-drawer-heading, .te-editor-drawer, .te-editor-toolbar, .te-quick-toolbar, .te-canvas-tools, .te-vector-tools, .te-canvas-bottom, .te-pages, .te-modal, .te-isolation-bar, .te-rich-controls) :is(button, input, select, textarea, summary):focus-visible,
+.te-context-menu button:focus-visible,
+.te-context-notice button:focus-visible {
+  outline: 2px solid var(--te-ui-focus);
+  outline-offset: 2px;
+}
+
+.te-simple-editor :is(.te-editor-header, .te-editor-drawer, .te-editor-toolbar, .te-quick-toolbar, .te-canvas-tools, .te-vector-tools, .te-canvas-bottom, .te-modal, .te-rich-controls) :is(button, input, select, textarea):disabled,
+.te-simple-editor [aria-disabled="true"].te-context-action,
+.te-context-menu button:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+  box-shadow: none;
+}
+
+.te-simple-editor :is(.te-header-menu, .te-quick-toolbar button, .te-canvas-tools button, .te-element-segments button, .te-inspector-tabs button, .te-focal-grid button, .te-layer-multi-select, .te-color-none)[aria-pressed="true"],
+.te-simple-editor :is(.te-element-segments button, .te-inspector-tabs button, .te-tool-tabs button).is-active,
+.te-simple-editor .te-layer-row-tools button.is-on {
+  background: var(--te-ui-accent-surface);
+  border-color: var(--te-ui-accent);
+  color: #f3eaff;
+  box-shadow: inset 0 0 0 1px #c3a6ff18;
+}
+
+.te-simple-editor .te-button.te-primary {
+  background: #bea0fa;
+  border-color: #d2bbff;
+  color: #191323;
+  font-weight: 650 !important;
+}
+.te-simple-editor .te-button.te-primary:hover:not(:disabled) {
+  background: #d0b6ff;
+  border-color: #e2d1ff;
+  color: #191323;
+}
+.te-simple-editor .te-button.te-primary:active:not(:disabled) { background: #ac88ed; }
+.te-simple-editor :is(.te-element-delete, .te-layer-delete):hover:not(:disabled),
+.te-context-menu button.is-danger {
+  color: var(--te-ui-danger);
+  border-color: #91575f;
+}
+.te-context-menu button.is-danger:hover:not(:disabled) { background: #503039; border-color: #ca828c; }
+
+/* Fields retain their native input behavior and visible boundaries. */
+.te-simple-editor :is(.te-editor-header, .te-editor-drawer, .te-quick-toolbar, .te-vector-tools, .te-canvas-bottom, .te-modal) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]):not([type="file"]):not([type="hidden"]), select, textarea) {
+  min-height: var(--te-ui-target);
+  max-width: 100%;
+  min-width: 0;
+  border: 1px solid var(--te-ui-border);
+  border-radius: var(--te-ui-radius);
+  background: var(--te-ui-field);
+  color: var(--te-ui-text);
+  padding: 7px 9px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.45;
+}
+.te-simple-editor :is(.te-editor-header, .te-editor-drawer, .te-quick-toolbar, .te-vector-tools, .te-canvas-bottom, .te-modal) :is(input, textarea)::placeholder { color: #aaa5bb; }
+.te-simple-editor :is(.te-editor-header, .te-editor-drawer, .te-quick-toolbar, .te-vector-tools, .te-canvas-bottom, .te-modal) :is(input, select, textarea):hover:not(:disabled) { border-color: var(--te-ui-border-hover); }
+.te-simple-editor :is(.te-editor-drawer, .te-vector-tools, .te-modal) :is(input[type="checkbox"], input[type="radio"]) { width: 18px; height: 18px; flex: none; accent-color: var(--te-ui-accent); }
+.te-simple-editor :is(.te-property-check, .te-dialog-check, .te-clip-toggle, .te-canvas-tools label) { min-height: var(--te-ui-target); }
+.te-simple-editor :is(.te-range, .te-color-alpha, .te-layer-group-appearance) input[type="range"] { min-height: var(--te-ui-target); margin-block: 0; padding: 0; accent-color: var(--te-ui-accent); cursor: pointer; }
+.te-simple-editor .te-color-alpha { min-height: var(--te-ui-target); font-size: 12px; color: var(--te-ui-muted); }
+.te-simple-editor .te-color-swatch { width: var(--te-ui-target); height: var(--te-ui-target); border: 1px solid var(--te-ui-border); border-radius: var(--te-ui-radius); }
+.te-simple-editor .te-color-swatch:focus-within,
+.te-simple-editor :is(.te-frame-photo-upload, .te-upload, .te-texture-upload):focus-within { outline: 2px solid var(--te-ui-focus); outline-offset: 2px; }
+.te-simple-editor .te-color-field input.te-color-hex { width: 91px; font-size: 13px; font-variant-numeric: tabular-nums; }
+.te-simple-editor .te-color-field { gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.te-simple-editor .te-color-field > span:last-child { gap: 6px; margin-left: auto; }
+.te-simple-editor :is(.te-frame-photo-upload, .te-texture-upload) { min-height: var(--te-ui-target); border-color: var(--te-ui-border); background: var(--te-ui-surface); color: var(--te-ui-text); font-size: 13px; }
+.te-simple-editor .te-field,
+.te-simple-editor .te-property-check { font-size: 12px; color: var(--te-ui-muted); }
+.te-simple-editor :is(.te-element-label, .te-element-hint, .te-element-mixed, .te-element-lock-note, .te-layer-help, .te-layer-description > span, .te-field-note) { color: var(--te-ui-muted); font-size: 12px; line-height: 1.5; }
+.te-simple-editor .te-element-number small { color: var(--te-ui-muted); font-size: 12px; }
+.te-simple-editor .te-range > span { font-size: 12px; color: var(--te-ui-muted); }
+.te-simple-editor .te-range output { font-size: 12px; color: var(--te-ui-text); }
+
+/* Header actions remain distinct from document information and primary export. */
+.te-simple-editor .te-editor-header { min-height: 68px; height: auto; padding-block: 9px; border-bottom-color: #3c3c47; }
+.te-simple-editor .te-editor-header-actions { gap: 7px; }
+.te-simple-editor .te-editor-header .te-button { font-size: 13px !important; }
+.te-simple-editor .te-header-menu { background: var(--te-ui-surface); border-color: var(--te-ui-border); padding-inline: 12px; }
+.te-simple-editor .te-icon { width: var(--te-ui-target); height: var(--te-ui-target); min-width: var(--te-ui-target); padding: 0; }
+.te-simple-editor .te-history { gap: 6px; }
+.te-simple-editor .te-document-title { gap: 4px; }
+.te-simple-editor .te-document-title input { font-size: 14px; font-weight: 550; }
+.te-simple-editor .te-document-title > span { font-size: 12px; color: var(--te-ui-muted); }
+.te-simple-editor .te-context-action { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.te-simple-editor .te-context-action > svg { flex: none; }
+.te-simple-editor .te-context-label { font-size: 13px; line-height: 1.35; color: inherit; padding: 0; }
+
+/* Compact contextual toolbar: wrap controls rather than hiding them offscreen. */
+.te-simple-editor .te-editor-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+  gap: 0;
+  padding: 6px 10px;
+  background: var(--te-ui-panel);
+  border-bottom: 1px solid #3c3c47;
+}
+.te-simple-editor .te-editor-toolbar > .te-canvas-tools { flex: 0 1 auto; border: 0; background: transparent; padding: 0 9px 0 0; margin-right: 9px; border-right: 1px solid #4a4858; }
+.te-simple-editor .te-editor-toolbar > .te-quick-toolbar { flex: 1 1 340px; padding: 0; border: 0; }
+.te-simple-editor .te-editor-toolbar > .te-node-toolbar-host { flex: 1 1 400px; border: 0; padding: 4px 0; background: transparent; }
+.te-simple-editor .te-canvas-tools { gap: 6px; min-width: 0; color: var(--te-ui-text); }
+.te-simple-editor .te-canvas-tools button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; }
+.te-simple-editor .te-quick-toolbar.is-compact,
+.te-simple-editor .te-quick-toolbar.is-compact.has-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  min-width: 0;
+  max-width: 100%;
+  overflow: visible;
+  gap: 6px;
+  padding: 8px 12px;
+  min-height: 52px;
+  background: var(--te-ui-panel);
+}
+.te-simple-editor .te-editor-toolbar > .te-quick-toolbar.is-compact { min-height: var(--te-ui-target); padding: 0; }
+.te-simple-editor .te-quick-toolbar.is-compact :is(.te-quick-basics, .te-quick-actions) { display: flex; align-items: center; flex: 0 1 auto; flex-wrap: wrap; min-width: 0; max-width: 100%; gap: 6px; overflow: visible; }
+.te-simple-editor .te-quick-toolbar.is-compact .te-quick-object-actions { display: flex; align-items: center; flex: none; gap: 5px; }
+.te-simple-editor .te-quick-object-actions button { min-width: var(--te-ui-target); padding-inline: 7px; }
+.te-simple-editor .te-quick-toolbar.is-compact .te-quick-basics > select { width: 140px; max-width: 140px; flex: 0 1 140px; }
+.te-simple-editor .te-quick-toolbar.is-compact input[type="number"] { width: 62px; flex: 0 0 62px; }
+.te-simple-editor .te-quick-toolbar.is-compact :is(button, select, input:not([type="color"])) { height: var(--te-ui-target); min-height: var(--te-ui-target); }
+.te-simple-editor .te-quick-toolbar.is-compact .te-quick-format-button { min-width: var(--te-ui-target); padding-inline: 9px; }
+.te-simple-editor .te-quick-toolbar.is-compact .te-quick-color { width: var(--te-ui-target); height: var(--te-ui-target); border-color: var(--te-ui-border); border-radius: var(--te-ui-radius); }
+.te-simple-editor .te-quick-toolbar.is-compact .te-quick-color:focus-within { outline-color: var(--te-ui-focus); }
+.te-simple-editor .te-quick-toolbar.is-compact .te-quick-spacer { flex: 1 1 6px; min-width: 0; }
+.te-simple-editor .te-quick-toolbar.is-compact .te-quick-label { font-size: 12px; color: var(--te-ui-muted); margin-right: 3px; }
+.te-simple-editor .te-quick-toolbar.is-compact .te-quick-control-label { font-size: 12px; color: var(--te-ui-muted); margin: 0; }
+.te-simple-editor .te-vector-tools { gap: 6px; padding: 6px; border-color: var(--te-ui-border); background: var(--te-ui-panel); }
+
+/* Drawer and inspector: one scroll surface, flat categories, comfortable labels. */
+.te-simple-editor.has-panel .te-editor-sidebar { width: calc(76px + var(--te-ui-drawer-width)); }
+.te-simple-editor .te-editor-drawer { width: var(--te-ui-drawer-width); background: var(--te-ui-panel); border-right-color: #3c3c47; }
+.te-simple-editor .te-drawer-heading { min-height: 56px; gap: 12px; padding: 10px 14px 10px 18px; background: var(--te-ui-panel); border-bottom-color: #3c3c47; flex: none; }
+.te-simple-editor .te-drawer-heading h2 { font-size: 15px; font-weight: 600; }
+.te-simple-editor .te-panel-scroll { padding: 16px 16px 24px; scrollbar-width: thin; scrollbar-color: #666174 transparent; }
+.te-simple-editor .te-tool-tabs { gap: 6px; }
+.te-simple-editor .te-tool-tabs button { font-size: 13px; border: 1px solid #44434f; background: #202027; color: #cfcbdb; }
+.te-simple-editor .te-tool-tabs button:hover:not(:disabled) { border-color: var(--te-ui-border-hover); background: var(--te-ui-hover); color: #fff; }
+.te-simple-editor .te-element-inspector { overflow: visible; padding: 0; }
+.te-simple-editor .te-inspector-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; margin: 0 0 16px; }
+.te-simple-editor .te-inspector-tabs button { min-width: 0; padding: 7px 5px; white-space: normal; overflow-wrap: anywhere; }
+.te-simple-editor .te-inspector-content { min-width: 0; }
+.te-simple-editor .te-element-section { padding-block: 16px; border-top-color: #3c3c47; }
+.te-simple-editor .te-element-section h3 { font-size: 14px; font-weight: 600; color: var(--te-ui-text); margin-bottom: 12px; }
+.te-simple-editor .te-element-inspector .te-field { margin-bottom: 12px; gap: 6px; }
+.te-simple-editor .te-element-inspector .te-field :is(input, textarea, select) { font-size: 13px; padding: 7px 9px; }
+.te-simple-editor .te-element-inspector fieldset:disabled :is(.te-field, .te-color-field, .te-range) { opacity: 1; }
+.te-simple-editor .te-context-add-text { margin-top: 0; margin-bottom: 16px; }
+.te-simple-editor .te-context-empty-actions { display: grid; gap: 8px; }
+.te-simple-editor .te-context-empty-actions .te-full { margin-top: 0; }
+.te-simple-editor .te-element-segments { gap: 5px; padding: 0; border: 0; background: transparent; }
+.te-simple-editor .te-element-segments button { min-height: var(--te-ui-target); height: auto; padding: 6px 4px; }
+.te-simple-editor .te-focal-grid { grid-template-columns: repeat(3, var(--te-ui-target)); gap: 5px; }
+.te-simple-editor .te-focal-grid button { height: var(--te-ui-target); }
+.te-simple-editor .te-advanced-section > summary,
+.te-simple-editor .te-drawer-details > summary,
+.te-simple-editor .te-layer-group-appearance > summary { min-height: var(--te-ui-target); display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--te-ui-text); border: 1px solid #4a4959; border-radius: var(--te-ui-radius); background: #25252e; padding: 8px 10px; }
+.te-simple-editor .te-property-action { border-radius: var(--te-ui-radius); font-size: 13px; }
+.te-simple-editor .te-drawer-settings .te-clip-toggle { min-height: var(--te-ui-target); border-color: var(--te-ui-border); background: var(--te-ui-surface); color: var(--te-ui-text); font-size: 13px; }
+.te-simple-editor .te-drawer-settings .te-clip-toggle[aria-pressed="true"] { background: var(--te-ui-accent-surface); border-color: var(--te-ui-accent); color: #f3eaff; }
+.te-simple-editor .te-panel-scroll .te-panel-heading h2 { font-size: 14px; }
+.te-simple-editor .te-layer-selection-summary { gap: 6px; flex-wrap: wrap; font-size: 12px; }
+.te-simple-editor .te-layer-toolbar { padding: 0; border: 0; gap: 5px; background: transparent; }
+.te-simple-editor .te-layer-toolbar > button { min-width: var(--te-ui-target); height: var(--te-ui-target); }
+.te-simple-editor .te-layer-row-tools { gap: 4px; }
+.te-simple-editor .te-layer-row-tools button { width: var(--te-ui-target); height: var(--te-ui-target); padding: 0; }
+.te-simple-editor .te-layer-row-main { flex-wrap: wrap; row-gap: 4px; }
+.te-simple-editor .te-layer-select { flex: 1 1 130px; }
+.te-simple-editor .te-layer-row-tools { margin-left: auto; padding-block: 3px; }
+.te-simple-editor .te-layer-description strong { font-size: 12px; }
+.te-simple-editor .te-layer-select { min-height: 48px; }
+.te-simple-editor .te-layer-collapse { min-width: var(--te-ui-target); min-height: var(--te-ui-target); border-radius: var(--te-ui-radius); }
+.te-simple-editor :is(.te-layer-off-canvas, .te-layer-collapse, .te-layer-search button, .te-layer-isolation button) { min-height: var(--te-ui-target); border: 1px solid var(--te-ui-border); border-radius: var(--te-ui-radius); background: var(--te-ui-surface); color: var(--te-ui-text); padding: 5px 8px; font-size: 13px; }
+.te-simple-editor .te-layer-search { gap: 6px; border-color: var(--te-ui-border); padding: 4px 6px; }
+.te-simple-editor .te-layer-search input { border: 0; background: transparent; padding: 3px 4px; }
+.te-simple-editor .te-layer-search:focus-within { outline: 2px solid var(--te-ui-focus); outline-offset: 2px; }
+.te-simple-editor .te-canvas-bottom { height: auto; min-height: 46px; gap: 8px; padding: 5px 12px; border-top-color: #3c3c47; }
+.te-simple-editor .te-canvas-bottom .te-icon { width: var(--te-ui-target); height: var(--te-ui-target); }
+.te-simple-editor .te-zoom-input { width: 62px; }
+.te-simple-editor .te-page-card { display: flex; align-items: center; gap: 5px; }
+.te-simple-editor .te-page-more { position: static; display: flex; align-items: center; justify-content: center; flex: none; width: var(--te-ui-target); height: var(--te-ui-target); min-height: var(--te-ui-target); padding: 0; border: 1px solid var(--te-ui-border); background: #2b2b35f2; border-radius: var(--te-ui-radius); color: var(--te-ui-text); font-size: 13px; }
+.te-simple-editor .te-page-more:hover { background: var(--te-ui-hover); border-color: var(--te-ui-border-hover); }
+.te-simple-editor .te-page-thumb > span { font-size: 12px; }
+.te-simple-editor .te-add-page { color: var(--te-ui-text); border-color: var(--te-ui-border); }
+.te-simple-editor .te-add-page > span { font-size: 12px; }
+.te-simple-editor .te-isolation-bar { align-items: center; justify-content: space-between; gap: 12px; padding: 6px 12px; color: var(--te-ui-text); }
+.te-simple-editor .te-isolation-bar > span { min-width: 0; overflow-wrap: anywhere; }
+.te-simple-editor .te-shape-picker button { border-color: var(--te-ui-border); background: var(--te-ui-surface); font-size: 13px; }
+.te-simple-editor :is(.te-swatches, .te-brand-palette) button { width: var(--te-ui-target); height: var(--te-ui-target); min-height: var(--te-ui-target); border-color: var(--te-ui-border); }
+.te-simple-editor :is(.te-canvas-templates, .te-brand-element-grid, .te-artwork-grid) button { border-color: var(--te-ui-border); }
+.te-simple-editor :is(.te-canvas-templates, .te-brand-element-grid, .te-artwork-grid) button:hover:not(:disabled) { border-color: var(--te-ui-accent); }
+.te-simple-editor .te-canvas-templates > button > span { font-size: 13px; }
+.te-simple-editor .te-brand-element-grid > button > span { font-size: 12px; }
+.te-simple-editor .te-add-text { border-color: var(--te-ui-border); }
+.te-simple-editor .te-upload { border-color: var(--te-ui-border); }
+.te-simple-editor .te-modal :is(.te-dialog-check, .te-property-check) { font-size: 12px; }
+.te-simple-editor .te-modal summary { font-size: 13px; }
+
+/* Portaled action menus use the same system; each row is visibly actionable. */
+.te-context-menu { padding: 7px; background: var(--te-ui-panel); border-color: var(--te-ui-border); border-radius: 12px; }
+.te-context-menu button { margin-block: 3px; gap: 12px; text-align: left; }
+.te-context-menu .te-context-label { padding: 7px 5px 9px; color: var(--te-ui-muted); font-size: 12px; font-weight: 600; }
+.te-context-menu kbd { color: var(--te-ui-muted); font-size: 12px; }
+.te-context-menu .te-context-separator { background: #555160; margin-block: 7px; }
+.te-context-notice button { width: var(--te-ui-target); flex: none; padding: 0; }
+
+@media (min-width: 761px) {
+  /* Shared flex flow uses the entire row; contextual groups do not force extra rows. */
+  .te-simple-editor .te-editor-toolbar { gap: 6px; }
+  .te-simple-editor .te-editor-toolbar > .te-canvas-tools,
+  .te-simple-editor .te-editor-toolbar > .te-quick-toolbar.is-compact,
+  .te-simple-editor .te-editor-toolbar .te-quick-actions { display: contents; }
+  .te-simple-editor .te-editor-toolbar .te-quick-actions > button { flex: none; }
+  .te-simple-editor .te-editor-toolbar .te-quick-basics { padding-left: 8px; border-left: 1px solid #555160; }
+  .te-simple-editor .te-editor-toolbar .te-quick-spacer { display: none; }
+}
+
+@media (max-width: 1050px) and (min-width: 761px) {
+  .te-simple-editor { --te-ui-drawer-width: 300px; }
+  .te-simple-editor .te-editor-header { gap: 9px; padding-inline: 12px; }
+  .te-simple-editor .te-editor-header .te-document-title { width: clamp(120px, 20vw, 180px); }
+  .te-simple-editor .te-editor-header-actions { gap: 5px; }
+  .te-simple-editor .te-header-menu { padding-inline: 10px; }
+  .te-simple-editor .te-editor-toolbar > .te-quick-toolbar { flex-basis: 300px; }
+}
+
+@media (max-width: 760px), (pointer: coarse) {
+  .te-simple-editor,
+  .te-context-menu,
+  .te-context-notice { --te-ui-target: 44px; }
+  .te-simple-editor :is(.te-editor-drawer, .te-modal) :is(input:not([type="checkbox"]):not([type="radio"]):not([type="color"]):not([type="range"]):not([type="file"]):not([type="hidden"]), select, textarea) { font-size: 13px; }
+  .te-simple-editor .te-element-inspector .te-field :is(input, select, textarea) { font-size: 13px; }
+  .te-simple-editor .te-layer-row-tools { gap: 3px; }
+  .te-simple-editor .te-layer-toolbar { gap: 3px; flex-wrap: wrap; }
+  .te-simple-editor .te-layer-toolbar > button { flex: 1 0 var(--te-ui-target); }
+  .te-simple-editor .te-color-field input.te-color-hex { font-size: 13px; }
+  .te-context-menu button { min-height: 44px; }
+}
+
+@media (max-width: 760px) {
+  .te-simple-editor .te-editor-header { padding: 8px 10px; gap: 8px; }
+  .te-simple-editor .te-editor-header .te-document-title { min-width: 100px; }
+  .te-simple-editor .te-editor-header .te-button { min-height: var(--te-ui-target); padding: 7px 10px; }
+  .te-simple-editor .te-editor-header-actions { gap: 6px; }
+  .te-simple-editor .te-editor-sidebar,
+  .te-simple-editor.has-panel .te-editor-sidebar { display: contents; }
+  .te-simple-editor .te-tool-tabs { order: 3; flex: none; padding: 6px 4px calc(6px + env(safe-area-inset-bottom)); gap: 4px; }
+  .te-simple-editor .te-tool-tabs button { padding: 6px 2px; font-size: 13px; min-height: 56px; }
+  .te-simple-editor .te-canvas-column { order: 1; flex: 1; min-height: 0; }
+  .te-simple-editor .te-editor-drawer { position: static; order: 2; flex: 0 1 40%; width: 100%; max-height: 40%; min-height: 0; border-color: var(--te-ui-border); box-shadow: 0 -4px 18px #0003; }
+  .te-simple-editor .te-editor-drawer:has(.te-context-empty-actions) { display: none; }
+  .te-simple-editor:has(.te-editor-drawer):not(:has(.te-editor-drawer .te-context-empty-actions)) .te-pages { display: none; }
+  .te-simple-editor .te-drawer-heading { min-height: 52px; padding: 4px 12px 4px 16px; }
+  .te-simple-editor .te-panel-scroll { flex: 1; padding: 14px 16px 20px; }
+  .te-simple-editor .te-editor-drawer:has(.te-inspector-tabs) .te-drawer-heading { min-height: 48px; padding-block: 2px; }
+  .te-simple-editor .te-editor-drawer:has(.te-inspector-tabs) .te-panel-scroll { display: flex; flex-direction: column; padding-top: 8px; }
+  .te-simple-editor .te-editor-drawer:has(.te-inspector-tabs) .te-context-add-text { order: 2; flex: none; margin-top: 12px; margin-bottom: 0; }
+  .te-simple-editor .te-element-heading { min-height: var(--te-ui-target); margin-bottom: 8px; gap: 8px; }
+  .te-simple-editor .te-element-heading .te-eyebrow { display: none; }
+  .te-simple-editor .te-element-heading > div:first-child { flex: 1; min-width: 0; }
+  .te-simple-editor .te-element-heading h2 { margin: 0; font-size: 13px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .te-simple-editor .te-element-heading-actions { gap: 4px; }
+  .te-simple-editor .te-editor-toolbar { padding: 6px 8px; row-gap: 6px; }
+  .te-simple-editor .te-editor-toolbar > .te-canvas-tools { flex: 1 1 100%; padding: 0; margin: 0; border: 0; }
+  .te-simple-editor .te-canvas-tools > button { min-width: var(--te-ui-target); }
+  .te-simple-editor .te-canvas-tools > button > span { display: none; }
+  .te-simple-editor .te-editor-toolbar > .te-quick-toolbar { flex-basis: 100%; }
+  .te-simple-editor .te-quick-toolbar.is-compact,
+  .te-simple-editor .te-quick-toolbar.is-compact.has-selection { padding: 6px 8px; gap: 5px; }
+  .te-simple-editor .te-editor-toolbar > .te-quick-toolbar.is-compact { padding: 0; }
+  .te-simple-editor .te-quick-toolbar.is-compact.has-selection > .te-quick-basics { width: 100%; flex: 1 1 100%; gap: 5px; padding: 0; overflow: visible; }
+  .te-simple-editor .te-quick-toolbar.is-compact .te-quick-basics > select { width: 102px; max-width: 102px; flex: 1 1 94px; }
+  .te-simple-editor .te-quick-toolbar.is-compact input[type="number"] { width: 50px; flex-basis: 50px; padding-inline: 5px; }
+  .te-simple-editor .te-quick-toolbar.is-compact .te-quick-format-button { padding-inline: 6px; }
+  /* The open inspector already exposes these values; preserve canvas space. */
+  .te-simple-editor:has(.te-editor-drawer .te-inspector-tabs) .te-quick-toolbar.is-compact .te-quick-basics,
+  .te-simple-editor:has(.te-editor-drawer .te-inspector-tabs) .te-quick-toolbar.is-compact > select { display: none; }
+  /* A scrollable action group shares the second row with duplicate/delete/more. */
+  .te-simple-editor .te-quick-toolbar.is-compact.has-selection > .te-quick-actions { width: auto; flex: 1 1 0; min-width: var(--te-ui-target); gap: 5px; flex-wrap: nowrap; overflow-x: auto; overscroll-behavior-inline: contain; scrollbar-width: thin; scrollbar-color: #797085 transparent; padding: 2px 5px 3px 2px; border-right: 1px solid #4a4858; }
+  .te-simple-editor .te-quick-toolbar.is-compact .te-quick-actions > button { flex: none; white-space: nowrap; }
+  .te-simple-editor .te-quick-toolbar.is-compact .te-quick-spacer { display: none; }
+  .te-simple-editor .te-quick-toolbar.is-compact .te-quick-label { display: none; }
+  .te-simple-editor .te-quick-toolbar.is-compact > button[aria-label="More canvas actions"] { margin-left: auto; min-width: var(--te-ui-target); }
+  .te-simple-editor .te-canvas-bottom { min-height: 48px; gap: 5px; padding: 2px 8px; flex-wrap: wrap; }
+  .te-simple-editor .te-canvas-bottom > div { gap: 4px; min-width: 0; }
+  .te-simple-editor .te-canvas-bottom .te-text-button { padding-inline: 8px; }
+  .te-simple-editor .te-page-navigation > button[aria-label="Add page"] { display: none; }
+  .te-simple-editor .te-inspector-tabs { margin-bottom: 8px; }
+  .te-simple-editor .te-layer-toolbar-divider { display: none; }
+  .te-simple-editor .te-layer-description strong { font-size: 13px; }
+  .te-simple-editor .te-element-align { flex-wrap: wrap; }
+  .te-simple-editor .te-element-align button { flex: 1 0 var(--te-ui-target); }
+  .te-simple-editor .te-dialog-footer { flex-wrap: wrap; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .te-simple-editor :is(.te-button, .te-icon, .te-text-button, .te-context-action),
+  .te-simple-editor :is(.te-quick-toolbar, .te-canvas-tools, .te-inspector-tabs) button,
+  .te-context-menu button { transition: none; }
+}

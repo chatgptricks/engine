@@ -8,6 +8,31 @@ export function textFitLimits(element: TextElement) {
   const max=Math.max(min,Math.min(500,element.autoFitMaxFontSize??element.fontSize));
   return {min,max};
 }
+
+/** Measure natural content height without the current box limiting shrinkage. */
+export function measureTextHeight(node: HTMLElement): number {
+  const { height, minHeight, maxHeight } = node.style;
+  try {
+    node.style.height = "auto";
+    node.style.minHeight = "0";
+    node.style.maxHeight = "none";
+    const computed = node.ownerDocument?.defaultView?.getComputedStyle(node);
+    const natural = Number.parseFloat(computed?.height ?? "");
+    return Math.max(1, Math.min(10000, Math.ceil(Math.max(node.scrollHeight, Number.isFinite(natural) ? natural : 0))));
+  } finally {
+    node.style.height = height;
+    node.style.minHeight = minHeight;
+    node.style.maxHeight = maxHeight;
+  }
+}
+
+/** Keep the visual top edge in place when a rotated text box grows or shrinks. */
+export function resizeTextHeight(element: TextElement, height: number): TextElement {
+  if (!Number.isFinite(height) || Math.abs(height - element.height) < .5) return element;
+  const nextHeight = Math.max(1, Math.min(10000, height));
+  const delta = (nextHeight - element.height) / 2, radians = element.rotation * Math.PI / 180;
+  return { ...element, height: nextHeight, x: element.x - delta * Math.sin(radians), y: element.y + delta * Math.cos(radians) - delta };
+}
 /** The requested fontSize is never replaced by a temporary measured result. */
 export function fitTextFontSize(element:TextElement,fits:(size:number)=>boolean):number {
   let {min:low,max:high}=textFitLimits(element);

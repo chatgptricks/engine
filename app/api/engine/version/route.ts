@@ -4,7 +4,7 @@
  * for verifying that a push landed even when a failed build leaves the
  * previous deployment serving traffic.
  */
-const ENGINE_BUILD = "2026-10-12-full-editor-audit";
+const ENGINE_BUILD = "2026-10-22-canva-workflows";
 
 export function GET() {
   return Response.json({ build: ENGINE_BUILD, commit: process.env.RENDER_GIT_COMMIT ?? null }, { headers: { "Cache-Control": "no-store" } });

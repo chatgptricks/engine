@@ -28,6 +28,17 @@ export function createLibraryDesign(library:EditorLibrary, options:CreationOptio
 
 export type LibraryItemKey=`design:${string}`|`template:${string}`;
 export type SearchFilters={folder:string;favorites:boolean;tag:string;format?:DesignFormat|"custom"|"";purpose?:"post"|"template"|"";review?:"draft"|"review"|"approved"|"";sort?:"updated"|"name"|"created"|"pages"};
+/** Project-only filters stay remembered, but never hide the template catalogue. */
+export function libraryFiltersForView(filters:SearchFilters,view:"designs"|"templates"):SearchFilters {
+  return view==="templates"?{...filters,purpose:undefined,review:undefined}:{...filters};
+}
+export function clearLibraryFiltersForView(filters:SearchFilters,view:"designs"|"templates"):SearchFilters {
+  return {folder:"",favorites:false,tag:"",sort:filters.sort,...(view==="templates"?{purpose:filters.purpose,review:filters.review}:{})};
+}
+/** null preserves each item's folder; an empty string explicitly removes it. */
+export function bulkOrganizationMetadata(folderId:string|null,tags:string):{folderId?:string;tags:string[]} {
+  return {...(folderId===null?{}:{folderId:folderId||undefined}),tags:tags.split(",").map(tag=>tag.trim()).filter(Boolean)};
+}
 export function librarySearchText(item:DesignDocument|DesignTemplate):string {
   const content=item.pages.flatMap(page=>[page.label,page.style.heading,page.style.body,...(page.canvas?.elements??[]).flatMap(element=>[element.name,element.type==="text"?element.text:""])]);
   return [item.name,...item.tags??[],"caption"in item?item.caption:item.description,"category"in item?item.category:undefined,...content,...([...(item.continuousCanvas?.elements??[]),...(item.masterScene?.elements??[])]).flatMap(element=>[element.name,element.type==="text"?element.text:""])].filter(Boolean).join(" ").toLocaleLowerCase();

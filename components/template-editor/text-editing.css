@@ -1,0 +1,26 @@
+.te-text-toolbar-host { flex: none; min-width: 0; }
+.te-text-toolbar-host:empty { display: none; }
+.te-text-toolbar-host .te-rich-controls.te-rich-controls-docked {
+  position: static;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 44px;
+  width: 100%;
+  padding: 5px 14px;
+  border: 0;
+  border-bottom: 1px solid #ffffff12;
+  border-radius: 0;
+  background: var(--te-ui-panel, #1c1c24);
+  color: var(--te-ui-text, #f0eef7);
+  box-shadow: none;
+  overflow-x: auto;
+}
+.te-text-toolbar-host .te-rich-controls button { flex: none; min-width: 32px; min-height: 32px; border-radius: 6px; }
+.te-rich-controls-label { margin-right: 8px; font-size: 12px; opacity: .7; }
+.te-text-toolbar-host .te-rich-controls-done { margin-left: auto; padding-inline: 14px; }
+@media (max-width: 760px) {
+  .te-text-toolbar-host .te-rich-controls.te-rich-controls-docked { padding: 4px 8px; }
+  .te-rich-controls-label { display: none; }
+  .te-text-toolbar-host .te-rich-controls button { min-width: 40px; min-height: 40px; }
+}

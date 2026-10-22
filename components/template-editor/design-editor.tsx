@@ -6,9 +6,11 @@ import {ENGINE_CLIPBOARD_TYPE,encodeElementClipboard,decodeElementClipboard,plai
 import type {ElementSnapshot} from "@/lib/template-editor/commands";
 import {resolveDesignPageId, type NavigationHistoryMode} from "@/lib/template-editor/use-studio-navigation";
 import {useDocumentPresence} from "@/lib/template-editor/use-presence";
+import {CollaborationBar, type EditorCollaboration} from "./collaboration-bar";
+import {sameContent} from "@/lib/template-editor/library-sync";
 import {PageAccessibilitySection} from "./page-accessibility";
 import {prepareRasterAsset} from "@/lib/template-editor/client-media";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowLeftIcon,
   CheckIcon,
@@ -25,6 +27,7 @@ import {
   designAsTemplate,
   duplicatePage,
   createCanvasElement,
+  createTextBox,
   sceneForPage,
   type CanvasElement,
   type CanvasScene,
@@ -77,10 +80,13 @@ import { useContextMenu, type ContextMenuItem } from "./context-menu";
 import { copySelection, duplicateSelection, pasteSelection, removeSelection, setSelectionLocked, reorderSelection, alignSelection, groupSelection, ungroupSelection, setGroupHidden, setGroupLocked, expandGroupSelection, scopeSelection, constrainSceneToIsolation, canEditElement, isElementHidden, isElementLocked, fillShapeWithImage, type SceneCommandResult } from "@/lib/template-editor/commands";
 import {groupMemberIds} from "@/lib/template-editor/layer-tree";
 import { translateElements } from "@/lib/template-editor/snapping";
-import { ElementInspector } from "./element-inspector";
+import { ElementInspector, type InspectorSection } from "./element-inspector";
+import { EditorIcon } from "./editor-icons";
 import "./wysiwyg.css";
 import "./pro-tools.css";
 import "./editor-shell.css";
+import "./interaction-system.css";
+import "./editor-workflow.css";
 import { DesignFrame, DesignPreview, FRAME_WIDTH } from "./preview";
 
 type Tab =
@@ -96,6 +102,7 @@ type Tab =
   | "view";
 type Props = {
   workspaceScope?: string;
+  collaboration?: EditorCollaboration;
   design: DesignDocument;
   currentPageId?: string;
   onCurrentPageChange?: (id:string,mode:NavigationHistoryMode)=>void;
@@ -123,6 +130,14 @@ const SHAPE_OPERATIONS = [
   ['xor', 'Exclude overlap'],
 ] as const;
 
+function compactEditorSnapshot() { return window.matchMedia("(max-width: 760px)").matches; }
+function subscribeCompactEditor(notify: () => void) {
+  const media=window.matchMedia("(max-width: 760px)");
+  media.addEventListener("change",notify);
+  return ()=>media.removeEventListener("change",notify);
+}
+function desktopEditorSnapshot() { return false; }
+
 function canCombineShapeSelection(scene: CanvasScene, ids: string[]) {
   const elements = scene.elements.filter(element => ids.includes(element.id));
   return ids.length >= 2 && elements.length === ids.length && elements.every(element => element.type === "shape" && !isElementHidden(scene, element) && canEditElement(scene, element, "position") && canEditElement(scene, element, "delete"));
@@ -130,6 +145,7 @@ function canCombineShapeSelection(scene: CanvasScene, ids: string[]) {
 
 export function DesignEditor({
   workspaceScope,
+  collaboration,
   design: initial,
   currentPageId,
   onCurrentPageChange,
@@ -150,7 +166,8 @@ export function DesignEditor({
   onAddDesigns,
 }: Props) {
   const { openMenu } = useContextMenu();
-  const otherEditors=useDocumentPresence(initial.id,workspaceScope,canEdit);
+  const compactEditor=useSyncExternalStore(subscribeCompactEditor,compactEditorSnapshot,desktopEditorSnapshot);
+  const otherEditors=useDocumentPresence(initial.id,workspaceScope,canEdit&&!collaboration);
   const [editingRequest, setEditingRequest] = useState<{id: string; serial: number}>();
   const [renameLayer, setRenameLayer] = useState<{id: string; name: string} | null>(null);
   const [design, setDesign] = useState<DesignDocument>(initial);
@@ -172,13 +189,13 @@ export function DesignEditor({
   const activePage = useRef(pageId);
 
   const [tab, setTab] = useState<Tab | null>(null);
-  const [inspectorSection, setInspectorSection] = useState<"edit" | "position">("edit");
+  const [inspectorSection, setInspectorSection] = useState<InspectorSection>("edit");
   const [templateSearch, setTemplateSearch] = useState("");
   const [pagesOpen, setPagesOpen] = useState(initial.pages.length > 1);
   const drawerTrigger = useRef<HTMLElement | null>(null);
   const drawerScrollRef = useRef<HTMLFieldSetElement>(null);
   useLayoutEffect(()=>{if(drawerScrollRef.current)drawerScrollRef.current.scrollTop=0;},[tab,inspectorSection]);
-  const drawerTitles: Record<Tab, string> = {templates:"Templates", text:"Text", elements:"Elements", media:"Uploads", brand:"Brand", layers:"Layers", caption:"Caption", style:"Edit selection", page:"Page settings", view:"View"};
+  const drawerTitles: Record<Tab, string> = {templates:"Templates", text:"Text", elements:"Elements", media:"Uploads", brand:"Brand", layers:"Layers", caption:"Caption", style:"Properties", page:"Page settings", view:"View"};
   function openPanel(next: Tab, toggle = false) {
     if (toggle && tab === next) { closePanel(); return; }
     if (document.activeElement instanceof HTMLElement) drawerTrigger.current = document.activeElement;
@@ -188,11 +205,20 @@ export function DesignEditor({
     setTab(null);
     drawerTrigger.current?.focus({preventScroll:true});
   }
-  function openInspector(section: "edit" | "position" = "edit") {
+  function openInspector(section: InspectorSection = "edit") {
     setInspectorSection(section);
     openPanel("style");
   }
-  const [selection, setSelected] = useState<string[]>([]);
+  const [selection, setSelection] = useState<string[]>([]);
+  const selectedIdsRef = useRef<string[]>([]);
+  const setSelected = useCallback((ids: string[]) => {
+    const changed = ids.length !== selectedIdsRef.current.length || ids.some((id,index)=>id!==selectedIdsRef.current[index]);
+    selectedIdsRef.current = ids;
+    setSelection(ids);
+    if (changed && ids.length) {
+      setInspectorSection("edit");
+    }
+  }, []);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [notice, setNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
@@ -210,6 +236,7 @@ export function DesignEditor({
   const [penClosed,setPenClosed]=useState(false);
   const [penPointCount,setPenPointCount]=useState(0);
   const [nodeToolbarHost,setNodeToolbarHost]=useState<HTMLDivElement|null>(null);
+  const [textToolbarHost,setTextToolbarHost]=useState<HTMLDivElement|null>(null);
   const drawingControls=useRef<CanvasDrawingControls|null>(null);
   const registerDrawingControls=useCallback((controls:CanvasDrawingControls|null)=>{drawingControls.current=controls;},[]);
   const [imageDropTargetId,setImageDropTargetId]=useState<string|null>(null);
@@ -263,10 +290,22 @@ export function DesignEditor({
   const workspaceRef = useRef<HTMLDivElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const replaceFileRef = useRef<HTMLInputElement>(null);
+  const replaceTargetRef = useRef<string | null>(null);
   const onChangeRef = useRef(onChange);
   useEffect(() => {
     onChangeRef.current = onChange;
   }, [onChange]);
+  const receivedDocument = useRef(initial);
+  useLayoutEffect(() => {
+    if (receivedDocument.current === initial) return;
+    receivedDocument.current = initial;
+    if (!collaboration || initial.id !== current.current.id || sameContent(initial,current.current)) return;
+    // Keep this editor instance, its navigation, and its local transient tools
+    // while adopting the shared document. Receiving never emits another edit.
+    current.current = initial;
+    setDesign(initial);
+  }, [initial,collaboration]);
   const page = design.pages.find((p) => p.id === pageId) ?? design.pages[0];
   const activePageId = page.id;
   const index = design.pages.indexOf(page);
@@ -275,13 +314,34 @@ export function DesignEditor({
   const continuous = Boolean(design.continuousCanvas)&&!editingMaster;
   const canvasWidth = FRAME_WIDTH * (continuous ? design.pages.length : 1);
   const scene = editingMaster ? design.masterScene??{background:'transparent',elements:[]} : design.continuousCanvas ?? page.canvas ?? sceneForPage(page, design.format);
+  const collaborationPageId = editingMaster ? "@master" : continuous ? "@continuous" : page.id;
+  const publishAwareness = collaboration?.setAwareness;
+  const awarenessScene = useRef(scene);
+  useLayoutEffect(() => { awarenessScene.current = scene; });
+  useEffect(() => { publishAwareness?.({pageId:collaborationPageId,cursor:null,preview:null}); }, [publishAwareness,collaborationPageId]);
+  const publishCursor = useCallback((cursor:{x:number;y:number}|null) => { publishAwareness?.({cursor}); }, [publishAwareness]);
+  const publishScenePreview = useCallback((preview:CanvasScene|null) => {
+    if (!publishAwareness) return;
+    const elements = preview?.elements.filter(element => {
+      const original = awarenessScene.current.elements.find(item => item.id === element.id);
+      return original && (element.x !== original.x || element.y !== original.y || element.width !== original.width || element.height !== original.height || element.rotation !== original.rotation || element.type === "text" && original.type === "text" && element.fontSize !== original.fontSize);
+    }).map(element => ({id:element.id,x:element.x,y:element.y,width:element.width,height:element.height,rotation:element.rotation,...(element.type === "text" ? {fontSize:element.fontSize} : {})})) ?? [];
+    publishAwareness({preview:elements.length ? {elements} : null});
+  }, [publishAwareness]);
   const isolatedGroupId = scene.groups?.some(group => group.id === requestedIsolationGroupId) ? requestedIsolationGroupId : null;
   const selected = scopeSelection(scene, selection, isolatedGroupId ?? undefined);
+  const collaborationSelection = JSON.stringify(selected);
+  useEffect(() => { publishAwareness?.({selected:JSON.parse(collaborationSelection) as string[]}); }, [publishAwareness,collaborationSelection]);
   useLayoutEffect(()=>{historyContext.current={pageId:page.id,selectedIds:[...selected],editingMaster,isolatedGroupId};},[page.id,selected,editingMaster,isolatedGroupId]);
   const previousPage = !continuous && index > 0 ? design.pages[index - 1] : undefined;
   const onionScene = onionSkin && page.canvas && previousPage ? previousPage.canvas ?? sceneForPage(previousPage, design.format) : undefined;
   const selectedPhoto = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && (element.type === "image" || (element.type === "shape" && element.imageFill))) : undefined;
   const selectedImage = selected.length === 1 ? scene.elements.find((element) => element.id === selected[0] && element.type === "image") : undefined;
+  const selectedElements = scene.elements.filter(element=>selected.includes(element.id));
+  const textSelection = selectedElements.length>0&&selectedElements.every(element=>element.type==="text");
+  const contextTitle = !selected.length ? "Canvas" : textSelection ? "Text" : selected.length>1 ? `${selected.length} selected` : selectedPhoto ? selectedPhoto.type==="shape"?"Photo frame":"Photo" : selectedElements[0]?.type==="shape"?"Shape":"Properties";
+  const compactPanelOpen=compactEditor&&tab!==null&&(tab!=="style"||selected.length>0);
+  const pagesVisible=pagesOpen&&!compactPanelOpen;
   const scale = Math.max(0.005, fit) * zoom;
   // Only committed geometry changes the scrollable area; dragging never moves
   // the coordinate origin underneath the pointer. Include hidden layers so
@@ -337,7 +397,11 @@ export function DesignEditor({
     }
   }
   function selectLayers(ids: string[]) {
-    setSelected(expandGroupSelection(scene,ids,isolatedGroupId??undefined));
+    // Keep the layer list open for Shift-selection and repeated layer actions.
+    const next=expandGroupSelection(scene,ids,isolatedGroupId??undefined);
+    selectedIdsRef.current=next;
+    setSelection(next);
+    setInspectorSection("edit");
     const element = scene.elements.find((item) => item.id === ids.at(-1));
     if (element && !element.hidden) locateLayer(element);
   }
@@ -403,9 +467,14 @@ export function DesignEditor({
     },
     [setNotice],
   );
+  const sharedHistory = collaboration?.history;
   const travel = useCallback(
     (direction: "undo" | "redo") => {
       if (blocked.current || historyBridge.current?.flush()===false) return false;
+      if (sharedHistory) {
+        sharedHistory[direction]();
+        return true;
+      }
       const h = history.current;
       const entry=travelHistory(h,current.current,historyContext.current,direction,value=>onChangeRef.current(value),value=>({...value,updatedAt:new Date().toISOString()}));
       if(!entry)return false;
@@ -426,7 +495,7 @@ export function DesignEditor({
       setHistoryRevision(revision=>revision+1);
       return true;
     },
-    [setSelected,setEditingMaster,setIsolatedGroupId,setNotice,onCurrentPageChange],
+    [setSelected,setEditingMaster,setIsolatedGroupId,setNotice,onCurrentPageChange,sharedHistory],
   );
   function changeScene(next: CanvasScene, group = "") {
       return commit(
@@ -592,7 +661,7 @@ export function DesignEditor({
       const value=plainClipboardText(text);
       if(value.trim()) {
         const offset=!editingMaster&&current.current.continuousCanvas?Math.max(0,current.current.pages.findIndex(item=>item.id===page.id))*FRAME_WIDTH:0;
-        const element=createCanvasElement("text",{text:value,name:value.slice(0,100),font:brand.font,color:brand.text,x:position?.x??offset+40,y:position?.y??40,width:280,height:120,textMode:"auto-height"});
+        const element=createTextBox({text:value,name:value.slice(0,100),font:brand.font,color:brand.text,x:position?.x??offset+40,y:position?.y??40,width:280});
         applyCommand(live=>live.elements.length>=100?{scene:live,selectedIds:[],limited:true}:{scene:{...live,elements:[...live.elements,element]},selectedIds:[element.id],limited:false});
       }
     }catch(error){setNotice(error instanceof Error?error.message:"Could not paste the clipboard.");}
@@ -670,8 +739,8 @@ export function DesignEditor({
         {id: "image", label: "Upload image", disabled: disabled || uploading, onSelect: () => fileRef.current?.click()},
         {id: "select", label: "Select all unlocked elements", shortcut: "⌘/Ctrl A", separator: true, disabled: !scene.elements.some((e) => !e.locked && !e.hidden), onSelect: () => setSelected(selectable.map(e=>e.id))},
         {id: "background", label: "Page background", onSelect: () => openPanel("page")},
-        {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", separator: true, disabled: disabled || !historyState.undo, onSelect: () => travel("undo")},
-        {id: "redo", label: "Redo", shortcut: "⌘/Ctrl ⇧ Z", disabled: disabled || !historyState.redo, onSelect: () => travel("redo")},
+        {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", separator: true, disabled: disabled || !(sharedHistory?.canUndo ?? historyState.undo), onSelect: () => travel("undo")},
+        {id: "redo", label: "Redo", shortcut: "⌘/Ctrl ⇧ Z", disabled: disabled || !(sharedHistory?.canRedo ?? historyState.redo), onSelect: () => travel("redo")},
       ],
     });
   }
@@ -689,8 +758,8 @@ export function DesignEditor({
   }
   function workspaceMenu(event: React.MouseEvent) {
     openMenu(event, {label: design.name || "Design workspace", items: [
-      {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", disabled: disabled || !historyState.undo, onSelect: () => travel("undo")},
-      {id: "redo", label: "Redo", shortcut: "⌘/Ctrl ⇧ Z", disabled: disabled || !historyState.redo, onSelect: () => travel("redo")},
+      {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", disabled: disabled || !(sharedHistory?.canUndo ?? historyState.undo), onSelect: () => travel("undo")},
+      {id: "redo", label: "Redo", shortcut: "⌘/Ctrl ⇧ Z", disabled: disabled || !(sharedHistory?.canRedo ?? historyState.redo), onSelect: () => travel("redo")},
       {id: "paste", label: "Paste elements", shortcut: "⌘/Ctrl V", disabled: disabled, onSelect: () => {void pasteFromSystemClipboard();}},
       {id: "add", label: "Add blank page", separator: true, disabled: disabled || design.pages.length >= 20, onSelect: () => addPage()},
       {id: "template", label: saveTemplateLabel, disabled, onSelect: () => setTemplateName(design.name)},
@@ -715,18 +784,16 @@ export function DesignEditor({
   }
   const addText = (size = 28, text = "Add your text") =>
     addElement(
-      createCanvasElement("text", {
+      createTextBox({
         text,
         name: text,
         x: (continuous ? index * FRAME_WIDTH : 0) + 32,
         y: canvasHeight / 2 - 40,
         width: 296,
-        height: Math.max(60, size * 2.6),
         font: brand.font,
         fontSize: size,
         fontWeight: size >= 24 ? 700 : 400,
         color: brand.text,
-        textMode:'auto-height',
       }),
     );
   const addShape = (shape: ShapeElement['shape'], line = false) =>
@@ -958,12 +1025,13 @@ export function DesignEditor({
     addElement(createCanvasElement('image',{...photo,fit:photo.objectFit,name:photo.alt||'Photo',x:(continuous?index*FRAME_WIDTH:0)+(FRAME_WIDTH-width)/2,y:(canvasHeight-height)/2,width,height}));
   }
   function openTextTexture() {
-    if (disabled || selected.length !== 1) return;
+    if (disabled) return;
     if (historyBridge.current?.flush() === false) return;
     const target = current.current.pages.find(item => item.id === page.id);
     if (!target) return;
     const live = editingMaster ? current.current.masterScene ?? scene : current.current.continuousCanvas ?? target.canvas ?? sceneForPage(target,current.current.format);
-    const element = live.elements.find(item => item.id === selected[0]);
+    const candidates = live.elements.filter(item=>selected.includes(item.id)&&item.type==="text"&&!isElementHidden(live,item)&&canEditElement(live,item,"content")&&canEditElement(live,item,"style"));
+    const element = candidates.length===1?candidates[0]:undefined;
     if (!element || element.type !== "text" || !canEditElement(live,element,"content") || !canEditElement(live,element,"style") || isElementHidden(live,element)) return;
     const range = textFormatter.current?.capture();
     const words = range?.elementId === element.id ? getTextWords(element).filter(word => word.end > range.start && word.start < range.end).map(word => word.index) : undefined;
@@ -1057,13 +1125,14 @@ export function DesignEditor({
       onDeleteColorRole={id=>commit(d=>removeColorRole(d,id))}
       onFormatText={formatText}
       initialSection={inspectorSection}
+      onSectionChange={setInspectorSection}
       onTextTexture={openTextTexture}
       onUploadFramePhoto={(file:File,id:string)=>upload(file,id)}
     />
   );
 
   return (
-    <div className={`te-editor te-wysiwyg te-simple-editor${tab ? " has-panel" : ""}`} onContextMenu={workspaceMenu} onDragEnd={()=>setImageDropTargetId(null)}>
+    <div className={`te-editor te-wysiwyg te-simple-editor te-guided-editor${tab ? " has-panel" : ""}`} onContextMenu={workspaceMenu} onDragEnd={()=>setImageDropTargetId(null)}>
                 <input
                   ref={fileRef}
                   hidden
@@ -1075,6 +1144,11 @@ export function DesignEditor({
                     if (file) void upload(file);
                   }}
                 />
+      <input ref={replaceFileRef} hidden type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" onChange={event=>{
+        const file=event.target.files?.[0],id=replaceTargetRef.current;
+        event.target.value="";replaceTargetRef.current=null;
+        if(file&&id)void upload(file,id);
+      }}/>
       {photoGhost&&<div className="te-photo-drag-ghost" style={{left:photoGhost.x+12,top:photoGhost.y+12}} aria-hidden="true">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={proxied(photoGhost.src)} alt=""/>
@@ -1117,13 +1191,13 @@ export function DesignEditor({
           />
           <span role="status">
             {isTemplateDraft ? "Template draft · " : ""}
-            {saveStatus}{otherEditors>0&&<span className="te-presence-label" title={`This project is also active in ${otherEditors} other tab${otherEditors===1?"":"s"} or device${otherEditors===1?"":"s"}.`}> · Also open elsewhere{otherEditors>1?` (${otherEditors})`:""}</span>}
+            {saveStatus}{!collaboration&&otherEditors>0&&<span className="te-presence-label" title={`This project is also active in ${otherEditors} other tab${otherEditors===1?"":"s"} or device${otherEditors===1?"":"s"}.`}> · Also open elsewhere{otherEditors>1?` (${otherEditors})`:""}</span>}
           </span>
         </div>
         <div className="te-history">
           <button
             className="te-icon"
-            disabled={disabled || !historyState.undo}
+            disabled={disabled || !(collaboration?.history?.canUndo ?? historyState.undo)}
             onClick={() => travel("undo")}
             onPointerDown={event=>{if(event.button===0)event.preventDefault();}}
             title="Undo (⌘Z / Ctrl+Z)"
@@ -1134,7 +1208,7 @@ export function DesignEditor({
           </button>
           <button
             className="te-icon"
-            disabled={disabled || !historyState.redo}
+            disabled={disabled || !(collaboration?.history?.canRedo ?? historyState.redo)}
             onClick={() => travel("redo")}
             onPointerDown={event=>{if(event.button===0)event.preventDefault();}}
             title="Redo (⌘⇧Z / Ctrl+Y)"
@@ -1145,6 +1219,7 @@ export function DesignEditor({
           </button>
         </div>
         <div className="te-editor-header-actions">
+          {collaboration&&<CollaborationBar collaboration={collaboration} />}
           <button className="te-button te-header-menu" aria-haspopup="menu" onClick={event=>openMenu(event,{label:"File",items:[
             {id:"save-template",label:saveTemplateLabel,disabled,onSelect:()=>setTemplateName(design.name)},
             {id:"caption",label:"Post caption",onSelect:()=>openPanel("caption")},
@@ -1198,13 +1273,15 @@ export function DesignEditor({
               </button>
             ))}
           </nav>
-          {tab&&<section id="te-editor-panel" className="te-editor-drawer" aria-label={drawerTitles[tab]} onKeyDown={event=>{
+          {tab&&<section id="te-editor-panel" className="te-editor-drawer" aria-label={tab==="style"?contextTitle:drawerTitles[tab]} onKeyDown={event=>{
             if(event.key==="Escape"&&!event.defaultPrevented){event.preventDefault();event.stopPropagation();closePanel();}
           }}>
-          <div className="te-drawer-heading"><h2>{drawerTitles[tab]}</h2><button className="te-icon" aria-label="Close tool panel" onClick={closePanel}>×</button></div>
+          <div className="te-drawer-heading"><h2>{tab==="style"?contextTitle:drawerTitles[tab]}</h2><button className="te-icon" aria-label="Close tool panel" onClick={closePanel}>×</button></div>
           <fieldset ref={drawerScrollRef} disabled={disabled && tab !== "view"} className="te-panel-scroll">
             {tab === "text" && (
               <>
+                <button type="button" className="te-button te-primary te-full te-insert-text" onClick={()=>addText()}><PlusIcon size={18}/>Add a text box<span className="te-shortcut-hint">T</span></button>
+                <div className="te-panel-heading"><h2>Text presets</h2></div>
                 <button
                   className="te-add-text te-add-heading"
                   onClick={() => addText(30, "Add a heading")}
@@ -1246,8 +1323,7 @@ export function DesignEditor({
                   </button>
                 </div>
                 <p className="te-help">
-                  Drag, resize, and rotate shapes on the canvas. Choose Edit in the toolbar
-                  for photos, fill, and borders. Select two or more shapes to use Merge shapes in the toolbar.
+                  Select a shape to see its fill, photo, and outline here. Select two or more shapes to use Merge shapes in the toolbar.
                 </p>
                 <div className="te-shape-picker">{([
                   ['triangle','M12 3 22 21H2Z'],['diamond','M12 2 22 12 12 22 2 12Z'],
@@ -1372,13 +1448,15 @@ export function DesignEditor({
                 const height = Math.max(1, asset.height * ratio);
                 addElement({...createCanvasElement("image", {name:asset.name, src:asset.src, fit:"contain", x:(continuous ? index * FRAME_WIDTH : 0)+(FRAME_WIDTH-width)/2, y:(canvasHeight-height)/2, width,height}),...brandAssetPhoto(asset),fit:"contain"});
               }} />}
-            {tab === "layers" && <LayersPanel scene={scene} selectedIds={selected} width={canvasWidth} height={canvasHeight} disabled={disabled}
+            {tab === "layers" && <>
+              {selected.length>0&&<button type="button" className="te-button te-full" onClick={()=>openInspector()}><EditorIcon name="position"/>Edit selected elements</button>}
+              <LayersPanel scene={scene} selectedIds={selected} width={canvasWidth} height={canvasHeight} disabled={disabled}
               isolatedGroupId={isolatedGroupId??undefined} onEnterGroup={enterGroup} onExitGroup={()=>setIsolatedGroupId(null)}
               onGroupContextMenu={(event,id)=>openMenu(event,{label:scene.groups?.find(g=>g.id===id)?.name??'Group',items:[{id:'isolate',label:'Edit group',onSelect:()=>enterGroup(id)},{id:'group-lock',label:'Toggle lock',disabled:Boolean(isolatedGroupId)&&!groupMemberIds(scene,id).some(member=>isolatedIds?.has(member)),onSelect:()=>applyCommand(live=>setGroupLocked(live,id,!live.groups?.find(g=>g.id===id)?.locked))},{id:'group-hidden',label:'Toggle visibility',disabled:Boolean(isolatedGroupId)&&!groupMemberIds(scene,id).some(member=>isolatedIds?.has(member)),onSelect:()=>applyCommand(live=>setGroupHidden(live,id,!live.groups?.find(g=>g.id===id)?.hidden))}]})}
               onSelect={selectLayers} onChange={changeScene} onLocate={locateLayer}
               onContextMenu={(event, element) => canvasMenu(event, element.id)}
               onDuplicate={() => applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined))}
-              onDelete={() => applyCommand((live) => removeSelection(live, selected))} />}
+              onDelete={() => applyCommand((live) => removeSelection(live, selected))} /></>}
             {tab === "caption" && (
               <>
                 <label className="te-field">
@@ -1493,16 +1571,26 @@ export function DesignEditor({
               <button className="te-text-button" disabled={!selected.length} onClick={()=>{const bounds=sceneVisualBounds({background:'transparent',elements:scene.elements.filter(e=>selected.includes(e.id))});const node=workspaceRef.current;if(bounds&&node){setZoom(Math.max(.05,Math.min(32,Math.min(node.clientWidth/(bounds.width+80),node.clientHeight/(bounds.height+80))/fit)));zoomAnchor.current={x:bounds.x+bounds.width/2,y:bounds.y+bounds.height/2,screenX:node.clientWidth/2,screenY:node.clientHeight/2};}}}>Fit selected elements</button>
               <button className="te-text-button" onClick={()=>setShowShortcuts(true)}>Keyboard shortcuts</button>
             </div>}
-            {tab === "style" && inspector}
+            {tab === "style" && <>
+              {(selectedPhoto||canCombineShapeSelection(scene,selected))&&<div className="te-element-actions te-element-grid">
+                {selectedPhoto&&<button type="button" className="te-button te-context-action" aria-label="Crop selected photo" aria-pressed={cropImageId===selectedPhoto.id} disabled={disabled||!canEditElement(scene,selectedPhoto,"style")||!canEditElement(scene,selectedPhoto,"content")} onClick={()=>setCropImageId(cropImageId===selectedPhoto.id?null:selectedPhoto.id)}><EditorIcon name="crop"/>{cropImageId===selectedPhoto.id?"Done crop":"Crop photo"}</button>}
+                {canCombineShapeSelection(scene,selected)&&<button type="button" className="te-button te-context-action" aria-label="Merge selected shapes" disabled={disabled} onClick={()=>applyCommand(live=>combineShapes(live,selected,"union"))}><EditorIcon name="merge"/>Merge shapes</button>}
+              </div>}
+              {inspector}
+              {!selected.length&&<div className="te-context-empty-actions"><button type="button" className="te-button te-full" onClick={()=>addText()}><TextIcon/>Add text</button><button type="button" className="te-button te-full" onClick={()=>openPanel("elements")}><PlusIcon/>Add a shape</button><button type="button" className="te-button te-full" onClick={()=>fileRef.current?.click()}><ImageIcon/>Upload photo</button></div>}
+            </>}
           </fieldset>
           </section>}
         </aside>
         <main className="te-canvas-column">
+          <div className="te-editor-toolbar">
           <div className="te-canvas-tools" role="toolbar" aria-label="Canvas tools">
-            <button type="button" aria-pressed={navigationMode==="select"&&!pathTool} title="Select · V" onClick={()=>{setNavigationMode("select");setPathTool(false);}}>Select</button>
-            <button type="button" aria-pressed={navigationMode==="hand"} title="Pan canvas · H" onClick={()=>{setNavigationMode("hand");setPathTool(false);setCropImageId(null);}}>Hand</button>
-            <button type="button" disabled={disabled} aria-pressed={pathTool} title="Draw path · P" onClick={()=>{setPathTool(value=>!value);setNavigationMode("select");setCropImageId(null);}}>Pen</button>
-            <button type="button" disabled={disabled||selected.length!==1||!scene.elements.some(element=>element.id===selected[0]&&element.type==="shape"&&canEditElement(scene,element,"style")&&canEditElement(scene,element,"position"))} aria-pressed={navigationMode==="nodes"} title="Edit path nodes · A" onClick={()=>{setNavigationMode(value=>value==="nodes"?"select":"nodes");setPathTool(false);}}>Nodes</button>
+            <button type="button" aria-pressed={navigationMode==="select"&&!pathTool} aria-label="Select" title="Select · V" onClick={()=>{setNavigationMode("select");setPathTool(false);}}><EditorIcon name="select"/><span>Select</span></button>
+            <button type="button" aria-pressed={navigationMode==="hand"} aria-label="Hand" title="Pan canvas · H" onClick={()=>{setNavigationMode("hand");setPathTool(false);setCropImageId(null);}}><EditorIcon name="hand"/><span>Hand</span></button>
+            <button type="button" disabled={disabled} aria-pressed={pathTool||navigationMode==="nodes"} aria-label="Drawing tools" aria-haspopup="menu" title="Drawing tools" onClick={event=>openMenu(event,{label:"Drawing tools",items:[
+              {id:"pen",label:pathTool?"Stop drawing":"Draw a path",shortcut:"P",onSelect:()=>{setPathTool(value=>!value);setNavigationMode("select");setCropImageId(null);}},
+              {id:"nodes",label:navigationMode==="nodes"?"Finish editing points":"Edit shape points",shortcut:"A",disabled:selected.length!==1||!scene.elements.some(element=>element.id===selected[0]&&element.type==="shape"&&canEditElement(scene,element,"style")&&canEditElement(scene,element,"position")),onSelect:()=>{setNavigationMode(value=>value==="nodes"?"select":"nodes");setPathTool(false);}},
+            ]})}><EditorIcon name={navigationMode==="nodes"?"nodes":"pen"}/><span>{navigationMode==="nodes"?"Points":"Draw"}</span><span aria-hidden>⌄</span></button>
             {pathTool&&<>
               <label><input type="checkbox" checked={penClosed} onChange={event=>setPenClosed(event.target.checked)}/>Close path</label>
               <span className="te-pen-point-status" role="status">{penPointCount} points · Tap canvas to add</span>
@@ -1519,6 +1607,10 @@ export function DesignEditor({
             onBackground={()=>openPanel("page")}
             onEdit={()=>openInspector()}
             onPosition={()=>openInspector("position")}
+            onInspect={openInspector}
+            activeSection={tab==="style"?inspectorSection:null}
+            onReplacePhoto={()=>{if(selected.length===1){replaceTargetRef.current=selected[0];replaceFileRef.current?.click();}}}
+            onUnlock={()=>applyCommand(live=>setSelectionLocked(live,selected,false))}
             onCrop={selectedPhoto&&!disabled&&canEditElement(scene,selectedPhoto,"style")?()=>setCropImageId(cropImageId===selectedPhoto.id?null:selectedPhoto.id):undefined}
             cropping={Boolean(cropImageId)}
             onGroup={selected.length>1?()=>applyCommand(live=>groupSelection(live,selected,"Group",isolatedGroupId??undefined)):undefined}
@@ -1527,6 +1619,8 @@ export function DesignEditor({
             onDelete={() => applyCommand((live) => removeSelection(live, selected))}
             onMore={(event) => selected.length ? openMenu(event, {label: "Selected elements", items: elementMenu(selected)}) : canvasMenu(event, null)}
             onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />}
+          <div className="te-text-toolbar-host" ref={setTextToolbarHost}/>
+          </div>
           {(editingMaster||isolatedGroupId||cropImageId)&&<div className="te-isolation-bar"><span>{editingMaster?'Editing shared master':isolatedGroupId?`Inside ${scene.groups?.find(g=>g.id===isolatedGroupId)?.name??'group'}`:'Drag image to crop · Scroll to zoom image'}</span><button className="te-text-button" onClick={()=>{setEditingMaster(false);setIsolatedGroupId(null);setCropImageId(null);setSelected([]);}}>Done</button></div>}
           <div
             className={`te-canvas-space${spacePanning?' is-panning':''}`}
@@ -1578,6 +1672,10 @@ export function DesignEditor({
                     selectedIds={selected}
                     onSelect={setSelected}
                     onChange={changeScene}
+                    peers={collaboration?.peers}
+                    collaborationPageId={collaboration ? collaborationPageId : undefined}
+                    onCursorChange={collaboration ? publishCursor : undefined}
+                    onScenePreview={collaboration ? publishScenePreview : undefined}
                     onHistory={travel}
                     onRegisterHistoryBridge={registerHistoryBridge}
                     onHistoryBoundary={closeEditingHistory}
@@ -1602,6 +1700,7 @@ export function DesignEditor({
                     navigationMode={navigationMode}
                     onExitNodeEditing={()=>setNavigationMode("select")}
                     nodeToolbarHost={nodeToolbarHost}
+                    textToolbarHost={textToolbarHost}
                     onRequestCrop={id=>{setSelected([id]);setCropImageId(id);}}
                     penClosed={penClosed} penColor={brand.text}
                     onCancelDrawing={()=>setPathTool(false)}
@@ -1634,7 +1733,7 @@ export function DesignEditor({
           </div>
           <div className="te-canvas-bottom">
             <div className="te-page-navigation">
-              <button className="te-text-button" aria-label="Show pages" aria-expanded={pagesOpen} aria-controls="te-editor-pages" onClick={()=>setPagesOpen(open=>!open)}><LayoutIcon size={16}/> Page {index+1} of {design.pages.length} <span aria-hidden="true">{pagesOpen?"⌄":"⌃"}</span></button>
+              <button className="te-text-button" aria-label="Show pages" aria-expanded={pagesVisible} aria-controls="te-editor-pages" onClick={()=>{if(compactPanelOpen){closePanel();setPagesOpen(true);}else setPagesOpen(open=>!open);}}><LayoutIcon size={16}/> Page {index+1} of {design.pages.length} <span aria-hidden="true">{pagesVisible?"⌄":"⌃"}</span></button>
               <button className="te-icon" aria-label="Add page" title="Add page" disabled={disabled||design.pages.length>=20} onClick={()=>addPage()}><PlusIcon size={17}/></button>
               <button className="te-text-button te-caption-trigger" onClick={()=>openPanel("caption",true)}>Caption</button>
               {outsideCount>0&&<button className="te-text-button te-parked-count" onClick={()=>openPanel("layers")}>{outsideCount} off canvas</button>}
@@ -1668,7 +1767,7 @@ export function DesignEditor({
               </button>
             </div>
           </div>
-          {pagesOpen&&<section id="te-editor-pages" className="te-pages" aria-label="Carousel pages">
+          {pagesVisible&&<section id="te-editor-pages" className="te-pages" aria-label="Carousel pages">
             <div className="te-page-strip">
               {design.pages.map((p, i) => (
                 <div key={p.id} className="te-page-card" onContextMenu={(event) => pageMenu(event, p)}>
