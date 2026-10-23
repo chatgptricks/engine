@@ -1,5 +1,5 @@
-# Create this Blueprint in the Codex workspace. Reuse the existing Supabase
-# project and font key; no database recreation or data migration is required.
+# Optional Blueprint for a new backend. Production reuses greatful-independent.
+# Keep the existing Supabase project and font key when moving an existing workspace.
 services:
   - type: web
     name: engine-api
