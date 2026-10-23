@@ -1256,9 +1256,10 @@ const MAX_LIBRARY_CHARS = 30 * 1024 * 1024;
 const MAX_IMAGE_CHARS = 12 * 1024 * 1024;
 /** Match JSON's character budget without allocating a second copy of every
  * embedded image. Stop as soon as the limit is exceeded. */
-export function fitsJsonCharacterLimit(input: unknown, maximum: number): boolean {
+export function fitsJsonCharacterLimit(input: unknown, maximum: number, deduplicateImages = false): boolean {
   let length = 0;
   const ancestors = new Set<object>();
+  const images = new Set<string>();
   const add = (count: number) => (length += count) <= maximum;
   const omitted = (value: unknown) => value === undefined || typeof value === "function" || typeof value === "symbol";
   function normalize(value: unknown, key: string): unknown {
@@ -1283,9 +1284,15 @@ export function fitsJsonCharacterLimit(input: unknown, maximum: number): boolean
     }
     return true;
   }
-  function visit(value: unknown): boolean {
+  function visit(value: unknown, field = ""): boolean {
     if (value === null) return add(4);
-    if (typeof value === "string") return text(value);
+    if (typeof value === "string") {
+      if (deduplicateImages && ["src", "url", "previewSrc"].includes(field) && value.startsWith("data:image/")) {
+        if (images.has(value)) return add(79);
+        images.add(value);
+      }
+      return text(value);
+    }
     if (typeof value === "boolean") return add(value ? 4 : 5);
     if (typeof value === "number") return add(JSON.stringify(value).length);
     if (typeof value !== "object") return false;
@@ -1307,7 +1314,7 @@ export function fitsJsonCharacterLimit(input: unknown, maximum: number): boolean
           if (omitted(child)) continue;
           if (!first && !add(1)) return false;
           first = false;
-          if (!text(key) || !add(1) || !visit(child)) return false;
+          if (!text(key) || !add(1) || !visit(child, key)) return false;
         }
       }
       return true;
@@ -2080,9 +2087,12 @@ function normalizeReadingOrders(pages:DesignPage[],continuous?:CanvasScene,maste
 export function parseLibrary(input: unknown): EditorLibrary | null {
   try {
     if (typeof input === "string") {
-      if (input.length > MAX_LIBRARY_CHARS) return null;
+      // Legacy JSON backups may repeat the same embedded image many times.
+      // Packed saves remain bounded separately by the 12 MiB wire limit.
+      if (input.length > 200 * 1024 * 1024) return null;
       input = JSON.parse(input);
-    } else if (!fitsJsonCharacterLimit(input, MAX_LIBRARY_CHARS)) return null;
+    }
+    if (!fitsJsonCharacterLimit(input, MAX_LIBRARY_CHARS, true)) return null;
     if (
       !object(input) ||
       (input.version !== 1 && input.version !== 2) ||

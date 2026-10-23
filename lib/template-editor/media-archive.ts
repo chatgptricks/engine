@@ -1,5 +1,18 @@
 import JSZip from "jszip";
 import type {EditorLibrary} from "./model";
+import {packAssets, unpackAssets} from "./library-sync";
+export async function packPortableLibrary(library:EditorLibrary):Promise<string> {
+  const packed=await packAssets(library);
+  return JSON.stringify({format:"engine-workspace",version:1,library:packed.value,assets:packed.assets});
+}
+export function unpackPortableLibrary(value:unknown):unknown {
+  if(value&&typeof value==="object"&&"format" in value&&value.format==="engine-workspace") {
+    const packed=value as {version?:number;library?:unknown;assets?:Record<string,string>};
+    if(packed.version!==1||!packed.library||!packed.assets||typeof packed.assets!=="object"||Array.isArray(packed.assets))throw new Error("The workspace backup is invalid.");
+    return unpackAssets(packed.library,packed.assets);
+  }
+  return value; // Legacy backups remain importable.
+}
 const MAX_ARCHIVE=200*1024*1024, MAX_ASSET=15*1024*1024, MAX_LIBRARY=40*1024*1024;
 const privateSource=/^\/api\/template-editor\/assets\/([a-f0-9]{64})$/;
 type MediaEntry={id:string;path:string;mimeType:string;bytes:number};
@@ -24,7 +37,7 @@ function download(blob:Blob,name:string) {
   const url=URL.createObjectURL(blob),link=document.createElement("a");link.href=url;link.download=name;link.click();setTimeout(()=>URL.revokeObjectURL(url),60_000);
 }
 export async function downloadPortableLibrary(library:EditorLibrary,name:string):Promise<void> {
-  const base=name.replace(/(?:\.engine)?\.(?:json|zip)$/i,"")||"Engine backup",ids=originalAssetIds(library),json=JSON.stringify(library);
+  const base=name.replace(/(?:\.engine)?\.(?:json|zip)$/i,"")||"Engine backup",ids=originalAssetIds(library),json=await packPortableLibrary(library);
   if(!ids.length){download(new Blob([json],{type:"application/json"}),`${base}.engine.json`);return;}
   const zip=new JSZip(),assets:MediaEntry[]=[];let total=new Blob([json]).size;
   if(total>MAX_LIBRARY)throw new Error("The workspace is too large for one backup. Export selected projects instead.");
@@ -64,14 +77,14 @@ export async function readLibraryArchive(file:File):Promise<{library:unknown;res
   if(file.size>MAX_ARCHIVE)throw new Error("Choose a backup smaller than 200 MB.");
   if(!/\.zip$/i.test(file.name)) {
     if(file.size>MAX_LIBRARY)throw new Error("Choose a JSON backup smaller than 40 MB.");
-    return {library:JSON.parse(await file.text()),restoreMedia:async(selected)=>{
+    return {library:unpackPortableLibrary(JSON.parse(await file.text())),restoreMedia:async(selected)=>{
       for(const id of originalAssetIds(selected)){const response=await fetch(`/api/template-editor/assets/${id}`);if(!response.ok)throw new Error("This JSON references private originals that are missing. Import its portable .engine.zip backup instead.");await response.body?.cancel();}
     }};
   }
   const buffer=await file.arrayBuffer();validateArchiveDirectory(buffer);
   const zip=await JSZip.loadAsync(buffer),libraryFile=zip.file("library.json"),manifestFile=zip.file("manifest.json");
   if(!libraryFile||!manifestFile)throw new Error("The Engine backup is missing its library or manifest.");
-  const library:unknown=JSON.parse(new TextDecoder().decode(await boundedEntry(libraryFile,MAX_LIBRARY)));
+  const library:unknown=unpackPortableLibrary(JSON.parse(new TextDecoder().decode(await boundedEntry(libraryFile,MAX_LIBRARY))));
   const manifest=JSON.parse(new TextDecoder().decode(await boundedEntry(manifestFile,200_000))) as {version:number;assets:MediaEntry[]};
   if(manifest.version!==1||!Array.isArray(manifest.assets)||manifest.assets.length>999)throw new Error("The backup manifest is invalid.");
   const entries=new Map<string,MediaEntry>();

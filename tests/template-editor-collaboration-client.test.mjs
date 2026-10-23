@@ -69,3 +69,11 @@ test("client undo after concurrent saves retains required timestamps and the oth
     }
   }
 });
+
+
+test("collaboration materializes copied embedded images without a false expanded-size rejection",()=>{
+  const document=fixture(),src="data:image/webp;base64,"+"A".repeat(1_700_000);
+  document.pages[0].canvas.elements=Array.from({length:20},()=>model.createCanvasElement("image",{src}));
+  const doc=collaboration.createCollaborationDocument(document);
+  try {assert.deepEqual(collaboration.readCollaborationDocument(doc),document);}finally{doc.destroy();}
+});

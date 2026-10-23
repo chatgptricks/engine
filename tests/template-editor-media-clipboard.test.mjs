@@ -185,3 +185,20 @@ test('metadata fetch rejects private hosts before making an image request',async
  await assert.rejects(fetchOriginalImageBytes('http://127.0.0.1/photo.png'),/private/);
  await assert.rejects(fetchOriginalImageBytes('https://name:password@example.com/photo.png'),/not supported/);
 });
+
+
+test('portable backups store repeated embedded images once and retain legacy compatibility',async()=>{
+  const media=loadCached('lib/template-editor/media-archive.ts');
+  const design=model.createBlankDesign('Image copies','portrait');
+  const src="data:image/png;base64," + Buffer.from("\x89PNG\r\n\x1a\n"+"0".repeat(1_300_000),"binary").toString("base64");
+  design.pages[0].canvas.elements=Array.from({length:20},()=>model.createCanvasElement('image',{src}));
+  const library={...structuredClone(model.EMPTY_LIBRARY),designs:[design]};
+  const encoded=await media.packPortableLibrary(library);
+  assert.ok(encoded.length<1_750_000);
+  const restored=media.unpackPortableLibrary(JSON.parse(encoded));
+  assert.ok(model.parseLibrary(restored));
+  assert.deepEqual(restored,library);
+  assert.equal(media.unpackPortableLibrary(library),library);
+  const broken=JSON.parse(encoded);broken.assets={};
+  assert.throws(()=>media.unpackPortableLibrary(broken),/missing/);
+});
