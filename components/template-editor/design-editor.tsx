@@ -1,4 +1,6 @@
 "use client";
+import { constrainSmartTemplate } from "@/lib/template-editor/smart-template";
+import { layoutSmartScene, prepareSmartTextExport } from "@/lib/template-editor/smart-text";
 import { resolveEditorCommand, editorCommandHelp } from "@/lib/template-editor/editor-commands";
 import { saveSelectionTextStyle } from "@/lib/template-editor/editing-actions";
 
@@ -441,7 +443,7 @@ export function DesignEditor({
     if(job||exportPreparation.current)return;
     const controller=new AbortController();exportPreparation.current=controller;setPreparingExport(true);setExportDialog(false);
     try {
-      const prepared=await prepareExportDimensions(structuredClone(design),pageIds,options,controller.signal);
+      const prepared=await prepareExportDimensions(await prepareSmartTextExport(structuredClone(design),controller.signal,pageIds),pageIds,options,controller.signal);
       controller.signal.throwIfAborted();assertDesignExportBudget(prepared,options,pageIds);
       if(mounted.current)setJob({design:prepared,options,pageIds});
     }catch(error){if(!controller.signal.aborted&&mounted.current)setNotice(error instanceof Error?error.message:'Export could not start.');}
@@ -455,7 +457,13 @@ export function DesignEditor({
       if (blocked.current) return false;
       const previous = current.current;
       let changed:DesignDocument;
-      try{changed=change(previous);}catch(error){setNotice(error instanceof Error?error.message:'Could not apply this change.');return false;}
+      try{changed=change(previous);
+        changed={...changed,pages:changed.pages.map(page=>{
+          const source=previous.pages.find(original=>original.id===page.id)?.canvas;
+          if(!source||!page.canvas||source===page.canvas||!source.elements.some(element=>element.templateRole||element.type==="text"&&element.smartText)||!page.canvas.elements.some(element=>source.elements.some(original=>original.id===element.id)))return page;
+          return {...page,canvas:layoutSmartScene(constrainSmartTemplate(source,page.canvas)).scene};
+        })};
+      }catch(error){setNotice(error instanceof Error?error.message:'Could not apply this change.');return false;}
       if(sameDocumentContent(changed,previous))return true;
       const next = { ...changed, updatedAt: new Date().toISOString() };
       const h = history.current;
@@ -504,6 +512,7 @@ export function DesignEditor({
           if (!target) return d;
           const live = editingMaster ? d.masterScene ?? scene : d.continuousCanvas ?? target.canvas ?? sceneForPage(target, d.format);
           next = constrainSceneToIsolation(live, next, isolatedGroupId ?? undefined);
+          next = layoutSmartScene(constrainSmartTemplate(live, next)).scene;
           if(editingMaster)return {...d,masterScene:next};
           const promoted=next.elements.filter(e=>e.master);
           if(promoted.length){const snapshot=copySelection(next,promoted.map(e=>e.id));const copy=duplicateCanvasScene({background:'transparent',elements:snapshot,groups:snapshot.groups});const master={background:'transparent',...d.masterScene,groups:[...(d.masterScene?.groups??[]),...(copy.groups??[])],elements:[...(d.masterScene?.elements??[]),...copy.elements.map(e=>({...e,x:e.x-(d.continuousCanvas?d.pages.findIndex(p=>p.id===activePageId)*FRAME_WIDTH:0)}))]};if(master.elements.length>100)throw new Error('The master supports up to 100 elements.');const remainder={...next,elements:next.elements.filter(e=>!e.master)};return d.continuousCanvas?{...d,masterScene:master,continuousCanvas:remainder}:{...d,masterScene:master,pages:d.pages.map(p=>p.id===activePageId?{...p,canvas:remainder}:p)};}
@@ -790,10 +799,10 @@ export function DesignEditor({
         x: (continuous ? index * FRAME_WIDTH : 0) + 32,
         y: canvasHeight / 2 - 40,
         width: 296,
-        font: brand.font,
+        font: scene.elements.find((element):element is TextElement=>element.type==="text"&&Boolean(element.smartText))?.font ?? brand.font,
         fontSize: size,
         fontWeight: size >= 24 ? 700 : 400,
-        color: brand.text,
+        color: scene.elements.find((element):element is TextElement=>element.type==="text"&&Boolean(element.smartText))?.color ?? brand.text,
       }),
     );
   const addShape = (shape: ShapeElement['shape'], line = false) =>
@@ -1228,7 +1237,7 @@ export function DesignEditor({
             {id:"advanced",label:"Advanced design tools",onSelect:()=>{setWorkflowTab("resources");setWorkflowOpen(true);}},
             {id:"shortcuts",label:"Keyboard shortcuts",separator:true,onSelect:()=>setShowShortcuts(true)},
           ]})}>File <span aria-hidden="true">⌄</span></button>
-          <button className="te-button te-header-menu" aria-pressed={tab==="page"} aria-controls="te-editor-panel" onClick={()=>openPanel("page",true)}>Resize</button>
+          <button className="te-button te-header-menu" disabled={design.pages.some(page=>page.canvas?.elements.some(element=>element.type==="text"&&element.smartText))} title={design.pages.some(page=>page.canvas?.elements.some(element=>element.type==="text"&&element.smartText))?"ChatGPTricks uses a fixed canvas size":undefined} aria-pressed={tab==="page"} aria-controls="te-editor-panel" onClick={()=>openPanel("page",true)}>Resize</button>
           <button className="te-button te-header-menu" aria-pressed={tab==="view"} aria-controls="te-editor-panel" onClick={()=>openPanel("view",true)}>View</button>
           {isTemplateDraft&&<button className="te-button te-draft-save" disabled={disabled} onClick={()=>setTemplateName(design.name)}>{saveTemplateLabel}</button>}
           <button className="te-button te-primary" disabled={Boolean(job)||uploading} onClick={openExportSettings}>

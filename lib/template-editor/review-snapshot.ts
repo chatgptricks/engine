@@ -22,7 +22,7 @@ function publicPhoto(value: unknown, includeId = false): Record<string,unknown> 
 }
 function publicScene(scene: CanvasScene, width: number, height: number): CanvasScene {
   const paint = ["gradient","shadow","blur","blendMode","strokeDash"];
-  const text = ["text","font","fontSize","fontWeight","italic","underline","color","align","lineHeight","letterSpacing","richText","textMode","autoFitFontSize","autoFitMinFontSize","autoFitMaxFontSize","verticalAlign","padding","paragraphSpacing","strikethrough","listStyle"];
+  const text = ["text","font","fontSize","fontWeight","italic","underline","color","align","lineHeight","letterSpacing","richText","textMode","autoFitFontSize","autoFitMinFontSize","autoFitMaxFontSize","verticalAlign","padding","paragraphSpacing","strikethrough","listStyle","smartText"];
   const image = ["publicAlt","src","fit","cropX","cropY","radius","cropScale","flipX","flipY","mask"];
   const shape = ["shape","fill","stroke","strokeWidth","strokeAlign","radius","sides","starPoints","innerRadius","path","viewBox","fillRule"];
   const allowedGroups=new Set<string>();
@@ -30,12 +30,14 @@ function publicScene(scene: CanvasScene, width: number, height: number): CanvasS
   const groups=scene.groups?.filter(group=>allowedGroups.has(group.id)).map((group,index)=>({id:group.id,name:`Group ${index+1}`,parentId:group.parentId,opacity:(group as typeof group&{opacity?:number}).opacity,locked:false}));
   return {background: scene.background,...(groups?.length?{groups}:{}), elements: scene.elements.filter(element => !hidden(scene,element) && painted(element,width,height)).map((element,index) => {
     const data = element as unknown as Record<string, unknown>;
+    const flowAnchor = element.smartFlow && scene.elements.find(anchor => anchor.slot === element.smartFlow!.after || anchor.id === element.smartFlow!.after);
+    const smartFlow = flowAnchor && !hidden(scene, flowAnchor) && painted(flowAnchor, width, height) ? { ...element.smartFlow!, after: flowAnchor.id } : undefined;
     const fields = ["id","type","x","y","width","height","rotation","opacity","groupId","clipBounds",...paint,...(element.type === "text" ? text : element.type === "image" ? image : shape)];
     const imageFill = element.type === "shape" ? publicPhoto(data.imageFill) : undefined;
     const textureFill = element.type === "text" ? publicPhoto(data.textureFill) : undefined;
     const textureIds = element.type === "text" ? new Set([...((element.richText ?? "").matchAll(/data-texture-id="([^"]+)"/g))].map(match => match[1])) : new Set<string>();
     const wordTextures = element.type === "text" && Array.isArray(data.wordTextures) ? data.wordTextures.filter(photo => photo && typeof photo === "object" && textureIds.has(String(photo.id))).map(photo => publicPhoto(photo,true)) : [];
-    return {...Object.fromEntries(fields.filter(key => data[key] !== undefined).map(key => [key,structuredClone(data[key])])), name: `${element.type} ${index + 1}`, locked: false, ...(imageFill ? {imageFill} : {}), ...(textureFill ? {textureFill} : {}), ...(wordTextures.length ? {wordTextures} : {})} as CanvasElement;
+    return {...Object.fromEntries(fields.filter(key => data[key] !== undefined).map(key => [key,structuredClone(data[key])])), name: `${element.type} ${index + 1}`, locked: false, ...(smartFlow ? {smartFlow} : {}), ...(imageFill ? {imageFill} : {}), ...(textureFill ? {textureFill} : {}), ...(wordTextures.length ? {wordTextures} : {})} as CanvasElement;
   })};
 }
 /** Publish only painted artwork, never editor notes, provenance or hidden assets. */

@@ -525,7 +525,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
                           <span className="te-card-action">Use template<ArrowRightIcon size={15} /></span>
                         </div>
                         <span className="te-card-name">{template.favorite ? "★ " : ""}{template.name}</span>
-                        <span className="te-card-description">{template.custom ? "Your template" : template.category} · {FORMATS[template.format].label}</span>
+                        <span className="te-card-description">{/^@?chatgptricks$/i.test(template.name.trim()) ? "Smart template" : template.custom ? "Your template" : template.category} · {FORMATS[template.format].label}</span>
                       </button>
                     </LibraryCard>)}
                   </div>
