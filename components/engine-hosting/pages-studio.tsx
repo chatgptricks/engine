@@ -4,6 +4,7 @@ import {createClient,type SupabaseClient} from "@supabase/supabase-js";
 import Studio from "@/components/template-editor/studio";
 import {saveRecoveryDraft,type RecoveryDraft} from "@/lib/template-editor/recovery-storage";
 import {parseLibrary} from "@/lib/template-editor/model";
+import {createSessionTokenReader} from "@/lib/engine/session-token";
 
 const backend=process.env.NEXT_PUBLIC_ENGINE_API_URL??"";
 const base=process.env.NEXT_PUBLIC_ENGINE_BASE_PATH??"/engine";
@@ -12,10 +13,10 @@ export function PagesStudio(){
   const auth=useRef<SupabaseClient|null>(null),popup=useRef<Window|null>(null),state=useRef("");
   useEffect(()=>{
     let active=true,stopAuth:(()=>void)|undefined;
-    const token=async()=>{const session=await auth.current?.auth.getSession();return session?.data.session?.access_token??null;};
+    const token=createSessionTokenReader(()=>auth.current);
     const workerMessage=(event:MessageEvent)=>{
       if(event.source!==navigator.serviceWorker.controller||event.data?.type!=="engine-api-token"||!event.ports[0])return;
-      void token().then(value=>event.ports[0].postMessage({token:value})).catch(()=>event.ports[0].postMessage({token:null}));
+      void token(event.data.refresh===true).then(value=>event.ports[0].postMessage({token:value})).catch(()=>event.ports[0].postMessage({error:true}));
     };
     const resolveScope=async()=>{
       const value=await token();
