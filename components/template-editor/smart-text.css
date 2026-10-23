@@ -8,4 +8,18 @@
 .te-smart-warning { margin: 0; padding: 7px 9px; border-radius: 7px; background: #ffedd5; color: #8a3a08; font-size: 12px; line-height: 1.4; max-width: 360px; }
 .te-smart-text.is-compact { gap: 4px; }
 .te-smart-text.is-compact .te-smart-warning { max-width: 280px; font-size: 11px; padding: 4px 7px; }
+.te-smart-layout-panel { display: grid; gap: 16px; }
+.te-smart-layout-panel > .te-help { margin: 0; }
+.te-smart-layout-card { display: grid; gap: 12px; padding: 14px; border: 1px solid #ffffff20; border-radius: 12px; background: #ffffff04; }
+.te-smart-layout-card h3 { margin: 0; font-size: 14px; }
+.te-smart-layout-card .te-field { display: grid; gap: 8px; font-size: 12px; }
+.te-smart-layout-card textarea { box-sizing: border-box; width: 100%; min-height: 90px; resize: vertical; border: 1px solid #ffffff25; border-radius: 8px; background: #121217; color: #f3f0fa; padding: 10px; font: inherit; line-height: 1.5; }
+.te-smart-layout-card .te-smart-line-control { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 5px; }
+.te-smart-layout-card .te-smart-line-control > span { grid-column: 1 / -1; margin: 0 0 2px; }
+.te-smart-layout-card .te-smart-line-control button { min-height: 40px; padding: 7px 3px; }
+.te-smart-layout-note { margin: 0; padding: 10px; border-radius: 8px; background: #01d59215; color: #96eacb; font-size: 12px; line-height: 1.5; }
+.te-smart-layout-empty { padding: 14px; border: 1px dashed #ffffff30; border-radius: 12px; font-size: 13px; line-height: 1.7; color: #bdb9c9; }
+.te-smart-layout-empty strong { color: #f3f0fa; font-size: 15px; }
+.te-smart-layout-empty p:last-child { margin-bottom: 0; }
+.te-simple-editor .te-smart-layout-entry { border: 1px solid #01d59266; background: #01d59215; color: #adf4da; }
 @media (max-width: 600px) { .te-smart-line-control button { min-height: 36px; } .te-smart-text.is-compact { width: 100%; } }

@@ -965,29 +965,61 @@ const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&l
 const isPlaceholder = (element: TextElement) => /^(#[\da-f]{6}|image)$/i.test(element.text.trim());
 const isProfile = (element: CanvasElement) => element.name.startsWith("Instagram ·") || (element.type === "text" && ["Follow", "Message", "2,475", "2.7M", "87"].includes(element.text));
 
-/** Imported Canva runs are separate objects. Join only adjacent, compatible
- * text runs in the same group, keeping each run's color and emphasis. */
-export function mergeTemplateText(scene: CanvasScene): CanvasScene {
+/** Imported Canva runs are separate objects. Join spatially contiguous,
+ * compatible runs, keeping each run's color and emphasis. */
+export function mergeTemplateText(scene: CanvasScene, sourceIds?: Map<string, string>): CanvasScene {
+  for (const element of scene.elements) sourceIds?.set(element.id, element.id);
   const consumed = new Set<string>(), replacements = new Map<string, TextElement>();
-  for (const element of scene.elements) {
-    if (element.type !== "text" || !element.groupId || consumed.has(element.id) || isPlaceholder(element) || isProfile(element)) continue;
-    const runs = scene.elements.filter((other): other is TextElement => other.type === "text" && other.groupId === element.groupId && other.font === element.font && Math.abs(other.fontSize - element.fontSize) < .1 && !isPlaceholder(other) && !isProfile(other)).sort((a, b) => Math.abs(a.y - b.y) < 2 ? a.x - b.x : a.y - b.y);
-    if (runs.length < 2 || runs.some(run => run.rotation !== 0 || run.hidden || run.locked || run.wordTextures?.length || run.textureFill)) continue;
-    const adjacent = runs.every((run, index) => !index || Math.abs(run.y - runs[index - 1].y) < 2 && Math.abs(run.x - runs[index - 1].x - runs[index - 1].width) < 8 || Math.abs(run.x - runs[0].x) < 2 && Math.abs(run.y - runs[index - 1].y - runs[index - 1].height) < 8);
-    if (!adjacent) continue;
+  const groups = new Map(scene.groups?.map(group => [group.id, group]) ?? []);
+  const blockedGroup = (id?: string) => {
+    const seen = new Set<string>();
+    while (id && !seen.has(id)) {
+      seen.add(id); const group = groups.get(id);
+      if (!group) break;
+      if (group.hidden || group.locked) return true;
+      id = group.parentId;
+    }
+    return false;
+  };
+  const candidates = scene.elements.filter((element): element is TextElement => element.type === "text" && !isPlaceholder(element) && !isProfile(element) && !element.smartText && element.rotation === 0 && !element.hidden && !element.locked && !blockedGroup(element.groupId) && !element.wordTextures?.length && !element.textureFill);
+  const readingOrder = (a: TextElement, b: TextElement) => Math.abs(a.y - b.y) < 2 ? a.x - b.x : a.y - b.y;
+  const compatible = (a: TextElement, b: TextElement) => a.font === b.font && Math.abs(a.fontSize - b.fontSize) < .1 && a.align === b.align && Math.abs(a.lineHeight - b.lineHeight) < .02 && Math.abs(a.letterSpacing - b.letterSpacing) < .1 && a.opacity === b.opacity;
+  const adjacent = (a: TextElement, b: TextElement) => {
+    if (!compatible(a, b)) return false;
+    const sameGroup = Boolean(a.groupId && a.groupId === b.groupId);
+    const [left, right] = a.x < b.x ? [a, b] : [b, a];
+    if (Math.abs(a.y - b.y) < 2 && Math.abs(a.height - b.height) < 2 && right.x > left.x + 1) {
+      const gap = right.x - left.x - left.width;
+      // A previously edited run can have a wider box than its remaining
+      // grouped fragments. Their left-to-right order still identifies the copy.
+      if (Math.abs(gap) < 8 || sameGroup && gap < 0 && right.x < left.x + left.width) return true;
+    }
+    const [top, bottom] = a.y < b.y ? [a, b] : [b, a];
+    return sameGroup && Math.abs(a.x - b.x) < 2 && Math.abs(bottom.y - top.y - top.height) < 8;
+  };
+  for (const element of candidates) {
+    if (consumed.has(element.id)) continue;
+    const runs = [element], joined = new Set([element.id]);
+    for (let position = 0; position < runs.length; position++) for (const other of candidates) {
+      if (!consumed.has(other.id) && !joined.has(other.id) && adjacent(runs[position], other)) { runs.push(other); joined.add(other.id); }
+    }
+    if (runs.length < 2) continue;
+    runs.sort(readingOrder);
     const first = runs[0], left = Math.min(...runs.map(run => run.x)), top = Math.min(...runs.map(run => run.y));
     const richText = runs.map((run, index) => {
       const separator = index ? Math.abs(run.y - runs[index - 1].y) < 2 ? " " : "<br>" : "";
-      return `${separator}<span style="color:${run.color};font-weight:${run.fontWeight};font-style:${run.italic ? "italic" : "normal"}">${run.richText ?? escape(run.text.trim())}</span>`;
+      const decoration = [run.underline ? "underline" : "", run.strikethrough ? "line-through" : ""].filter(Boolean).join(" ") || "none";
+      return `${separator}<span style="color:${run.color};font-weight:${run.fontWeight};font-style:${run.italic ? "italic" : "normal"};text-decoration:${decoration}">${run.richText ?? escape(run.text.trim())}</span>`;
     }).join("");
     replacements.set(first.id, { ...first, groupId: undefined, x: left, y: top, width: Math.max(...runs.map(run => run.x + run.width)) - left, height: Math.max(...runs.map(run => run.y + run.height)) - top, text: runs.map(run => run.text.trim()).join(" "), richText });
+    for (const run of runs) sourceIds?.set(run.id, first.id);
     runs.forEach(run => consumed.add(run.id));
   }
   return { ...scene, elements: scene.elements.flatMap(element => replacements.has(element.id) ? [replacements.get(element.id)!] : consumed.has(element.id) ? [] : [element]) };
 }
 
-/** Applied to new copies only. Saved artwork and the source template are never
- * rewritten on load, and deleted templates are never reintroduced. */
+/** Prepares new copies or an explicit smart-layout edit. Opening saved artwork
+ * never rewrites it, and deleted templates are never reintroduced. */
 export function prepareSmartTemplate(template: DesignTemplate): DesignTemplate {
   if (!isChatGPTricksTemplate(template) || template.continuousCanvas) return template;
   const height = 360 * (template.customSize?.height ?? (template.format === "story" ? 1920 : template.format === "square" ? 1080 : 1350)) / (template.customSize?.width ?? 1080);

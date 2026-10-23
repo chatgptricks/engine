@@ -24,7 +24,9 @@ The agent API is `/api/agent/slides`; the local MCP entry point is `npm run agen
 
 ## Smart ChatGPTricks template
 
-New designs made from **@chatgptricks** keep its existing canvas size, branding, fonts and artwork. Compatible imported headline fragments become one editable text block. Select text and use **Fit text → Auto / 2 lines / 3 lines / 4 lines** in the toolbar or Text panel. Covers use centered, balanced lines with no isolated words when the wording allows; content slides align left. Auto respects paragraph breaks. Fitting changes typography, never the wording.
+The **Smart layout** panel follows the current selection in **@chatgptricks** designs. Select text to edit its copy and choose **Auto / 2 lines / 3 lines / 4 lines**; select a photo for fill/fit and crop; select elements or groups for alignment and distribution. The panel opens by default and can be reopened from the header or tool rail. Existing projects and renamed projects linked to this template are supported: choosing a line count or editing copy adopts smart layout on that slide in one undoable change. Opening a project leaves its saved artwork intact.
+
+New designs made from **@chatgptricks** keep its existing canvas size, branding, fonts and artwork. Compatible imported headline fragments become one editable text block. Covers use centered, balanced lines with no isolated words when the wording allows; content slides align left. Auto respects paragraph breaks. Fitting changes typography, never the wording.
 
 Text and photo frames use the template’s margins and spacing. Text + Media, Full Bleed + text, Prompt and Title Quote layouts reflow their dependent content. Replace or crop frame photos, and add independent text, images and elements with object, margin and spacing snapping. Duplicating a fixed element makes an independently editable copy. Existing designs and the saved source template remain unchanged; the rules apply when starting a new copy.
 
