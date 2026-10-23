@@ -13,6 +13,7 @@ import type {
 } from "@/lib/template-editor/model";
 import type { TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
 import { FontSelect, NumberField } from "./controls";
+import { SmartTextControls } from "./smart-text-controls";
 import { PaintPicker } from "./paint-picker";
 import { applyElementPaint, commonElementPaint, paintTextFormattingPatch } from "@/lib/template-editor/paint";
 import { AdvancedProperties, ColorRolesPanel, type ColorRoleOption } from "./advanced-properties";
@@ -447,12 +448,13 @@ export function ElementInspector({
       </>:<>
         <div className="te-inspector-tabs" role="group" aria-label="Property categories">{categories.map(category=><button type="button" key={category.id} data-section={category.id} aria-pressed={effectiveSection===category.id} onClick={()=>{if(onSectionChange)onSectionChange(category.id);else setSection(category.id);}}>{category.label}</button>)}</div>
         {hasLocked&&<p className="te-element-lock-note"><LockIcon locked/>{allLocked?inheritedLock?"Unlock the parent group in Layers to edit this selection.":"Unlock to edit this selection.":"Locked elements stay unchanged."}</p>}
-        {displayed.some(element=>element.protected?.length)&&<p className="te-element-hint">Protected properties stay unchanged. Manage protection in Advanced.</p>}
+        {displayed.some(element=>element.protected?.length)&&<p className="te-element-hint">{displayed.some(element=>element.templateRole||element.type==="text"&&element.smartText)?"ChatGPTricks fonts and layout stay fixed. Edit the content or choose a line count.":"Protected properties stay unchanged. Manage protection in Advanced."}</p>}
         <div className="te-inspector-content" data-section={effectiveSection}>
           <fieldset disabled={noEdits}>
             {effectiveSection==="edit"&&<>
               {texts.length>0&&<>
-                <Section title={texts.length===elements.length?"Text":`Text · ${texts.length}`}>
+                <SmartTextControls scene={scene} selectedIds={selectedIds} disabled={disabled} outputScale={outputScale} onChange={onChange}/>
+                {!texts.every(element=>element.smartText)&&<><Section title={texts.length===elements.length?"Text":`Text · ${texts.length}`}>
                   <fieldset disabled={textStyleDisabled}>
                     <FontSelect value={commonFont??""} onChange={font=>updateText({font},"font")}/>
                     {commonFont===undefined&&<p className="te-element-mixed">Multiple typefaces</p>}
@@ -468,9 +470,9 @@ export function ElementInspector({
                     <div className="te-element-grid"><NumberField label="Line spacing" min={.5} max={5} step={.05} value={shared(texts,"lineHeight")} onChange={lineHeight=>updateText({lineHeight},"line-height")}/><NumberField label="Letter spacing" unit="px" min={-20*OUTPUT_SCALE} max={100*OUTPUT_SCALE} step={.1} value={px(shared(texts,"letterSpacing"))} onChange={value=>updateText({letterSpacing:value/OUTPUT_SCALE},"letter-spacing")}/></div></Section>
                   </fieldset>
                 </Section>
-                <AdvancedProperties {...advancedFor("text")}/>
-                {onTextTexture&&texts.length===1?<Section title="Image texture" disclosure><button type="button" className="te-property-action" disabled={textStyleDisabled||textContentDisabled} onMouseDown={event=>event.preventDefault()} onClick={()=>{if(!textStyleDisabled&&!textContentDisabled)onTextTexture();}}>Image texture · choose words</button></Section>:<AdvancedProperties {...advancedFor("texture")}/>}
-                {texts.length===1&&<Section title="Text content" disclosure><fieldset disabled={textContentDisabled}>
+                <AdvancedProperties {...advancedFor("text")}/></>}
+                {!texts.every(element=>element.smartText)&&(onTextTexture&&texts.length===1?<Section title="Image texture" disclosure><button type="button" className="te-property-action" disabled={textStyleDisabled||textContentDisabled} onMouseDown={event=>event.preventDefault()} onClick={()=>{if(!textStyleDisabled&&!textContentDisabled)onTextTexture();}}>Image texture · choose words</button></Section>:<AdvancedProperties {...advancedFor("texture")}/>)}
+                {texts.length===1&&<Section title="Text content" disclosure={!texts[0].smartText}><fieldset disabled={textContentDisabled}>
                   <label className="te-field">Text content<p className="te-element-hint">Double-click on the canvas to keep individual word styles.</p><textarea rows={3} maxLength={20000} value={texts[0].text} onChange={event=>updateText({text:event.target.value,richText:undefined,wordTextures:undefined},"text")}/></label>
                   <div className="te-element-segments"><button type="button" aria-label="Uppercase" title="Uppercase" onClick={()=>update("uppercase",element=>element.type==="text"?changeTextCase(element,true):element)}>AA</button><button type="button" aria-label="Lowercase" title="Lowercase" onClick={()=>update("lowercase",element=>element.type==="text"?changeTextCase(element,false):element)}>aa</button></div>
                 </fieldset></Section>}
@@ -514,7 +516,7 @@ export function ElementInspector({
               <AdvancedProperties {...advancedFor("effects")}/>
             </>}
             {effectiveSection==="advanced"&&<>
-              <AdvancedProperties {...advancedFor("brand")}/><AdvancedProperties {...advancedFor("constraints")}/><AdvancedProperties {...advancedFor("path")}/>
+              <AdvancedProperties {...advancedFor("brand")}/>{!displayed.some(element=>element.templateRole||element.type==="text"&&element.smartText)&&<AdvancedProperties {...advancedFor("constraints")}/>}<AdvancedProperties {...advancedFor("path")}/>
               {images.length>0&&<Section title="Accessibility" disclosure><fieldset disabled={photoContentDisabled}><label className="te-field">Image description<textarea aria-label="Public image description" rows={3} maxLength={2000} value={shared(images,"publicAlt")??""} placeholder={images.length>1&&shared(images,"publicAlt")===undefined?"Mixed descriptions":"What should a screen reader say about this image?"} onChange={event=>{const publicAlt=event.target.value;update("public-alt",element=>element.type==="image"?{...element,publicAlt}:element.type==="shape"&&element.imageFill?{...element,imageFill:{...element.imageFill,publicAlt}}:element);}}/></label><p className="te-element-hint">Shared in review links. Leave blank for decorative images. Internal image notes stay private.</p></fieldset></Section>}
               <Section title="Copy appearance" disclosure><div className="te-element-grid te-element-actions"><button type="button" disabled={displayed.length!==1} onClick={()=>setAppearance(copyAppearance(displayed[0]))}>Copy appearance</button><button type="button" disabled={!appearance||styleDisabled} onClick={()=>{if(noEdits||styleDisabled||!appearance)return;const result=pasteAppearance(scene,selectedIds,appearance);if(result.scene!==scene)onChange(result.scene);}}>Paste appearance</button></div></Section>
               {elements.length===1&&<Section title="Layer options"><label className="te-field te-element-name">Layer name<input value={elements[0].name} maxLength={120} onChange={event=>update("name",element=>({...element,name:event.target.value}))}/></label></Section>}

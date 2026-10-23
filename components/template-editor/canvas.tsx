@@ -43,6 +43,8 @@ import { parseColor } from "@/lib/template-editor/color-utils";
 import { photoContent, updatePhotoContent, shapeViewBox, findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { textureBackgroundStyle, activeTextTextures, textTextureVariables, textTextureCss } from "@/lib/template-editor/text-textures";
 import { fillShapeWithImage } from "@/lib/template-editor/commands";
+import { useSmartScene } from "./smart-text-controls";
+import { layoutSmartScene, clearSmartTextMeasurements, type SmartTextLayout } from "@/lib/template-editor/smart-text";
 import { LayoutOverlay } from "./layout-panel";
 import {historyShortcut} from "@/lib/template-editor/history";
 import { proxied } from "@/lib/engine/util";
@@ -259,14 +261,14 @@ function WorldClip({ bounds, children }: { bounds?: CanvasElement["clipBounds"];
   return <div className="te-canvas-source-clip" style={{left:bounds.x,top:bounds.y,width:bounds.width,height:bounds.height}}><div style={{left:-bounds.x,top:-bounds.y}}>{children}</div></div>;
 }
 
-function SceneElement({ element }: { element: CanvasElement }) {
+function SceneElement({ element, smartLayout }: { element: CanvasElement; smartLayout?: SmartTextLayout }) {
   const token = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const filterId = `effect-${token}`, gradientId = `gradient-${token}`;
   const shadow = element.shadow;
   const padding = shadow ? Math.abs(shadow.spread) + shadow.blur * 3 + Math.max(Math.abs(shadow.offsetX), Math.abs(shadow.offsetY)) + 10 : 0;
   const shadowColor = shadow ? parseColor(shadow.color) : null;
   const filter = [shadow ? `url(#${filterId})` : "", element.blur ? `blur(${element.blur}px)` : ""].filter(Boolean).join(" ") || undefined;
-  const lines = element.type === "text" ? splitRichLines(element.richText ? resolveRichDecorations(scaleRichTextFonts(element.richText,textDisplayFontSize(element)/element.fontSize)??element.richText, element.underline, element.strikethrough) : undefined, element.text) : [];
+  const lines = element.type === "text" ? smartLayout ? smartLayout.lines.map(line => resolveRichDecorations(scaleRichTextFonts(line.html, smartLayout.fontSize / element.fontSize) ?? line.html, element.underline, element.strikethrough)) : splitRichLines(element.richText ? resolveRichDecorations(scaleRichTextFonts(element.richText,textDisplayFontSize(element)/element.fontSize)??element.richText, element.underline, element.strikethrough) : undefined, element.text) : [];
   const gradient = element.gradient;
   const endpoints = gradientEndpoints(gradient?.angle ?? 0, element.width, element.height);
   const radialRadius=Math.hypot(element.width,element.height)/2;
@@ -309,9 +311,10 @@ function SceneElement({ element }: { element: CanvasElement }) {
 
 /** One 360px coordinate system is used for the editor, thumbnails and exports. */
 export function SceneRenderer({ scene, isolate = true }: { scene: CanvasScene; isolate?: boolean }) {
+  const fitted = useSmartScene(scene);
   return (
     <div className="te-canvas-scene" style={{ background: scene.background, ...(!isolate ? {isolation:"auto" as const} : {}) }}>
-      {<SceneLayers scene={scene} render={element => <SceneElement element={element} />} />}
+      {<SceneLayers scene={fitted.scene} render={element => <SceneElement element={element} smartLayout={fitted.texts.get(element.id)} />} />}
     </div>
   );
 }
@@ -620,9 +623,10 @@ export function CanvasEditor({
     endCrop(true);end(true);endMarquee(true);
   });
   const [fontRevision,setFontRevision]=useState(0);
-  useEffect(()=>{const loaded=()=>setFontRevision(revision=>revision+1);document.fonts?.addEventListener("loadingdone",loaded);return()=>document.fonts?.removeEventListener("loadingdone",loaded);},[]);
+  useEffect(()=>{const loaded=()=>{clearSmartTextMeasurements();setFontRevision(revision=>revision+1);};document.fonts?.addEventListener("loadingdone",loaded);return()=>document.fonts?.removeEventListener("loadingdone",loaded);},[]);
   const [dragFrameId,setDragFrameId]=useState<string|null>(null);
   const currentScene = live ?? scene;
+  const smartView = useSmartScene(currentScene);
   const isolationIds = useMemo(() => isolatedGroupId ? new Set(groupMemberIds(currentScene, isolatedGroupId)) : null,[currentScene,isolatedGroupId]);
   const inScope = useCallback((element: CanvasElement) => !isolationIds || isolationIds.has(element.id),[isolationIds]);
   const cropLatest = useRef<CanvasScene | null>(null);
@@ -712,8 +716,10 @@ export function CanvasEditor({
   useEffect(()=>{onRegisterHistoryBridge?.({flush:()=>{updateEditing();return editingAccepted.current;}});return()=>onRegisterHistoryBridge?.(null);});
   useLayoutEffect(()=>{
     if(disabled||live||editingId)return;
-    let changed=false;
-    const elements=scene.elements.map(element=>{
+    const smart = layoutSmartScene(scene);
+    let changed=smart.scene!==scene;
+    const elements=smart.scene.elements.map(element=>{
+      if(element.type === "text" && element.smartText)return element;
       if(element.type!=="text"||!element.textMode||element.textMode==="fixed"||isElementHidden(scene,element)||!inScope(element))return element;
       const text=[...root.current?.querySelectorAll<HTMLElement>("[data-element-id] .te-canvas-text")??[]].find(node=>node.closest<HTMLElement>("[data-element-id]")?.dataset.elementId===element.id);
       if(!text)return element;
@@ -1230,7 +1236,7 @@ export function CanvasEditor({
         {masterScene&&Array.from({length:slideCount||1},(_,index)=>masterPageVisibility?.[index]!==false&&<div className="te-canvas-master-page" key={index} data-master-slide={index} style={{left:index*(slideWidth??width),width:slideWidth??width,height}}><SceneRenderer scene={sceneWithPreviewAssets({...masterScene,background:"transparent"})} isolate={false}/></div>)}
         {<SceneLayers scene={displayScene} render={(element) => (
           <div key={element.id} className={`te-canvas-page-layer${clippedIds.has(element.id) ? " is-clipped" : ""}${!inScope(element)?" is-outside-isolation":""}`}>
-            <SceneElement element={elementWithPreviewAsset(element)} />
+            <SceneElement element={elementWithPreviewAsset(element)} smartLayout={smartView.texts.get(element.id)} />
           </div>
         )} />}
       </div>

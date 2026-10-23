@@ -48,6 +48,9 @@ export type CanvasElementBase = {
   anchors?: { horizontal: "left" | "center" | "right" | "stretch"; vertical: "top" | "middle" | "bottom" | "stretch" };
   slot?: string;
   protected?: ProtectedProperty[];
+  /** Template artwork stays fixed; photo content can still be replaced/cropped. */
+  templateRole?: "brand" | "media";
+  smartFlow?: { after: string; gap: number; bottom: number; edge?: "top"; resize?: boolean };
   componentId?: string;
   componentInstanceId?: string;
   componentSourceId?: string;
@@ -72,6 +75,7 @@ export type TextElement = CanvasElementBase & {
   autoFitMinFontSize?: number;
   autoFitMaxFontSize?: number;
   autoFitFontSize?: number;
+  smartText?: { role: "cover" | "heading" | "body"; lines: 0 | 2 | 3 | 4; minFontSize: number; maxFontSize: number; maxHeight: number };
   verticalAlign?: "top" | "middle" | "bottom";
   padding?: number;
   paragraphSpacing?: number;
@@ -954,7 +958,90 @@ export function sceneForPage(
   return scene;
 }
 
+export function isChatGPTricksTemplate(template: Pick<DesignTemplate, "name">): boolean {
+  return /^@?chatgptricks$/i.test(template.name.trim());
+}
+const escape = (value: string) => value.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\n/g, "<br>");
+const isPlaceholder = (element: TextElement) => /^(#[\da-f]{6}|image)$/i.test(element.text.trim());
+const isProfile = (element: CanvasElement) => element.name.startsWith("Instagram ·") || (element.type === "text" && ["Follow", "Message", "2,475", "2.7M", "87"].includes(element.text));
+
+/** Imported Canva runs are separate objects. Join only adjacent, compatible
+ * text runs in the same group, keeping each run's color and emphasis. */
+export function mergeTemplateText(scene: CanvasScene): CanvasScene {
+  const consumed = new Set<string>(), replacements = new Map<string, TextElement>();
+  for (const element of scene.elements) {
+    if (element.type !== "text" || !element.groupId || consumed.has(element.id) || isPlaceholder(element) || isProfile(element)) continue;
+    const runs = scene.elements.filter((other): other is TextElement => other.type === "text" && other.groupId === element.groupId && other.font === element.font && Math.abs(other.fontSize - element.fontSize) < .1 && !isPlaceholder(other) && !isProfile(other)).sort((a, b) => Math.abs(a.y - b.y) < 2 ? a.x - b.x : a.y - b.y);
+    if (runs.length < 2 || runs.some(run => run.rotation !== 0 || run.hidden || run.locked || run.wordTextures?.length || run.textureFill)) continue;
+    const adjacent = runs.every((run, index) => !index || Math.abs(run.y - runs[index - 1].y) < 2 && Math.abs(run.x - runs[index - 1].x - runs[index - 1].width) < 8 || Math.abs(run.x - runs[0].x) < 2 && Math.abs(run.y - runs[index - 1].y - runs[index - 1].height) < 8);
+    if (!adjacent) continue;
+    const first = runs[0], left = Math.min(...runs.map(run => run.x)), top = Math.min(...runs.map(run => run.y));
+    const richText = runs.map((run, index) => {
+      const separator = index ? Math.abs(run.y - runs[index - 1].y) < 2 ? " " : "<br>" : "";
+      return `${separator}<span style="color:${run.color};font-weight:${run.fontWeight};font-style:${run.italic ? "italic" : "normal"}">${run.richText ?? escape(run.text.trim())}</span>`;
+    }).join("");
+    replacements.set(first.id, { ...first, groupId: undefined, x: left, y: top, width: Math.max(...runs.map(run => run.x + run.width)) - left, height: Math.max(...runs.map(run => run.y + run.height)) - top, text: runs.map(run => run.text.trim()).join(" "), richText });
+    runs.forEach(run => consumed.add(run.id));
+  }
+  return { ...scene, elements: scene.elements.flatMap(element => replacements.has(element.id) ? [replacements.get(element.id)!] : consumed.has(element.id) ? [] : [element]) };
+}
+
+/** Applied to new copies only. Saved artwork and the source template are never
+ * rewritten on load, and deleted templates are never reintroduced. */
+export function prepareSmartTemplate(template: DesignTemplate): DesignTemplate {
+  if (!isChatGPTricksTemplate(template) || template.continuousCanvas) return template;
+  const height = 360 * (template.customSize?.height ?? (template.format === "story" ? 1920 : template.format === "square" ? 1080 : 1350)) / (template.customSize?.width ?? 1080);
+  return { ...template, pages: template.pages.map((page, pageIndex) => {
+    if (!page.canvas || page.canvas.elements.some(element => element.type === "text" && element.smartText)) return page;
+    // The asset sheet is a toolbox, not a publishing layout.
+    if (/^assets$/i.test(page.label ?? "")) return page;
+    const merged = mergeTemplateText(page.canvas), label = page.label?.toLowerCase() ?? "";
+    const texts = merged.elements.filter((element): element is TextElement => element.type === "text" && !isPlaceholder(element) && !isProfile(element)).sort((a, b) => a.y - b.y);
+    const media = merged.elements.filter(element => !isProfile(element) && element.name !== "Logo" && (element.type === "image" || element.type === "shape" && element.width > 180 && element.height > 100 && !element.gradient && !/fade/i.test(element.name)));
+    const textIds = new Set(texts.map(element => element.id)), mediaIds = new Set(media.map(element => element.id));
+    let elements: CanvasElement[] = merged.elements.map(element => {
+      if (element.type === "text" && textIds.has(element.id)) {
+        const index = texts.findIndex(text => text.id === element.id), cover = pageIndex === 0 || /^cta/.test(label);
+        const role = cover ? "cover" : index === 0 ? "heading" : "body";
+        const next = texts[index + 1];
+        const bottom = Math.min(height - 20, next ? next.y - 8 : height - 20);
+        const x = Math.max(18, element.x), width = Math.min(element.width, 360 - x - 18);
+        const base = { ...element, groupId: undefined, slot: `smart-text-${index}`, x, width, align: cover ? "center" as const : "left" as const, textMode: "auto-fit" as const, verticalAlign: "top" as const, protected: ["position", "style", "delete"] as const };
+        const maxHeight = Math.max(element.height, bottom - element.y);
+        const minimum = Math.min(element.fontSize, role === "cover" ? 18 : 11);
+        return { ...base, protected: [...base.protected], smartText: { role, lines: pageIndex === 0 ? 3 : 0, minFontSize: minimum, maxFontSize: Math.min(100, element.fontSize * 1.65), maxHeight } };
+      }
+      if (mediaIds.has(element.id)) return { ...element, groupId: undefined, slot: "smart-media", name: element.type === "shape" ? "Photo frame" : element.name, templateRole: "media" as const, protected: ["position", "delete"] };
+      return { ...element, templateRole: "brand" as const, ...(element.type === "text" && isPlaceholder(element) ? { hidden: true } : {}), protected: ["content", "position", "style", "delete"] };
+    });
+    const patchText = (index: number, patch: Partial<TextElement>, maxHeight?: number) => {
+      elements = elements.map(element => element.type === "text" && element.slot === `smart-text-${index}` ? { ...element, ...patch, smartText: { ...element.smartText!, ...(maxHeight === undefined ? {} : { maxHeight }) } } : element);
+    };
+    if (label === "text + media" && texts[0] && media[0]) {
+      patchText(0, { x: media[0].x, width: media[0].width }, 120);
+      elements = elements.map(element => element.id === media[0].id ? { ...element, smartFlow: { after: "smart-text-0", gap: 8, bottom: media[0].y + media[0].height, resize: true } } : element);
+    }
+    if (label === "full bleed + text" && texts.length >= 2) {
+      patchText(0, {}, 72);
+      patchText(1, { smartFlow: { after: "smart-text-0", gap: 8, bottom: height - 28 } }, 100);
+    }
+    if (label === "prompt" && texts.length >= 2 && media[0]) {
+      patchText(0, {}, 72);
+      elements = elements.map(element => element.id === media[0].id ? { ...element, templateRole: "brand", smartFlow: { after: "smart-text-0", gap: 8, bottom: media[0].y + media[0].height, resize: true } } : element);
+      patchText(1, { smartFlow: { after: "smart-media", edge: "top", gap: 15, bottom: media[0].y + media[0].height - 52 } }, media[0].height - 70);
+    }
+    if (label === "title quote" && texts.length >= 2) {
+      patchText(0, {}, Math.max(texts[0].height, height - 65 - texts[0].y));
+      patchText(1, { smartFlow: { after: "smart-text-0", gap: 8, bottom: height - 25 } }, 40);
+    }
+    const canvas: CanvasScene = { ...merged, elements, layout: { ...merged.layout, showGuides: true, margins: { enabled: true, top: 20, right: 20, bottom: 20, left: 20 }, snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } } };
+    return { ...page, canvas };
+  }) };
+}
+
+
 export function createDesign(template: DesignTemplate): DesignDocument {
+  template = prepareSmartTemplate(template);
   const now = new Date().toISOString();
   const design: DesignDocument = {
     ...copyResources(template),
@@ -1402,6 +1489,13 @@ function parseLayout(value: unknown): CanvasLayout | null {
 
 function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElementBase> | null {
   const result: Partial<CanvasElementBase> = {};
+  if (!optional(value, "templateRole", choice(["brand", "media"]))) return null;
+  if (value.templateRole !== undefined) result.templateRole = value.templateRole as CanvasElementBase["templateRole"];
+  if (value.smartFlow !== undefined) {
+    const flow = value.smartFlow;
+    if (!object(flow) || !string(flow.after, 200) || !flow.after || !numberIn(flow.gap, 0, 1000) || !numberIn(flow.bottom, -10000, 10000) || !optional(flow, "edge", choice(["top"])) || !optional(flow, "resize", boolean)) return null;
+    result.smartFlow = { after: flow.after, gap: flow.gap, bottom: flow.bottom, ...(flow.edge === "top" ? { edge: "top" } : {}), ...(typeof flow.resize === "boolean" ? { resize: flow.resize } : {}) };
+  }
   for (const key of ["groupId", "componentId", "componentInstanceId", "componentSourceId", "colorRoleId"] as const) {
     if (!optional(value, key, identity)) return null;
     if (value[key] !== undefined) result[key] = value[key] as string;
@@ -1448,6 +1542,11 @@ function parseTextExtensions(value: Record<string, unknown>): Partial<TextElemen
   if (!["autoFitMinFontSize","autoFitMaxFontSize","autoFitFontSize"].every(key=>optional(value,key,candidate=>numberIn(candidate,1,500))) || value.autoFitMinFontSize!==undefined && value.autoFitMaxFontSize!==undefined && Number(value.autoFitMinFontSize)>Number(value.autoFitMaxFontSize)) return null;
   if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "textStyleId", identity)) return null;
   const result: Partial<TextElement> = {};
+  if (value.smartText !== undefined) {
+    const smart = value.smartText;
+    if (!object(smart) || !choice(["cover", "heading", "body"])(smart.role) || ![0, 2, 3, 4].includes(Number(smart.lines)) || typeof smart.lines !== "number" || !numberIn(smart.minFontSize, 1, 500) || !numberIn(smart.maxFontSize, smart.minFontSize as number, 500) || !numberIn(smart.maxHeight, 1, 10000)) return null;
+    result.smartText = { role: smart.role as "cover" | "heading" | "body", lines: smart.lines as 0 | 2 | 3 | 4, minFontSize: smart.minFontSize, maxFontSize: smart.maxFontSize, maxHeight: smart.maxHeight };
+  }
   for (const key of ["textMode", "verticalAlign", "listStyle", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
   if (value.richText !== undefined) {
     const sanitized = sanitizeRichText(value.richText);

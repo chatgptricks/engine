@@ -40,6 +40,9 @@ export function isElementHidden(scene: CanvasScene, element: CanvasElement): boo
   return Boolean(element.hidden) || ancestorGroups(scene, element.groupId).some(group => group.hidden);
 }
 export function canEditElement(scene: CanvasScene, element: CanvasElement, property: ProtectedProperty): boolean {
+  if (element.templateRole === "brand") return false;
+  if (element.templateRole === "media" && (property === "position" || property === "delete")) return false;
+  if (element.type === "text" && element.smartText && property !== "content") return false;
   return !isElementLocked(scene, element) && !element.protected?.includes(property);
 }
 
@@ -181,6 +184,7 @@ function insertCopies(
     ...element,
     name: `${element.name.slice(0, 195)} copy`,
     locked: false,
+    ...(element.templateRole || element.type === "text" && element.smartText ? { templateRole: undefined, smartText: undefined, smartFlow: undefined, slot: undefined, protected: undefined } : {}),
     x: element.x + delta.x,
     y: element.y + delta.y,
     ...(element.clipBounds ? { clipBounds: { ...element.clipBounds, x: element.clipBounds.x + originDelta.x, y: element.clipBounds.y + originDelta.y } } : {}),

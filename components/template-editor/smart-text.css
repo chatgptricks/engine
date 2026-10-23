@@ -1,0 +1,11 @@
+.te-smart-text { display: grid; gap: 8px; min-width: 0; }
+.te-smart-line-control { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.te-smart-line-control > span { font-size: 12px; font-weight: 600; margin-right: 4px; }
+.te-smart-line-control button { border: 1px solid #ffffff25; border-radius: 7px; padding: 7px 9px; font: inherit; font-size: 12px; cursor: pointer; background: var(--te-surface, #fff); color: #e9e9eb; white-space: nowrap; }
+.te-smart-line-control button[aria-pressed="true"] { background: #01d592; border-color: #01b67e; color: #09291f; font-weight: 650; }
+.te-smart-line-control button:focus-visible { outline: 2px solid #01b67e; outline-offset: 2px; }
+.te-smart-line-control button:disabled { opacity: .45; cursor: default; }
+.te-smart-warning { margin: 0; padding: 7px 9px; border-radius: 7px; background: #ffedd5; color: #8a3a08; font-size: 12px; line-height: 1.4; max-width: 360px; }
+.te-smart-text.is-compact { gap: 4px; }
+.te-smart-text.is-compact .te-smart-warning { max-width: 280px; font-size: 11px; padding: 4px 7px; }
+@media (max-width: 600px) { .te-smart-line-control button { min-height: 36px; } .te-smart-text.is-compact { width: 100%; } }

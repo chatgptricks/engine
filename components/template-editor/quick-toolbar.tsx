@@ -11,6 +11,7 @@ import { canEditElement, isElementHidden, isElementLocked } from "@/lib/template
 import { applyElementPaint, commonElementPaint, paintTextFormattingPatch } from "@/lib/template-editor/paint";
 import { photoContent, updatePhotoContent } from "@/lib/template-editor/photo-frames";
 import { textRangeTogglePatch, type TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
+import { SmartTextControls } from "./smart-text-controls";
 import { PaintPicker } from "./paint-picker";
 import "./element-inspector.css";
 
@@ -87,7 +88,8 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
     </>:<>
       <span className="te-quick-label">{label}</span>
       {onMergeShapes&&selected.every(element=>element.type==="shape")&&selected.length>1&&<button type="button" className="te-context-action" aria-label="Merge shapes" title="Union: combine the selected shapes into one shape" disabled={disabled||selected.length!==selectedIds.length||!selected.every(element=>canEditElement(scene,element,"position")&&canEditElement(scene,element,"delete"))} onClick={onMergeShapes}><EditorIcon name="merge"/>Merge shapes</button>}
-      {allText&&<div className="te-quick-basics">
+      {allText && texts.every(element=>element.smartText) && <SmartTextControls scene={scene} selectedIds={selectedIds} disabled={disabled} compact outputScale={outputScale} onChange={onChange}/>}
+      {allText&&!texts.every(element=>element.smartText)&&<div className="te-quick-basics">
         <select aria-label="Quick font" disabled={disabledStyle} value={commonValue(texts,"font")??""} onChange={event=>patchText({font:event.target.value})}>
           {commonValue(texts,"font")===undefined&&<option value="" disabled>Mixed fonts</option>}
           {FONTS.map(([id,name])=><option key={id} value={id}>{name}</option>)}
