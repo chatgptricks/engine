@@ -23,7 +23,9 @@ export function checkLibrarySaveBudget(library:unknown):LibraryBudgetResult{
  try{
   if(library===undefined||typeof library==='function'||typeof library==='symbol')throw Error('Missing serializable workspace');
   const value=cost(library);
-  if(value.chars>30*1024*1024)return{ok:false,bytes:null,error:'This workspace exceeds the 30 MB in-memory document limit and was not applied. Remove old items or large images.'};
+  // The editor reuses image strings across templates, copies and previews.
+  // Their expanded JSON length is not the memory or storage cost. Enforce
+  // the actual packed request budget below, counting each image once.
   let bytes=value.bytes;
   if(value.assets.size){bytes+=encoded(JSON.stringify({library:null,assets:{}}))-4;let index=0;for(const asset of value.assets){let size=assetBytes.get(asset);if(size===undefined){size=encoded(JSON.stringify(asset));if(assetBytes.size>=1000)assetBytes.clear();assetBytes.set(asset,size);}bytes+=66+1+size+(index++?1:0);}}
   return bytes>MAX_SAVE_LIBRARY_BYTES?{ok:false,bytes,error:'This change exceeds the 12 MB library limit and was not applied. Remove unused assets or designs, or use smaller images.'}:{ok:true,bytes};

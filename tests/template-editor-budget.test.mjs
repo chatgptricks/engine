@@ -67,8 +67,8 @@ test("repeated image sources consume one unique asset in the deduplicated wire b
   const src="data:image/webp;base64,"+"A".repeat(1_700_000);
   const library={pages:Array.from({length:10},()=>({image:{url:src},canvas:{elements:[{type:"image",src}]}}))};
   const result=checkLibrarySaveBudget(library);
-  // The raw in-memory model still has a separate 30 MB cap.
-  assert.equal(result.ok,false);
+  // Copying a template must not count identical embedded images repeatedly.
+  assert.equal(result.ok,true);assert.ok(result.bytes<1_710_000);
   library.pages=library.pages.slice(0,8);
   const packed=checkLibrarySaveBudget(library);
   assert.equal(packed.ok,true);assert.ok(packed.bytes<1_710_000);

@@ -170,7 +170,7 @@ test("brand asset payloads still count toward the shared whole-library limit", (
   const input = brandLibrary();
   const payload = `data:image/png;base64,${Buffer.from("\x89PNG\r\n\x1a\n" + "0".repeat(1_499_900), "binary").toString("base64")}`;
   assert.ok(payload.length < 2_000_000);
-  input.brandKits[0].assets = Array.from({ length: 16 }, (_, index) => ({ id: `asset-${index}`, name: "Large asset", src: payload, width: 100, height: 100, kind: "image" }));
+  input.brandKits[0].assets = Array.from({ length: 16 }, (_, index) => ({ id: `asset-${index}`, name: "Large asset", src: payload.slice(0,-8) + Buffer.from(String(index).padStart(6,"0")).toString("base64"), width: 100, height: 100, kind: "image" }));
   assert.equal(parseLibrary(input), null);
 });
 
@@ -1077,4 +1077,17 @@ test("format resizing keeps tiny layers and extreme geometry within persistence 
   );
   assert.ok(larger.elements.every((element) => element.height === 10_000));
   assert.ok(parseLibrary(canvasLibrary(larger.elements)));
+});
+
+
+test("copied template images are counted once when loading objects and legacy JSON", () => {
+  const design = createBlankDesign("Repeated template images", "portrait");
+  const src = "data:image/png;base64," + Buffer.from("\x89PNG\r\n\x1a\n"+"0".repeat(1_300_000),"binary").toString("base64");
+  design.pages[0].canvas!.elements = Array.from({length:20}, () => createCanvasElement("image", {src}));
+  const value = {...structuredClone(EMPTY_LIBRARY), designs:[design]};
+  assert.ok(JSON.stringify(value).length > 30 * 1024 * 1024);
+  assert.ok(parseLibrary(value));
+  assert.ok(parseLibrary(JSON.stringify(value)));
+  assert.equal(fitsJsonCharacterLimit({src, nested:{src}}, 2_000_000, true),true);
+  assert.equal(fitsJsonCharacterLimit({unknown:src, nested:{unknown:src}}, 2_000_000, true),false);
 });

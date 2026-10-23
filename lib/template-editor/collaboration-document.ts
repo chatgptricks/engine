@@ -119,7 +119,7 @@ function patchValue(target: Y.Map<unknown>, field: string, before: unknown, next
   else target.set(field, shared(next, field));
 }
 
-function materialize(value: unknown, depth = 0, budget = {nodes: 0, chars: 0}): unknown {
+function materialize(value: unknown, depth = 0, budget = {nodes: 0, chars: 0, images: new Set<string>()}, field = ""): unknown {
   if (depth > 40 || ++budget.nodes > 150_000) throw new Error("Collaboration document exceeds its structure limit.");
   if (value instanceof Y.Text) {
     const text = value.toString(); budget.chars += text.length;
@@ -142,7 +142,7 @@ function materialize(value: unknown, depth = 0, budget = {nodes: 0, chars: 0}): 
         if (child === "plain") continue;
         if (!object(child) || typeof child.text !== "string" || typeof child.richText !== "string" || sanitizeRichText(child.richText) !== child.richText) throw new Error("Invalid collaborative rich text.");
         result.text = child.text; result.richText = child.richText;
-      } else result[field] = materialize(child, depth + 1, budget);
+      } else result[field] = materialize(child, depth + 1, budget, field);
     }
     if (value.get(RICH) === "plain") {
       if (typeof result.text !== "string") throw new Error("Invalid collaborative text.");
@@ -152,8 +152,12 @@ function materialize(value: unknown, depth = 0, budget = {nodes: 0, chars: 0}): 
   }
   if (value instanceof Y.Array || value instanceof Y.Doc) throw new Error("Invalid collaboration value.");
   if (Array.isArray(value)) return value.map(child => materialize(child, depth + 1, budget));
-  if (object(value)) return Object.fromEntries(Object.entries(value).map(([field, child]) => [field, materialize(child, depth + 1, budget)]));
-  if (typeof value === "string") budget.chars += value.length;
+  if (object(value)) return Object.fromEntries(Object.entries(value).map(([field, child]) => [field, materialize(child, depth + 1, budget, field)]));
+  if (typeof value === "string") {
+    const image = ["src", "url", "previewSrc"].includes(field) && value.startsWith("data:image/");
+    budget.chars += image && budget.images.has(value) ? 79 : value.length;
+    if (image) budget.images.add(value);
+  }
   if (budget.chars > 30 * 1024 * 1024) throw new Error("Collaboration document exceeds its size limit.");
   return value;
 }

@@ -60,7 +60,7 @@ Select a text layer and choose **Texture** in the toolbar (or **Image texture ·
 
 On touch screens, **Layers → Select multiple** lets you tap individual layers or groups to build a selection. **Done selecting** keeps the selection ready for Group or Position. Text formatting and selection actions occupy separate toolbar rows on small screens so Edit, Texture, Position, and More remain visible.
 
-The current editor supports up to 100 elements per scene, 20 pages per design, 150 designs, 80 custom templates, and 80 folders. Shared master scenes have their own scene limit. Trash continues to occupy workspace capacity until items are permanently removed. Images are deduplicated in storage and save requests: the complete request is limited to 12 MiB, with 64 KiB reserved for operation metadata, and the raw in-memory JSON has a 30 MiB character limit. This editor exports still images; the preserved research workspace retains its existing video tools.
+The current editor supports up to 100 elements per scene, 20 pages per design, 150 designs, 80 custom templates, and 80 folders. Shared master scenes have their own scene limit. Trash continues to occupy workspace capacity until items are permanently removed. Images are deduplicated in storage and save requests: the complete request is limited to 12 MiB, with 64 KiB reserved for operation metadata, and document validation counts repeated image sources once within its 30 MiB character budget. This editor exports still images; the preserved research workspace retains its existing video tools.
 
 ## Finding tools
 
