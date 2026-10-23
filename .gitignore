@@ -29,3 +29,9 @@ next-env.d.ts
 .DS_Store
 *.pem
 npm-debug.log*
+
+# Static frontend build artifacts
+/frontend/.next/
+/frontend/out/
+/frontend/public/
+/frontend/next-env.d.ts

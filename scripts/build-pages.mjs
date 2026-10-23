@@ -1,0 +1,22 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import {spawnSync} from "node:child_process";
+import {preparePagesFonts} from "./prepare-pages-fonts.mjs";
+const root=process.cwd(),base=process.env.ENGINE_PAGES_BASE_PATH??"/engine";
+const configured=process.env.ENGINE_API_URL;
+if(!configured)throw Error("Set ENGINE_API_URL to the verified Render backend URL.");
+const backend=new URL(configured);
+if(backend.username||backend.password||backend.pathname!=="/"||backend.search||backend.hash||!(backend.protocol==="https:"||backend.protocol==="http:"&&["localhost","127.0.0.1"].includes(backend.hostname)))throw Error("ENGINE_API_URL must be an HTTPS origin (or localhost for testing).");
+if(!/^\/[a-zA-Z0-9_-]+$/.test(base))throw Error("ENGINE_PAGES_BASE_PATH must be one project path.");
+await preparePagesFonts(backend.origin);
+await fs.mkdir("frontend/public",{recursive:true});
+await fs.cp("public","frontend/public",{recursive:true});
+const worker=(await fs.readFile("frontend/static/engine-api-worker.js","utf8")).replaceAll("__ENGINE_API_ORIGIN__",backend.origin).replaceAll("__ENGINE_BASE_PATH__",base);
+await fs.writeFile("frontend/public/engine-api-worker.js",worker);
+const result=spawnSync(process.execPath,["node_modules/next/dist/bin/next","build","frontend"],{cwd:root,stdio:"inherit",env:{...process.env,ENGINE_API_URL:backend.origin}});
+if(result.status!==0)process.exit(result.status??1);
+async function rewrite(directory){for(const entry of await fs.readdir(directory,{withFileTypes:true})){const file=path.join(directory,entry.name);if(entry.isDirectory())await rewrite(file);else if(/\.css$/.test(file)){const css=await fs.readFile(file,"utf8");await fs.writeFile(file,css.replace(/url\((['"]?)(\/(?:fonts|template-editor)\/)/g,`url($1${base}$2`));}}}
+await rewrite("frontend/out");
+await fs.writeFile("frontend/out/.nojekyll","");
+await fs.writeFile("frontend/out/version.json",JSON.stringify({commit:process.env.GITHUB_SHA??spawnSync("git",["rev-parse","HEAD"],{encoding:"utf8"}).stdout.trim(),backend:backend.origin,builtAt:new Date().toISOString()})+"\n");
+console.log(`Pages frontend ready at frontend/out (${base}/), backend ${backend.origin}`);

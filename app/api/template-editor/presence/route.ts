@@ -7,7 +7,7 @@ const reply=(body:unknown,status=200)=>Response.json(body,{status,headers:{"Cach
 export async function POST(request:Request) {
   const access=await resolveEngineAccess();if(!access)return reply({error:"Sign in to check editor presence."},401);
   const origin=request.headers.get("origin");
-  if(origin!==null&&![request.url,process.env.NEXT_PUBLIC_SITE_URL,process.env.RENDER_EXTERNAL_URL].some(value=>{try{return Boolean(value)&&new URL(value!).origin===origin;}catch{return false;}}))return reply({error:"Open presence from the editor."},403);
+  if(origin!==null&&![request.url,process.env.NEXT_PUBLIC_SITE_URL,process.env.RENDER_EXTERNAL_URL,process.env.ENGINE_FRONTEND_URL].some(value=>{try{return Boolean(value)&&new URL(value!).origin===origin;}catch{return false;}}))return reply({error:"Open presence from the editor."},403);
   const reader=request.body?.getReader();if(!reader)return reply({error:"Invalid presence request."},400);
   let input:Record<string,unknown>;
   try {

@@ -426,7 +426,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
       ) : (
         <div className="te-home">
           <header className="te-home-header">
-            <a className="te-wordmark" href="/admin/engine" aria-label="Engine home">
+            <a className="te-wordmark" href={process.env.NEXT_PUBLIC_ENGINE_BASE_PATH ? `${process.env.NEXT_PUBLIC_ENGINE_BASE_PATH}/` : "/admin/engine"} aria-label="Engine home">
               <span className="te-logo" aria-hidden>e.</span>
               <span>Engine</span>
             </a>
@@ -457,7 +457,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
                 <button type="button" onClick={()=>setView("trash")}>Trash{trashCount>0&&<span>{trashCount}</span>}</button>
               </div>
               <div className="te-sidebar-bottom">
-                <a href="/admin/engine/research">Research<ArrowRightIcon size={16} /></a>
+                <a href={`${process.env.NEXT_PUBLIC_ENGINE_API_URL??""}/admin/engine/research`}>Research<ArrowRightIcon size={16} /></a>
               </div>
             </aside>
             <main className="te-home-main">

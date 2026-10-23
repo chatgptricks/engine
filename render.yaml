@@ -1,0 +1,32 @@
+# Create this Blueprint in the Codex workspace. Reuse the existing Supabase
+# project and font key; no database recreation or data migration is required.
+services:
+  - type: web
+    name: engine-api
+    runtime: node
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: npm ci && npm run build
+    startCommand: node --max-old-space-size=192 node_modules/next/dist/bin/next start
+    healthCheckPath: /api/engine/version
+    autoDeployTrigger: commit
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: ENGINE_FRONTEND_URL
+        value: https://chatgptricks.github.io/engine/
+      - key: NEXT_PUBLIC_SITE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_URL
+        sync: false
+      - key: NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: OWNER_EMAIL
+        sync: false
+      - key: ENGINE_FONT_BUNDLE_KEY
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
