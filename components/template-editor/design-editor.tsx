@@ -1,5 +1,7 @@
 "use client";
 import { constrainSmartTemplate } from "@/lib/template-editor/smart-template";
+import { supportsSmartTemplate, updateSmartTemplateText } from "@/lib/template-editor/smart-template-editing";
+import { SmartLayoutPanel } from "./smart-layout-panel";
 import { layoutSmartScene, prepareSmartTextExport } from "@/lib/template-editor/smart-text";
 import { resolveEditorCommand, editorCommandHelp } from "@/lib/template-editor/editor-commands";
 import { saveSelectionTextStyle } from "@/lib/template-editor/editing-actions";
@@ -92,6 +94,7 @@ import "./editor-workflow.css";
 import { DesignFrame, DesignPreview, FRAME_WIDTH } from "./preview";
 
 type Tab =
+  | "smart"
   | "templates"
   | "brand"
   | "text"
@@ -190,14 +193,14 @@ export function DesignEditor({
   const restoredNavigationPage=useRef<string|null>(null);
   const activePage = useRef(pageId);
 
-  const [tab, setTab] = useState<Tab | null>(null);
+  const [tab, setTab] = useState<Tab | null>(() => supportsSmartTemplate(initial, templates) ? "smart" : null);
   const [inspectorSection, setInspectorSection] = useState<InspectorSection>("edit");
   const [templateSearch, setTemplateSearch] = useState("");
   const [pagesOpen, setPagesOpen] = useState(initial.pages.length > 1);
   const drawerTrigger = useRef<HTMLElement | null>(null);
   const drawerScrollRef = useRef<HTMLFieldSetElement>(null);
   useLayoutEffect(()=>{if(drawerScrollRef.current)drawerScrollRef.current.scrollTop=0;},[tab,inspectorSection]);
-  const drawerTitles: Record<Tab, string> = {templates:"Templates", text:"Text", elements:"Elements", media:"Uploads", brand:"Brand", layers:"Layers", caption:"Caption", style:"Properties", page:"Page settings", view:"View"};
+  const drawerTitles: Record<Tab, string> = {smart:"Smart layout", templates:"Templates", text:"Text", elements:"Elements", media:"Uploads", brand:"Brand", layers:"Layers", caption:"Caption", style:"Properties", page:"Page settings", view:"View"};
   function openPanel(next: Tab, toggle = false) {
     if (toggle && tab === next) { closePanel(); return; }
     if (document.activeElement instanceof HTMLElement) drawerTrigger.current = document.activeElement;
@@ -212,6 +215,7 @@ export function DesignEditor({
     openPanel("style");
   }
   const [selection, setSelection] = useState<string[]>([]);
+  const smartContextEnabled = supportsSmartTemplate(initial, templates);
   const selectedIdsRef = useRef<string[]>([]);
   const setSelected = useCallback((ids: string[]) => {
     const changed = ids.length !== selectedIdsRef.current.length || ids.some((id,index)=>id!==selectedIdsRef.current[index]);
@@ -219,8 +223,9 @@ export function DesignEditor({
     setSelection(ids);
     if (changed && ids.length) {
       setInspectorSection("edit");
+      if (smartContextEnabled) setTab(previous => previous === "layers" || previous === "media" ? previous : "smart");
     }
-  }, []);
+  }, [smartContextEnabled]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [notice, setNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
@@ -316,6 +321,7 @@ export function DesignEditor({
   const continuous = Boolean(design.continuousCanvas)&&!editingMaster;
   const canvasWidth = FRAME_WIDTH * (continuous ? design.pages.length : 1);
   const scene = editingMaster ? design.masterScene??{background:'transparent',elements:[]} : design.continuousCanvas ?? page.canvas ?? sceneForPage(page, design.format);
+  const smartLayoutAvailable = supportsSmartTemplate(design, templates);
   const collaborationPageId = editingMaster ? "@master" : continuous ? "@continuous" : page.id;
   const publishAwareness = collaboration?.setAwareness;
   const awarenessScene = useRef(scene);
@@ -1115,8 +1121,9 @@ export function DesignEditor({
     setPreflightIssues(preflightDesign(design,{measureText:(element,id)=>{if(id!==page.id)return undefined;const node=workspaceRef.current?.querySelector<HTMLElement>(`[data-element-id="${element.id}"] .te-canvas-text`);return node?{width:node.scrollWidth,height:node.scrollHeight}:undefined;},imageAvailable:(src,element)=>{const node=Array.from(workspaceRef.current?.querySelectorAll<HTMLImageElement>(`[data-element-id="${element.id}"] img`)??[]).find(image=>image.getAttribute('src')===proxied(src));return node?.complete?node.naturalWidth>0:undefined;},measureTexture:(element,id,pageId)=>{if(pageId!==page.id)return undefined;const parent=workspaceRef.current?.querySelector<HTMLElement>(`[data-element-id="${element.id}"]`);const node=id==='whole'?parent?.querySelector<HTMLElement>('.te-canvas-text'):parent?.querySelector<HTMLElement>(`[data-texture-id="${id}"]`);const box=node?.getBoundingClientRect();return box?{width:box.width/scale,height:box.height/scale}:undefined;}}));
     setExportDialog(true);
   }
-  const inspector = (
+  const inspectorFor = (section = inspectorSection, contextual = false) => (
     <ElementInspector
+      key={contextual ? `smart:${selected.join(":")}` : "properties"}
       scene={scene}
       selectedIds={selected}
       onSelect={setSelected}
@@ -1133,12 +1140,13 @@ export function DesignEditor({
       onSaveColorRole={role=>commit(d=>updateColorRole(d,role))}
       onDeleteColorRole={id=>commit(d=>removeColorRole(d,id))}
       onFormatText={formatText}
-      initialSection={inspectorSection}
-      onSectionChange={setInspectorSection}
+      initialSection={section}
+      onSectionChange={contextual ? undefined : setInspectorSection}
       onTextTexture={openTextTexture}
       onUploadFramePhoto={(file:File,id:string)=>upload(file,id)}
     />
   );
+  const inspector = inspectorFor();
 
   return (
     <div className={`te-editor te-wysiwyg te-simple-editor te-guided-editor${tab ? " has-panel" : ""}`} onContextMenu={workspaceMenu} onDragEnd={()=>setImageDropTargetId(null)}>
@@ -1229,6 +1237,7 @@ export function DesignEditor({
         </div>
         <div className="te-editor-header-actions">
           {collaboration&&<CollaborationBar collaboration={collaboration} />}
+          {smartLayoutAvailable && <button className="te-button te-smart-layout-entry" aria-pressed={tab === "smart"} aria-controls="te-editor-panel" onClick={() => {setEditingMaster(false); openPanel("smart");}}>Smart layout</button>}
           <button className="te-button te-header-menu" aria-haspopup="menu" onClick={event=>openMenu(event,{label:"File",items:[
             {id:"save-template",label:saveTemplateLabel,disabled,onSelect:()=>setTemplateName(design.name)},
             {id:"caption",label:"Post caption",onSelect:()=>openPanel("caption")},
@@ -1259,6 +1268,7 @@ export function DesignEditor({
       <div className="te-editor-body">
         <aside className="te-editor-sidebar">
           <nav className="te-tool-tabs" aria-label="Editor tools">
+            {smartLayoutAvailable && <button className={tab === "smart" ? "is-active" : ""} aria-label="Smart layout" aria-controls="te-editor-panel" aria-expanded={tab === "smart"} aria-pressed={tab === "smart"} onClick={() => {setEditingMaster(false); openPanel("smart", true);}}><StarIcon size={20}/><span>Smart layout</span></button>}
             {(
               [
                 ["templates", LayoutIcon, "Design"],
@@ -1287,6 +1297,14 @@ export function DesignEditor({
           }}>
           <div className="te-drawer-heading"><h2>{tab==="style"?contextTitle:drawerTitles[tab]}</h2><button className="te-icon" aria-label="Close tool panel" onClick={closePanel}>×</button></div>
           <fieldset ref={drawerScrollRef} disabled={disabled && tab !== "view"} className="te-panel-scroll">
+            {tab === "smart" && <>
+            {selectedPhoto && <div className="te-element-actions te-element-grid"><button type="button" className="te-button" disabled={disabled || !canEditElement(scene, selectedPhoto, "style") || !canEditElement(scene, selectedPhoto, "content")} onClick={() => setCropImageId(cropImageId === selectedPhoto.id ? null : selectedPhoto.id)}>{cropImageId === selectedPhoto.id ? "Finish crop" : "Crop photo"}</button><button type="button" className="te-button" disabled={disabled || !canEditElement(scene, selectedPhoto, "content")} onClick={() => {replaceTargetRef.current = selectedPhoto.id; replaceFileRef.current?.click();}}>Replace photo</button></div>}
+            <SmartLayoutPanel design={design} pageId={page.id} selectedIds={selected} templates={templates} disabled={disabled} outputScale={format.width / FRAME_WIDTH} onUpdate={(id, patch) => {
+              if (commit(d => {
+                const updated = updateSmartTemplateText(d, page.id, id, patch, templates);
+                return {...updated, pages: updated.pages.map(item => item.id === page.id && item.canvas ? {...item, canvas: layoutSmartScene(item.canvas).scene} : item)};
+              }, `${page.id}:smart-${patch.lines === undefined ? "copy" : "lines"}:${id}`)) {setIsolatedGroupId(null); setSelected([id]);}
+            }}>{inspectorFor(selectedPhoto ? "photo" : "position", true)}</SmartLayoutPanel></>}
             {tab === "text" && (
               <>
                 <button type="button" className="te-button te-primary te-full te-insert-text" onClick={()=>addText()}><PlusIcon size={18}/>Add a text box<span className="te-shortcut-hint">T</span></button>
