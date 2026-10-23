@@ -14,7 +14,7 @@ const reply = (body: unknown, status = 200) => new Response(jsonByteStream(body)
 function originAllowed(request: Request) {
   const origin = request.headers.get("origin");
   if (origin === null) return true;
-  return [request.url, process.env.NEXT_PUBLIC_SITE_URL, process.env.RENDER_EXTERNAL_URL].some(value => {
+  return [request.url, process.env.NEXT_PUBLIC_SITE_URL, process.env.RENDER_EXTERNAL_URL,process.env.ENGINE_FRONTEND_URL].some(value => {
     try {const url = new URL(value!); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && url.origin === origin;}
     catch {return false;}
   });

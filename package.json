@@ -13,7 +13,8 @@
     "agent:mcp": "node scripts/engine-agent-mcp.mjs",
     "test:template-editor": "node --test tests/template-editor-*.test.mjs",
     "test:template-editor:recovery": "node scripts/test-template-editor-recovery.mjs",
-    "test:template-editor:collaboration": "node scripts/test-template-editor-collaboration.mjs"
+    "test:template-editor:collaboration": "node scripts/test-template-editor-collaboration.mjs",
+    "build:pages": "node scripts/build-pages.mjs"
   },
   "dependencies": {
     "@dnd-kit/core": "^6.3.1",

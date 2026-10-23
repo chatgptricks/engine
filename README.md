@@ -214,6 +214,18 @@ Chrome/Chromium is required; unavailable tooling fails instead of skipping.
 | Database migrations | `supabase/migrations/` |
 | Template model and persistence test entry points | `tests/template-editor-*.test.mjs` |
 
+## GitHub Pages frontend with Render and Supabase
+
+`npm run build:pages` builds a separate static application in `frontend/out`, reusing the same editor, fonts, and renderer. Set `ENGINE_API_URL` to the verified Render backend origin and `ENGINE_PAGES_BASE_PATH=/engine`. No database credentials are included in the frontend. The backend serves configuration containing only the Supabase public URL and publishable key.
+
+The static client keeps a renewable Supabase session. Its service worker forwards editor API requests, original images, and collaboration streams to the configured backend using bearer authentication; it never stores tokens, caches private API responses, or forwards authentication to other hosts. The backend validates every session with Supabase and retains the existing owner allowlist. Sign-in runs in a same-origin Render popup and transfers the validated session to the exact configured Pages origin. Pending browser recovery records on that sign-in origin are copied before mounting the editor and use the existing reconciliation rules.
+
+Deploy `render.yaml` in the **Codex** Render workspace, copying the existing Supabase configuration and licensed-font key. Keep the database and `OWNER_EMAIL` unchanged. Set `NEXT_PUBLIC_SITE_URL` to the new backend URL, add its `/admin/auth/callback` URL in Supabase Auth, and set `ENGINE_FRONTEND_URL=https://chatgptricks.github.io/engine/`. Copy optional research/integration secrets if those features are used. Keep the old service available until cloud data, pending local edits, sign-in and exports have been verified. Browser-only edits on the previous origin must be saved there or restored from its backup before switching; moving the server does not move a browser's IndexedDB.
+
+Enable GitHub Pages with **GitHub Actions** and set the repository variable `ENGINE_API_URL` to the new backend. The Pages workflow waits for Render to report the exact source commit before publishing. It fetches only the existing public licensed fonts and checks their repository-pinned SHA-256 hashes; secret keys and raw font sources stay out of Git. An unset backend variable skips publishing, and a failed release leaves the previous site intact. Review and research pages remain on Render; editor and agent links use the appropriate frontend/backend origin.
+
+Local split-host verification: start the backend with `ENGINE_FRONTEND_URL=http://localhost:4180`, build with `ENGINE_API_URL=http://localhost:3018`, then serve `frontend/out` at `/engine/` on port 4180. Local auth bypass is accepted only for a backend that reports development mode on localhost.
+
 ## Deploy this independent copy on Render
 
 The existing production editor is [Engine on Render](https://greatful-independent.onrender.com/admin/engine). Its Render service follows `chatgptricks/engine`, branch `main`, with automatic deployments. Update that service to deploy this project; a second service is unnecessary.

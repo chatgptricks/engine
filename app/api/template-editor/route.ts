@@ -47,6 +47,7 @@ function allowedSaveOrigin(request: Request): boolean {
     request.url,
     process.env.NEXT_PUBLIC_SITE_URL,
     process.env.RENDER_EXTERNAL_URL,
+    process.env.ENGINE_FRONTEND_URL,
   ].some((value) => httpOrigin(value) === origin);
 }
 

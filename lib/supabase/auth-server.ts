@@ -14,7 +14,7 @@
  * pattern recommended in @supabase/ssr's docs.
  */
 import { createServerClient } from "@supabase/ssr";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 import { isOwnerEmail } from "@/lib/owners";
 
 export async function getAuthServerClient() {
@@ -51,10 +51,12 @@ export async function getAuthServerClient() {
 export async function getCurrentAdminUser(): Promise<{
   email: string;
 } | null> {
+  const authorization=(await headers()).get("authorization");
+  if(authorization!==null&&!/^Bearer [A-Za-z0-9._-]+$/.test(authorization))return null;
   const supabase = await getAuthServerClient();
   const {
     data: { user },
-  } = await supabase.auth.getUser();
+  } = await supabase.auth.getUser(authorization?.slice(7));
   if (!user?.email) return null;
   if (!isOwnerEmail(user.email)) return null;
   return { email: user.email };

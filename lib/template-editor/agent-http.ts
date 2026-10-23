@@ -5,7 +5,7 @@ export const agentResponse = (body: unknown, status = 200) => Response.json(body
 export function allowedAgentOrigin(request: Request): boolean {
   const origin = request.headers.get("origin");
   if (origin === null) return true;
-  return [request.url, process.env.NEXT_PUBLIC_SITE_URL, process.env.RENDER_EXTERNAL_URL].some(value => {
+  return [request.url, process.env.NEXT_PUBLIC_SITE_URL, process.env.RENDER_EXTERNAL_URL,process.env.ENGINE_FRONTEND_URL].some(value => {
     try {const url = new URL(value!); return ["http:", "https:"].includes(url.protocol) && !url.username && !url.password && url.origin === origin;}
     catch {return false;}
   });

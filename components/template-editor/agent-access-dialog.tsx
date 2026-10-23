@@ -19,7 +19,7 @@ export function AgentAccessDialog({onClose}: {onClose: () => void}) {
   const [nextOffset, setNextOffset] = useState<number | null>(null);
   useEffect(() => {
     let active = true;
-    accessRequest().then(result => {if (active) {setCredentials(result.credentials); setNextOffset(result.nextOffset ?? null); setNow(Date.now()); setOrigin(window.location.origin);}}).catch(cause => {if (active) setError(cause.message);}).finally(() => {if (active) setBusy(false);});
+    accessRequest().then(result => {if (active) {setCredentials(result.credentials); setNextOffset(result.nextOffset ?? null); setNow(Date.now()); setOrigin(process.env.NEXT_PUBLIC_ENGINE_API_URL??window.location.origin);}}).catch(cause => {if (active) setError(cause.message);}).finally(() => {if (active) setBusy(false);});
     return () => {active = false;};
   }, []);
   async function create() {
@@ -62,7 +62,7 @@ export function AgentAccessDialog({onClose}: {onClose: () => void}) {
         <p>Copy this token now. It appears once and expires in 30 days. It can read and edit slides in this workspace.</p>
         <div className="te-agent-secret"><input aria-label="Agent access token" readOnly value={created.token} onFocus={event => event.currentTarget.select()} /><button className="te-button" onClick={() => void copy(created.token)}>Copy token</button></div>
         <details open><summary>Connect through MCP</summary>
-          <p><a href="/api/agent/bridge" download="engine-agent-mcp.mjs">Download the MCP bridge</a>, then replace its absolute path in this configuration. Add it to your agent’s MCP settings. Requires Node.js 22.</p>
+          <p><a href="/api/agent/bridge" download="engine-agent-mcp.mjs" onClick={event=>{if(!process.env.NEXT_PUBLIC_ENGINE_API_URL)return;event.preventDefault();void (async()=>{try{const response=await fetch("/api/agent/bridge");if(!response.ok)throw Error("Sign in to download the agent bridge.");const url=URL.createObjectURL(await response.blob()),link=document.createElement("a");link.href=url;link.download="engine-agent-mcp.mjs";link.click();setTimeout(()=>URL.revokeObjectURL(url),30000);}catch(cause){setError(cause instanceof Error?cause.message:"Download failed.");}})();}}>Download the MCP bridge</a>, then replace its absolute path in this configuration. Add it to your agent’s MCP settings. Requires Node.js 22.</p>
           <textarea aria-label="MCP configuration" readOnly rows={12} value={config} onFocus={event => event.currentTarget.select()} spellCheck={false} />
           <button className="te-button" onClick={() => void copy(config)}>Copy MCP configuration</button>
         </details>

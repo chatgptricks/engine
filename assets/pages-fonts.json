@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "name": "SF-Pro-Display-Regular.otf",
+      "bytes": 6182812,
+      "sha256": "569752285a0b63728a16d2e1b2ba6fa9c8ddb3bbaeeac0f77adac64a47a02785"
+    },
+    {
+      "name": "SF-Pro-Display-Bold.otf",
+      "bytes": 6378092,
+      "sha256": "d9b90a6639037ced25b26be7d4e884fb5f52854a1a9d8c4c7f8d4094b8780d4a"
+    },
+    {
+      "name": "SF-Pro-Display-RegularItalic.otf",
+      "bytes": 6080056,
+      "sha256": "b6e69239ee361c9c5b48fd748b88d12d702fef360fdaf4c1056857546a76b5ee"
+    },
+    {
+      "name": "SF-Pro-Display-BoldItalic.otf",
+      "bytes": 6266516,
+      "sha256": "18808c94d1cfda849e30f692c1b0e3c7752fb598b446f9ddf9f2c1b4419f4134"
+    },
+    {
+      "name": "SF-Pro-Display-Canva-Regular.woff2",
+      "bytes": 2560,
+      "sha256": "aada1714cb340b823137938c0c0199b0825419c6da199d4f57c0ffe8ff70161e"
+    },
+    {
+      "name": "SF-Pro-Display-Canva-Bold.woff2",
+      "bytes": 3316,
+      "sha256": "90c345c3f3fd50de69df259b91b8d6b9998d5e80849888be6e2ed7444aa33689"
+    },
+    {
+      "name": "SF-Pro-Display-Canva-Regular.ttf",
+      "bytes": 10924,
+      "sha256": "1d158e6232da231fedd42ad02f40f44cb3c3124e7692344dd075f277212aed58"
+    },
+    {
+      "name": "SF-Pro-Display-Canva-Bold.ttf",
+      "bytes": 12080,
+      "sha256": "45f36b1a417709b8a0417a3db21bb0f3143ed4fcf88853f3f19fe8c9fcf6b215"
+    },
+    {
+      "name": "BebasNeueBold-Canva.woff2",
+      "bytes": 15244,
+      "sha256": "89f92094a458d91f288166ae0b2ac60e494077e026a67ba1e703259dee1ccce4"
+    }
+  ]
+}

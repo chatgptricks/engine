@@ -17,7 +17,7 @@ function pageRange(input: Record<string, unknown>) {
   if (!Number.isInteger(offset) || Number(offset) < 0 || Number(offset) > 10000 || !Number.isInteger(limit) || Number(limit) < 1 || Number(limit) > 100) throw new RequestError("Use an integer offset from 0–10000 and limit from 1–100.");
   return {offset: Number(offset), limit: Number(limit)};
 }
-function editorUrl(document: DesignDocument) {return `/admin/engine?design=${encodeURIComponent(document.id)}`;}
+function editorUrl(document: DesignDocument) {const frontend=process.env.ENGINE_FRONTEND_URL;return `${frontend?frontend.replace(/\/$/, "")+"/":"/admin/engine"}?design=${encodeURIComponent(document.id)}`;}
 async function deckResult(document: DesignDocument, extra = {}) {
   return {document, view: agentDeckView(document), hash: await contentHash(document), editorUrl: editorUrl(document), coordinates: {document: "360-wide scene units", authoring: "output pixels", pixelsPerSceneUnit: formatDimensions(document).width / 360}, ...extra};
 }
