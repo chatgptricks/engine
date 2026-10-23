@@ -56,7 +56,10 @@ export async function getCurrentAdminUser(): Promise<{
   const supabase = await getAuthServerClient();
   const {
     data: { user },
+    error,
   } = await supabase.auth.getUser(authorization?.slice(7));
+  // An upstream outage is retryable, not evidence that the user signed out.
+  if(error && ((error.status ?? 0) >= 500 || error.name === "AuthRetryableFetchError")) throw error;
   if (!user?.email) return null;
   if (!isOwnerEmail(user.email)) return null;
   return { email: user.email };

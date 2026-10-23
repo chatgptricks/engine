@@ -26,9 +26,9 @@ test('Pages CORS matches one configured HTTPS origin and keeps session transfer 
 });
 
 test('backend verifies bearer sessions with Supabase and retains the owner allowlist',async()=>{
- let authorization=null,email='owner@test.dev',seen=[];
+ let authorization=null,email='owner@test.dev',seen=[],error=null;
  const auth=load('lib/supabase/auth-server.ts',{
-  '@supabase/ssr':{createServerClient:()=>({auth:{getUser:async token=>{seen.push(token);return {data:{user:token==='expired'?null:{email}}};}}})},
+  '@supabase/ssr':{createServerClient:()=>({auth:{getUser:async token=>{seen.push(token);return {data:{user:token==='expired'||error?null:{email}},error};}}})},
   'next/headers':{cookies:async()=>({getAll:()=>[],set(){}}),headers:async()=>new Headers(authorization?{Authorization:authorization}:{})},
   '@/lib/owners':{isOwnerEmail:value=>value==='owner@test.dev'},
  });
@@ -37,15 +37,18 @@ test('backend verifies bearer sessions with Supabase and retains the owner allow
  email='stranger@test.dev';assert.equal(await auth.getCurrentAdminUser(),null);
  authorization='Bearer expired';assert.equal(await auth.getCurrentAdminUser(),null);
  const before=seen.length;authorization='Basic token';assert.equal(await auth.getCurrentAdminUser(),null);assert.equal(seen.length,before);
+ authorization='Bearer valid';error=Object.assign(new Error('Auth unavailable'),{status:503});await assert.rejects(auth.getCurrentAdminUser(),error);
+ error=Object.assign(new Error('Fetch failed'),{name:'AuthRetryableFetchError'});await assert.rejects(auth.getCurrentAdminUser(),error);
+ error=Object.assign(new Error('Expired JWT'),{status:401});assert.equal(await auth.getCurrentAdminUser(),null);
 });
 
-function worker({token='verified-jwt',clientUrl='https://pages.test/engine/',network=async()=>new Response('saved')}={}){
- const events={},calls=[];
+function worker({token='verified-jwt',reply=()=>({token}),clientUrl='https://pages.test/engine/',network=async()=>new Response('saved')}={}){
+ const events={},calls=[],messages=[];
  class Channel{constructor(){const one={close(){},onmessage:null},two={postMessage:data=>one.onmessage?.({data})};this.port1=one;this.port2=two;}}
- const self={location:{origin:'https://pages.test'},registration:{scope:'https://pages.test/engine/'},clients:{get:async()=>({url:clientUrl,postMessage:(message,ports)=>ports[0].postMessage({token})}),claim:async()=>{}},skipWaiting(){},addEventListener:(name,handler)=>events[name]=handler};
+ const self={location:{origin:'https://pages.test'},registration:{scope:'https://pages.test/engine/'},clients:{get:async()=>({url:clientUrl,postMessage:(message,ports)=>{messages.push(message);ports[0].postMessage(reply(message));}}),claim:async()=>{}},skipWaiting(){},addEventListener:(name,handler)=>events[name]=handler};
  const source=fs.readFileSync('frontend/static/engine-api-worker.js','utf8').replaceAll('__ENGINE_API_ORIGIN__','https://api.test').replaceAll('__ENGINE_BASE_PATH__','/engine');
  vm.runInNewContext(source,{self,Response,Request,Headers,URL,MessageChannel:Channel,setTimeout,clearTimeout,fetch:async(...args)=>{calls.push(args);return network(...args);}});
- return {calls,request:(url,init)=>{let result;events.fetch({request:new Request(url,init),clientId:'client',respondWith:value=>result=Promise.resolve(value)});return result;}};
+ return {calls,messages,request:(url,init)=>{let result;events.fetch({request:new Request(url,init),clientId:'client',respondWith:value=>result=Promise.resolve(value)});return result;}};
 }
 test('static transport forwards method, exact body and verified auth only to its configured backend',async()=>{
  const w=worker();
@@ -69,4 +72,51 @@ test('static transport preserves private image bytes and streams collaboration e
  controller.enqueue(new TextEncoder().encode('event: update\ndata: {"revision":2}\n\n'));
  assert.match(new TextDecoder().decode((await reader.read()).value),/revision/);controller.close();
  assert.equal(response.headers.get('Cache-Control'),'private, no-store');
+});
+
+test('a rejected session refreshes once and replays the exact idempotent save body',async()=>{
+ const attempts=[];
+ const w=worker({reply:({refresh})=>({token:refresh?'renewed-jwt':'old-jwt'}),network:async(url,options)=>{
+  attempts.push({url,authorization:options.headers.get('Authorization'),body:new TextDecoder().decode(options.body)});
+  return attempts.length===1?new Response('expired',{status:401}):new Response('saved');
+ }});
+ const body=JSON.stringify({operationId:'save-123',library:{designs:[]}});
+ const response=await w.request('https://pages.test/api/template-editor',{method:'PUT',body});
+ assert.equal(await response.text(),'saved');assert.equal(attempts.length,2);
+ assert.deepEqual(attempts.map(a=>a.authorization),['Bearer old-jwt','Bearer renewed-jwt']);
+ assert.deepEqual(attempts.map(a=>a.body),[body,body]);
+ assert.deepEqual(w.messages.map(m=>m.refresh),[false,true]);
+});
+
+test('session recovery stops after one retry and distinguishes missing auth from temporary failure',async()=>{
+ const rejected=worker({network:async()=>new Response('unauthorized',{status:401})});
+ assert.equal((await rejected.request('https://pages.test/api/template-editor')).status,401);assert.equal(rejected.calls.length,2);
+ const failed=worker({reply:()=>({error:true})});
+ assert.equal((await failed.request('https://pages.test/api/template-editor')).status,503);assert.equal(failed.calls.length,0);
+ const expired=worker({reply:({refresh})=>({token:refresh?null:'old'}),network:async()=>new Response('expired',{status:401})});
+ assert.equal((await expired.request('https://pages.test/api/template-editor')).status,401);assert.equal(expired.calls.length,1);
+ const unavailable=worker({reply:({refresh})=>refresh?{error:true}:{token:'old'},network:async()=>new Response('expired',{status:401})});
+ assert.equal((await unavailable.request('https://pages.test/api/template-editor')).status,503);assert.equal(unavailable.calls.length,1);
+});
+
+test('concurrent token requests share reads and wait for a single forced refresh',async()=>{
+ const {createSessionTokenReader}=load('lib/engine/session-token.ts');
+ let finishRead,finishRefresh,reads=0,refreshes=0;
+ const result=token=>({data:{session:{access_token:token}},error:null});
+ const token=createSessionTokenReader(()=>({auth:{
+  getSession:()=>{reads++;return new Promise(resolve=>{finishRead=resolve;});},
+  refreshSession:()=>{refreshes++;return new Promise(resolve=>{finishRefresh=resolve;});},
+ }}));
+ const a=token(),b=token(),c=token(true),d=token(true),e=token();
+ assert.equal(reads,1);assert.equal(refreshes,0);finishRead(result('old'));
+ assert.deepEqual(await Promise.all([a,b]),['old','old']);assert.equal(refreshes,1);
+ finishRefresh(result('new'));assert.deepEqual(await Promise.all([c,d,e]),['new','new','new']);
+});
+
+test('token lookup errors stay retryable and do not poison later requests',async()=>{
+ const {createSessionTokenReader}=load('lib/engine/session-token.ts');let fail=true;
+ const read=async()=>({data:{session:fail?null:{access_token:'recovered'}},error:fail?new Error('Temporary auth failure'):null});
+ const token=createSessionTokenReader(()=>({auth:{getSession:read,refreshSession:read}}));
+ await assert.rejects(token(),/Temporary auth failure/);fail=false;assert.equal(await token(),'recovered');
+ assert.equal(await createSessionTokenReader(()=>null)(),null);
 });
