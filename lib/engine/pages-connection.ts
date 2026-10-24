@@ -41,6 +41,26 @@ export function storedPagesUser(storage: BrowserStorage): string | null {
   const session = readJson(storage, PAGES_SESSION_KEY) as {user?: {id?: unknown}; access_token?: unknown; refresh_token?: unknown} | null;
   return session && typeof session.access_token === "string" && session.access_token.length > 0 && typeof session.refresh_token === "string" && session.refresh_token.length > 0 && typeof session.user?.id === "string" && session.user.id.length > 0 && session.user.id.length < 200 ? session.user.id : null;
 }
+/** Online SDK identity remains usable when browser persistence is disabled. */
+export function pagesIdentityMatches(storage: BrowserStorage, expectedUser: string, currentUser: string | null): boolean {
+  const persisted = storedPagesUser(storage);
+  return persisted === null ? currentUser === expectedUser : persisted === expectedUser;
+}
+export function createPagesTransferGuard() {
+  let generation = 0;
+  return {
+    invalidate() { generation++; },
+    begin() { const selected = ++generation; return () => selected === generation; },
+  };
+}
+/** A cancelled transfer cannot continue writing drafts for the previous user. */
+export async function restorePagesDrafts<T>(drafts: readonly T[], current: () => boolean, restore: (draft: T) => Promise<void>): Promise<boolean> {
+  for (const draft of drafts) {
+    if (!current()) return false;
+    await restore(draft);
+  }
+  return current();
+}
 export function cachedPagesBinding(storage: BrowserStorage, connection: PagesConnection): PagesWorkspaceBinding | null {
   const value = readJson(storage, PAGES_BINDING_KEY) as Partial<PagesWorkspaceBinding> | null;
   const userId = storedPagesUser(storage);
@@ -68,6 +88,8 @@ export function createPagesAuthFetch(lifetime?: AbortSignal): typeof fetch {
     const signals = [AbortSignal.timeout(10_000)];
     if (supplied) signals.push(supplied);
     if (lifetime) signals.push(lifetime);
-    return fetch(input, {...init, signal: AbortSignal.any(signals)});
+    const signal = AbortSignal.any(signals);
+    signal.throwIfAborted();
+    return fetch(input, {...init, signal}).then(response => { signal.throwIfAborted(); return response; });
   };
 }

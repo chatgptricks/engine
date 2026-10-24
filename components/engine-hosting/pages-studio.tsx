@@ -6,7 +6,7 @@ import Studio from "@/components/template-editor/studio";
 import {saveRecoveryDraft, type RecoveryDraft} from "@/lib/template-editor/recovery-storage";
 import {parseLibrary} from "@/lib/template-editor/model";
 import {createSessionTokenReader} from "@/lib/engine/session-token";
-import {cachedPagesBinding, cachedPagesConnection, connectionDeadline, createPagesAuthFetch, forgetPagesBinding, parsePagesConnection, PAGES_SESSION_KEY, rememberPagesBinding, rememberPagesConnection, storedPagesUser, type PagesConnection} from "@/lib/engine/pages-connection";
+import {cachedPagesBinding, cachedPagesConnection, connectionDeadline, createPagesAuthFetch, createPagesTransferGuard, forgetPagesBinding, pagesIdentityMatches, parsePagesConnection, PAGES_SESSION_KEY, rememberPagesBinding, rememberPagesConnection, restorePagesDrafts, storedPagesUser, type PagesConnection} from "@/lib/engine/pages-connection";
 import styles from "./pages-studio.module.css";
 
 const backend = process.env.NEXT_PUBLIC_ENGINE_API_URL ?? "";
@@ -28,6 +28,8 @@ export function PagesStudio() {
     let connection: PagesConnection | null = null, stopAuth: (() => void) | undefined;
     let retryTimer: ReturnType<typeof setTimeout> | undefined;
     let handoffRetry: (() => Promise<void>) | null = null;
+    const transferGuard = createPagesTransferGuard();
+    let authLifetime: AbortController | null = null;
     const lifetime = new AbortController();
     const storage = {
       getItem(key: string) { try { return localStorage.getItem(key); } catch { return null; } },
@@ -41,16 +43,25 @@ export function PagesStudio() {
       if (!active || retryTimer) return;
       retryTimer = setTimeout(() => { retryTimer = undefined; retry.current(); }, 10_000);
     };
+    const retireAuth = () => {
+      // Retire the whole client's request lifetime. Its internal refresh
+      // retries must never inherit the next account's fresh abort signal.
+      authLifetime?.abort(); authLifetime = null;
+      stopAuth?.(); stopAuth = undefined;
+      const client = auth.current; auth.current = null; authInitialized = false;
+      if (client) void client.auth.stopAutoRefresh().catch(() => undefined);
+    };
     const requireSignIn = () => {
       generation++; currentUser = null;
       handoffRetry = null;
+      transferGuard.invalidate();
       forgetPagesBinding(storage);
       if (active) { setScope(null); setUserId(""); setNeedsSignIn(true); setReady(workerReady); setError(""); }
       cancelRetry();
     };
     const selectUser = (id: string) => {
       if (currentUser === id) return;
-      if (!handoff) handoffRetry = null;
+      if (!handoff) { handoffRetry = null; transferGuard.invalidate(); }
       generation++; currentUser = id; forgetPagesBinding(storage);
       if (active) { setScope(null); setUserId(id); setNeedsSignIn(false); }
     };
@@ -66,6 +77,7 @@ export function PagesStudio() {
       if (!connection || !workerReady) throw Error("The workspace connection is still starting.");
       let accessToken: string | null = null;
       let identity = "local";
+      const startingGeneration = generation;
       if (auth.current) {
         const result = await connectionDeadline(auth.current.auth.getSession(), 8000);
         if (!active) return null;
@@ -75,7 +87,8 @@ export function PagesStudio() {
         if (!session) { requireSignIn(); return null; }
         identity = session.user.id; accessToken = session.access_token;
         // The browser may have switched accounts while SDK refresh was pending.
-        if (storedPagesUser(storage) !== identity) { scheduleRetry(); return null; }
+        const persistedIdentity = storedPagesUser(storage);
+        if (persistedIdentity !== null && persistedIdentity !== identity || startingGeneration !== generation && currentUser !== identity) { scheduleRetry(); return null; }
         selectUser(identity);
       }
       const observedGeneration = generation;
@@ -85,7 +98,7 @@ export function PagesStudio() {
       });
       const data = await response.json().catch(() => null);
       if (!active) return null;
-      if (generation !== observedGeneration || auth.current && storedPagesUser(storage) !== identity) { scheduleRetry(); return null; }
+      if (generation !== observedGeneration || auth.current && !pagesIdentityMatches(storage, identity, currentUser)) { scheduleRetry(); return null; }
       if (response.status === 401 || response.status === 403) { requireSignIn(); return null; }
       if (!response.ok || typeof data?.scope !== "string" || !/^[a-f0-9]{64}$/.test(data.scope)) throw Error(data?.error ?? "The cloud connection is unavailable. Retrying automatically.");
       if (auth.current) rememberPagesBinding(storage, connection, identity, data.scope);
@@ -106,29 +119,36 @@ export function PagesStudio() {
       if (event.origin !== backend || event.source !== popup.current || event.data?.type !== "engine-sign-in" || event.data?.state !== signInState.current || !signInState.current) return;
       signInState.current = "";
       const {session, drafts} = event.data;
+      const transferCurrent = transferGuard.begin();
+      let sessionApplied = false;
       const completeHandoff = async () => {
-        if (handoff || !active) return;
+        if (handoff || !active || !transferCurrent()) return;
         handoff = true; setReady(false);
         try {
           if (!auth.current || typeof session?.access_token !== "string" || typeof session?.refresh_token !== "string") throw Error("Sign-in could not be completed.");
-          const result = await connectionDeadline(auth.current.auth.setSession(session), 10_000);
-          if (result.error) throw result.error;
+          if (!sessionApplied) {
+            const result = await connectionDeadline(auth.current.auth.setSession(session), 10_000);
+            if (!active || !transferCurrent()) return;
+            if (result.error) throw result.error;
+            sessionApplied = true;
+          }
           authInitialized = true;
           const confirmed = await resolveScope(false);
-          if (!confirmed) return;
+          if (!confirmed || !transferCurrent()) return;
           const confirmedUser = currentUser, confirmedGeneration = generation;
-          if (Array.isArray(drafts)) for (const candidate of drafts as RecoveryDraft[]) {
+          const stillSelected = () => active && transferCurrent() && generation === confirmedGeneration && currentUser === confirmedUser && (!auth.current || pagesIdentityMatches(storage, confirmedUser ?? "", currentUser));
+          const restored = await restorePagesDrafts(Array.isArray(drafts) ? drafts as RecoveryDraft[] : [], stillSelected, async candidate => {
             const library = parseLibrary(candidate.library), baseline = candidate.baseline ? parseLibrary(candidate.baseline) : undefined;
-            if (candidate.scope !== confirmed || !library || typeof candidate.key !== "string" || typeof candidate.stamp !== "string" || !Number.isFinite(candidate.updatedAt)) continue;
+            if (candidate.scope !== confirmed || !library || typeof candidate.key !== "string" || typeof candidate.stamp !== "string" || !Number.isFinite(candidate.updatedAt)) return;
             await saveRecoveryDraft({...candidate, library, ...(baseline ? {baseline} : {baseline: undefined})});
-          }
+          });
           // Pending edits arrive before Studio reads this origin's recovery store.
-          handoffRetry = null;
-          if (active && currentUser === confirmedUser && generation === confirmedGeneration) {
+          if (transferCurrent()) handoffRetry = null;
+          if (restored && stillSelected()) {
             setScope(confirmed); setUserId(currentUser ?? ""); setNeedsSignIn(false); setError("");
           } else if (active) scheduleRetry();
-        } catch (cause) { if (active) { setError(message(cause)); scheduleRetry(); } }
-        finally { handoff = false; if (active) setReady(workerReady); }
+        } catch (cause) { if (active && transferCurrent()) { setError(message(cause)); scheduleRetry(); } }
+        finally { handoff = false; if (active) { setReady(workerReady); if (!transferCurrent()) scheduleRetry(); } }
       };
       // Retain the transfer until every pending draft has reached this origin.
       // Automatic retries must not open Studio around a failed migration.
@@ -169,19 +189,25 @@ export function PagesStudio() {
       try {
         if (!backend) throw Error("The workspace connection has not been configured.");
         // Worker setup and public configuration are independent of cloud auth.
-        const [config] = await Promise.all([getConnection(), ensureWorker()]);
+        const [config] = await Promise.all([connection ? Promise.resolve(connection) : getConnection(), ensureWorker()]);
         if (!active) return;
         connection = config; workerReady = true;
         if (!auth.current && config.supabaseUrl && config.supabaseKey) {
           const binding = cachedPagesBinding(storage, config);
           currentUser = binding?.userId ?? storedPagesUser(storage);
-          auth.current = createClient(config.supabaseUrl, config.supabaseKey, {
+          authLifetime = new AbortController();
+          const client = createClient(config.supabaseUrl, config.supabaseKey, {
             auth: {storageKey: PAGES_SESSION_KEY, persistSession: true, autoRefreshToken: true, detectSessionInUrl: false},
-            global: {fetch: createPagesAuthFetch(lifetime.signal)},
+            global: {fetch: createPagesAuthFetch(AbortSignal.any([lifetime.signal, authLifetime.signal]))},
           });
-          const subscription = auth.current.auth.onAuthStateChange((event, session) => {
-            if (!active) return;
-            if (event === "SIGNED_OUT") { authInitialized = true; requireSignIn(); return; }
+          auth.current = client;
+          const subscription = client.auth.onAuthStateChange((event, session) => {
+            if (!active || auth.current !== client) return;
+            if (event === "SIGNED_OUT") {
+              requireSignIn(); retireAuth();
+              setTimeout(() => { if (active) void bootstrap(); }, 0);
+              return;
+            }
             if (session?.user.id) {
               authInitialized = true;
               if (session.user.id !== currentUser) selectUser(session.user.id);
@@ -203,8 +229,13 @@ export function PagesStudio() {
       if (event.key !== PAGES_SESSION_KEY && event.key !== null) return;
       const identity = storedPagesUser(storage);
       if (identity === currentUser) return;
+      // External account changes cancel every retry of the previous popup,
+      // even while that popup is awaiting auth, scope, or recovery storage.
+      handoffRetry = null; transferGuard.invalidate();
+      retireAuth();
       if (!identity) requireSignIn();
-      else { selectUser(identity); authInitialized = false; void connect(); }
+      else selectUser(identity);
+      void bootstrap();
     };
     const online = () => retry.current();
     window.addEventListener("message", signedIn);
@@ -213,9 +244,7 @@ export function PagesStudio() {
     navigator.serviceWorker?.addEventListener("message", workerMessage);
     void bootstrap();
     return () => {
-      active = false; lifetime.abort(); cancelRetry(); stopAuth?.();
-      const client = auth.current; auth.current = null;
-      if (client) void client.auth.stopAutoRefresh().catch(() => undefined);
+      active = false; lifetime.abort(); cancelRetry(); retireAuth();
       window.removeEventListener("message", signedIn);
       window.removeEventListener("storage", storageChanged);
       window.removeEventListener("online", online);
