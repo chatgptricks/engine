@@ -127,8 +127,8 @@ test("legacy presence still returns full snapshots and an update cannot take the
   const legacy = await h.post(); assert.equal((await legacy.json()).state, h.saved.state); assert.equal(h.stats.reads, 1);
   await h.post({presenceOnly: true}); assert.equal(h.stats.reads, 1, "The full legacy read primes only minimal metadata");
   const update = await h.post({presenceOnly: true, update: "encoded-update"});
-  assert.equal((await update.json()).state, h.saved.state); assert.equal(h.stats.saves, 1); assert.equal(h.stats.reads, 2);
-  await h.post({presenceOnly: true}); assert.equal(h.stats.reads, 2, "The saved room refreshes minimal metadata");
+  assert.equal((await update.json()).state, h.saved.state); assert.equal(h.stats.saves, 1); assert.equal(h.stats.reads, 1, "An update uses only its queued save read, without a full preflight");
+  await h.post({presenceOnly: true}); assert.equal(h.stats.reads, 1, "The saved room refreshes minimal metadata");
 });
 
 test("matching SSE resume verifies scalar revision then sends only small presence metadata", async () => {

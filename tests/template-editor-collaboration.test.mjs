@@ -167,6 +167,7 @@ test("collaboration API rejects foreign workspaces and origins before room acces
   assert.equal((await route.POST(request(input, {"Content-Length": String(30 * 1024 * 1024)}))).status, 413); assert.equal(reads, 0);
   const doc = replica(collaboration.decodeCollaborationUpdate(saved.state)), update = collaboration.encodeCollaborationUpdate(edit(doc, value => {value.caption = "Edit";}));
   const conflict = await route.POST(request({...input, epoch: crypto.randomUUID(), update})); assert.equal(conflict.status, 409);
+  assert.equal(reads,1,"A generation conflict reloads the canonical snapshot once, after the queued save rejects the stale epoch");
   const data = await conflict.json(); assert.equal(data.code, "generation_changed"); assert.equal(data.snapshot.epoch, saved.epoch); assert.equal(data.snapshot.document.id, document.id); assert.equal((await persistence.getEditorLibrary("team")).library.designs[0].caption, ""); doc.destroy();
 });
 
@@ -177,23 +178,56 @@ test("collaboration POST validates presence before writing and keeps new-layer s
   t.after(()=>replicaDoc.destroy());
   const added = model.createCanvasElement("shape"), update = collaboration.encodeCollaborationUpdate(edit(replicaDoc,value=>{value.pages[0].canvas.elements.push(added);}));
   const {validateCollaborationAwareness} = loader({"@/lib/supabase/admin":{getAdminSupabase:()=>null},"@/lib/supabase/auth-server":{getCurrentAdminUser:async()=>null}})("lib/template-editor/collaboration-server.ts");
-  let saves = 0;const heartbeats = [];
+  let saves = 0, reads = 0;const heartbeats = [];
   const route = loader({
     "@/lib/template-editor/collaboration-metadata": load("lib/template-editor/collaboration-metadata.ts"),
     "@/lib/engine/member":{resolveEngineAccess:async()=>({kind:"owner",ownerKey:"team"})},
-    "@/lib/template-editor/persistence":{...persistence,saveCollaborationDocument:async(...args)=>{saves++;return persistence.saveCollaborationDocument(...args);}},
+    "@/lib/template-editor/persistence":{...persistence,getCollaborationDocument:async(...args)=>{reads++;return persistence.getCollaborationDocument(...args);},saveCollaborationDocument:async(...args)=>{saves++;return persistence.saveCollaborationDocument(...args);}},
     "@/lib/template-editor/collaboration-document":{...collaboration,createCollaborationDocument(){throw Error("Unexpected unqueued Yjs replay");}},
     "@/lib/template-editor/json-stream":load("lib/template-editor/json-stream.ts"),
     "@/lib/template-editor/collaboration-server":{validateCollaborationAwareness,collaborationActor:async()=>({id:"actor",name:"Alice",color:"#2563eb"}),readCollaborationParticipants:async()=>[],heartbeatCollaboration:async(_owner,_document,_session,_actor,awareness)=>{heartbeats.push(awareness);return [];}},
   })("app/api/template-editor/collaboration/route.ts");
   const input = {documentId:document.id,sessionId:crypto.randomUUID(),sequence:1,expectedScope:initial.scope,epoch:initial.epoch,update};
   const post = awareness=>route.POST(new Request("http://localhost/api/template-editor/collaboration",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({...input,awareness})}));
-  const invalid = await post({selected:[],cursor:{x:"invalid",y:0}});
-  assert.equal(invalid.status,400);assert.equal(saves,0);assert.equal(heartbeats.length,0);
+  for (const awareness of [
+    {selected:[],cursor:{x:"invalid",y:0}},
+    {pageId:"<invalid>",selected:[],cursor:null},
+    {selected:["duplicate","duplicate"],cursor:null},
+    {selected:[],cursor:null,preview:{elements:[{id:"bad",x:"invalid",y:0,width:1,height:1,rotation:0}]}},
+    {selected:[],cursor:null,preview:{elements:Array(101).fill({})}},
+  ]) {
+    const invalid = await post(awareness);
+    assert.equal(invalid.status,400);assert.equal(saves,0);assert.equal(reads,0);assert.equal(heartbeats.length,0);
+  }
   assert.equal((await persistence.getEditorLibrary("team")).revision,initial.revision);
   const preview={id:added.id,x:added.x,y:added.y,width:added.width,height:added.height,rotation:added.rotation};
   const valid = await post({pageId:document.pages[0].id,selected:[added.id],cursor:{x:1,y:2},preview:{elements:[preview]}});
-  assert.equal(valid.status,200);assert.equal(saves,1);
+  assert.equal(valid.status,200);assert.equal(saves,1);assert.equal(reads,0,"Valid updates must not read the entire workspace before the queued save");
   assert.deepEqual(heartbeats[0].selected,[added.id]);assert.deepEqual(heartbeats[0].preview.elements,[preview]);
   assert.ok((await valid.json()).document.pages[0].canvas.elements.some(element=>element.id===added.id));
+});
+
+test("an update without a full preflight cannot recreate a deleted document or write another owner's document", async t => {
+  const persistence = store(t), document = fixture();
+  await persistence.saveEditorLibrary("team", {...structuredClone(model.EMPTY_LIBRARY), designs:[document]}, null);
+  const initial = await persistence.getCollaborationDocument("team",document.id), replicaDoc = replica(collaboration.decodeCollaborationUpdate(initial.state));
+  t.after(()=>replicaDoc.destroy());
+  const update = collaboration.encodeCollaborationUpdate(edit(replicaDoc,value=>{value.caption="Must not be resurrected";}));
+  const library = await persistence.getEditorLibrary("team");
+  await persistence.saveEditorLibrary("team",{...library.library,designs:[]},library.revision);
+  let ownerKey = "team", reads = 0, heartbeats = 0;
+  const {validateCollaborationAwareness} = loader({"@/lib/supabase/admin":{getAdminSupabase:()=>null},"@/lib/supabase/auth-server":{getCurrentAdminUser:async()=>null}})("lib/template-editor/collaboration-server.ts");
+  const route = loader({
+    "@/lib/template-editor/collaboration-metadata":load("lib/template-editor/collaboration-metadata.ts"),
+    "@/lib/engine/member":{resolveEngineAccess:async()=>({kind:"owner",ownerKey})},
+    "@/lib/template-editor/persistence":{...persistence,getCollaborationDocument:async(...args)=>{reads++;return persistence.getCollaborationDocument(...args);}},
+    "@/lib/template-editor/json-stream":load("lib/template-editor/json-stream.ts"),
+    "@/lib/template-editor/collaboration-server":{validateCollaborationAwareness,collaborationActor:async()=>({id:"actor",name:"Alice",color:"#2563eb"}),readCollaborationParticipants:async()=>[],heartbeatCollaboration:async()=>{heartbeats++;return [];}},
+  })("app/api/template-editor/collaboration/route.ts");
+  for (const owner of ["team","other"]) {
+    ownerKey = owner;
+    const response = await route.POST(new Request("http://localhost/api/template-editor/collaboration",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({documentId:document.id,sessionId:crypto.randomUUID(),sequence:1,expectedScope:persistence.editorOwnerScope(owner),epoch:initial.epoch,update,awareness:{selected:[],cursor:null}})}));
+    assert.equal(response.status,404);assert.equal(reads,0);assert.equal(heartbeats,0);
+    assert.equal((await persistence.getEditorLibrary(owner)).library.designs.length,0);
+  }
 });
