@@ -50,7 +50,7 @@ test("collaboration streams defer unread updates and keep presence and document 
     return event;
   };
   const poll = () => {
-    const [id, task] = [...timers].find(([, task]) => task.delay === 350);
+    const [id, task] = [...timers].find(([, task]) => task.delay === 1000);
     timers.delete(id); task.callback();
   };
   try {

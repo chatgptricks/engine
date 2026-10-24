@@ -23,6 +23,16 @@ export async function getAuthServerClient() {
     process.env.NEXT_PUBLIC_SUPABASE_URL ?? "",
     process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "",
     {
+      global: {
+        // A stalled Auth provider must release the server request even when a
+        // browser gives up first. SDK errors remain retryable; this never turns
+        // an unavailable identity provider into an authenticated session.
+        fetch(input, init) {
+          const deadline = AbortSignal.timeout(10_000);
+          const caller = init?.signal ?? (input instanceof Request ? input.signal : null);
+          return fetch(input, {...init, signal: caller ? AbortSignal.any([caller, deadline]) : deadline});
+        },
+      },
       cookies: {
         getAll() {
           return cookieStore.getAll();

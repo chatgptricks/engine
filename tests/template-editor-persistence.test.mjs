@@ -62,6 +62,74 @@ test("cloud reads, revision polling, inserts and CAS updates receive query-wide 
   assert.ok(db.stats.signals.every(signal => signal instanceof AbortSignal && !signal.aborted));
 });
 
+test("idle collaboration reads scalar revision metadata without selecting the JSONB workspace", async t => {
+  const queries = [];
+  let revision = crypto.randomUUID();
+  const db = {from(table) {
+    assert.equal(table, "gf_client_state");
+    const request = {column: null, owner: null};
+    const query = {
+      select(column) {request.column = column; return query;},
+      eq(column, value) {assert.equal(column, "owner"); request.owner = value; return query;},
+      abortSignal(signal) {assert.ok(signal instanceof AbortSignal); return query;},
+      async maybeSingle() {queries.push(request); return {data: revision ? {state_revision: revision} : null, error: null};},
+    };
+    return query;
+  }};
+  const store = persistence(t, {db});
+  assert.equal(await store.getCollaborationRevision("owner"), revision);
+  revision = crypto.randomUUID();
+  assert.equal(await store.getCollaborationRevision("owner"), revision);
+  revision = null;
+  assert.equal(await store.getCollaborationRevision("owner"), null);
+  assert.deepEqual(queries, Array(3).fill({column: "state_revision", owner: "template-editor:owner"}));
+});
+
+test("old databases share a bounded schema fallback then adopt scalar revision metadata after migration", async t => {
+  let now = Date.now(), migrated = false;
+  t.mock.method(Date, "now", () => now);
+  const queries = [], signals = [];
+  const revision = crypto.randomUUID();
+  const db = {from() {
+    let column;
+    const query = {
+      select(value) {column = value; return query;}, eq() {return query;},
+      abortSignal(signal) {signals.push(signal); return query;},
+      async maybeSingle() {
+        queries.push(column);
+        if (column === "state_revision") return migrated ? {data: {state_revision: revision}, error: null} : {data: null, error: {code: "42703", message: "column state_revision does not exist"}};
+        return {data: {revision}, error: null};
+      },
+    };
+    return query;
+  }};
+  const one = persistence(t, {db}), two = persistence(t, {db});
+  assert.equal(await one.getCollaborationRevision("owner"), revision);
+  assert.equal(signals[0], signals[1], "The schema probe and fallback share one complete-request deadline");
+  assert.equal(await two.getCollaborationRevision("owner"), revision);
+  migrated = true;
+  assert.equal(await one.getCollaborationRevision("owner"), revision);
+  now += 60_001;
+  assert.equal(await two.getCollaborationRevision("owner"), revision);
+  assert.deepEqual(queries, ["state_revision", "revision:data->>revision", "revision:data->>revision", "revision:data->>revision", "state_revision"]);
+});
+
+test("revision metadata failures do not fall back on permission, timeout or unrelated schema errors", async t => {
+  t.mock.method(console, "error", () => {});
+  for (const error of [{code: "42501", message: "denied"}, {code: "57014", message: "timeout"}, {code: "42P01", message: "missing table"}, {code: "PGRST204", message: "unrelated missing column"}]) {
+    const queries = [];
+    const db = {from() {
+      const query = {
+        select(column) {queries.push(column); return query;}, eq() {return query;}, abortSignal() {return query;},
+        async maybeSingle() {return {data: null, error, status: 503};},
+      };
+      return query;
+    }};
+    await assert.rejects(persistence(t, {db}).getCollaborationRevision("owner"), /storage is unavailable/);
+    assert.deepEqual(queries, ["state_revision"]);
+  }
+});
+
 test("real Supabase queries bypass the installed Next response tee when opening the library", async t => {
   const {createClient} = requireModule("@supabase/supabase-js");
   const {createDedupeFetch} = requireModule("next/dist/server/lib/dedupe-fetch");
@@ -186,6 +254,8 @@ function fakeDatabase() {
           }
           stats.reads++;
           stats.projections.push(projection);
+          if (projection === "state_revision") return {data: row ? {state_revision: row.data.revision ?? null} : null, error: null};
+          if (projection === "revision:data->>revision") return {data: row ? {revision: row.data.revision ?? null} : null, error: null};
           if (projection === "library:data->library,revision:data->>revision,assets:data->assets") return {data: row ? structuredClone({library: row.data.library, revision: row.data.revision, assets: row.data.assets}) : null, error: null};
           return { data: row ? structuredClone(row) : null, error: null };
         },

@@ -8,6 +8,9 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 const PRIVATE = {"Cache-Control": "private, no-store"};
 const MAX_BODY = 25 * 1024 * 1024;
+// Each stream reads both revision and presence. A one-second interval avoids
+// hundreds of idle database queries per minute per tab on small instances.
+const POLL_INTERVAL_MS = 1_000;
 const validId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(value);
 const validSession = (value: unknown): value is string => typeof value === "string" && /^[a-f0-9-]{36}$/i.test(value);
 const reply = (body: unknown, status = 200) => new Response(jsonByteStream(body), {status, headers: {...PRIVATE, "Content-Type": "application/json"}});
@@ -119,7 +122,7 @@ export async function GET(request: Request) {
         // Slow readers must drain the previous event before another snapshot
         // is loaded and queued. The next poll still observes the latest revision.
         if (controller.desiredSize !== null && controller.desiredSize <= 0) {
-          timer = setTimeout(() => {void poll();}, 350);
+          timer = setTimeout(() => {void poll();}, POLL_INTERVAL_MS);
           return;
         }
         try {
@@ -132,9 +135,9 @@ export async function GET(request: Request) {
           } else if (signature(participants) !== presenceSignature) send("presence", {scope, actor, participants});
           presenceSignature = signature(participants);
         } catch (error) {const failure = statusFor(error); send("error", {error: failure.message, ...(failure.status === 404 ? {code: "not_found"} : {})}); stop(); return;}
-        if (!stopped) timer = setTimeout(() => {void poll();}, 350);
+        if (!stopped) timer = setTimeout(() => {void poll();}, POLL_INTERVAL_MS);
       };
-      timer = setTimeout(() => {void poll();}, 350);
+      timer = setTimeout(() => {void poll();}, POLL_INTERVAL_MS);
       // Reopen periodically so access is checked again after logout/revocation.
       // EventSource resumes automatically; snapshots are idempotent Yjs updates.
       rotation = setTimeout(stop, 25_000);

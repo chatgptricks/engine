@@ -82,8 +82,9 @@ function browserTabId(): string {
   return crypto.randomUUID();
 }
 
-export function useEditorLibrary(expectedScope?: string) {
+export function useEditorLibrary(expectedScope?: string, options: {preferCached?: boolean} = {}) {
   const trustedScope = useRef(expectedScope ?? "");
+  const preferCached = useRef(options.preferCached === true);
   const [library, updateLibrary] = useState<EditorLibrary>(EMPTY_LIBRARY);
   const [workspaceScope, setWorkspaceScope] = useState(expectedScope ?? "");
   const [ready, setReady] = useState(false);
@@ -116,11 +117,38 @@ export function useEditorLibrary(expectedScope?: string) {
   const backupFailure = useRef(false);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryAttempts=useRef(0),retryAt=useRef(0),autoRetryPaused=useRef(false);
+  const retryablePause = useRef(false);
   const inFlight = useRef<Promise<void> | null>(null);
   const backupQueue = useRef<Promise<unknown>>(Promise.resolve());
   const loadController = useRef<AbortController | null>(null);
   const saveRef = useRef<() => Promise<void>>(async () => undefined);
+  const loadRef = useRef<(discardPending?: boolean, background?: boolean) => Promise<void>>(async () => undefined);
+  const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshNeeded = useRef(false);
+  const backgroundRead = useRef(false);
   const liveDocumentId = useRef<string | undefined>(undefined);
+
+  const scheduleReconnect = useCallback(function schedule(delay = 10_000) {
+    if (reconnectTimer.current) return;
+    reconnectTimer.current = setTimeout(() => {
+      reconnectTimer.current = null;
+      if (!mounted.current || !refreshNeeded.current) return;
+      if (!navigator.onLine || conflict.current || inFlight.current) { schedule(); return; }
+      if (dirty.current && autoRetryPaused.current) {
+        // Exhausted transient saves may resume one request per cooldown. Auth,
+        // invalid documents and conflicts still require explicit attention.
+        if (!retryablePause.current) return;
+        if (retryAt.current > Date.now()) {schedule(Math.max(10_000, retryAt.current - Date.now()));return;}
+        autoRetryPaused.current = false;
+        retryablePause.current = false;
+      }
+      if (dirty.current && retryAt.current > Date.now()) {schedule(Math.max(10_000, retryAt.current - Date.now()));return;}
+      // A pending edit must go through revision-aware save reconciliation;
+      // replacing it with a fresh GET could discard work typed during recovery.
+      const operation = dirty.current ? saveRef.current() : loadRef.current(false, true);
+      void operation.finally(() => { if (refreshNeeded.current) schedule(); });
+    }, delay);
+  }, []);
 
   const persistRecovery = useCallback((): Promise<boolean> => {
     if (!scope.current || !dirty.current) return Promise.resolve(true);
@@ -172,7 +200,7 @@ export function useEditorLibrary(expectedScope?: string) {
   }, []);
 
   const save = useCallback(async () => {
-    if (!loaded.current || !dirty.current || conflict.current || autoRetryPaused.current) return;
+    if (!loaded.current || !dirty.current || conflict.current || autoRetryPaused.current || backgroundRead.current) return;
     if (inFlight.current) return inFlight.current;
     if (typeof navigator !== "undefined" && !navigator.onLine) { setStatus("offline"); return; }
     // Live document operations have their own atomic CRDT persistence. Ordinary
@@ -256,6 +284,8 @@ export function useEditorLibrary(expectedScope?: string) {
           );
         }
         const remote = parseLibrary(data.library) ?? sentLibrary;
+        refreshNeeded.current = false;
+        retryablePause.current = false;
         retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;
         const localLive = current.current.designs.find(document => document.id === liveDocumentId.current);
         const localOrdinary = localLive ? {...current.current, designs: current.current.designs.map(document => document.id === localLive.id ? sentLibrary.designs.find(saved => saved.id === document.id) ?? document : document)} : current.current;
@@ -283,8 +313,11 @@ export function useEditorLibrary(expectedScope?: string) {
         }
       } catch (cause) {
         const networkFailure=cause instanceof TypeError||cause instanceof DOMException&&['TimeoutError','NetworkError'].includes(cause.name);
-        const delay=!conflict.current&&(retryable||networkFailure)&&navigator.onLine?saveRetryDelay(retryAttempts.current,Math.random(),retryAfter):null;
-        autoRetryPaused.current=delay===null&&navigator.onLine;retryAt.current=delay===null?0:Date.now()+delay;
+        const canRetry = !conflict.current && (retryable || networkFailure) && navigator.onLine;
+        const delay=canRetry?saveRetryDelay(retryAttempts.current,Math.random(),retryAfter):null;
+        retryablePause.current = delay === null && canRetry;
+        autoRetryPaused.current=delay===null&&navigator.onLine;
+        retryAt.current=delay===null?(retryablePause.current?Date.now()+Math.max(10_000,Math.min(60_000,Math.max(0,retryAfter??0)*1000)):0):Date.now()+delay;
         if(delay!==null){retryAttempts.current++;if(timer.current)clearTimeout(timer.current);timer.current=setTimeout(()=>void saveRef.current(),delay);}
         if (mounted.current) {
           setStatus(typeof navigator !== "undefined" && !navigator.onLine ? "offline" : conflict.current ? "conflict" : "error");
@@ -319,14 +352,19 @@ export function useEditorLibrary(expectedScope?: string) {
     saveRef.current = save;
   }, [save]);
 
-  const load = useCallback(async (discardPending = false) => {
+  const load = useCallback(async (discardPending = false, backgroundRequest = false) => {
     const previousLibrary = current.current;
+    const initialRevision = revision.current;
+    const background = backgroundRequest && loaded.current && !discardPending;
+    const cachedFirst = preferCached.current && !loaded.current && !discardPending;
+    backgroundRead.current = background;
     loadController.current?.abort();
     const controller = new AbortController();
     loadController.current = controller;
-    if (timer.current) clearTimeout(timer.current);
-    loaded.current = false;retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;
-    if (mounted.current) {
+    if (!background && timer.current) clearTimeout(timer.current);
+    if (!background) loaded.current = false;
+    retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;retryablePause.current=false;
+    if (mounted.current && !background) {
       setCanEdit(false);
       setStatus("loading");
       setError(null);
@@ -342,17 +380,44 @@ export function useEditorLibrary(expectedScope?: string) {
     try {
       let remote: RemoteLibrary | null = null;
       let offline = false;
+      if (cachedFirst && trustedScope.current) {
+        remote = await getCachedWorkspace(trustedScope.current).catch(cause => {
+          if (cause instanceof RecoveryMigrationError) throw cause;
+          return null;
+        });
+        offline = Boolean(remote);
+      }
+      let retryableLoad = false;
+      let rejectedAccess = false;
       try {
-        const result = await fetch(`${ENDPOINT}?packed=1`, {cache: "no-store", signal: controller.signal});
-        const body = await result.json();
-        if (!result.ok) {
-          if (result.status === 401) clearCachedWorkspaceSelection();
-          throw new Error(responseError(body, "Your library could not be loaded."));
+        if (!remote) {
+          const result = await fetch(`${ENDPOINT}?packed=1`, {cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)])});
+          retryableLoad = result.status === 429 || result.status >= 500;
+          rejectedAccess = result.status === 401 || result.status === 403;
+          const body = await result.json().catch(cause => {
+            // A 200 response can still lose its connection while its large
+            // body is streaming. Keep that retryable instead of treating a
+            // cancelled read as a corrupt library and disabling cached edits.
+            if (cause instanceof SyntaxError) return null;
+            throw cause;
+          });
+          if (!result.ok) {
+            if (result.status === 401) clearCachedWorkspaceSelection();
+            throw new Error(responseError(body, "Your library could not be loaded."));
+          }
+          remote = remoteLibrary(body);
         }
-        remote = remoteLibrary(body);
       } catch (cause) {
         if (controller.signal.aborted) return;
-        if (!(cause instanceof TypeError) && navigator.onLine) throw cause;
+        if (rejectedAccess) throw cause;
+        const networkFailure = cause instanceof TypeError || cause instanceof DOMException && ["TimeoutError", "NetworkError"].includes(cause.name);
+        if (!retryableLoad && !networkFailure && navigator.onLine) throw cause;
+        if (background) {
+          refreshNeeded.current = true;
+          if (mounted.current) {setStatus("offline");setError("Cloud connection is unavailable. Your edits are kept in this browser; reconnecting automatically.");}
+          scheduleReconnect();
+          return;
+        }
         remote = await getCachedWorkspace(trustedScope.current || scope.current); offline = true;
         if (!remote) throw new Error("No offline copy is available in this browser. Connect once to open your workspace.");
       }
@@ -362,14 +427,6 @@ export function useEditorLibrary(expectedScope?: string) {
         );
       if (controller.signal.aborted) return;
       if (trustedScope.current && remote.scope !== trustedScope.current) { clearCachedWorkspaceSelection(); throw new Error("The signed-in account changed. Reload this page to open the correct workspace. Pending edits remain in the original browser recovery store."); }
-      trustedScope.current = remote.scope;
-      scope.current = remote.scope;
-      baseline.current = remote.library;
-      knownAssets.current = new Set(remote.assetKeys);
-      pendingSave.current = null;
-      if (!offline) await cacheWorkspace(remote).catch(() => undefined);
-      revision.current = remote.revision;
-      storage.current = remote.storage;
       tabId.current ||= browserTabId();
       let draft: RecoveryDraft | undefined;
       try {
@@ -377,7 +434,7 @@ export function useEditorLibrary(expectedScope?: string) {
           await backupQueue.current;
           await removeExactDraft(discardedOwn);
           if (discardedRecovered) await removeExactDraft(discardedRecovered);
-        } else {
+        } else if (!background) {
           const drafts = await getRecoveryDrafts(remote.scope);
           draft =
             drafts.find(
@@ -390,13 +447,33 @@ export function useEditorLibrary(expectedScope?: string) {
         backupFailure.current = true;
       }
       if (controller.signal.aborted) return;
+      if (background && revision.current !== initialRevision) {
+        // Live collaboration may acknowledge a newer revision during the GET.
+        // Keep that confirmed state and fetch again instead of rolling it back.
+        refreshNeeded.current = true;
+        scheduleReconnect();
+        return;
+      }
+      if (background && dirty.current) {
+        // Snapshot only after every read has finished, so typing while the
+        // server was responding is included in the three-way merge below.
+        draft = {key: `${scope.current}:${tabId.current}`, scope: scope.current, library: current.current, baseline: baseline.current, revision: revision.current, stamp: stamp.current, updatedAt: Date.now()};
+      }
+      trustedScope.current = remote.scope;
+      scope.current = remote.scope;
+      baseline.current = remote.library;
+      knownAssets.current = new Set(remote.assetKeys);
+      pendingSave.current = null;
+      revision.current = remote.revision;
+      storage.current = remote.storage;
+      refreshNeeded.current = offline;
       // A save can reach the server just before the browser closes. If so,
       // matching content proves the pending recovery copy has already landed.
       if (
         draft &&
         sameContent(draft.library, remote.library)
       ) {
-        await removeExactDraft(draft).catch(() => undefined);
+        void removeExactDraft(draft).catch(() => undefined);
         draft = undefined;
       }
       recovered.current = draft ?? null;
@@ -417,6 +494,7 @@ export function useEditorLibrary(expectedScope?: string) {
         // also contains newer edits. Retire only the adopted snapshot.
         else await clearSavedRecovery(stamp.current);
       }
+      if (!offline && baseline.current === remote.library && revision.current === remote.revision) await cacheWorkspace(remote).catch(() => undefined);
       loaded.current = true;
       if (mounted.current) {
         updateLibrary(current.current);
@@ -447,8 +525,11 @@ export function useEditorLibrary(expectedScope?: string) {
         timer.current = setTimeout(() => {
           void saveRef.current();
         }, 600);
+      if (offline) scheduleReconnect(250);
     } catch (cause) {
       if (controller.signal.aborted || !mounted.current) return;
+      refreshNeeded.current = false;
+      if (background) conflict.current = true;
       setReady(true);
       setCanEdit(false);
       setStatus("error");
@@ -457,8 +538,12 @@ export function useEditorLibrary(expectedScope?: string) {
           ? cause.message
           : "Your library could not be loaded. Retry before editing.",
       );
+    } finally {
+      if (loadController.current === controller) backgroundRead.current = false;
     }
-  }, [bumpChangedDocuments, persistRecovery, clearSavedRecovery]);
+  }, [bumpChangedDocuments, persistRecovery, clearSavedRecovery, scheduleReconnect]);
+
+  useEffect(() => { loadRef.current = load; }, [load]);
 
   useEffect(() => {
     mounted.current = true;
@@ -467,6 +552,7 @@ export function useEditorLibrary(expectedScope?: string) {
       mounted.current = false;
       loadController.current?.abort();
       if (timer.current) clearTimeout(timer.current);
+      if (reconnectTimer.current) clearTimeout(reconnectTimer.current);
     };
   }, [load]);
 
@@ -516,7 +602,7 @@ export function useEditorLibrary(expectedScope?: string) {
   );
 
   const retrySave = useCallback(() => {
-    retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;
+    retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;retryablePause.current=false;
     if (!loaded.current) {
       void load();
       return;
@@ -576,7 +662,7 @@ export function useEditorLibrary(expectedScope?: string) {
       // cache. Refresh its revision before accepting the next edit.
       if (event.persisted) void load();
     };
-    const online = () => { retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;if (dirty.current) void saveRef.current(); else void load(); };
+    const online = () => { retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;retryablePause.current=false;if (dirty.current) void saveRef.current(); else void load(); };
     const offline = () => { if (mounted.current) setStatus("offline"); };
     window.addEventListener("online", online);
     window.addEventListener("offline", offline);
