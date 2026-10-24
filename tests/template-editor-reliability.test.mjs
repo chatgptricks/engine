@@ -330,7 +330,15 @@ test('inactive texture resources and parked images do not block the source memor
 test('live owner feedback polling sends revisions, pauses hidden tabs and aborts after panel close',async()=>{
  const {watchReviewFeedback}=load('lib/template-editor/review-feedback-poller.ts'),calls=[],updates=[];let visible=false;
  const stop=watchReviewFeedback([{id:'review',token:'token'}],(id,comments)=>updates.push([id,comments]),message=>assert.fail(message),{interval:10,visible:()=>visible,fetcher:async url=>{calls.push(url);return Response.json(calls.length===1?{revision:'R1',comments:[{id:'C',text:'New comment'}]}:{revision:'R1',notModified:true});}});
- await new Promise(resolve=>setTimeout(resolve,15));assert.equal(calls.length,0);visible=true;await new Promise(resolve=>setTimeout(resolve,25));stop();const count=calls.length;assert.equal(updates.length,1);assert.ok(calls.at(-1).includes('since=R1'));await new Promise(resolve=>setTimeout(resolve,20));assert.equal(calls.length,count);
+ try{
+  await pause(15);assert.equal(calls.length,0);visible=true;
+  // Parallel compilation can delay multiple timer turns beyond 25 ms. Wait
+  // for the actual conditional request, with a deadline for a broken poller.
+  const deadline=performance.now()+5000;
+  while(!calls.some(url=>url.includes('since=R1'))&&performance.now()<deadline)await pause(5);
+  assert.equal(updates.length,1);assert.ok(calls.some(url=>url.includes('since=R1')),'Polling did not send the acknowledged revision within five seconds');
+ }finally{stop();}
+ const count=calls.length;await pause(20);assert.equal(calls.length,count);
 });
 test('closing an owner feedback panel discards its in-flight response',async()=>{
  const {watchReviewFeedback}=load('lib/template-editor/review-feedback-poller.ts');let resolve,changed=0;
