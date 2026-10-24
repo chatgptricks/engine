@@ -91,12 +91,85 @@ test('a background GET cannot roll back a newer live collaboration acknowledgmen
  assert.equal(run.cached.length,1);assert.equal(run.cached[0].revision,'live-new');assert.ok([...run.scheduled.values()].some(timer=>timer.delay===10000));
 });
 
+test('an older failed library refresh cannot replace a real cloud acknowledgment, even at the same revision',async t=>{
+ for(const revision of ['old','new-live'])for(const failure of ['timeout','503'])await t.test(`${revision} ${failure}`,async t=>{
+  onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='c'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let finish,reject,calls=0;
+  const refreshed={...remote,library:{...library,designs:[...library.designs,doc()]},revision:'full-refresh'};
+  const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:()=>++calls===1?new Promise((yes,no)=>{finish=yes;reject=no;}):Promise.resolve(Response.json(refreshed))});
+  await run.fire(250);const document=library.designs[0];run.render().receiveLiveDocument(document,document,{scope,revision,storage:'cloud',assetKeys:[]});assert.equal(run.render().status,'saved');
+  if(failure==='timeout')reject(new DOMException('Old read timed out','TimeoutError'));else finish(Response.json({error:'Old read unavailable'},{status:503}));await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(run.render().status,'saved');assert.equal(run.render().error,null);assert.equal(run.render().canEdit,true);assert.deepEqual(run.render().library,library);
+  assert.ok([...run.scheduled.values()].some(timer=>timer.delay===30000),'Other library changes still need a background refresh');
+  assert.equal([...run.scheduled.values()].some(timer=>timer.delay===10000),false,'Do not rapidly repeat failed full-library reads');
+  await run.fire(30000);assert.equal(calls,2);assert.equal(run.render().library.designs.length,2);assert.equal(run.render().status,'saved');assert.equal(run.cached.at(-1).revision,'full-refresh');
+ });
+});
+
+test('local undo or redo cannot turn an older document acknowledgment into new cloud proof',async t=>{
+ onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='1'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let reject;
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:()=>new Promise((yes,no)=>{reject=no;})});
+ const saved=library.designs[0],snapshot={scope,revision:'old',storage:'cloud',assetKeys:[],epoch:crypto.randomUUID(),version:1,state:'confirmed-state',document:saved,participants:[],actor:{id:'self',name:'Self',color:'#000'}};
+ run.render().receiveLiveDocument(saved,saved,snapshot);await run.fire(250);
+ const undo=structuredClone(saved);undo.caption='Local undo result';run.render().receiveLiveDocument(saved,undo,{...snapshot,participants:[]});
+ reject(new TypeError('A genuinely newer failed library read'));await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(run.render().status,'offline','Local history changes provide no new cloud acknowledgment');assert.equal(run.render().library.designs[0].caption,undo.caption);assert.ok(run.persisted.some(draft=>draft.library.designs[0].caption===undo.caption));
+});
+
+test('a fresh full document acknowledgment still counts when its confirmed revision and artwork are unchanged',async t=>{
+ onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='2'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let reject;
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:()=>new Promise((yes,no)=>{reject=no;})});
+ const saved=library.designs[0],snapshot={scope,revision:'old',storage:'cloud',assetKeys:[],epoch:crypto.randomUUID(),version:1,state:'confirmed-state',document:saved,participants:[],actor:{id:'self',name:'Self',color:'#000'}};
+ run.render().receiveLiveDocument(saved,saved,snapshot);await run.fire(250);
+ const freshSaved=structuredClone(saved);run.render().receiveLiveDocument(freshSaved,freshSaved,{...snapshot,document:freshSaved});
+ reject(new DOMException('Older full read expired','TimeoutError'));await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(run.render().status,'saved');assert.equal(run.render().error,null);assert.equal(run.render().canEdit,true);
+});
+
+test('a browser without cached artwork allows the backend storage budget before timing out its first read',async t=>{
+ onlineBrowser(t);const deadlines=[];t.mock.method(AbortSignal,'timeout',delay=>{const controller=new AbortController();deadlines.push({controller,delay});return controller.signal;});
+ const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='3'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let finish;
+ const run=await recoveredWorkspace(t,{remote,preferCached:true,loadRequest:()=>new Promise(resolve=>{finish=resolve;})});
+ assert.equal(run.state.ready,false);assert.equal(deadlines[0].delay,45000);finish(Response.json(remote));await new Promise(resolve=>setImmediate(resolve));assert.equal(run.render().status,'saved');assert.equal(run.render().canEdit,true);
+});
+
+test('a stale library read failure also preserves newer pending edits and a newer save error',async t=>{
+ for(const status of ['saving','error'])await t.test(status,async t=>{
+  onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='d'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let reject;
+  const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:()=>new Promise((yes,no)=>{reject=no;})});
+  await run.fire(250);run.render().receiveLiveDocument(library.designs[0],library.designs[0],{scope,revision:'old',storage:'cloud',assetKeys:[]});
+  if(status==='saving'){const edited=structuredClone(library);edited.designs[0].caption='New pending edit';run.render().setLibrary(edited);}else run.render().liveError('Newer document save needs attention');
+  reject(new TypeError('Old background request disconnected'));await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(run.render().status,status);assert.equal(run.render().canEdit,true);
+  if(status==='saving')assert.equal(run.render().library.designs[0].caption,'New pending edit');else assert.equal(run.render().error,'Newer document save needs attention');
+ });
+});
+
+test('an edit whose autosave waited for a background read resumes before the full-read retry cooldown',async t=>{
+ onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='4'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let finish;
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:()=>new Promise(resolve=>{finish=resolve;}),saveRequest:async()=>Response.json({scope,revision:'saved-after-read',storage:'cloud'})});
+ await run.fire(250);const edited=structuredClone(library);edited.designs[0].caption='Save promptly after the read';run.render().setLibrary(edited);await run.fire(600);assert.equal(run.requests.length,1,'Never run the ordinary save concurrently with the library read');
+ finish(Response.json({error:'Read unavailable'},{status:503}));await new Promise(resolve=>setImmediate(resolve));assert.ok([...run.scheduled.values()].some(timer=>timer.delay===30000));
+ await run.fire(600);const deadline=performance.now()+5000;while(run.requests.length<2&&performance.now()<deadline)await pause(5);
+ assert.equal(run.requests.length,2);assert.equal(run.requests[1].method,'PUT');assert.equal(run.render().library.designs[0].caption,edited.designs[0].caption);
+ assert.ok(JSON.parse(run.requests[1].body).patch.collections.designs.some(change=>change.value?.caption===edited.designs[0].caption),'The resumed save must carry the edit made during the background read');
+});
+
+test('a newer document acknowledgment never suppresses rejected access, owner changes, or malformed library data',async t=>{
+ for(const failure of ['401','403','scope','malformed'])await t.test(failure,async t=>{
+  onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='e'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let finish;
+  const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:()=>new Promise(resolve=>{finish=resolve;})});
+  await run.fire(250);run.render().receiveLiveDocument(library.designs[0],library.designs[0],{scope,revision:'old',storage:'cloud',assetKeys:[]});
+  finish(failure==='scope'?Response.json({...remote,scope:'0'.repeat(64)}):failure==='malformed'?Response.json({}):Response.json({error:'Access rejected'},{status:Number(failure)}));await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(run.render().status,'error');assert.equal(run.render().canEdit,false);assert.deepEqual(run.render().library,library);assert.equal([...run.scheduled.values()].some(timer=>timer.delay===30000),false);
+ });
+});
+
 test('background reconnect is bounded and preserves an editable cache on timeout',async t=>{
  onlineBrowser(t);const deadlines=[];t.mock.method(AbortSignal,'timeout',delay=>{const controller=new AbortController();deadlines.push({controller,delay});return controller.signal;});
  const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='4'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};
  const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:options=>new Promise((resolve,reject)=>{options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});})});
- await run.fire(250);assert.equal(deadlines[0].delay,15000);deadlines[0].controller.abort(new DOMException('Slow backend','TimeoutError'));await new Promise(resolve=>setImmediate(resolve));
- assert.equal(run.render().status,'offline');assert.equal(run.render().canEdit,true);assert.deepEqual(run.render().library,library);assert.ok([...run.scheduled.values()].some(timer=>timer.delay===10000));
+ await run.fire(250);assert.equal(deadlines[0].delay,45000);deadlines[0].controller.abort(new DOMException('Slow backend','TimeoutError'));await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(run.render().status,'offline');assert.equal(run.render().canEdit,true);assert.deepEqual(run.render().library,library);assert.ok([...run.scheduled.values()].some(timer=>timer.delay===30000));
 });
 
 test('a successful response whose body times out keeps the cached workspace editable and retries',async t=>{
@@ -106,10 +179,10 @@ test('a successful response whose body times out keeps the cached workspace edit
   controller.enqueue(new TextEncoder().encode('{"library":'));
   options.signal.addEventListener('abort',()=>controller.error(options.signal.reason),{once:true});
  }}),{status:200,headers:{'Content-Type':'application/json'}}))});
- await run.fire(250);assert.equal(run.render().canEdit,true);assert.equal(deadlines[0].delay,15000);
+ await run.fire(250);assert.equal(run.render().canEdit,true);assert.equal(deadlines[0].delay,45000);
  deadlines[0].controller.abort(new DOMException('Response body stalled','TimeoutError'));await new Promise(resolve=>setImmediate(resolve));
  assert.equal(run.render().status,'offline');assert.equal(run.render().canEdit,true);assert.deepEqual(run.render().library,library);
- assert.equal(run.cached.length,0);assert.ok([...run.scheduled.values()].some(timer=>timer.delay===10000));
+ assert.equal(run.cached.length,0);assert.ok([...run.scheduled.values()].some(timer=>timer.delay===30000));
 });
 
 test('cached pending work resumes after exhausted transient retries and the reconnect cooldown',async t=>{

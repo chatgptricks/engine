@@ -126,6 +126,10 @@ export function useEditorLibrary(expectedScope?: string, options: {preferCached?
   const reconnectTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshNeeded = useRef(false);
   const backgroundRead = useRef(false);
+  // A first full document ACK can confirm the cached revision unchanged.
+  // Count durable acknowledgments, rather than relying on revision changes.
+  const durableAcknowledgment = useRef(0);
+  const acknowledgedDocument = useRef<{saved: DesignDocument; scope: string; revision: string | null; epoch: string; version: number; state: string} | null>(null);
   const liveDocumentId = useRef<string | undefined>(undefined);
 
   const scheduleReconnect = useCallback(function schedule(delay = 10_000) {
@@ -284,6 +288,7 @@ export function useEditorLibrary(expectedScope?: string, options: {preferCached?
           );
         }
         const remote = parseLibrary(data.library) ?? sentLibrary;
+        durableAcknowledgment.current++;
         refreshNeeded.current = false;
         retryablePause.current = false;
         retryAttempts.current=0;retryAt.current=0;autoRetryPaused.current=false;
@@ -355,6 +360,7 @@ export function useEditorLibrary(expectedScope?: string, options: {preferCached?
   const load = useCallback(async (discardPending = false, backgroundRequest = false) => {
     const previousLibrary = current.current;
     const initialRevision = revision.current;
+    let initialAcknowledgment = durableAcknowledgment.current;
     const background = backgroundRequest && loaded.current && !discardPending;
     const cachedFirst = preferCached.current && !loaded.current && !discardPending;
     backgroundRead.current = background;
@@ -391,7 +397,10 @@ export function useEditorLibrary(expectedScope?: string, options: {preferCached?
       let rejectedAccess = false;
       try {
         if (!remote) {
-          const result = await fetch(`${ENDPOINT}?packed=1`, {cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(15_000)])});
+          // Cached editing remains available while the server completes its
+          // 30-second storage budget and streams the packed library response.
+          initialAcknowledgment = durableAcknowledgment.current;
+          const result = await fetch(`${ENDPOINT}?packed=1`, {cache: "no-store", signal: AbortSignal.any([controller.signal, AbortSignal.timeout(45_000)])});
           retryableLoad = result.status === 429 || result.status >= 500;
           rejectedAccess = result.status === 401 || result.status === 403;
           const body = await result.json().catch(cause => {
@@ -414,8 +423,12 @@ export function useEditorLibrary(expectedScope?: string, options: {preferCached?
         if (!retryableLoad && !networkFailure && navigator.onLine) throw cause;
         if (background) {
           refreshNeeded.current = true;
-          if (mounted.current) {setStatus("offline");setError("Cloud connection is unavailable. Your edits are kept in this browser; reconnecting automatically.");}
-          scheduleReconnect();
+          // A failed older library read cannot contradict a real document or
+          // save acknowledgment received while that read was still pending.
+          if (mounted.current && durableAcknowledgment.current === initialAcknowledgment) {setStatus("offline");setError("Cloud connection is unavailable. Your edits are kept in this browser; reconnecting automatically.");}
+          // Let an aborted backend read finish before starting another large
+          // JSONB read. This cooldown does not delay pending save retries.
+          scheduleReconnect(30_000);
           return;
         }
         remote = await getCachedWorkspace(trustedScope.current || scope.current); offline = true;
@@ -539,7 +552,15 @@ export function useEditorLibrary(expectedScope?: string, options: {preferCached?
           : "Your library could not be loaded. Retry before editing.",
       );
     } finally {
-      if (loadController.current === controller) backgroundRead.current = false;
+      if (loadController.current === controller) {
+        backgroundRead.current = false;
+        // A typing timer may have fired while the background read blocked
+        // writes. Resume that dirty save independently of the read cooldown.
+        if (background && dirty.current && !conflict.current && !inFlight.current && mounted.current) {
+          const delay = autosaveDelay(retryAt.current, autoRetryPaused.current);
+          if (delay !== null) {if (timer.current) clearTimeout(timer.current); timer.current = setTimeout(() => void saveRef.current(), delay);}
+        }
+      }
     }
   }, [bumpChangedDocuments, persistRecovery, clearSavedRecovery, scheduleReconnect]);
 
@@ -624,6 +645,13 @@ export function useEditorLibrary(expectedScope?: string, options: {preferCached?
     const next = {...current.current, designs: current.current.designs.map(document => document.id === visible.id ? visible : document)};
     const parsed = validateLibraryMutation(current.current, next);
     if (!parsed || !checkLibrarySaveBudget(parsed).ok) {setMutationError("Live edits exceed this workspace's limits. Your browser recovery remains available."); return;}
+    const previousAcknowledgment = acknowledgedDocument.current;
+    // Undo/redo reuses the last server document and snapshot. A fresh JSON
+    // document ACK has its own saved object, even at an unchanged revision.
+    if (!previousAcknowledgment || previousAcknowledgment.saved !== saved || previousAcknowledgment.scope !== snapshot.scope || previousAcknowledgment.revision !== snapshot.revision || previousAcknowledgment.epoch !== snapshot.epoch || previousAcknowledgment.version !== snapshot.version || previousAcknowledgment.state !== snapshot.state) {
+      durableAcknowledgment.current++;
+      acknowledgedDocument.current = {saved, scope: snapshot.scope, revision: snapshot.revision, epoch: snapshot.epoch, version: snapshot.version, state: snapshot.state};
+    }
     baseline.current = {...baseline.current, designs: baseline.current.designs.map(document => document.id === saved.id ? saved : document)};
     current.current = parsed;
     revision.current = snapshot.revision; storage.current = snapshot.storage;
