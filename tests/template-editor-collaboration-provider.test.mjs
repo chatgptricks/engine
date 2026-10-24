@@ -209,6 +209,20 @@ test("late presence from an old epoch and mismatched resume metadata cannot repl
  }finally{client.dispose();first.doc.destroy();second.doc.destroy();}
 });
 
+test("a stale same-epoch presence poll cannot trigger another full download after a newer document ACK",async()=>{
+ const original=fixture(),shared=room(original),client=harness(original),initial=shared.snapshot(1);
+ try{
+  await client.start(initial);await client.clock.advance(70);const awareness=client.requests[0];
+  const local=structuredClone(original);local.caption="Confirmed newer artwork";client.controls.submitDocument(original,local);
+  awareness.respond({presenceOnly:true,scope,epoch:initial.epoch,version:initial.version,revision:initial.revision,actor:initial.actor,participants:[]});await settle();await client.clock.advance(70);
+  const edit=client.requests[1];Y.applyUpdate(shared.doc,protocol.decodeCollaborationUpdate(edit.body.update));const confirmed=shared.snapshot(2);edit.respond(confirmed);await settle();client.render();
+  const streams=client.streams.length,deliveries=client.deliveries.length;
+  client.streams.at(-1).emit("presence",{scope,epoch:initial.epoch,version:initial.version,revision:initial.revision,actor:initial.actor,participants:[{id:"stale",sessionId:crypto.randomUUID(),name:"Stale peer",color:"#7c3aed",selected:[],seenAt:Date.now()}]});client.render();
+  assert.equal(client.streams.length,streams,"Do not download the full document for an older poll event");assert.equal(client.deliveries.length,deliveries,"Presence cannot acknowledge or replace artwork");assert.equal(client.controls.peers.length,0);assert.equal(client.controls.status,"live");assert.equal(client.visible.caption,local.caption);
+  client.event("online");const params=new URL(client.streams.at(-1).url,"https://pages.test").searchParams;assert.equal(params.get("knownVersion"),"2");assert.equal(params.get("knownRevision"),confirmed.revision,"Retain only metadata from the real document ACK");
+ }finally{client.dispose();shared.doc.destroy();}
+});
+
 test("legacy full JSON document acknowledgments remain compatible with the presence opt-in",async()=>{
  const original=fixture(),shared=room(original),client=harness(original);
  try{

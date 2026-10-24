@@ -171,6 +171,11 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
         try {
           const presence = JSON.parse(event.data);
           const resumed = presence.epoch !== undefined || presence.version !== undefined || presence.revision !== undefined;
+          const confirmed = snapshotRef.current;
+          // A poll can capture presence just before a real document POST
+          // acknowledges a newer version. Ignore that older event instead of
+          // downloading the same image-heavy document again.
+          if (confirmed?.scope === scope && confirmed.document.id === documentId && presence.scope === scope && presence.epoch === confirmed.epoch && Number.isSafeInteger(presence.version) && presence.version >= 0 && presence.version < confirmed.version && (presence.revision === null || typeof presence.revision === "string")) return;
           if (!receivePresence(presence, resumed) && resumed) {setStatus(navigator.onLine ? "reconnecting" : "offline"); connect(false);}
         } catch { /* The document stream remains the authoritative state. */ }
       });
