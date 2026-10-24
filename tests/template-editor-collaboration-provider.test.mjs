@@ -142,6 +142,82 @@ test("an initial collaboration access error stays visible instead of reverting t
  }finally{client.dispose();}
 });
 
+test("small awareness acknowledgments update peers without acknowledging artwork or advancing confirmed metadata",async()=>{
+ const original=fixture(),shared=room(original),client=harness(original),initial=shared.snapshot();
+ try{
+  await client.start(initial);await client.clock.advance(70);const awareness=client.requests[0];
+  assert.equal(awareness.body.presenceOnly,true);assert.equal(awareness.body.update,undefined);assert.ok(JSON.stringify(awareness.body).length<2000);
+  const local=structuredClone(original);local.caption="Pending while presence responds";client.controls.submitDocument(original,local);
+  const deliveries=client.deliveries.length,participants=[{id:"bruno",sessionId:crypto.randomUUID(),name:"Bruno",color:"#7c3aed",selected:[],cursor:null,seenAt:Date.now()}];
+  awareness.respond({presenceOnly:true,scope,epoch:initial.epoch,version:99,revision:"unconfirmed-new-revision",actor:initial.actor,participants});
+  await settle();client.render();assert.equal(client.deliveries.length,deliveries,"Only a document acknowledgment may retire browser recovery");assert.equal(client.controls.peers[0].name,"Bruno");
+  client.event("online");const resumed=new URL(client.streams.at(-1).url,"https://pages.test");
+  assert.equal(resumed.searchParams.get("knownEpoch"),initial.epoch);assert.equal(resumed.searchParams.get("knownVersion"),String(initial.version));assert.equal(resumed.searchParams.get("knownRevision"),initial.revision,"Presence must not advance the confirmed document revision");
+  await client.clock.advance(70);const edit=client.requests[1];assert.ok(edit.body.update);assert.equal(edit.body.presenceOnly,undefined);
+  Y.applyUpdate(shared.doc,protocol.decodeCollaborationUpdate(edit.body.update));assert.equal(protocol.readCollaborationDocument(shared.doc).caption,local.caption);
+ }finally{client.dispose();shared.doc.destroy();}
+});
+
+test("a successful small presence retry restores live status and immediately flushes artwork queued during that retry",async()=>{
+ const original=fixture(),shared=room(original),client=harness(original),initial=shared.snapshot();
+ try{
+  await client.start(initial);await client.clock.advance(70);client.requests[0].reject();await settle();client.render();assert.equal(client.controls.status,"reconnecting");
+  await client.clock.advance(1000);const retried=client.requests[1];assert.equal(retried.body.presenceOnly,true);
+  const local=structuredClone(original);local.caption="Send immediately after the presence retry";client.controls.submitDocument(original,local);const deliveries=client.deliveries.length;
+  retried.respond({presenceOnly:true,scope,epoch:initial.epoch,version:initial.version,revision:initial.revision,actor:initial.actor,participants:[]});await settle();client.render();
+  assert.equal(client.controls.status,"live");assert.equal(client.deliveries.length,deliveries);await client.clock.advance(70);
+  const edit=client.requests[2];assert.ok(edit?.body.update,"Do not leave pending artwork waiting until the next heartbeat");Y.applyUpdate(shared.doc,protocol.decodeCollaborationUpdate(edit.body.update));assert.equal(protocol.readCollaborationDocument(shared.doc).caption,local.caption);
+ }finally{client.dispose();shared.doc.destroy();}
+});
+
+test("a resumed presence event restores live status while preserving unsent local edits and recovery",async()=>{
+ const original=fixture(),shared=room(original),client=harness(original),initial=shared.snapshot();
+ try{
+  await client.start(initial);const local=structuredClone(original);local.caption="Keep this unsent edit";client.controls.submitDocument(original,local);
+  const deliveries=client.deliveries.length;client.streams[0].onerror(new Event("error"));client.render();assert.equal(client.controls.status,"reconnecting");
+  await client.clock.advance(1200);const stream=client.streams.at(-1),params=new URL(stream.url,"https://pages.test").searchParams;
+  assert.equal(params.get("knownEpoch"),initial.epoch);assert.equal(params.get("knownVersion"),String(initial.version));assert.equal(params.get("knownRevision"),initial.revision);
+  stream.emit("presence",{scope,epoch:initial.epoch,version:initial.version,revision:initial.revision,actor:initial.actor,participants:[]});client.render();
+  assert.equal(client.controls.status,"live");assert.equal(client.controls.ready,true);assert.equal(client.deliveries.length,deliveries);
+  const edit=client.requests.find(request=>request.body.update);assert.ok(edit);Y.applyUpdate(shared.doc,protocol.decodeCollaborationUpdate(edit.body.update));assert.equal(protocol.readCollaborationDocument(shared.doc).caption,local.caption);
+ }finally{client.dispose();shared.doc.destroy();}
+});
+
+test("a presence generation conflict reconnects a full snapshot and rebases pending edits instead of pausing",async()=>{
+ const original=fixture(),first=room(original),replacement=structuredClone(original);replacement.name="New remote generation";const second=room(replacement),client=harness(original);
+ try{
+  await client.start(first.snapshot());await client.clock.advance(70);const awareness=client.requests[0];assert.equal(awareness.body.presenceOnly,true);
+  const local=structuredClone(original);local.caption="Pending across the generation change";client.controls.submitDocument(original,local);
+  awareness.respond({code:"generation_changed",error:"Reconnect the document generation"},409);await settle();client.render();
+  assert.equal(client.controls.status,"reconnecting");assert.equal(client.streams.length,2);assert.equal(new URL(client.streams[1].url,"https://pages.test").searchParams.has("knownEpoch"),false,"A generation conflict must demand the full baseline");
+  await client.clock.advance(500);assert.equal(client.requests.length,1,"Do not resend old-epoch presence while the new baseline is opening");
+  client.streams[1].emit("snapshot",second.snapshot());client.render();await client.clock.advance(70);
+  const edit=client.requests[1];assert.ok(edit.body.update);assert.equal(edit.body.epoch,second.epoch);
+  Y.applyUpdate(second.doc,protocol.decodeCollaborationUpdate(edit.body.update));const saved=protocol.readCollaborationDocument(second.doc);assert.equal(saved.caption,local.caption);assert.equal(saved.name,replacement.name);
+  edit.respond(second.snapshot(2));await settle();client.render();assert.equal(client.controls.status,"live");assert.equal(client.errors.length,0);
+ }finally{client.dispose();first.doc.destroy();second.doc.destroy();}
+});
+
+test("late presence from an old epoch and mismatched resume metadata cannot replace the current document",async()=>{
+ const original=fixture(),first=room(original),replacement=structuredClone(original);replacement.name="Current generation";const second=room(replacement),client=harness(original),initial=first.snapshot(),updated=second.snapshot();
+ try{
+  await client.start(initial);await client.clock.advance(70);const awareness=client.requests[0];client.streams[0].emit("snapshot",updated);client.render();const deliveries=client.deliveries.length;
+  awareness.respond({presenceOnly:true,scope,epoch:initial.epoch,version:initial.version,revision:initial.revision,actor:initial.actor,participants:[{id:"stale",name:"Old peer",selected:[],sessionId:crypto.randomUUID()}]});await settle();client.render();
+  assert.equal(client.controls.peers.length,0);assert.equal(client.visible.name,replacement.name);assert.equal(client.deliveries.length,deliveries);
+  client.event("online");client.streams.at(-1).emit("presence",{scope,epoch:updated.epoch,version:updated.version,revision:"wrong-revision",actor:updated.actor,participants:[]});client.render();
+  assert.equal(client.controls.status,"reconnecting");assert.equal(new URL(client.streams.at(-1).url,"https://pages.test").searchParams.has("knownEpoch"),false);assert.equal(client.deliveries.length,deliveries);
+ }finally{client.dispose();first.doc.destroy();second.doc.destroy();}
+});
+
+test("legacy full JSON document acknowledgments remain compatible with the presence opt-in",async()=>{
+ const original=fixture(),shared=room(original),client=harness(original);
+ try{
+  await client.start(shared.snapshot());await client.clock.advance(70);const awareness=client.requests[0];assert.equal(awareness.body.presenceOnly,true);
+  const deliveries=client.deliveries.length;awareness.respond(shared.snapshot());await settle();client.render();
+  assert.equal(client.deliveries.length,deliveries+1);assert.equal(client.controls.status,"live");assert.equal(client.controls.ready,true);assert.equal(client.errors.length,0);
+ }finally{client.dispose();shared.doc.destroy();}
+});
+
 test("slow collaboration saves stay single-flight through server work and preserve edits made while waiting",async()=>{
   const original=fixture(),shared=room(original),client=harness(original);
   try{

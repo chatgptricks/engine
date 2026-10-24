@@ -14,6 +14,7 @@ test("collaboration streams defer unread updates and keep presence and document 
   const transportSource = ts.transpileModule(fs.readFileSync(new URL("../lib/template-editor/json-stream.ts", import.meta.url), "utf8"), {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText;
   vm.runInThisContext(`(function(require,module,exports){${transportSource}\n})`)(native, transport, transport.exports);
   const dependencies = {
+    "@/lib/template-editor/collaboration-metadata": {rememberCollaborationMetadata() {}, readCollaborationMetadata() {return null;}},
     "@/lib/template-editor/json-stream": transport.exports,
     "@/lib/engine/member": {resolveEngineAccess: async () => ({ownerKey: "team"})},
     "@/lib/template-editor/persistence": {
