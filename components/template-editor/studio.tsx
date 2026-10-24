@@ -77,7 +77,7 @@ export function templatePreview(template: DesignTemplate): DesignDocument {
   };
 }
 
-export default function TemplateStudio({workspaceScope}: {workspaceScope?: string}) {
+export default function TemplateStudio({workspaceScope, preferCached}: {workspaceScope?: string; preferCached?: boolean}) {
   const {
     library,
     ready,
@@ -93,7 +93,7 @@ export default function TemplateStudio({workspaceScope}: {workspaceScope?: strin
     livePending,
     liveError,
     confirmedDocument,
-  } = useEditorLibrary(workspaceScope);
+  } = useEditorLibrary(workspaceScope, {preferCached});
   const navigation = useStudioNavigation(libraryScope,ready,library.designs,library.folders);
   const {view,setView,activeId,setActiveId}=navigation;
   const [creation,setCreation]=useState<{kind:"post"|"carousel"|"template";template?:DesignTemplate;preset?:string}|null>(null);

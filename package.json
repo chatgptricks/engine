@@ -8,7 +8,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "node scripts/prepare-licensed-fonts.mjs && next build",
-    "start": "node --max-old-space-size=192 node_modules/next/dist/bin/next start",
+    "start": "node --max-old-space-size=768 node_modules/next/dist/bin/next start",
     "lint": "eslint",
     "agent:mcp": "node scripts/engine-agent-mcp.mjs",
     "test:template-editor": "node --test tests/template-editor-*.test.mjs",

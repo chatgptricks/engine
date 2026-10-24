@@ -5,10 +5,10 @@ services:
     name: engine-api
     runtime: node
     region: oregon
-    plan: free
+    plan: 1c-2g
     branch: main
     buildCommand: npm ci && npm run build
-    startCommand: node --max-old-space-size=192 node_modules/next/dist/bin/next start
+    startCommand: node --max-old-space-size=768 node_modules/next/dist/bin/next start
     healthCheckPath: /api/engine/version
     autoDeployTrigger: commit
     envVars:

@@ -62,6 +62,12 @@ function assertDevelopmentStorage() { if (process.env.NODE_ENV === "production")
 // A query-level signal covers the response body and all SDK retry attempts.
 // It also opts large GET responses out of Next's fetch deduplication/teeing.
 const CLOUD_READ_TIMEOUT_MS = 30_000, CLOUD_WRITE_TIMEOUT_MS = 45_000;
+const REVISION_COLUMNS = Symbol.for("engine.template-editor.persistence.revision-columns");
+type RevisionColumnCache = WeakMap<object, {retryAfter: number}>;
+function revisionColumns(): RevisionColumnCache {
+  const shared = globalThis as typeof globalThis & {[REVISION_COLUMNS]?: RevisionColumnCache};
+  return shared[REVISION_COLUMNS] ??= new WeakMap();
+}
 function logCloudFailure(operation: string, started: number, status: number, error: {code?: string; message?: string; details?: string}) {
   // Database messages can contain saved values. Log only known error classes,
   // a bounded provider code, and timing; never a URL, body, owner, or headers.
@@ -275,12 +281,22 @@ async function collaborationOperation(owner: string, documentId: string, update?
 export async function getCollaborationDocument(owner: string, documentId: string): Promise<StoredCollaborationDocument> {
   return withPersistenceQueue(() => collaborationOperation(owner, documentId));
 }
-/** Poll only the small revision projection; artwork is fetched when it changes. */
+/** Read stored scalar metadata so idle polling never detoasts the image-heavy
+ * JSONB workspace. Older databases remain usable while migration 0019 rolls out. */
 export async function getCollaborationRevision(owner: string): Promise<string | null> {
   const db = getAdminSupabase();
   if (!db) {assertDevelopmentStorage(); return withPersistenceQueue(async () => (await readFile(editorOwnerScope(owner)))?.revision ?? null);}
-  const started = Date.now();
-  const {data, error, status} = await db.from("gf_client_state").select("revision:data->>revision").eq("owner", storageKey(owner)).abortSignal(AbortSignal.timeout(CLOUD_READ_TIMEOUT_MS)).maybeSingle();
+  const started = Date.now(), signal = AbortSignal.timeout(CLOUD_READ_TIMEOUT_MS), columns = revisionColumns();
+  if ((columns.get(db)?.retryAfter ?? 0) <= started) {
+    const {data, error, status} = await db.from("gf_client_state").select("state_revision").eq("owner", storageKey(owner)).abortSignal(signal).maybeSingle();
+    if (!error) {columns.delete(db); return data?.state_revision ?? null;}
+    const absent = error.code === "42703" || (error.code === "PGRST204" && /state_revision/.test(error.message ?? ""));
+    if (!absent) {logCloudFailure("read-revision", started, status, error); throw new Error("Live collaboration storage is unavailable.");}
+    // Share the schema probe result between route bundles, but try again after
+    // one minute so a live migration takes effect without a server restart.
+    columns.set(db, {retryAfter: started + 60_000});
+  }
+  const {data, error, status} = await db.from("gf_client_state").select("revision:data->>revision").eq("owner", storageKey(owner)).abortSignal(signal).maybeSingle();
   if (error) {logCloudFailure("read-revision", started, status, error); throw new Error("Live collaboration storage is unavailable.");}
   return data?.revision ?? null;
 }

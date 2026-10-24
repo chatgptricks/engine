@@ -10,6 +10,9 @@ import type {DesignDocument} from "./model";
 
 type Session = CollaborationParticipant & {sequence: number; left?: boolean};
 type PresenceRecord = {revision: string; sessions: Session[]};
+// Presence is transient. Do not leave an editor request waiting indefinitely
+// when the database or a response body stalls during a provider outage.
+const PRESENCE_REQUEST_TIMEOUT_MS = 12_000;
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
 const key = (owner: string, documentId: string) => `template-collaboration-presence:${hash(`${owner}\0${documentId}`)}`;
 const directory = () => path.join(developmentDirectory("template-editor-presence"), "collaboration");
@@ -34,7 +37,7 @@ function decode(value: unknown): PresenceRecord {
 }
 async function read(owner: string, documentId: string): Promise<PresenceRecord | null> {
   const db = getAdminSupabase();
-  if (db) {const {data, error} = await db.from("gf_client_state").select("data").eq("owner", key(owner, documentId)).maybeSingle(); if (error) throw new Error("Live presence is unavailable."); return data ? decode(data.data) : null;}
+  if (db) {const {data, error} = await db.from("gf_client_state").select("data").eq("owner", key(owner, documentId)).abortSignal(AbortSignal.timeout(PRESENCE_REQUEST_TIMEOUT_MS)).maybeSingle(); if (error) throw new Error("Live presence is unavailable."); return data ? decode(data.data) : null;}
   if (process.env.NODE_ENV === "production") throw new Error("Live presence is unavailable.");
   try {return decode(JSON.parse(await fs.readFile(filename(owner, documentId), "utf8")));}
   catch (error) {if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error;}
@@ -44,8 +47,9 @@ async function write(owner: string, documentId: string, record: PresenceRecord, 
   const db = getAdminSupabase();
   if (db) {
     const row = {owner: key(owner, documentId), data: record, updated_at: new Date().toISOString()};
-    if (revision === null) {const {error} = await db.from("gf_client_state").insert(row); if (error?.code === "23505") throw new ConcurrentPresence(); if (error) throw new Error("Live presence is unavailable.");}
-    else {const {data, error} = await db.from("gf_client_state").update(row).eq("owner", row.owner).eq("data->>revision", revision).select("owner").maybeSingle(); if (error) throw new Error("Live presence is unavailable."); if (!data) throw new ConcurrentPresence();}
+    const signal = AbortSignal.timeout(PRESENCE_REQUEST_TIMEOUT_MS);
+    if (revision === null) {const {error} = await db.from("gf_client_state").insert(row).abortSignal(signal); if (error?.code === "23505") throw new ConcurrentPresence(); if (error) throw new Error("Live presence is unavailable.");}
+    else {const {data, error} = await db.from("gf_client_state").update(row).eq("owner", row.owner).eq("data->>revision", revision).select("owner").abortSignal(signal).maybeSingle(); if (error) throw new Error("Live presence is unavailable."); if (!data) throw new ConcurrentPresence();}
     return;
   }
   if (process.env.NODE_ENV === "production") throw new Error("Live presence is unavailable.");

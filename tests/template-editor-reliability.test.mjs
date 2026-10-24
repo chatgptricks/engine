@@ -19,8 +19,8 @@ const doc=()=>model.createBlankDesign('Draft','portrait');
 
 // Exercise the hook's asynchronous load path with real parsing and reconciliation.
 // Browser storage and timers stay controlled so no autosave can touch a server.
-async function recoveredWorkspace(t,{remote,drafts,cleanupError=false,saveRequest}){
- const slots=[],effects=[],scheduled=new Map(),requests=[],cached=[],removed=[],persisted=[],stored=new Map(drafts.map(draft=>[draft.key,structuredClone(draft)]));let cursor=0;
+async function recoveredWorkspace(t,{remote,drafts=[],cleanupError=false,saveRequest,loadRequest,workspaceCache=null,preferCached=false}){
+ const slots=[],effects=[],scheduled=new Map(),requests=[],cached=[],cacheReads=[],removed=[],persisted=[],stored=new Map(drafts.map(draft=>[draft.key,structuredClone(draft)]));let cursor=0;
  const changed=(slot,deps)=>!slot||!deps||deps.some((value,index)=>!Object.is(value,slot.deps?.[index]));
  const react={
   useRef(initial){const index=cursor++;return slots[index]??(slots[index]={current:initial});},
@@ -30,23 +30,135 @@ async function recoveredWorkspace(t,{remote,drafts,cleanupError=false,saveReques
  };
  const previousWindow=globalThis.window;globalThis.window={addEventListener(){},removeEventListener(){}};
  t.after(()=>{slots.forEach(slot=>slot?.cleanup?.());if(previousWindow===undefined)delete globalThis.window;else globalThis.window=previousWindow;});
- t.mock.method(globalThis,'fetch',async(url,options)=>{requests.push({url,...options});return options?.method==='PUT'&&saveRequest?saveRequest(options):Response.json(remote);});
+ t.mock.method(globalThis,'fetch',async(url,options)=>{requests.push({url,...options});return options?.method==='PUT'&&saveRequest?saveRequest(options):loadRequest?loadRequest(options):Response.json(remote);});
  t.mock.method(globalThis,'setTimeout',(callback,delay)=>{const handle={};scheduled.set(handle,{callback,delay});return handle;});
  t.mock.method(globalThis,'clearTimeout',handle=>scheduled.delete(handle));
  const {useEditorLibrary:loadWorkspaceHook}=load('lib/template-editor/use-library.ts',{
   react,'./model':model,'./library-sync':sync,'./library-budget':budget,'./incremental-validation':incremental,
   './asset-processing':{async prepareSaveOffThread(base,next,known,metadata){if(!saveRequest)assert.fail('A clean recovery must not prepare a server save.');const packed=await sync.packAssets(await sync.createLibraryPatch(base,next),known);return {...packed,body:JSON.stringify({...metadata,patch:packed.value,assets:packed.assets})};}},
   './recovery-storage':{
-   RecoveryMigrationError:class extends Error{},cacheWorkspace:async value=>{cached.push(value);},clearCachedWorkspaceSelection(){},getCachedWorkspace:async()=>null,
+   RecoveryMigrationError:class extends Error{},cacheWorkspace:async value=>{cached.push(value);},clearCachedWorkspaceSelection(){},getCachedWorkspace:async scope=>{cacheReads.push(scope);return workspaceCache;},
    getRecoveryDrafts:async scope=>[...stored.values()].filter(draft=>draft.scope===scope),
    saveRecoveryDraft:async draft=>{persisted.push(draft);stored.set(draft.key,structuredClone(draft));},
    removeExactDraft:async draft=>{removed.push({key:draft.key,stamp:draft.stamp});if(cleanupError)throw Error('Recovery cleanup unavailable');if(stored.get(draft.key)?.stamp===draft.stamp)stored.delete(draft.key);},
   },
  });
- const render=()=>{cursor=0;const state=loadWorkspaceHook(remote.scope);effects.splice(0).forEach(work=>work());return state;};
+ const render=()=>{cursor=0;const state=loadWorkspaceHook(remote.scope,{preferCached});effects.splice(0).forEach(work=>work());return state;};
  render();await new Promise(resolve=>setImmediate(resolve));
- return {state:render(),render,scheduled,requests,cached,removed,persisted,stored};
+ const fire=async delay=>{const entry=[...scheduled].find(([,item])=>item.delay===delay);assert.ok(entry,`No timer scheduled for ${delay} ms`);scheduled.delete(entry[0]);entry[1].callback();await new Promise(resolve=>setImmediate(resolve));};
+ return {state:render(),render,fire,scheduled,requests,cached,cacheReads,removed,persisted,stored};
 }
+
+function onlineBrowser(t){const before=Object.getOwnPropertyDescriptor(globalThis,'navigator');Object.defineProperty(globalThis,'navigator',{value:{onLine:true},configurable:true});t.after(()=>{if(before)Object.defineProperty(globalThis,'navigator',before);else delete globalThis.navigator;});}
+
+test('a verified scoped cache opens immediately and protects pending edits before any backend request',async t=>{
+ onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='1'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};
+ const edited=structuredClone(library);edited.designs[0].caption='Typed while disconnected';
+ const draft={key:`${scope}:closed-tab`,scope,stamp:'pending',revision:'old',updatedAt:20,baseline:library,library:edited};
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,drafts:[draft],loadRequest:()=>assert.fail('Cached startup must not await the backend')});
+ assert.equal(run.state.ready,true);assert.equal(run.state.canEdit,true);assert.equal(run.state.status,'offline');
+ assert.equal(run.state.library.designs[0].caption,edited.designs[0].caption);assert.deepEqual(run.cacheReads,[scope]);assert.equal(run.requests.length,0);
+ assert.deepEqual(run.stored.get(draft.key),draft);assert.ok([...run.scheduled.values()].some(timer=>timer.delay===250));
+});
+
+test('typing during a background reconnect merges with remote changes without a parallel stale save',async t=>{
+ onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='2'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let finish;
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:()=>new Promise(resolve=>{finish=resolve;})});
+ await run.fire(250);assert.equal(run.render().canEdit,true);assert.equal(run.requests.length,1);
+ const local=structuredClone(library);local.designs[0].caption='Typed while reconnecting';assert.equal(run.render().setLibrary(local),true);run.render().retrySave();
+ assert.equal(run.requests.length,1,'Wait for the read to reconcile before preparing a save');
+ const updated=structuredClone(library);updated.designs[0].name='Changed on another device';updated.designs.push(doc());
+ finish(Response.json({...remote,library:updated,revision:'new'}));await new Promise(resolve=>setImmediate(resolve));
+ const state=run.render();assert.equal(state.canEdit,true);assert.equal(state.library.designs[0].caption,local.designs[0].caption);assert.equal(state.library.designs[0].name,updated.designs[0].name);assert.equal(state.library.designs.length,2);
+ assert.equal(state.status,'saving');assert.ok(run.persisted.some(draft=>draft.library.designs[0].caption===local.designs[0].caption&&draft.baseline.designs[0].name===updated.designs[0].name));
+});
+
+test('temporary HTTP failure opens trusted cached work and a later reconnect confirms cloud state',async t=>{
+ onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='3'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let calls=0;
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,loadRequest:async()=>++calls===1?Response.json({error:'Upstream unavailable'},{status:503}):Response.json({...remote,revision:'reconnected'})});
+ assert.equal(run.state.status,'offline');assert.equal(run.state.canEdit,true);assert.equal(run.requests.length,1);
+ await run.fire(250);assert.equal(run.render().status,'saved');assert.equal(run.render().canEdit,true);assert.equal(run.requests.length,2);
+ assert.equal(run.cached.at(-1).revision,'reconnected');
+});
+
+test('a background GET cannot roll back a newer live collaboration acknowledgment',async t=>{
+ onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='8'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};let finish;
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:()=>new Promise(resolve=>{finish=resolve;})});
+ await run.fire(250);const document=structuredClone(library.designs[0]);document.name='Confirmed live update';
+ run.render().receiveLiveDocument(document,document,{scope,revision:'live-new',storage:'cloud',assetKeys:[]});
+ finish(Response.json(remote));await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(run.render().library.designs[0].name,document.name);assert.equal(run.render().status,'saved');assert.equal(run.render().canEdit,true);
+ assert.equal(run.cached.length,1);assert.equal(run.cached[0].revision,'live-new');assert.ok([...run.scheduled.values()].some(timer=>timer.delay===10000));
+});
+
+test('background reconnect is bounded and preserves an editable cache on timeout',async t=>{
+ onlineBrowser(t);const deadlines=[];t.mock.method(AbortSignal,'timeout',delay=>{const controller=new AbortController();deadlines.push({controller,delay});return controller.signal;});
+ const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='4'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:options=>new Promise((resolve,reject)=>{options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});})});
+ await run.fire(250);assert.equal(deadlines[0].delay,15000);deadlines[0].controller.abort(new DOMException('Slow backend','TimeoutError'));await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(run.render().status,'offline');assert.equal(run.render().canEdit,true);assert.deepEqual(run.render().library,library);assert.ok([...run.scheduled.values()].some(timer=>timer.delay===10000));
+});
+
+test('a successful response whose body times out keeps the cached workspace editable and retries',async t=>{
+ onlineBrowser(t);const deadlines=[];t.mock.method(AbortSignal,'timeout',delay=>{const controller=new AbortController();deadlines.push({controller,delay});return controller.signal;});
+ const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='9'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:options=>Promise.resolve(new Response(new ReadableStream({start(controller){
+  controller.enqueue(new TextEncoder().encode('{"library":'));
+  options.signal.addEventListener('abort',()=>controller.error(options.signal.reason),{once:true});
+ }}),{status:200,headers:{'Content-Type':'application/json'}}))});
+ await run.fire(250);assert.equal(run.render().canEdit,true);assert.equal(deadlines[0].delay,15000);
+ deadlines[0].controller.abort(new DOMException('Response body stalled','TimeoutError'));await new Promise(resolve=>setImmediate(resolve));
+ assert.equal(run.render().status,'offline');assert.equal(run.render().canEdit,true);assert.deepEqual(run.render().library,library);
+ assert.equal(run.cached.length,0);assert.ok([...run.scheduled.values()].some(timer=>timer.delay===10000));
+});
+
+test('cached pending work resumes after exhausted transient retries and the reconnect cooldown',async t=>{
+ onlineBrowser(t);let now=0,calls=0;t.mock.method(Date,'now',()=>now);t.mock.method(Math,'random',()=>0.5);
+ const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),folders:[],designs:[doc()]}),scope='a'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};
+ const edited=structuredClone(library);edited.designs[0].caption='Pending through a long provider outage';
+ const draft={key:`${scope}:closed-tab`,scope,stamp:'pending',revision:'old',updatedAt:20,baseline:library,library:edited};
+ const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,drafts:[draft],saveRequest:async()=>{
+  calls++;return calls<=7?Response.json({error:'Provider unavailable'},{status:503}):Response.json({scope,revision:'confirmed',storage:'cloud'});
+ }});
+ const settle=async()=>{const deadline=performance.now()+5000;while(run.render().status==='saving'&&performance.now()<deadline)await pause(5);assert.notEqual(run.render().status,'saving');};
+ await run.fire(600);await settle();
+ for(const delay of [1000,2000,4000,8000,16000]){now+=delay;await run.fire(delay);await settle();}
+ assert.equal(calls,6);assert.equal(run.render().canEdit,true);assert.equal(run.render().status,'error');assert.equal(run.render().library.designs[0].caption,edited.designs[0].caption);
+ await run.fire(250);assert.equal(calls,6,'Exhaustion must wait for the reconnect cooldown');
+ now+=10000;await run.fire(10000);await settle();
+ assert.equal(calls,7);assert.equal(run.render().status,'error');assert.ok([...run.scheduled.values()].every(timer=>timer.delay>=10000),'Another failure gets one cooldown, not a fresh rapid retry burst');
+ now+=10000;await run.fire(10000);await settle();
+ assert.equal(calls,8);assert.equal(run.render().status,'saved');assert.equal(run.render().library.designs[0].caption,edited.designs[0].caption);
+ assert.equal(new Set(run.requests.map(request=>request.body)).size,1,'Recovery retries retain the exact idempotent save body');
+ assert.equal(run.stored.size,0,'Pending recovery is retired only after cloud acknowledgment');
+});
+
+test('background recovery does not resume rejected authentication or invalid save requests',async t=>{
+ for(const status of [401,400])await t.test(String(status),async t=>{
+  onlineBrowser(t);const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='b'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};
+  const edited=structuredClone(library);edited.designs[0].caption='Keep this pending';
+  const draft={key:`${scope}:closed-tab`,scope,stamp:'pending',revision:'old',updatedAt:20,baseline:library,library:edited};let calls=0;
+  const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,drafts:[draft],saveRequest:async()=>{calls++;return Response.json({error:'Needs attention'},{status});}});
+  await run.fire(600);for(let attempt=0;attempt<100&&run.render().status==='saving';attempt++)await pause(1);await run.fire(250);
+  assert.equal(calls,1);assert.equal(run.render().status,'error');assert.equal(run.render().library.designs[0].caption,edited.designs[0].caption);
+  assert.equal([...run.scheduled.values()].some(timer=>timer.delay===10000),false);
+  assert.ok(run.stored.size>0);
+ });
+});
+
+test('explicit authentication rejection and a changed owner never fall back to a previous cache',async t=>{
+ onlineBrowser(t);for(const status of [401,403])await t.test(String(status),async t=>{
+  const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='5'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};
+  const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,loadRequest:async()=>Response.json({error:'Access denied'},{status})});
+  assert.equal(run.state.canEdit,false);assert.equal(run.state.status,'error');assert.equal(run.cacheReads.length,0);assert.deepEqual(run.state.library,model.EMPTY_LIBRARY);
+ });
+ await t.test('scope mismatch during background reconnect',async t=>{
+  const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),designs:[doc()]}),scope='6'.repeat(64),remote={library,revision:'old',storage:'cloud',scope};
+  const run=await recoveredWorkspace(t,{remote,workspaceCache:remote,preferCached:true,loadRequest:async()=>Response.json({...remote,scope:'7'.repeat(64)})});
+  await run.fire(250);assert.equal(run.render().canEdit,false);assert.equal(run.render().status,'error');assert.deepEqual(run.render().library,library);assert.equal(run.cached.length,0);
+  assert.equal(run.render().setLibrary({...library,designs:[]}),false);
+ });
+});
 
 test('a slow workspace save stays single-flight and keeps newer browser edits until acknowledged',async t=>{
  const previousNavigator=Object.getOwnPropertyDescriptor(globalThis,'navigator');Object.defineProperty(globalThis,'navigator',{value:{onLine:true},configurable:true});t.after(()=>{if(previousNavigator)Object.defineProperty(globalThis,'navigator',previousNavigator);else delete globalThis.navigator;});

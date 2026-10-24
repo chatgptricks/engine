@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {spawnSync} from "node:child_process";
 import {preparePagesFonts} from "./prepare-pages-fonts.mjs";
+import {preparePagesConnection} from "./prepare-pages-connection.mjs";
 const root=process.cwd(),base=process.env.ENGINE_PAGES_BASE_PATH??"/engine";
 const configured=process.env.ENGINE_API_URL;
 if(!configured)throw Error("Set ENGINE_API_URL to the verified Render backend URL.");
@@ -11,6 +12,7 @@ if(!/^\/[a-zA-Z0-9_-]+$/.test(base))throw Error("ENGINE_PAGES_BASE_PATH must be 
 await preparePagesFonts(backend.origin);
 await fs.mkdir("frontend/public",{recursive:true});
 await fs.cp("public","frontend/public",{recursive:true});
+await preparePagesConnection(backend.origin);
 const worker=(await fs.readFile("frontend/static/engine-api-worker.js","utf8")).replaceAll("__ENGINE_API_ORIGIN__",backend.origin).replaceAll("__ENGINE_BASE_PATH__",base);
 await fs.writeFile("frontend/public/engine-api-worker.js",worker);
 const result=spawnSync(process.execPath,["node_modules/next/dist/bin/next","build","frontend"],{cwd:root,stdio:"inherit",env:{...process.env,ENGINE_API_URL:backend.origin}});
