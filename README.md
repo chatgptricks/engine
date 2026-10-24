@@ -261,6 +261,8 @@ Cursor, selection and presence updates use small acknowledgments instead of retu
 
 Always-on compute is configured per service, separately from the Render workspace subscription. The optional Blueprint uses `1c-2g`; Free service instances sleep with inactivity. Supabase availability and resource limits remain independent of Render compute.
 
+On production Render, each running process uses the existing version health checks to trigger a small database read at most once every six hours, with an hourly retry after failure and a five-second query deadline. Restarting the process permits a fresh probe. This helps keep the Free Supabase project active using [documented API activity](https://supabase.com/docs/guides/platform/free-project-pausing). The probe never reads artwork or writes data, and it does not delay or change the version response. Connection results are logged without row contents or credentials.
+
 `vercel.json` is only for Vercel; Render does not run its cron schedule. Configure a separate scheduler or Render cron job if scheduled research is needed.
 
 ## Optional integrations
