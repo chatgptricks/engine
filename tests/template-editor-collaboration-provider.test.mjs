@@ -112,6 +112,36 @@ function harness(document) {
   };
 }
 
+test("an initial stream failure reports reconnecting before any document snapshot exists",async()=>{
+ const client=harness(fixture());
+ try{
+  await settle();client.render();assert.equal(client.controls.status,"connecting");
+  client.streams[0].onerror(new Event("error"));client.render();
+  assert.equal(client.controls.ready,false);assert.equal(client.controls.status,"reconnecting");
+  await client.clock.advance(1200);assert.equal(client.streams.length,2,"Retry the initial stream without requiring a page reload");
+  assert.equal(client.render().status,"reconnecting");
+ }finally{client.dispose();}
+});
+
+test("going offline before the first collaboration snapshot reports offline",async()=>{
+ const client=harness(fixture());
+ try{
+  await settle();client.render();client.offline();client.render();
+  assert.equal(client.controls.ready,false);assert.equal(client.controls.status,"offline");
+  assert.equal(client.streams[0].closed,true);assert.equal(client.deliveries.length,0);
+ }finally{client.dispose();}
+});
+
+test("an initial collaboration access error stays visible instead of reverting to connecting",async()=>{
+ const client=harness(fixture());
+ try{
+  await settle();client.render();client.streams[0].emit("error",{code:"not_found",error:"The document is no longer available."});client.render();
+  assert.equal(client.controls.ready,false);assert.equal(client.controls.status,"error");
+  assert.deepEqual(client.errors,["The document is no longer available."]);assert.equal(client.streams[0].closed,true);
+  await client.clock.advance(1500);assert.equal(client.streams.length,1,"A terminal access failure must not open a retry loop");
+ }finally{client.dispose();}
+});
+
 test("slow collaboration saves stay single-flight through server work and preserve edits made while waiting",async()=>{
   const original=fixture(),shared=room(original),client=harness(original);
   try{
