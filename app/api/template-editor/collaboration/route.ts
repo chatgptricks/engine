@@ -70,20 +70,19 @@ export async function POST(request: Request) {
       const participants = await heartbeatCollaboration(access.ownerKey, input.documentId, input.sessionId, actor, awareness, Number(input.sequence), input.leave === true);
       return reply({presenceOnly: true, ...presenceSnapshot(metadata, actor, participants)});
     }
-    let current: StoredCollaborationDocument | null = await currentDocument(access.ownerKey, input.documentId);
+    // Syntax and geometry do not depend on saved artwork. Validate them before
+    // any write, discarding membership filtering until the save returns the
+    // canonical document (which can contain newly added layers).
+    if (typeof input.update === "string") validateCollaborationAwareness(input.awareness, {id: input.documentId, pages: []});
     const actor = await collaborationActor(access, input.sessionId, input.name as string | undefined);
-    if (typeof input.update === "string") {
-      if (input.epoch !== current.epoch) return reply({error: "The live document generation changed. Reconnect before sending edits.", code: "generation_changed", snapshot: snapshot(current, actor, await readCollaborationParticipants(access.ownerKey, input.documentId))}, 409);
-    }
-    // Reject malformed presence before writing, then resolve layer membership
-    // against the saved document. The queued save owns the only Yjs replay.
-    validateCollaborationAwareness(input.awareness, current.document);
     let saved: StoredCollaborationDocument;
     if (typeof input.update === "string") {
-      current = null;
+      // The queued save already reads the current workspace and enforces its
+      // owner, epoch, document validation, budgets and revision CAS. A separate
+      // preflight would download the same image-heavy workspace a second time.
       saved = await saveCollaborationDocument(access.ownerKey, input.documentId, input.update, String(input.epoch));
       rememberCollaborationMetadata(access.ownerKey, saved);
-    } else saved = current;
+    } else saved = await currentDocument(access.ownerKey, input.documentId);
     const awareness = validateCollaborationAwareness(input.awareness, saved.document);
     // A concurrent deletion can make an otherwise valid selection stale. It
     // never changes durable artwork and is cleared on the next heartbeat.
