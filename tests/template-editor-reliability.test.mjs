@@ -6,6 +6,7 @@ import vm from 'node:vm';
 import {createRequire} from 'node:module';
 import {fileURLToPath} from 'node:url';
 import ts from 'typescript';
+import {setTimeout as pause} from 'node:timers/promises';
 const root=fileURLToPath(new URL('..',import.meta.url)),native=createRequire(import.meta.url),cache=new Map();
 function load(file,dependencies={}){
  const key=file+Object.keys(dependencies).join();if(!Object.keys(dependencies).length&&cache.has(key))return cache.get(key);
@@ -52,7 +53,9 @@ test('a slow workspace save stays single-flight and keeps newer browser edits un
  let now=0;const deadlines=[],pending=[];
  t.mock.method(AbortSignal,'timeout',delay=>{const controller=new AbortController();deadlines.push({controller,at:now+delay});return controller.signal;});
  const advance=async duration=>{now+=duration;for(const item of deadlines)if(item.at<=now)item.controller.abort(new DOMException('Request timed out','TimeoutError'));await new Promise(resolve=>setImmediate(resolve));};
- const settle=async condition=>{for(let count=0;count<40&&!condition();count++)await new Promise(resolve=>setImmediate(resolve));assert.ok(condition());};
+ // Hashing runs on native workers; event-loop turns are not a completion
+ // deadline on a busy CI host. Keep app timers mocked while awaiting real work.
+ const settle=async condition=>{const deadline=performance.now()+5000;while(!condition()&&performance.now()<deadline)await pause(5);assert.ok(condition(),'Save work did not finish within five seconds');};
  const library=model.parseLibrary({...structuredClone(model.EMPTY_LIBRARY),folders:[],designs:[doc()]}),scope='f'.repeat(64);
  const run=await recoveredWorkspace(t,{remote:{library,revision:'initial',storage:'cloud',scope},drafts:[],saveRequest:options=>new Promise((resolve,reject)=>{pending.push({options,resolve});options.signal.addEventListener('abort',()=>reject(options.signal.reason),{once:true});})});
  const first=structuredClone(library);first.designs[0].caption='First slow save';assert.equal(run.state.setLibrary(first),true);run.state.retrySave();await settle(()=>pending.length===1);
