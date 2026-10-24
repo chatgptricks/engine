@@ -6,7 +6,7 @@ import {getCurrentAdminUser} from "@/lib/supabase/auth-server";
 import type {EngineAccess} from "@/lib/engine/member";
 import {developmentDirectory} from "./development-storage";
 import {COLLABORATION_PRESENCE_TTL, type CollaborationActor, type CollaborationAwareness, type CollaborationParticipant} from "./collaboration-types";
-import type {DesignDocument} from "./model";
+import type {CollaborationValidationDocument} from "./collaboration-metadata";
 
 type Session = CollaborationParticipant & {sequence: number; left?: boolean};
 type PresenceRecord = {revision: string; sessions: Session[]};
@@ -80,7 +80,7 @@ export async function heartbeatCollaboration(owner: string, documentId: string, 
 }
 
 /** Awareness cannot reference another document or inject nonfinite geometry. */
-export function validateCollaborationAwareness(value: unknown, document: DesignDocument): CollaborationAwareness {
+export function validateCollaborationAwareness(value: unknown, document: CollaborationValidationDocument): CollaborationAwareness {
   if (value === undefined) return {selected: [], cursor: null};
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Invalid collaboration presence.");
   const input = value as Record<string, unknown>;

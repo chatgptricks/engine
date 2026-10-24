@@ -3,6 +3,7 @@ import {editorOwnerScope, getCollaborationDocument, getCollaborationRevision, sa
 import {collaborationActor, heartbeatCollaboration, readCollaborationParticipants, validateCollaborationAwareness} from "@/lib/template-editor/collaboration-server";
 import type {CollaborationActor, CollaborationParticipant, CollaborationSnapshot} from "@/lib/template-editor/collaboration-types";
 import {jsonByteStream, jsonTextChunks} from "@/lib/template-editor/json-stream";
+import {readCollaborationMetadata, rememberCollaborationMetadata, type CollaborationMetadata} from "@/lib/template-editor/collaboration-metadata";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -37,6 +38,14 @@ async function body(request: Request): Promise<Record<string, unknown>> {
 function snapshot(stored: StoredCollaborationDocument, actor: CollaborationActor, participants: CollaborationParticipant[]): CollaborationSnapshot {
   return {state: stored.state, document: stored.document, revision: stored.revision, scope: stored.scope, version: stored.version, epoch: stored.epoch, storage: stored.storage, assetKeys: stored.assetKeys, actor, participants};
 }
+async function currentDocument(owner: string, documentId: string) {
+  const stored = await getCollaborationDocument(owner, documentId);
+  rememberCollaborationMetadata(owner, stored);
+  return stored;
+}
+function presenceSnapshot(metadata: CollaborationMetadata, actor: CollaborationActor, participants: CollaborationParticipant[]) {
+  return {scope: metadata.scope, actor, participants, epoch: metadata.epoch, version: metadata.version, revision: metadata.revision};
+}
 function statusFor(error: unknown) {
   const message = error instanceof Error ? error.message : "Live collaboration is unavailable.";
   const status = /not available.*workspace/.test(message) ? 404 : /generation changed/.test(message) ? 409 : /exceeds|12 MB|30 MB/.test(message) ? 413 : /Invalid|Choose|Reload|room cannot|limit exceeded/.test(message) ? 400 : /Sign in/.test(message) ? 401 : 503;
@@ -49,10 +58,19 @@ export async function POST(request: Request) {
   if (!originAllowed(request)) return reply({error: "Open collaboration from the editor."}, 403);
   let input: Record<string, unknown>;
   try {input = await body(request);} catch (error) {return reply({error: error instanceof RangeError ? error.message : "Invalid collaboration request."}, error instanceof RangeError ? 413 : 400);}
-  if (!validId(input.documentId) || !validSession(input.sessionId) || typeof input.expectedScope !== "string" || !Number.isSafeInteger(input.sequence) || Number(input.sequence) < 1 || Number(input.sequence) > 1_000_000_000 || (input.update !== undefined && typeof input.update !== "string") || (input.leave !== undefined && typeof input.leave !== "boolean") || (input.name !== undefined && typeof input.name !== "string")) return reply({error: "Invalid collaboration session."}, 400);
+  if (!validId(input.documentId) || !validSession(input.sessionId) || typeof input.expectedScope !== "string" || !Number.isSafeInteger(input.sequence) || Number(input.sequence) < 1 || Number(input.sequence) > 1_000_000_000 || (input.update !== undefined && typeof input.update !== "string") || (input.presenceOnly !== undefined && typeof input.presenceOnly !== "boolean") || (input.leave !== undefined && typeof input.leave !== "boolean") || (input.name !== undefined && typeof input.name !== "string")) return reply({error: "Invalid collaboration session."}, 400);
   if (input.expectedScope !== editorOwnerScope(access.ownerKey)) return reply({error: "The signed-in workspace changed.", code: "workspace_owner_changed"}, 403);
   try {
-    let current: StoredCollaborationDocument | null = await getCollaborationDocument(access.ownerKey, input.documentId);
+    if (input.presenceOnly === true && input.update === undefined) {
+      const revision = await getCollaborationRevision(access.ownerKey);
+      const metadata = readCollaborationMetadata(access.ownerKey, input.documentId, revision) ?? rememberCollaborationMetadata(access.ownerKey, await currentDocument(access.ownerKey, input.documentId));
+      if (input.epoch !== metadata.epoch) return reply({error: "The live document generation changed. Reconnect before sending presence.", code: "generation_changed"}, 409);
+      const awareness = validateCollaborationAwareness(input.awareness, metadata.document);
+      const actor = await collaborationActor(access, input.sessionId, input.name as string | undefined);
+      const participants = await heartbeatCollaboration(access.ownerKey, input.documentId, input.sessionId, actor, awareness, Number(input.sequence), input.leave === true);
+      return reply({presenceOnly: true, ...presenceSnapshot(metadata, actor, participants)});
+    }
+    let current: StoredCollaborationDocument | null = await currentDocument(access.ownerKey, input.documentId);
     const actor = await collaborationActor(access, input.sessionId, input.name as string | undefined);
     if (typeof input.update === "string") {
       if (input.epoch !== current.epoch) return reply({error: "The live document generation changed. Reconnect before sending edits.", code: "generation_changed", snapshot: snapshot(current, actor, await readCollaborationParticipants(access.ownerKey, input.documentId))}, 409);
@@ -64,6 +82,7 @@ export async function POST(request: Request) {
     if (typeof input.update === "string") {
       current = null;
       saved = await saveCollaborationDocument(access.ownerKey, input.documentId, input.update, String(input.epoch));
+      rememberCollaborationMetadata(access.ownerKey, saved);
     } else saved = current;
     const awareness = validateCollaborationAwareness(input.awareness, saved.document);
     // A concurrent deletion can make an otherwise valid selection stale. It
@@ -74,7 +93,7 @@ export async function POST(request: Request) {
     const {message, status} = statusFor(error);
     if (status === 409) {
       try {
-        const [current, actor, participants] = await Promise.all([getCollaborationDocument(access.ownerKey, input.documentId), collaborationActor(access, input.sessionId, input.name as string | undefined), readCollaborationParticipants(access.ownerKey, input.documentId)]);
+        const [current, actor, participants] = await Promise.all([currentDocument(access.ownerKey, input.documentId), collaborationActor(access, input.sessionId, input.name as string | undefined), readCollaborationParticipants(access.ownerKey, input.documentId)]);
         return reply({error: message, code: "generation_changed", snapshot: snapshot(current, actor, participants)}, status);
       } catch { /* Preserve the original failure if storage is temporarily down. */ }
     }
@@ -89,19 +108,26 @@ export async function GET(request: Request) {
   const query = new URL(request.url).searchParams, documentId = query.get("documentId"), sessionId = query.get("sessionId");
   if (!validId(documentId) || !validSession(sessionId)) return reply({error: "Invalid collaboration session."}, 400);
   if (query.get("expectedScope") !== editorOwnerScope(access.ownerKey)) return reply({error: "The signed-in workspace changed.", code: "workspace_owner_changed"}, 403);
-  let initial: StoredCollaborationDocument | null, actor: CollaborationActor, peers: CollaborationParticipant[];
+  let initial: StoredCollaborationDocument | null = null, resumed: CollaborationMetadata | null = null, actor: CollaborationActor, peers: CollaborationParticipant[];
   try {
-    initial = await getCollaborationDocument(access.ownerKey, documentId);
+    const epoch = query.get("knownEpoch"), version = query.get("knownVersion"), revision = query.get("knownRevision");
+    if (validSession(epoch) && version !== null && /^\d{1,15}$/.test(version) && Number.isSafeInteger(Number(version)) && validSession(revision)) {
+      const actualRevision = await getCollaborationRevision(access.ownerKey);
+      const metadata = readCollaborationMetadata(access.ownerKey, documentId, actualRevision);
+      if (metadata && metadata.epoch === epoch && metadata.version === Number(version) && metadata.revision === revision) resumed = metadata;
+    }
+    if (!resumed) initial = await currentDocument(access.ownerKey, documentId);
     actor = await collaborationActor(access, sessionId, query.get("name") ?? undefined);
     peers = await heartbeatCollaboration(access.ownerKey, documentId, sessionId, actor, {selected: [], cursor: null}, 0);
   } catch (error) {const {message, status} = statusFor(error); return reply({error: message, ...(status === 404 ? {code: "not_found"} : {})}, status);}
-  const scope = initial.scope, encoder = new TextEncoder();
+  const scope = (resumed ?? initial!).scope, encoder = new TextEncoder();
   let stopped = false, timer: ReturnType<typeof setTimeout> | undefined, rotation: ReturnType<typeof setTimeout> | undefined;
   let cleanup = () => {};
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      const first = initial!;
-      let revision = first.revision;
+      const first = initial;
+      let revision = (resumed ?? first!).revision;
+      let epoch = (resumed ?? first!).epoch, version = (resumed ?? first!).version;
       const signature = (participants: CollaborationParticipant[]) => JSON.stringify(participants.map(participant => ({...participant, seenAt: 0})));
       let presenceSignature = signature(peers);
       const send = (event: string, value: unknown) => {
@@ -113,10 +139,12 @@ export async function GET(request: Request) {
       const stop = () => {if (stopped) return; stopped = true; if (timer) clearTimeout(timer); if (rotation) clearTimeout(rotation); request.signal.removeEventListener("abort", stop); try {controller.close();} catch { /* Reader already cancelled. */ }};
       cleanup = stop;
       request.signal.addEventListener("abort", stop, {once: true});
-      send("snapshot", snapshot(first, actor, peers));
+      if (first) send("snapshot", snapshot(first, actor, peers));
+      else send("presence", presenceSnapshot(resumed!, actor, peers));
       // Polling needs only the scope and revision. Release the image-heavy
       // initial snapshot instead of retaining it for the life of every stream.
       initial = null;
+      resumed = null;
       const poll = async () => {
         if (stopped) return;
         // Slow readers must drain the previous event before another snapshot
@@ -129,10 +157,11 @@ export async function GET(request: Request) {
           const [nextRevision, participants] = await Promise.all([getCollaborationRevision(access.ownerKey), readCollaborationParticipants(access.ownerKey, documentId)]);
           if (stopped) return;
           if (nextRevision !== revision) {
-            const current = await getCollaborationDocument(access.ownerKey, documentId);
+            const current = await currentDocument(access.ownerKey, documentId);
             revision = current.revision;
+            epoch = current.epoch; version = current.version;
             send("update", snapshot(current, actor, participants));
-          } else if (signature(participants) !== presenceSignature) send("presence", {scope, actor, participants});
+          } else if (signature(participants) !== presenceSignature) send("presence", {scope, actor, participants, epoch, version, revision});
           presenceSignature = signature(participants);
         } catch (error) {const failure = statusFor(error); send("error", {error: failure.message, ...(failure.status === 404 ? {code: "not_found"} : {})}); stop(); return;}
         if (!stopped) timer = setTimeout(() => {void poll();}, POLL_INTERVAL_MS);

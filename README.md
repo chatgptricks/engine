@@ -257,6 +257,8 @@ Apply `supabase/migrations/0019_editor_revision_metadata.sql` while the database
 
 The Pages build publishes only the existing public sign-in configuration alongside the application, so opening Engine does not need a live backend configuration request. After a successful authenticated workspace verification, this browser can reopen that exact user's scoped cached library and pending edits while cloud services recover. Cloud requests retain normal authentication and reconnect in the background. A rejected identity never opens another user's cached workspace.
 
+Cursor, selection and presence updates use small acknowledgments instead of returning the image-heavy document. The server validates those requests against copied page/layer IDs in a bounded metadata cache, after checking the current database revision. Reconnecting streams can reuse an already loaded document only when its epoch, version and revision match. New connections, cache misses and changed artwork still load the authenticated document normally; older clients remain supported. Presence acknowledgments never count as saved artwork or clear pending edit recovery.
+
 Always-on compute is configured per service, separately from the Render workspace subscription. The optional Blueprint uses `1c-2g`; Free service instances sleep with inactivity. Supabase availability and resource limits remain independent of Render compute.
 
 `vercel.json` is only for Vercel; Render does not run its cron schedule. Configure a separate scheduler or Render cron job if scheduled research is needed.

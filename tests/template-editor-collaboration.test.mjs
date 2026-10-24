@@ -152,6 +152,7 @@ test("collaboration API rejects foreign workspaces and origins before room acces
   const saved = await persistence.getCollaborationDocument("team", document.id), sessionId = crypto.randomUUID(), actor = {id: "actor", name: "Alice", color: "#2563eb"};
   let reads = 0;
   const route = loader({
+    "@/lib/template-editor/collaboration-metadata": load("lib/template-editor/collaboration-metadata.ts"),
     "@/lib/engine/member": {resolveEngineAccess: async () => ({kind: "owner", ownerKey: "team"})},
     "@/lib/template-editor/persistence": {...persistence, getCollaborationDocument: async (...args) => {reads++; return persistence.getCollaborationDocument(...args);}},
     "@/lib/template-editor/collaboration-document": collaboration,
@@ -178,6 +179,7 @@ test("collaboration POST validates presence before writing and keeps new-layer s
   const {validateCollaborationAwareness} = loader({"@/lib/supabase/admin":{getAdminSupabase:()=>null},"@/lib/supabase/auth-server":{getCurrentAdminUser:async()=>null}})("lib/template-editor/collaboration-server.ts");
   let saves = 0;const heartbeats = [];
   const route = loader({
+    "@/lib/template-editor/collaboration-metadata": load("lib/template-editor/collaboration-metadata.ts"),
     "@/lib/engine/member":{resolveEngineAccess:async()=>({kind:"owner",ownerKey:"team"})},
     "@/lib/template-editor/persistence":{...persistence,saveCollaborationDocument:async(...args)=>{saves++;return persistence.saveCollaborationDocument(...args);}},
     "@/lib/template-editor/collaboration-document":{...collaboration,createCollaborationDocument(){throw Error("Unexpected unqueued Yjs replay");}},

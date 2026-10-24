@@ -37,7 +37,7 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
   useEffect(() => {
     if (!documentId || !scope) return;
     const opened = latest.current!;
-    let disposed = false, initialized = false, sending = false, paused = false, epoch = "", version = -1, retry = 0;
+    let disposed = false, initialized = false, sending = false, paused = false, awaitingGeneration = false, epoch = "", version = -1, retry = 0;
     let localName = "";
     try {localName = sessionStorage.getItem(NAME_KEY) ?? "";} catch { /* Collaboration does not depend on browser preferences. */ }
     const sessionId = crypto.randomUUID();
@@ -85,18 +85,34 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
       snapshotRef.current = value;
       const visible = readCollaborationDocument(doc);
       setSnapshot(value); setReady(true); setStatus(navigator.onLine ? "live" : "offline");
+      awaitingGeneration = false;
       callbacks.current.onDocument(value.document, visible, value);
       publishStacks(); retry = 0;
       if (pending.length || awarenessDirty) schedule();
     }
+    function receivePresence(value: Partial<CollaborationSnapshot>, resumed = false): boolean {
+      const confirmed = snapshotRef.current;
+      if (disposed || !initialized || !confirmed || confirmed.document.id !== documentId || confirmed.scope !== scope || value.scope !== scope || !Array.isArray(value.participants)) return false;
+      if (value.participants.some(person => !person || typeof person.id !== "string" || typeof person.sessionId !== "string" || typeof person.name !== "string" || typeof person.color !== "string" || !Array.isArray(person.selected))) return false;
+      if (value.actor && (typeof value.actor.id !== "string" || typeof value.actor.name !== "string" || typeof value.actor.color !== "string")) return false;
+      if (value.epoch !== undefined && value.epoch !== epoch) return false;
+      if (resumed && (awaitingGeneration || value.epoch !== confirmed.epoch || value.version !== confirmed.version || value.revision !== confirmed.revision)) return false;
+      // Presence never acknowledges artwork or advances document metadata.
+      // Pending Yjs operations and browser recovery require a document ACK.
+      const next = {...confirmed, participants: value.participants, actor: value.actor ?? confirmed.actor};
+      snapshotRef.current = next; setSnapshot(next);
+      if (resumed) {setStatus(navigator.onLine ? "live" : "offline"); retry = 0; if (pending.length || awarenessDirty) schedule();}
+      return true;
+    }
     async function send() {
-      if (disposed || paused || !initialized || sending || !navigator.onLine || (!pending.length && !awarenessDirty)) return;
+      if (disposed || paused || awaitingGeneration || !initialized || sending || !navigator.onLine || (!pending.length && !awarenessDirty)) return;
       sending = true;
       const batch = pending; pending = [];
       const requestEpoch = epoch;
+      const presenceOnly = batch.length === 0;
       const capturedAwareness = awareness;
       awarenessDirty = false;
-      const payload = {documentId, expectedScope: scope, sessionId, sequence: ++sequence, epoch, awareness: capturedAwareness, ...(localName ? {name: localName} : {}), ...(batch.length ? {update: encodeCollaborationUpdate(Y.mergeUpdates(batch))} : {})};
+      const payload = {documentId, expectedScope: scope, sessionId, sequence: ++sequence, epoch, awareness: capturedAwareness, ...(localName ? {name: localName} : {}), ...(batch.length ? {update: encodeCollaborationUpdate(Y.mergeUpdates(batch))} : {presenceOnly: true})};
       try {
         // A preflight read plus the queued read/write can take over 90 seconds.
         // Keep one request in flight while the server completes that bounded work.
@@ -108,6 +124,10 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
         if (disposed || requestEpoch !== epoch) return;
         if (!response.ok) {
           if (response.status === 409 && data.snapshot) {pending.unshift(...batch); receive(data.snapshot); return;}
+          if (response.status === 409 && data.code === "generation_changed" && presenceOnly) {
+            pending.unshift(...batch); awarenessDirty = true; awaitingGeneration = true;
+            setStatus(navigator.onLine ? "reconnecting" : "offline"); connect(false); return;
+          }
           if (response.status < 500 && response.status !== 429) {
             pending.unshift(...batch); source?.close();
             paused = true;
@@ -116,7 +136,10 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
           }
           throw new Error(data.error ?? "Live collaboration could not save. Your edits remain in this browser.");
         }
-        receive(data);
+        if (data.presenceOnly === true) {
+          if (!presenceOnly || typeof data.epoch !== "string" || !Number.isSafeInteger(data.version) || data.version < 0 || !(data.revision === null || typeof data.revision === "string") || !receivePresence(data)) throw new Error("Invalid collaboration presence response.");
+          retry = 0; setStatus(navigator.onLine ? "live" : "offline");
+        } else receive(data);
       } catch (reason) {
         if (disposed || requestEpoch !== epoch) return;
         pending.unshift(...batch); awarenessDirty = true;
@@ -130,10 +153,14 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
         if (!disposed && (pending.length || awarenessDirty) && retry === 0) schedule();
       }
     }
-    const connect = () => {
+    const connect = (resume = true) => {
       if (disposed || !navigator.onLine) return;
       source?.close();
       const params = new URLSearchParams({documentId, expectedScope: scope, sessionId, ...(localName ? {name: localName} : {})});
+      const confirmed = snapshotRef.current;
+      if (resume && !awaitingGeneration && initialized && confirmed?.scope === scope && confirmed.document.id === documentId && confirmed.epoch === epoch && confirmed.version === version && typeof confirmed.revision === "string") {
+        params.set("knownEpoch", confirmed.epoch); params.set("knownVersion", String(confirmed.version)); params.set("knownRevision", confirmed.revision);
+      }
       source = new EventSource(`${ENDPOINT}?${params}`);
       const message = (event: MessageEvent) => {
         try {receive(JSON.parse(event.data));} catch (reason) {if (!disposed) callbacks.current.onError(reason instanceof Error ? reason.message : "Invalid collaboration response.");}
@@ -143,7 +170,13 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
         if (disposed) return;
         try {
           const presence = JSON.parse(event.data);
-          if (presence.scope === scope && Array.isArray(presence.participants)) setSnapshot(previous => previous ? {...previous, participants: presence.participants, actor: presence.actor ?? previous.actor} : previous);
+          const resumed = presence.epoch !== undefined || presence.version !== undefined || presence.revision !== undefined;
+          const confirmed = snapshotRef.current;
+          // A poll can capture presence just before a real document POST
+          // acknowledges a newer version. Ignore that older event instead of
+          // downloading the same image-heavy document again.
+          if (confirmed?.scope === scope && confirmed.document.id === documentId && presence.scope === scope && presence.epoch === confirmed.epoch && Number.isSafeInteger(presence.version) && presence.version >= 0 && presence.version < confirmed.version && (presence.revision === null || typeof presence.revision === "string")) return;
+          if (!receivePresence(presence, resumed) && resumed) {setStatus(navigator.onLine ? "reconnecting" : "offline"); connect(false);}
         } catch { /* The document stream remains the authoritative state. */ }
       });
       source.addEventListener("error", (event: Event) => {
@@ -226,5 +259,5 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
   }, []);
   const undo = useCallback(() => controls.current?.undo(), []), redo = useCallback(() => controls.current?.redo(), []);
   const currentSnapshot = snapshot && snapshot.document.id === documentId && snapshot.scope === scope ? snapshot : null;
-  return {ready: ready && Boolean(currentSnapshot), status: currentSnapshot ? status : "connecting" as CollaborationConnection, self: {...(currentSnapshot?.actor ?? {id: "self", name: name || "You", color: "#7965e9"}), id: currentSession || "self"}, peers: (currentSnapshot?.participants ?? []).filter(peer => peer.sessionId !== currentSession).map(peer => ({...peer, id: peer.sessionId})), name, setName: currentSnapshot?.actor.canRename ? setName : undefined, setAwareness, submitDocument, history: {...stacks, undo, redo}};
+  return {ready: ready && Boolean(currentSnapshot), status: !currentSnapshot && status === "live" ? "connecting" as CollaborationConnection : status, self: {...(currentSnapshot?.actor ?? {id: "self", name: name || "You", color: "#7965e9"}), id: currentSession || "self"}, peers: (currentSnapshot?.participants ?? []).filter(peer => peer.sessionId !== currentSession).map(peer => ({...peer, id: peer.sessionId})), name, setName: currentSnapshot?.actor.canRename ? setName : undefined, setAwareness, submitDocument, history: {...stacks, undo, redo}};
 }
