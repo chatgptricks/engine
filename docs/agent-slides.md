@@ -85,6 +85,27 @@ Start with `engine_capabilities` to discover the current contract. Its `deckSche
 
 Pass that object to `engine_create_deck`. `format: "presentation"` currently means 1920 × 1080 output pixels. Capabilities also lists portrait, square, story, and custom size options, available font identifiers, and native templates. To start from a template, use its `templateId` and follow the slot and slide-count guidance returned by capabilities and `engine_list_templates`.
 
+### Consistent posts from a template
+
+For posts that should always look like your brand, start from a template instead of placing layers. `engine_list_templates` returns each template's slots exactly as a copy will have them, in reading order:
+
+```json
+{"pageIndex": 1, "pageLabel": "Text + Media", "slot": "smart-text-0", "type": "text", "role": "heading", "sample": "Your Title text", "maxCharacters": 184, "fixedStyle": true}
+{"pageIndex": 1, "pageLabel": "Text + Media", "slot": "smart-media", "type": "photo", "fixedStyle": false}
+```
+
+- **Text slots** keep the template's font, colour, alignment and position. Their size adapts to the copy: type first shrinks slightly inside the original box, then the slot takes room from what sits below it (a photo frame below gives up at most about a third of its height; text below moves down), and only then shrinks to the readable minimum. Copy at the foot of a page grows upwards. `maxCharacters` is a rough upper guide; shorter copy reads better.
+- **Photo slots** take a new image (`slots: {"smart-media": "https://…"}` or the slide's `image`) inside a fixed frame.
+- **Fixed** layers (logos, handles, profile cards, decorative shapes) are not listed and cannot change.
+
+Fill a slide with `title`/`body` (the first and second text slots in reading order) or by slot name, and pass one entry in `slides` per template page:
+
+```json
+{"spec": {"name": "Memory launch", "templateId": "…", "slides": [{}, {"title": "OpenAI just shipped memory for every ChatGPT user", "image": {"src": "https://…/photo.jpg", "alt": "ChatGPT memory settings"}}, {}]}}
+```
+
+Text that cannot fit at the readable minimum is flagged in the editor and must be shortened before that page can be exported.
+
 For a fully positioned slide, use `layout: "blank"` and independent `elements`. Agent authoring coordinates, dimensions, and font sizes are **output pixels**:
 
 ```json

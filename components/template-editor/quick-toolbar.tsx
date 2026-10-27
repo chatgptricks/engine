@@ -3,7 +3,7 @@
 import type { MouseEvent } from "react";
 import { CopyIcon, TrashIcon } from "@/components/engine/icons";
 import { EditorIcon, type EditorIconName } from "./editor-icons";
-import type { InspectorSection } from "./element-inspector";
+import { TemplateRoleSelect, type InspectorSection } from "./element-inspector";
 import type { CanvasElement, CanvasScene, ShapeElement, TextElement } from "@/lib/template-editor/model";
 import { FONTS, NumberInput } from "./controls";
 import { commonValue, boldState, booleanState } from "@/lib/template-editor/property-utils";
@@ -39,9 +39,11 @@ type Props = {
   activeSection?: InspectorSection | null;
   onReplacePhoto?: () => void;
   onUnlock?: () => void;
+  /** Template drafts: page height (scene units) for the "In posts" role picker. */
+  templateDraftHeight?: number;
 };
 
-export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, onUnlock, onDuplicate, onDelete, outputScale = 3 }: Props) {
+export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, onUnlock, onDuplicate, onDelete, outputScale = 3 }: Props) {
   const selected=scene.elements.filter(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element));
   const unlocked=selected.filter(element=>!isElementLocked(scene,element));
   const propertySelection=unlocked.length?unlocked:selected;
@@ -87,6 +89,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
       {onBackground&&<button type="button" className="te-context-action" aria-label="Edit page background" onClick={onBackground}><EditorIcon name="fill"/>Background</button>}
     </>:<>
       <span className="te-quick-label">{label}</span>
+      {templateDraftHeight!==undefined&&<TemplateRoleSelect scene={scene} elements={selected} height={templateDraftHeight} disabled={disabled} onChange={onChange} compact/>}
       {onMergeShapes&&selected.every(element=>element.type==="shape")&&selected.length>1&&<button type="button" className="te-context-action" aria-label="Merge shapes" title="Union: combine the selected shapes into one shape" disabled={disabled||selected.length!==selectedIds.length||!selected.every(element=>canEditElement(scene,element,"position")&&canEditElement(scene,element,"delete"))} onClick={onMergeShapes}><EditorIcon name="merge"/>Merge shapes</button>}
       {allText && texts.every(element=>element.smartText) && <SmartTextControls scene={scene} selectedIds={selectedIds} disabled={disabled} compact outputScale={outputScale} onChange={onChange}/>}
       {allText&&!texts.every(element=>element.smartText)&&<div className="te-quick-basics">

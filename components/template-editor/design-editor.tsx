@@ -1144,6 +1144,7 @@ export function DesignEditor({
       onSectionChange={contextual ? undefined : setInspectorSection}
       onTextTexture={openTextTexture}
       onUploadFramePhoto={(file:File,id:string)=>upload(file,id)}
+      templateDraft={isTemplateDraft&&!editingMaster&&!continuous}
     />
   );
   const inspector = inspectorFor();
@@ -1627,7 +1628,7 @@ export function DesignEditor({
             </>}
           </div>
           {navigationMode==="nodes"&&!pathTool&&<div className="te-node-toolbar-host" ref={setNodeToolbarHost}/>}
-          {!pathTool&&navigationMode==="select"&&<QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
+          {!pathTool&&navigationMode==="select"&&<QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene} templateDraftHeight={isTemplateDraft&&!editingMaster&&!continuous?canvasHeight:undefined}
             outputScale={format.width/FRAME_WIDTH}
             onFormatText={formatText}
             onTextTexture={openTextTexture}

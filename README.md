@@ -22,15 +22,22 @@ The agent API is `/api/agent/slides`; the local MCP entry point is `npm run agen
 4. Use **Save as template** to keep the complete design as a starting point for future posts. Copies receive independent page and image identities.
 5. Choose **Export** for PNG, JPG, WebP, multipage PDF, or an SVG for web viewers. Select the current page, all pages, or a range such as `1, 3-5`; choose resolution and image quality, and remove the background for PNG, WebP, or SVG. Multiple image pages download as a ZIP with numbered files and the caption when present. Captions can also be downloaded separately as TXT. Export checks fonts, image loading and resolution, and can be cancelled.
 
-## Smart ChatGPTricks template
+## Smart templates
 
-The **Smart layout** panel follows the current selection in **@chatgptricks** designs. Select text to edit its copy and choose **Auto / 2 lines / 3 lines / 4 lines**; select a photo for fill/fit and crop; select elements or groups for alignment and distribution. The panel opens by default and can be reopened from the header or tool rail. Existing projects and renamed projects linked to this template are supported: choosing a line count or editing copy adopts smart layout on that slide in one undoable change. Opening a project leaves its saved artwork intact.
+Every new post made from a template follows that template's layout automatically, so posts stay on-brand whether a person or an agent fills them. Engine reads each page's artwork and gives every layer one of four roles:
 
-New designs made from **@chatgptricks** keep its existing canvas size, branding, fonts and artwork. Compatible imported headline fragments become one editable text block. Covers use centered, balanced lines with no isolated words when the wording allows; content slides align left. Auto respects paragraph breaks. Fitting changes typography, never the wording.
+- **Text slot**: the copy can change. Font, colour, alignment and position follow the template. Automatic fitting first shrinks the type slightly inside the original box, then takes room from what sits directly below it (text below moves down; a photo or panel below keeps its bottom edge and gives up at most about a third of its height), and only then shrinks to the readable minimum. Copy at the foot of a page grows upwards and lifts the copy above it. A title that heads a wider photo spans that photo's width.
+- **Photo slot**: the photo can be replaced and cropped; the frame stays in place.
+- **Fixed**: logos, handles, profile cards, decorative shapes and anything locked stay exactly as designed. Small text that repeats on several pages counts as branding.
+- **Free**: layers you mark as free stay fully editable in posts.
 
-Text and photo frames use the template’s margins and spacing. Text + Media, Full Bleed + text, Prompt and Title Quote layouts reflow their dependent content. Replace or crop frame photos, and add independent text, images and elements with object, margin and spacing snapping. Duplicating a fixed element makes an independently editable copy. Existing designs and the saved source template remain unchanged; the rules apply when starting a new copy.
+While editing a template (**Edit template**), select any layer and use **In posts: …** in the toolbar (or **In posts from this template** in the inspector) to see the role Engine picked and override it. Template drafts open as plain artwork: nothing is locked while you design, imported Canva title fragments are joined into one text block, and the rules are worked out again for the next post. Existing posts are never rewritten.
 
-If the requested line count needs more words, the editor explains the closest balanced layout. Copy that exceeds its readable minimum shows a shortening notice and must be fixed before exporting that page. Export resolves every selected page using its loaded fonts, including unvisited slides, and shares the exact breaks with PNG, SVG and PDF. Saved designs, collaboration and public review snapshots retain the layout rules.
+The **Smart layout** panel follows the current selection. Select text to edit its copy and choose **Auto / 2 lines / 3 lines / 4 lines**; select a photo for fill/fit and crop; select elements or groups for alignment and distribution. If the requested line count needs more words, the editor explains the closest balanced layout. Copy that exceeds its readable minimum shows a shortening notice and must be fixed before exporting that page. Export resolves every selected page using its loaded fonts, including unvisited slides, and shares the exact breaks with PNG, SVG and PDF. Saved designs, collaboration and public review snapshots retain the layout rules.
+
+**@chatgptricks** keeps its hand-tuned rules on top: covers use centered, balanced 3-line titles with no isolated words, content slides align left, and the Text + Media, Full Bleed + text, Prompt and Title Quote pages use their tuned spacing. Legacy built-in templates keep their original appearance.
+
+Agents get the same slots: see [Consistent posts from a template](docs/agent-slides.md#consistent-posts-from-a-template).
 
 ## Build your own template
 

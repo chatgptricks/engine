@@ -67,7 +67,7 @@ export function fitSmartText(element: TextElement, metrics: SmartMetrics, words 
   const requested = rule.lines, maxCount = rule.role === "cover" ? Math.max(1, Math.floor(words.length / 2)) : words.length;
   const target = requested ? Math.min(requested, maxCount) : 0;
   const minimumWords = rule.role === "cover" && words.length >= target * 2 ? 2 : 1;
-  function atSize(size: number, balance: boolean) {
+  function atSize(size: number, balance: boolean, limit = available) {
     const ratio = size / metrics.size;
     const widths = words.map((word, index) => Math.max(.01, (metrics.widths[index] - element.letterSpacing * word.text.length) * ratio + element.letterSpacing * word.text.length));
     const space = Math.max(0, (metrics.space - element.letterSpacing) * ratio + element.letterSpacing);
@@ -86,16 +86,26 @@ export function fitSmartText(element: TextElement, metrics: SmartMetrics, words 
     }
     const blankLines = requested ? 0 : ends.slice(0, -1).reduce((total, end) => total + Math.max(0, words[end].paragraph - words[end - 1].paragraph - 1), 0);
     const height = (ends.length + blankLines) * size * element.lineHeight + Math.max(0, ends.length + blankLines - 1) * (element.paragraphSpacing ?? 0) + 2 * (element.padding ?? 0);
-    const fits = ends.length > 0 && widths.every(value => value <= width) && height <= available + 2 * (element.padding ?? 0) + .01;
+    const fits = ends.length > 0 && widths.every(value => value <= width) && height <= limit + 2 * (element.padding ?? 0) + .01;
     return { ends, widths, space, height, fits };
   }
-  let low = rule.minFontSize, high = requested ? rule.maxFontSize : Math.min(element.fontSize, rule.maxFontSize);
-  high = Math.max(low, high);
-  let chosen = high;
-  if (!atSize(high, false).fits) {
-    if (!atSize(low, false).fits) chosen = low;
-    else { for (let step = 0; step < 14; step++) { const middle = (low + high) / 2; if (atSize(middle, false).fits) low = middle; else high = middle; } chosen = Math.floor(low * 100) / 100; }
-  }
+  const low = rule.minFontSize, high = Math.max(low, requested ? rule.maxFontSize : Math.min(element.fontSize, rule.maxFontSize));
+  /** Largest size in [from, to] that fits `limit`, or null when even `from` overflows. */
+  const largest = (from: number, to: number, limit: number) => {
+    let lo = from, hi = Math.max(from, to);
+    if (atSize(hi, false, limit).fits) return hi;
+    if (!atSize(lo, false, limit).fits) return null;
+    for (let step = 0; step < 14; step++) { const middle = (lo + hi) / 2; if (atSize(middle, false, limit).fits) lo = middle; else hi = middle; }
+    return Math.floor(lo * 100) / 100;
+  };
+  let chosen: number;
+  const pad = 2 * (element.padding ?? 0);
+  if (!requested && rule.baseHeight !== undefined && rule.softMinFontSize !== undefined && rule.baseHeight < rule.maxHeight) {
+    // Stay in the authored box while a modest size change is enough; only then
+    // take room from the layout, and finally shrink to the readable minimum.
+    const soft = Math.min(high, Math.max(low, rule.softMinFontSize));
+    chosen = largest(soft, high, Math.min(available, Math.max(1, rule.baseHeight - pad))) ?? largest(low, soft, available) ?? low;
+  } else chosen = largest(low, high, available) ?? low;
   const result = atSize(chosen, true);
   const overflow = !result.fits || tooLong;
   if (!result.ends.length) {
@@ -138,18 +148,30 @@ export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText)
     if (visiting.has(original.id)) return original; // Malformed/cyclic imported flows stay bounded.
     visiting.add(original.id);
     let element = original;
-    const anchor = original.smartFlow && slots.get(original.smartFlow.after);
+    const flow = original.smartFlow, anchor = flow && slots.get(flow.after);
+    const upward = flow?.direction === "up";
+    // Upward flows: the bottom edge sits `gap` above the anchor's resolved top.
+    let edge: number | undefined;
     if (anchor && !anchor.hidden) {
-      const above = resolve(anchor), flow = original.smartFlow!;
-      const y = above.y + (flow.edge === "top" ? 0 : above.height) + flow.gap;
-      element = { ...element, y, ...(flow.resize ? { height: Math.max(1, flow.bottom - y) } : {}) };
+      const other = resolve(anchor);
+      if (upward) {
+        edge = other.y - flow!.gap;
+        element = flow!.resize ? { ...element, height: Math.max(1, edge - element.y) } : { ...element, y: edge - element.height };
+      } else {
+        const y = other.y + (flow!.edge === "top" ? 0 : other.height) + flow!.gap;
+        element = { ...element, y, ...(flow!.resize ? { height: Math.max(1, flow!.bottom - y) } : {}) };
+      }
     }
     if (element.type === "text" && element.smartText && !element.hidden) {
-      const maximum = element.smartFlow ? Math.min(element.smartText.maxHeight, Math.max(1, element.smartFlow.bottom - element.y)) : element.smartText.maxHeight;
-      const candidate = { ...element, smartText: { ...element.smartText, maxHeight: maximum } };
+      const rule = element.smartText, bottomEdge = edge ?? rule.anchorBottom;
+      let maximum = rule.maxHeight;
+      if (flow && !upward) maximum = Math.min(maximum, Math.max(1, flow.bottom - element.y));
+      if (flow && upward && edge !== undefined) maximum = Math.min(maximum, Math.max(1, edge - flow.bottom));
+      const candidate = { ...element, smartText: { ...rule, maxHeight: maximum } };
       const words = smartWords(element), layout = fitSmartText(candidate, measure(candidate, words), words);
       texts.set(element.id, layout);
-      element = { ...element, autoFitFontSize: layout.fontSize, height: Math.min(maximum, layout.height), textMode: "auto-fit" };
+      const height = Math.min(maximum, layout.height);
+      element = { ...element, autoFitFontSize: layout.fontSize, height, textMode: "auto-fit", ...(bottomEdge !== undefined ? { y: bottomEdge - height } : {}) };
     }
     visiting.delete(original.id); resolved.set(original.id, element); return element;
   }

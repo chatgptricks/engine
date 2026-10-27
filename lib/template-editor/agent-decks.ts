@@ -1,7 +1,7 @@
 /** Agent authoring uses output pixels; Engine stores editable layers on a 360-wide scene. */
 import {
   BUILT_IN_TEMPLATES, EMPTY_LIBRARY, createBlankDesign, createCanvasElement,
-  createDesign, formatDimensions, parseCanvasScene, parseLibrary, sceneForPage,
+  createDesign, formatDimensions, parseCanvasScene, parseLibrary, prepareSmartTemplate, sceneForPage,
   type CanvasElement, type CanvasScene, type DesignDocument, type DesignPage,
   type DesignTemplate, type EditorLibrary,
 } from "./model";
@@ -243,6 +243,28 @@ function makeSlide(spec: RecordValue, size: { width: number; height: number }, t
   page.readingOrder = elements.filter(element => element.type !== "shape").map(element => element.id);
   return page;
 }
+export type AgentTemplateSlot = { pageId: string; pageIndex: number; pageLabel?: string; elementId: string; slot: string; type: "text" | "photo"; role?: "cover" | "heading" | "body"; sample?: string; maxCharacters?: number; fixedStyle: boolean };
+
+/** Slots as a copy of the template will have them: text slots fit their copy
+ * in the template's own style, photo slots take a new image in a fixed frame.
+ * `maxCharacters` is a rough guide for copy that still reads at a good size. */
+export function agentTemplateSlots(template: DesignTemplate): AgentTemplateSlot[] {
+  const prepared = prepareSmartTemplate(template);
+  return prepared.pages.flatMap((page, pageIndex) => [...(page.canvas ?? sceneForPage(page, template.format)).elements].sort((a, b) => a.y - b.y || a.x - b.x).flatMap((element): AgentTemplateSlot[] => {
+    if (element.hidden || !element.slot && !element.templateRole && !(element.type === "text" && element.smartText)) return [];
+    if (element.templateRole === "brand" && !(element.type === "text" && element.smartText)) return [];
+    const base = { pageId: page.id, pageIndex, ...(page.label ? { pageLabel: page.label } : {}), elementId: element.id, slot: element.slot ?? element.id, fixedStyle: Boolean(element.protected?.includes("style")) };
+    if (element.type === "text") {
+      const rule = element.smartText, size = rule?.softMinFontSize ?? element.fontSize;
+      const perLine = Math.max(1, (element.width - 2 * (element.padding ?? 0)) / (size * .52));
+      const lines = rule ? Math.max(1, Math.floor((rule.maxHeight - 2 * (element.padding ?? 0)) / (size * element.lineHeight))) : undefined;
+      return [{ ...base, type: "text", ...(rule ? { role: rule.role } : {}), sample: element.text.slice(0, 200), ...(lines ? { maxCharacters: Math.max(8, Math.round(perLine * lines * .9)) } : {}) }];
+    }
+    if (element.type === "image" || element.type === "shape" && (element.templateRole === "media" || element.imageFill)) return [{ ...base, type: "photo" }];
+    return [];
+  }));
+}
+
 function validateDocument(document: DesignDocument): DesignDocument {
   if (!parseLibrary({ ...structuredClone(EMPTY_LIBRARY), designs: [document] })) fail("$", "result exceeds Engine's editable document limits");
   return document;
@@ -264,23 +286,26 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
   const replacements = new Map<CanvasElement, string>();
   for (const [key, value] of Object.entries((spec.slots ?? {}) as RecordValue)) {
     const target = canvas.elements.find(element => element.slot === key || element.id === key || element.name === key);
-    if (!target || target.type !== "text" && target.type !== "image") fail(`${path}.slots.${key}`, "must identify an existing text or image slot");
+    if (!target || target.type !== "text" && target.type !== "image" && !(target.type === "shape" && (target.templateRole === "media" || target.imageFill))) fail(`${path}.slots.${key}`, "must identify an existing text, image or photo-frame slot");
     replacements.set(target, String(value));
   }
+  // Template copy slots in reading order; fixed brand text (handles, page furniture) is never a target.
+  const copy = text.filter(element => element.type === "text" && element.smartText && !element.hidden).sort((a, b) => a.y - b.y || a.x - b.x);
   for (const key of ["title", "body"] as const) if (spec[key] !== undefined) {
     const candidates = key === "title" ? ["title", "heading"] : ["body", "description"];
-    const target = text.find(element => candidates.includes(element.slot ?? "")) ?? text[key === "title" ? 0 : 1];
+    const target = text.find(element => candidates.includes(element.slot ?? "")) ?? (copy.length ? copy[key === "title" ? 0 : 1] : text[key === "title" ? 0 : 1]);
     if (!target) fail(`${path}.${key}`, "template does not have a matching editable text slot");
     replacements.set(target, String(spec[key]));
   }
   for (const [element, value] of replacements) {
     ensureEditable(element, canvas, element.type === "text" ? ["text"] : ["src"], path);
-    if (element.type === "text") { element.text = value; delete element.richText; }
+    if (element.type === "text") { element.text = value; delete element.richText; delete element.wordTextures; }
     else if (element.type === "image") element.src = value;
+    else if (element.type === "shape") element.imageFill = { ...(element.imageFill ?? { objectFit: "cover", cropX: 50, cropY: 50 }), src: value };
     checkNativeElement(element, path);
   }
   if (spec.image) {
-    const element = canvas.elements.find(element => element.type === "image");
+    const element = canvas.elements.find(element => element.type === "image" && element.templateRole === "media") ?? canvas.elements.find(element => element.type === "image" && element.templateRole !== "brand") ?? canvas.elements.find(element => element.type === "image");
     if (!element || element.type !== "image") fail(`${path}.image`, "template has no editable image layer");
     ensureEditable(element, canvas, ["src", "publicAlt", "fit"], `${path}.image`);
     const image = spec.image as RecordValue;
@@ -455,6 +480,6 @@ export function agentCapabilities() {
       { id: "details", layout: "content", title: "A simple agent workflow", bullets: ["Read capabilities", "Create a deck", "Refine individual elements"] },
     ] },
     updateExample: { operations: [{ op: "update_slide", pageId: "intro", label: "Opening slide" }, { op: "rename", name: "My editable presentation" }] },
-    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates; slides must match the template slide count and may replace text/image slots.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace."],
+    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates; slides must match the template slide count and may replace text/image slots.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace."],
   };
 }
