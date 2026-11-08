@@ -46,13 +46,29 @@
 .te-recreate-summary { display:flex; align-items:center; gap:10px; min-width:0; padding:12px 14px; border:1px solid #ffffff10; border-radius:10px; background:#ffffff06; color:#ffffffd9; font-size:13px; }
 .te-recreate-summary > span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .te-recreate-summary > svg { flex-shrink:0; color:#ffffff70; }
-.te-recreate-steps { display:grid; gap:2px; margin:0; padding:0; list-style:none; }
-.te-recreate-steps li { display:flex; align-items:center; gap:12px; min-height:40px; color:#ffffff73; font-size:14px; }
-.te-recreate-steps li.is-active { color:#fff; font-weight:500; }
-.te-recreate-steps li.is-done { color:#ffffffc7; }
-.te-recreate-step-icon { display:grid; place-items:center; flex-shrink:0; width:24px; height:24px; border:1.5px solid #ffffff26; border-radius:50%; }
-.te-recreate-steps .is-done > .te-recreate-step-icon { border-color:#aa82f5; background:#aa82f5; color:#171023; }
-.te-recreate-steps .is-active > .te-recreate-step-icon { border-color:transparent; }
+.te-recreate-mode { flex-shrink:0; margin-left:auto; padding:3px 9px; border-radius:999px; background:#ffffff0d; color:#ffffffa6; font-size:11px; white-space:nowrap; }
+
+/* Progress lanes: one row per agent, grouped the way the stages run. */
+.te-modal:has(.te-recreate.te-recreate-wide) { max-width:660px; }
+.te-recreate-lanes { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 20px; }
+.te-recreate-lane { display:grid; align-content:start; gap:2px; min-width:0; }
+.te-tool-dialog.te-recreate .te-recreate-lane h3 { margin:0 0 4px; color:#ffffff80; font-size:11px; font-weight:600; letter-spacing:.4px; text-transform:uppercase; }
+.te-recreate-lane ol { display:grid; gap:2px; margin:0; padding:0; list-style:none; }
+.te-recreate-lane li { display:flex; align-items:flex-start; gap:10px; min-height:32px; padding:5px 0; color:#ffffff73; font-size:13px; }
+.te-recreate-lane li.is-running { color:#fff; font-weight:500; }
+.te-recreate-lane li.is-done { color:#ffffffd9; }
+.te-recreate-lane li.is-error { color:#ffd3d3; }
+.te-recreate-stage-icon { display:grid; place-items:center; flex-shrink:0; width:20px; height:20px; border:1.5px solid #ffffff26; border-radius:50%; font-size:11px; font-weight:700; line-height:1; }
+.te-recreate-lane .is-done > .te-recreate-stage-icon { border-color:#aa82f5; background:#aa82f5; color:#171023; }
+.te-recreate-lane .is-running > .te-recreate-stage-icon { border-color:transparent; }
+.te-recreate-lane .is-running .te-recreate-spinner { width:16px; height:16px; }
+.te-recreate-lane .is-error > .te-recreate-stage-icon { border-color:#ff9d8a; color:#ff9d8a; }
+.te-recreate-lane .is-skipped > .te-recreate-stage-icon { border-style:dashed; color:#ffffff80; }
+.te-recreate-stage-text { display:grid; gap:2px; min-width:0; }
+.te-recreate-stage-text > small { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:2; line-clamp:2; color:#ffffff8c; font-size:12px; font-weight:400; line-height:1.45; }
+.te-recreate-lane .is-error .te-recreate-stage-text > small { color:#ffb9b9; }
+.te-recreate-stage-round { color:#cfb4ff; font-size:11px; font-weight:500; }
+.te-tool-dialog.te-recreate details.te-recreate-team .te-recreate-lanes { padding-bottom:14px; }
 .te-recreate-spinner { display:block; width:18px; height:18px; border:2px solid #ffffff26; border-top-color:#c7a3ff; border-radius:50%; animation:te-recreate-spin .8s linear infinite; }
 @keyframes te-recreate-spin { to { transform:rotate(360deg); } }
 @media (prefers-reduced-motion:reduce) { .te-recreate-spinner { animation-duration:2.4s; } }
@@ -79,6 +95,75 @@
 .te-recreate-notes { display:grid; gap:6px; margin:0; padding-left:18px; color:#ffffffc7; font-size:13px; line-height:1.55; list-style:disc; }
 .te-recreate-notes li::marker { color:#b28bf8; }
 
+/* Autopilot switch: a native checkbox with role=switch. */
+.te-tool-dialog.te-recreate label.te-recreate-switch { position:relative; display:flex; align-items:flex-start; gap:12px; padding:12px 14px; border:1px solid #ffffff12; border-radius:10px; background:#ffffff05; cursor:pointer; }
+.te-tool-dialog.te-recreate .te-recreate-switch input[type=checkbox] { position:absolute; width:1px; height:1px; margin:0; opacity:0; pointer-events:none; }
+.te-recreate-switch-track { position:relative; flex-shrink:0; width:34px; height:20px; margin-top:1px; border-radius:999px; background:#ffffff26; transition:background .15s; }
+.te-recreate-switch-track::after { content:""; position:absolute; left:3px; top:3px; width:14px; height:14px; border-radius:50%; background:#fff; transition:transform .15s; }
+.te-recreate-switch input:checked + .te-recreate-switch-track { background:#aa82f5; }
+.te-recreate-switch input:checked + .te-recreate-switch-track::after { transform:translateX(14px); }
+.te-recreate-switch input:focus-visible + .te-recreate-switch-track { outline:2px solid #ddd; outline-offset:2px; }
+.te-recreate-switch-text { display:grid; gap:2px; min-width:0; }
+.te-tool-dialog.te-recreate .te-recreate-switch-text strong { font-size:13px; font-weight:550; }
+.te-recreate-switch-text small { color:#ffffff99; font-size:12px; line-height:1.5; }
+@media (prefers-reduced-motion:reduce) { .te-recreate-switch-track,.te-recreate-switch-track::after { transition:none; } }
+
+/* Checkpoint: the brief, the hook options and the slide plan. */
+.te-recreate-brief { display:grid; gap:6px; padding:12px 14px; border:1px solid #ffffff10; border-radius:10px; background:#ffffff05; }
+.te-tool-dialog.te-recreate .te-recreate-brief p { color:#ffffffb3; font-size:13px; line-height:1.5; }
+.te-recreate-brief small { color:#ffffff8c; font-size:12px; line-height:1.5; }
+.te-tool-dialog.te-recreate .te-recreate-section > .te-recreate-note { color:#ffffff99; font-size:12px; line-height:1.55; }
+.te-recreate-hooks { display:grid; gap:8px; }
+.te-tool-dialog.te-recreate label.te-recreate-hook { display:grid; grid-template-columns:16px minmax(0,1fr); gap:4px 12px; align-items:start; padding:12px 14px; border:1px solid #ffffff14; border-radius:10px; background:#ffffff05; cursor:pointer; transition:background .15s,border-color .15s; }
+.te-tool-dialog.te-recreate label.te-recreate-hook:hover { background:#ffffff09; }
+.te-tool-dialog.te-recreate label.te-recreate-hook.is-selected { border-color:#b28bf8aa; background:#ad83f514; }
+.te-tool-dialog.te-recreate .te-recreate-hook input[type=radio] { width:16px; height:16px; min-height:0; margin:2px 0 0; padding:0; accent-color:#aa82f5; }
+.te-recreate-hook-text { color:#fffffff0; font-size:14px; font-weight:500; line-height:1.4; overflow-wrap:anywhere; }
+.te-recreate-hook small { grid-column:2; color:#ffffff8c; font-size:12px; line-height:1.45; overflow-wrap:anywhere; }
+
+.te-recreate-outline { display:grid; gap:10px; margin:0; padding:0; list-style:none; }
+.te-recreate-slide { display:grid; gap:10px; min-width:0; padding:12px 14px; border:1px solid #ffffff12; border-radius:12px; background:#ffffff05; }
+.te-recreate-slide.is-invalid { border-color:#ff8f8f80; }
+.te-recreate-slide-head { display:flex; align-items:center; gap:10px; min-width:0; }
+.te-recreate-slide-number { display:grid; place-items:center; flex-shrink:0; min-width:24px; height:24px; padding:0 7px; border-radius:12px; background:#ffffff14; color:#fff; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; }
+.te-recreate-slide-kind { min-width:0; overflow:hidden; color:#ffffffe6; font-size:13px; font-weight:550; text-overflow:ellipsis; white-space:nowrap; }
+.te-recreate-slide-kind small { color:#ffffff80; font-size:12px; font-weight:400; }
+.te-recreate-slide-tools { display:flex; flex-shrink:0; gap:4px; margin-left:auto; }
+.te-tool-dialog.te-recreate .te-recreate-slide-tools button { display:grid; place-items:center; width:32px; height:32px; min-height:0; padding:0; border:1px solid #ffffff14; border-radius:8px; background:transparent; color:#ffffffb3; font-size:15px; line-height:1; }
+.te-tool-dialog.te-recreate .te-recreate-slide-tools button:hover:not(:disabled) { background:#ffffff10; color:#fff; }
+.te-tool-dialog.te-recreate .te-recreate-slide-tools button:disabled { opacity:.3; }
+.te-recreate-slide-row { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
+.te-tool-dialog.te-recreate .te-recreate-slide label.te-recreate-field > span { color:#ffffff99; font-size:12px; font-weight:400; }
+.te-tool-dialog.te-recreate details.te-recreate-slide-more { border:0; padding:0; }
+.te-tool-dialog.te-recreate details.te-recreate-slide-more > summary { min-height:30px; padding:5px 0; color:#ffffffa6; font-size:12px; font-weight:500; }
+.te-tool-dialog.te-recreate details.te-recreate-slide-more[open] > summary { margin-bottom:8px; border-bottom:0; }
+.te-recreate-slide-details { display:grid; gap:10px; }
+.te-recreate-add { display:flex; flex-wrap:wrap; gap:8px; }
+
+/* Real posts from X on a reaction slide. */
+.te-recreate-posts { display:grid; gap:6px; margin:0; padding:0; list-style:none; }
+.te-recreate-posts > li { padding:10px 12px; border:1px solid #ffffff10; border-radius:9px; background:#ffffff04; }
+.te-recreate-post { display:grid; gap:4px; min-width:0; }
+.te-recreate-post-head { display:flex; flex-wrap:wrap; align-items:baseline; gap:2px 8px; min-width:0; font-size:12px; }
+.te-tool-dialog.te-recreate .te-recreate-post-head strong { font-size:12px; font-weight:600; }
+.te-recreate-post-head > span { color:#ffffff8c; }
+.te-recreate-post-head a { margin-left:auto; color:#cfb4ff; text-decoration:underline; text-underline-offset:2px; }
+.te-recreate-post-text { display:-webkit-box; overflow:hidden; -webkit-box-orient:vertical; -webkit-line-clamp:3; line-clamp:3; color:#ffffffbf; font-size:12px; line-height:1.5; overflow-wrap:anywhere; white-space:pre-line; }
+.te-recreate-post-choices { display:grid; gap:6px; }
+.te-tool-dialog.te-recreate label.te-recreate-post-choice { display:grid; grid-template-columns:16px minmax(0,1fr); gap:10px; align-items:start; padding:10px 12px; border:1px solid #ffffff10; border-radius:9px; cursor:pointer; }
+.te-tool-dialog.te-recreate label.te-recreate-post-choice.is-selected { border-color:#b28bf880; background:#ad83f50f; }
+.te-tool-dialog.te-recreate label.te-recreate-post-choice:has(input:disabled) { cursor:default; opacity:.55; }
+.te-recreate-post-choice input[type=checkbox] { margin-top:1px; accent-color:#aa82f5; }
+
+/* The critics' report on the finished slides. */
+.te-recreate-critics { display:grid; grid-template-columns:auto minmax(0,1fr); gap:6px 12px; margin:0; font-size:13px; line-height:1.5; }
+.te-recreate-critics dt { color:#ffffff8c; font-size:12px; font-weight:600; line-height:1.6; }
+.te-recreate-critics dd { margin:0; color:#ffffffd1; }
+.te-recreate-issues { display:grid; gap:8px; margin:0; padding:0; list-style:none; }
+.te-recreate-issues > li { --verdict:#f2c46d; display:grid; gap:6px; padding:12px 14px; border:1px solid #ffffff10; border-left:3px solid var(--verdict); border-radius:10px; background:#ffffff05; }
+.te-recreate-issues > li.is-must_fix { --verdict:#ff9d8a; }
+.te-tool-dialog.te-recreate details.te-recreate-team > summary { color:#ffffffc7; }
+
 .te-modal .te-recreate-alert { display:grid; justify-items:start; gap:4px; margin:14px 0 0; }
 .te-modal .te-tool-dialog .te-recreate-alert { margin:0; }
 .te-recreate-alert strong { color:#ffd3d3; font-size:13px; font-weight:600; }
@@ -95,6 +180,8 @@
 .te-recreate-toast-icon { display:grid; place-items:center; flex-shrink:0; width:28px; height:28px; border-radius:50%; background:#ffffff0d; font-size:14px; font-weight:700; }
 .te-recreate-toast.is-done .te-recreate-toast-icon { background:#aa82f5; color:#171023; }
 .te-recreate-toast.is-error .te-recreate-toast-icon { background:#f0443826; color:#ffb9b9; }
+.te-recreate-toast.is-checkpoint { border-color:#b28bf866; }
+.te-recreate-toast.is-checkpoint .te-recreate-toast-icon { background:#ad83f533; color:#e6d8ff; }
 .te-recreate-toast .te-recreate-spinner { width:16px; height:16px; }
 .te-recreate-toast-text { display:grid; gap:2px; min-width:0; }
 .te-recreate-toast-text strong { font-size:13px; font-weight:550; }
@@ -113,7 +200,14 @@
   /* 16px keeps iOS from zooming into a focused field. */
   .te-tool-dialog.te-recreate input:not([type=radio]),.te-tool-dialog.te-recreate select,.te-tool-dialog.te-recreate textarea { font-size:16px; }
   .te-recreate-thumbs { grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px; }
-  .te-recreate-footnote { display:none; }
+  .te-recreate-footnote:not(.te-recreate-learns) { display:none; }
+  .te-dialog-footer .te-recreate-learns { flex-basis:100%; margin:0 0 4px; }
+  .te-recreate-slide-row { grid-template-columns:1fr; }
+  .te-recreate-slide { padding:12px; }
+}
+@media (max-width:600px) {
+  .te-recreate-lanes { grid-template-columns:1fr; }
+  .te-recreate-mode { display:none; }
 }
 @media (max-width:560px) {
   .te-recreate-toast:not(.is-compact) { left:12px; right:12px; bottom:calc(12px + env(safe-area-inset-bottom)); max-width:none; }

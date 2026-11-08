@@ -44,8 +44,13 @@ Tokens belong to the workspace that created them. They grant the agent the API's
 | `engine_update_deck` | Apply `changes` using `deckId`, `expectedHash`, and an optional UUID `operationId` |
 | `engine_export_deck` | Return `{filename, package, editorUrl}` for an editable `.engine.json` file |
 | `engine_list_page_profiles` | List the pages Engine recreates posts for: language, template, voice, house rules, Follow line |
-| `engine_recreate_post` | Start recreating an Instagram post (link or slide screenshots) for one page; returns a `jobId` |
-| `engine_recreate_status` | Read a recreation's progress and, when done, its `deckId`, `editorUrl`, fact checks and notes |
+| `engine_playbook` | Read the Recreate team's playbook: the carousel shape, the house rules, and one role card per stage with its output schema |
+| `engine_recreate_post` | Start recreating an Instagram post (link or slide screenshots) for one page, in `checkpoint` or `autopilot` mode; returns a `postId` and `jobId` |
+| `engine_recreate_status` | Read a recreation's progress: each stage's status and summary, the checkpoint while paused, and the deck, fact checks and critics' review when done |
+| `engine_recreate_approve` | Approve a paused recreation: an optional edited outline, plus a hook option or a hook of your own |
+| `engine_recreate_rerun_stage` | Rerun one stage, with optional instructions, and every stage after it |
+| `engine_recreate_submit_stage` | Hand in one stage's result yourself; Engine checks it against the stage's schema |
+| `engine_recreate_resume` | Continue a recreation that stopped, keeping every finished stage |
 
 List tools accept `offset` (default 0, maximum 10000) and `limit` (default 20, maximum 100). MCP tool discovery fetches the live schemas from Engine. When the server is unavailable, discovery exposes generic schemas so the capabilities tool can still diagnose the connection. Call capabilities again after changing server versions or reconnecting.
 
@@ -195,20 +200,41 @@ Image layers accept a supported image `src` and optional public alt text. An age
 
 ## Recreate a post for one of our pages
 
-Recreate turns someone else's Instagram post into a native, editable carousel in one page's template, voice and language (English or Spanish). It runs on the server with Claude:
+Recreate turns someone else's Instagram post into a native, editable carousel in one page's template, voice and language (English or Spanish). The finished post recreates the original faithfully, then answers the first questions a reader asks, shows real reactions from X, and ends with the page's Follow slide.
 
-1. **Import:** the post's slides and caption, from the link (through Apify) or from uploaded screenshots.
-2. **Research:** every claim is checked against primary sources with live web search, and real data is found for any chart.
-3. **Write:** fresh copy in the page's voice. It may add, cut or reorder slides, and it follows the page's house rules, such as no final periods and two-line bodies.
-4. **Build:** a deck made from the page's template pages, with charts drawn into the photo slot. Fact checks, photo briefs and notes are saved as deck comments.
+A team of agents does the work on the server, each with one job. Every stage saves its result into the run's **post file**, so a run can pause for a person, survive a server restart, or redo a single stage:
+
+| Stage | Who | What it produces |
+| --- | --- | --- |
+| `brief` | Editor-in-chief | What the original says slide by slide, what to keep, the reader's first questions |
+| `facts`, `data`, `reactions`, `visuals` | Research, in parallel (`visuals` starts once `facts` is done) | Checked claims with sources, the original chart's real data series, real viral posts from X with their links, candidate photos from X and from the pages the facts cite |
+| `outline` | Story editor | The slide plan: the original's slides first, then reader questions, reactions, a takeaway and Follow |
+| `hooks` | Headline model | Hook options for the cover (written by the copywriter when the headline model isn't set up) |
+| `approval` | A person, or autopilot | The approved plan and the chosen hook |
+| `copy`, `charts`, `images` | Makers, in parallel | Slot text in the page's voice, the charts, the photos |
+| `deck` | Designer | The editable deck in the page's template; fact checks, sources and notes are saved as deck comments |
+| `review` | Critics | Every number checked against the research, and the rendered slides checked against the original and the house rules. Must-fix problems go back to the copywriter, chart maker or art director, for at most two rounds |
 
 ```json
-{ "profileId": "chatgptricks", "url": "https://www.instagram.com/p/SHORTCODE/", "notes": "Optional direction for this post" }
+{ "profileId": "chatgptricks", "url": "https://www.instagram.com/p/SHORTCODE/", "mode": "checkpoint", "notes": "Optional direction for this post" }
 ```
 
-Call `engine_list_page_profiles` for the ids, then `engine_recreate_post`. A run takes a few minutes, so poll `engine_recreate_status` with the `jobId` about every 15 seconds until `status` is `done` or `error`. When it's done, review the deck with `engine_get_deck` and send a person the `editorUrl`. Instead of `url`, you can send `uploads`: 1–20 `{name, dataUrl}` slide screenshots in order, plus the `caption`.
+Call `engine_list_page_profiles` for the ids, then `engine_recreate_post`. Instead of `url`, you can send `uploads`: 1–20 `{name, dataUrl}` slide screenshots in order, plus the `caption`. A run takes several minutes, so poll `engine_recreate_status` with the `postId` about every 15 seconds:
 
-Over HTTP, the same calls are `GET /api/engine/page-profiles`, `POST /api/engine/recreate` (202 `{jobId}`) and `GET /api/engine/recreate?jobId=…`, all with the agent token. The server needs `ANTHROPIC_API_KEY`, and `APIFY_TOKEN` for links. Progress is kept in server memory, so a restart loses the progress record but never a saved deck.
+- **`checkpoint` mode** pauses with `status: "paused"` once the plan and the hook options are ready. The status then includes `checkpoint`: the outline, the hook options, the real reactions and the charts. Approve it with `engine_recreate_approve`: pass `option` (an index into `checkpoint.hooks.options`) or your own `hookText`, and optionally an edited `outline` in the same shape (reorder, cut or add slides; a reaction slide lists its posts in `reactionIds`).
+- **`autopilot` mode** (the default) approves the plan as written with the first hook option that fits the cover's headline (the shortest when none fits) and runs to the end.
+- When `status` is `done`, `result` has the `deckId`, `editorUrl`, fact checks, notes and the critics' `review` with any problems still open. Review the deck with `engine_get_deck` and send a person the `editorUrl`.
+- When `status` is `error`, `resumable` is true and `engine_recreate_resume` continues from the last finished stage.
+
+To change one part, call `engine_recreate_rerun_stage` with the stage and plain instructions, such as `{"stage": "copy", "instructions": "Make the cover shorter"}`; every stage after it runs again. An agent can also do a stage itself: read the role card and output schema in `engine_playbook`, then hand the result in with `engine_recreate_submit_stage`. Engine checks it against the schema and continues from there. Charts and the deck are always built by Engine, and reactions must be real posts from X.
+
+A rebuilt deck replaces the earlier version in place. If the deck changed since Engine saved it (a person edited it, or the editor re-fitted its text when it was opened), that version stays and the rebuild is saved next to it as a new post named “… (rebuilt)”. A deck in Trash is left alone; the new version is held and the run's notes say why.
+
+Hook choices teach the team's headline model only when a signed-in person approves, as in Engine's Recreate dialog. Approvals made with an agent token and autopilot runs are never sent to it.
+
+Over HTTP, the same calls use the agent token: `GET /api/engine/page-profiles`; `POST /api/engine/recreate` to start (202 with the run's status); `POST /api/engine/recreate` with `{"action": "approve" | "rerun_stage" | "submit_stage" | "resume" | "stop", "postId": "…", …}`; `GET /api/engine/recreate?postId=…` for progress; and `GET /api/engine/recreate?playbook=1` for the playbook. Older clients may keep using `jobId` in place of `postId`.
+
+The server needs `ANTHROPIC_API_KEY`, and `APIFY_TOKEN` for links and for reactions and photos from X. Searching X needs a paid Apify plan: on the free plan the tweet scraper runs only in demo mode, so the reactions and photo stages are skipped with a note saying so. `HEADLINE_API_KEY` enables the headline model. Each role's model can be changed with `ENGINE_MODEL_<ROLE>` (for example `ENGINE_MODEL_COPY`); Opus 5.5 writes and judges, and Sonnet 5.5 does the narrower research jobs. The design critic looks at the slides rendered with headless Chromium (`ENGINE_CHROMIUM_PATH`, else Playwright's own Chromium, else an installed Google Chrome); where no browser is available, it is skipped and only Engine's own checks run (empty slots, final periods, body length, the Follow line). Post files are kept for 30 days.
 
 ## Revise safely
 

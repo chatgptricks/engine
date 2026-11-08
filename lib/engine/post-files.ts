@@ -33,6 +33,8 @@ export type StageRecord = {
   round?: number;
   /** Extra instructions for a rerun, from a person or an agent. */
   instructions?: string;
+  /** Set each time the stage starts, so a result from a run that was superseded is dropped. */
+  attempt?: string;
 };
 export type PostMode = "checkpoint" | "autopilot";
 export type PostStatus = "running" | "paused" | "done" | "error";
@@ -204,9 +206,9 @@ export function setStage(file: PostFile, stage: PostStage, record: Partial<Stage
 
 /** Stages that must rerun when one changes: everything that read its output. */
 export const STAGE_INPUTS: Record<PostStage, PostStage[]> = {
-  brief: [], facts: ["brief"], data: ["brief"], reactions: ["brief"], visuals: ["brief"],
+  brief: [], facts: ["brief"], data: ["brief"], reactions: ["brief"], visuals: ["brief", "facts"],
   outline: ["brief", "facts", "data", "reactions"], hooks: ["brief", "facts"], approval: ["outline", "hooks"],
-  copy: ["approval", "facts", "reactions"], charts: ["approval", "data"], images: ["approval", "visuals"],
+  copy: ["approval", "facts", "data", "reactions"], charts: ["approval", "data"], images: ["approval", "visuals"],
   deck: ["copy", "charts", "images"], review: ["deck"],
 };
 export function downstreamOf(stage: PostStage): PostStage[] {

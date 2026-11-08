@@ -114,6 +114,20 @@ test("buildRecreatedDeck makes a native deck with emphasis, a chart PNG and note
   assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}),"the deck passes Engine's library validation");
 });
 
+test("the writer never sees the Reaction pages, and a slide on one is skipped",async()=>{
+  const reaction=pages.findIndex(page=>page.label==="Reaction"),both=pages.findIndex(page=>page.label==="Reactions");
+  assert.ok(reaction>0&&both>0,"the template has both reaction pages");
+  const visible=recreate.writerPages(template);
+  assert.ok(visible.every(page=>page.index!==reaction&&page.index!==both));
+  assert.deepEqual(visible.map(page=>page.index),pages.map((_,index)=>index).filter(index=>index!==reaction&&index!==both),"other pages keep their template index");
+  const {carousel}=carouselFor();
+  const invented={templatePage:reaction,purpose:"reaction",texts:[{slot:"reaction-text",text:"A post nobody wrote"}],media:{kind:"none",photoBrief:"",chart:null}};
+  const {document,notes}=await recreate.buildRecreatedDeck(profile,template,model.BUILT_IN_TEMPLATES,{...carousel,slides:[carousel.slides[0],invented]});
+  assert.equal(document.pages.length,1,"only the cover is built");
+  assert.ok(!JSON.stringify(document).includes("A post nobody wrote"));
+  assert.ok(notes.some(note=>/Reaction page: it shows real posts from X/.test(note)));
+});
+
 test("buildRecreatedDeck refuses a carousel with no usable slides",async()=>{
   const {carousel}=carouselFor();
   await assert.rejects(recreate.buildRecreatedDeck(profile,template,model.BUILT_IN_TEMPLATES,{...carousel,slides:[carousel.slides[3]]}),/didn't produce any slides/);

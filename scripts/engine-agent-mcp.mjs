@@ -47,6 +47,10 @@ function configuration() {
   return { endpoint: new URL("/api/agent/slides", url), recreate: new URL("/api/engine/recreate", url), profiles: new URL("/api/engine/page-profiles", url), token };
 }
 
+const STAGES = ["brief", "facts", "data", "reactions", "visuals", "outline", "hooks", "approval", "copy", "charts", "images", "deck", "review"];
+const SUBMITTABLE_STAGES = STAGES.filter((stage) => stage !== "charts" && stage !== "deck");
+const POST_TOOLS = new Set(["engine_recreate_status", "engine_recreate_approve", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume"]);
+
 function schema(properties = {}, required = []) {
   return { type: "object", properties, required, additionalProperties: false };
 }
@@ -67,6 +71,11 @@ function toolDefinitions(capabilities) {
     limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
   });
   const uuid = { type: "string", pattern: "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$" };
+  // A recreation is named by its postId, or by the jobId older clients kept.
+  const post = {
+    postId: { type: "string", pattern: "^post-[a-fA-F0-9-]{36}$", description: "postId from engine_recreate_post." },
+    jobId: { ...uuid, description: "jobId from engine_recreate_post (the postId without its post- prefix)." },
+  };
   const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
   return [
@@ -78,14 +87,34 @@ function toolDefinitions(capabilities) {
     { name: "engine_update_deck", description: "Update an existing native editable deck using stable IDs and expectedHash from engine_get_deck. A stale hash returns a conflict: read again and reconcile before retrying. Read engine_capabilities for supported changes. Returns the updated document, hash, editor URL, and operationId.", inputSchema: schema({ deckId, expectedHash: { type: "string", minLength: 1 }, changes: updateSchema, operationId }, ["deckId", "expectedHash", "changes"]), annotations: { ...write, destructiveHint: true } },
     { name: "engine_export_deck", description: "Return an editable .engine.json package and suggested filename for a deck, plus its editor URL. This preserves native text, images, shapes, pages, and layers for reimport; it is not a flattened slide image or PowerPoint export.", inputSchema: schema({ deckId }, ["deckId"]), annotations: read },
     { name: "engine_list_page_profiles", description: "List the pages Engine recreates posts for: id, name, handle, language (en/es), templateId, voice, house rules and Follow line. Use a profile id with engine_recreate_post.", inputSchema: schema(), annotations: read },
-    { name: "engine_recreate_post", description: "Start recreating an Instagram post for one page: Engine imports the post (or the uploaded slide screenshots), researches and fact-checks it with live web search, rewrites it in the page's voice and language (it may add, cut or reorder slides), and saves a native editable deck in the page's template. Returns a jobId at once; the run takes a few minutes. Poll engine_recreate_status about every 15 seconds.", inputSchema: schema({
+    { name: "engine_playbook", description: "Read the Recreate team's playbook: the carousel shape, the house rules, and one role card per stage (job, rules, quality bar, output schema). Read it before handing in a stage with engine_recreate_submit_stage, so your work meets the same bar as Engine's own agents.", inputSchema: schema(), annotations: read },
+    { name: "engine_recreate_post", description: "Start recreating an Instagram post for one page. A team of agents imports the post (or the uploaded slide screenshots), writes a brief, researches facts, chart data, real reactions from X and photos in parallel, plans the slides, gathers hook options from the team's headline model, writes the copy, builds a native editable deck in the page's template, and has critics check it (at most two fix rounds). mode checkpoint pauses after the plan and hooks until someone approves (engine_recreate_approve); autopilot (the default) runs to the end. Returns postId and jobId at once; a run takes several minutes. Poll engine_recreate_status about every 15 seconds.", inputSchema: schema({
       profileId: { type: "string", minLength: 1, maxLength: 120, description: "Page profile id from engine_list_page_profiles." },
       url: { type: "string", minLength: 1, maxLength: 2000, description: "Instagram post or reel link. Omit when sending uploads." },
       uploads: { type: "array", minItems: 1, maxItems: 20, description: "Slide screenshots in order, instead of a link.", items: schema({ name: { type: "string", maxLength: 200 }, dataUrl: { type: "string", description: "data:image/jpeg|png|webp;base64,…" } }, ["dataUrl"]) },
       caption: { type: "string", maxLength: 10000, description: "The original caption, when it isn't in the link." },
       notes: { type: "string", maxLength: 2000, description: "Direction for this post, for example an angle to take or data to use." },
+      mode: { type: "string", enum: ["checkpoint", "autopilot"], description: "checkpoint pauses for approval after the outline and hooks; autopilot (default) runs to the end." },
     }, ["profileId"]), annotations: { ...write, openWorldHint: true } },
-    { name: "engine_recreate_status", description: "Read a recreation's progress: status (queued, importing, researching, writing, building, done or error) and message. When done, result has deckId, editorUrl, slideCount, factChecks and notes; then use engine_get_deck to review or edit the deck.", inputSchema: schema({ jobId: { ...uuid, description: "jobId from engine_recreate_post." } }, ["jobId"]), annotations: read },
+    { name: "engine_recreate_status", description: "Read a recreation's progress: status (queued, importing, researching, planning, paused, writing, building, reviewing, done or error), message, and each stage with its status and a one-line summary. When paused, checkpoint has the outline, the hook options, the real X reactions and the charts to approve. When done, result has deckId, editorUrl, slideCount, factChecks, notes and the critics' review; then use engine_get_deck to review or edit the deck. When error, resumable says engine_recreate_resume can continue it.", inputSchema: schema(post), annotations: read },
+    { name: "engine_recreate_approve", description: "Approve a paused recreation: optionally pass an edited outline (same shape as checkpoint.outline: reorder, cut or add slides), and pick a hook by its index in checkpoint.hooks.options or write your own in hookText. Engine then writes the copy, draws the charts, chooses photos, builds the deck and reviews it. An agent's approval is never sent to the headline model as a pick; only a person's choice in Engine is.", inputSchema: schema({
+      ...post,
+      option: { type: "integer", minimum: 0, maximum: 20, description: "Index of the chosen hook in checkpoint.hooks.options." },
+      hookText: { type: "string", minLength: 1, maxLength: 200, description: "A hook of your own instead of an option." },
+      outline: { type: "object", description: "An edited outline: {slides: [{kind, templatePage, purpose, points, chartId, reactionIds, photo}], why}. Omit to keep the planned one." },
+      notes: { type: "string", maxLength: 2000, description: "Direction for the copywriter." },
+    }), annotations: write },
+    { name: "engine_recreate_rerun_stage", description: "Rerun one stage of a recreation, optionally with instructions (for example stage copy with \"make the cover shorter\"), and every stage that read it. Stages: brief, facts, data, reactions, visuals, outline, hooks, approval, copy, charts, images, deck, review. Rerunning approval reopens the checkpoint.", inputSchema: schema({
+      ...post,
+      stage: { type: "string", enum: STAGES },
+      instructions: { type: "string", maxLength: 2000, description: "What to change; the stage sees its earlier result too." },
+    }, ["stage"]), annotations: write },
+    { name: "engine_recreate_submit_stage", description: "Hand in one stage's result yourself instead of Engine's agent. Engine checks it against the stage's schema (read engine_playbook for each stage's output) and reruns everything after it. Stages you can hand in: brief, facts, data, reactions, visuals, outline, hooks, approval, copy, images, review; charts and the deck are always built by Engine. Reactions must be real posts from X.", inputSchema: schema({
+      ...post,
+      stage: { type: "string", enum: SUBMITTABLE_STAGES },
+      output: { type: "object", description: "The stage's result, in the shape its role card names." },
+    }, ["stage", "output"]), annotations: write },
+    { name: "engine_recreate_resume", description: "Continue a recreation that stopped (a failed stage, a server restart): failed and interrupted stages run again; finished ones are kept.", inputSchema: schema(post), annotations: write },
   ];
 }
 
@@ -99,14 +128,25 @@ const ACTIONS = {
   engine_export_deck: "export_deck",
 };
 // Recreate tools live outside the slides endpoint.
+const recreateAction = (action) => (config, args) => ({ url: config.recreate, method: "POST", body: { action, ...args } });
 const ROUTES = {
   engine_list_page_profiles: (config) => ({ url: config.profiles, method: "GET" }),
+  engine_playbook: (config) => {
+    const url = new URL(config.recreate);
+    url.searchParams.set("playbook", "1");
+    return { url, method: "GET" };
+  },
   engine_recreate_post: (config, args) => ({ url: config.recreate, method: "POST", body: args }),
   engine_recreate_status: (config, args) => {
     const url = new URL(config.recreate);
-    url.searchParams.set("jobId", args.jobId);
+    if (args.postId) url.searchParams.set("postId", args.postId);
+    else url.searchParams.set("jobId", args.jobId);
     return { url, method: "GET" };
   },
+  engine_recreate_approve: recreateAction("approve"),
+  engine_recreate_rerun_stage: recreateAction("rerun_stage"),
+  engine_recreate_submit_stage: recreateAction("submit_stage"),
+  engine_recreate_resume: recreateAction("resume"),
 };
 
 function validatedArguments(name, args) {
@@ -131,7 +171,22 @@ function validatedArguments(name, args) {
   if (Object.hasOwn(args, "jobId") && (typeof args.jobId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(args.jobId))) {
     throw new RpcError(-32602, "jobId must be the UUID returned by engine_recreate_post.");
   }
-  for (const [key, max] of [["profileId", 120], ["url", 2000], ["caption", 10000], ["notes", 2000]]) {
+  if (Object.hasOwn(args, "postId") && (typeof args.postId !== "string" || !/^post-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(args.postId))) {
+    throw new RpcError(-32602, "postId must be the post-… id returned by engine_recreate_post.");
+  }
+  if (POST_TOOLS.has(name) && !Object.hasOwn(args, "postId") && !Object.hasOwn(args, "jobId")) {
+    throw new RpcError(-32602, "Pass the postId (or jobId) from engine_recreate_post.");
+  }
+  if (Object.hasOwn(args, "mode") && args.mode !== "checkpoint" && args.mode !== "autopilot") throw new RpcError(-32602, "mode must be checkpoint or autopilot.");
+  if (Object.hasOwn(args, "stage") && !(name === "engine_recreate_submit_stage" ? SUBMITTABLE_STAGES : STAGES).includes(args.stage)) {
+    throw new RpcError(-32602, `stage must be one of: ${(name === "engine_recreate_submit_stage" ? SUBMITTABLE_STAGES : STAGES).join(", ")}.`);
+  }
+  if (Object.hasOwn(args, "option") && (!Number.isSafeInteger(args.option) || args.option < 0 || args.option > 20)) throw new RpcError(-32602, "option must be the index of a hook option.");
+  if (name === "engine_recreate_approve" && !Object.hasOwn(args, "option") && !Object.hasOwn(args, "hookText")) throw new RpcError(-32602, "Pick a hook with option or write one in hookText.");
+  for (const key of ["outline", "output"]) {
+    if (Object.hasOwn(args, key) && !object(args[key])) throw new RpcError(-32602, `${key} must be an object. Read engine_playbook for its shape.`);
+  }
+  for (const [key, max] of [["profileId", 120], ["url", 2000], ["caption", 10000], ["notes", 2000], ["hookText", 200], ["instructions", 2000]]) {
     if (Object.hasOwn(args, key) && (typeof args[key] !== "string" || !args[key].trim() || args[key].length > max)) {
       throw new RpcError(-32602, `${key} must be a nonempty string of at most ${max} characters.`);
     }
@@ -241,7 +296,7 @@ function bridge(config) {
         protocolVersion: PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
         capabilities: { tools: {} },
         serverInfo: { name: "engine-slides", title: "Engine editable slides", version: "1.0.0" },
-        instructions: "Start with engine_capabilities for the live deck and update schemas, coordinates, fonts, and limits. Create independent native layers; use the returned editorUrl to let a person continue editing. Get the current hash before updating. Preserve operationId for any identical mutation retry. To recreate an Instagram post for one of the team's pages, call engine_list_page_profiles, then engine_recreate_post, then poll engine_recreate_status.",
+        instructions: "Start with engine_capabilities for the live deck and update schemas, coordinates, fonts, and limits. Create independent native layers; use the returned editorUrl to let a person continue editing. Get the current hash before updating. Preserve operationId for any identical mutation retry. To recreate an Instagram post for one of the team's pages, call engine_list_page_profiles, then engine_recreate_post, then poll engine_recreate_status. With mode checkpoint the run pauses for engine_recreate_approve; engine_recreate_rerun_stage redoes one stage with instructions, and engine_recreate_submit_stage hands in a stage you did yourself (read engine_playbook first).",
       };
     }
     if (!initialized) throw new RpcError(-32000, "Initialize the MCP connection before requesting tools.");

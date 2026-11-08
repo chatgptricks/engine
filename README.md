@@ -278,6 +278,7 @@ See `.env.example` for configuration. These are not required for template editin
 
 - **Scheduled research:** Supabase, `CRON_SECRET`, and an external scheduler. On Vercel, `vercel.json` schedules the research cron hourly.
 - **Image search:** `APIFY_TOKEN` enables “Find images on X”; Google Custom Search keys enable another image source in research.
+- **Recreate post:** `ANTHROPIC_API_KEY` turns on Recreate post. A team of Claude agents researches an Instagram post, plans the slides (pausing for your review unless Autopilot is on), writes them in one page's voice, and has critics check the result. `APIFY_TOKEN` imports post links and finds reactions on X (X search needs a paid Apify plan). `ENGINE_MODEL_<ROLE>` changes one role's model. Agents can run and steer it through the MCP tools in `docs/agent-slides.md`.
 - **Headline model:** `HEADLINE_API_KEY` lets Recreate post ask the hosted headline service for hook options and report which one a person picked; `HEADLINE_API_URL` overrides the service address. Without the key, the hooks are written by the copywriter. The first call after a quiet spell can take a few minutes while the model wakes.
 - **Large research uploads:** `BLOB_READ_WRITE_TOKEN` enables Vercel Blob storage for uploads beyond the existing video limit.
 - **Instagram channels:** configure a Meta app through `/admin/instagram-setup`.

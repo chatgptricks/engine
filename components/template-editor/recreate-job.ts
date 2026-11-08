@@ -2,7 +2,12 @@
 
 import {useCallback, useEffect, useRef, useState} from "react";
 
-/** Client side of the Recreate post flow: request helpers, image prep and job polling. */
+/**
+ * Client side of the Recreate post flow: request helpers, image prep, and the
+ * live view of a run. A run is a team of agents working on one post file on
+ * the server; this file reads that view and sends a person's actions on it
+ * (approve the plan, resume, stop).
+ */
 export type PageProfile = {
   id: string;
   name: string;
@@ -14,13 +19,21 @@ export type PageProfile = {
   followCta: {line1: string; maxChars: number};
   swipeText: string;
 };
-export type RecreateStatus = "queued" | "importing" | "researching" | "writing" | "building" | "done" | "error";
+export type RecreateMode = "checkpoint" | "autopilot";
+export type RecreateStatus = "queued" | "importing" | "researching" | "planning" | "paused" | "writing" | "building" | "reviewing" | "done" | "error";
+export type StageName = "brief" | "facts" | "data" | "reactions" | "visuals" | "outline" | "hooks" | "approval" | "copy" | "charts" | "images" | "deck" | "review";
+export type StageStatus = "pending" | "running" | "done" | "skipped" | "error";
+/** One agent's (or Engine's) part of the run. */
+export type StageView = {stage: StageName; title: string; by: "agent" | "code" | "human"; status: StageStatus; actor?: string; model?: string; round: number; summary: string};
 export type FactCheck = {
   claim: string;
   verdict: "confirmed" | "corrected" | "unverified";
   detail: string;
   sources: {title: string; url: string}[];
 };
+export type ReviewIssue = {slide: number; problem: string; fix: string; severity: "must_fix" | "should_fix" | "note"};
+/** What the critics said about the finished slides. */
+export type RecreateReview = {round: number; rendered: boolean; facts: string; design: string; sentBack: string[]; open: ReviewIssue[]};
 export type RecreateResult = {
   deckId: string;
   editorUrl: string;
@@ -28,18 +41,46 @@ export type RecreateResult = {
   slideCount: number;
   factChecks: FactCheck[];
   notes: string[];
+  review: RecreateReview | null;
+};
+export type OutlineKind = "cover" | "original" | "question" | "reaction" | "takeaway" | "follow";
+export type OutlineSlide = {kind: OutlineKind; templatePage: number; purpose: string; points: string[]; chartId: string | null; reactionIds: string[]; photo: string};
+export type HookOption = {text: string; framework: string; by: "headline-model" | "copywriter" | "agent"; english: string | null};
+export type CheckpointPage = {index: number; label: string; reaction: "reaction" | "reactions" | null};
+export type CheckpointReaction = {id: string; url: string; name: string; handle: string; verified: boolean; text: string; likes: number; reposts: number; why: string};
+export type CheckpointChart = {id: string; purpose: string; recreates: string; source: string};
+/** The plan a person checks before the slides are written. */
+export type Checkpoint = {
+  slides: OutlineSlide[];
+  why: string;
+  pages: CheckpointPage[];
+  hooks: HookOption[];
+  hookSource: HookOption["by"];
+  hookNote: string;
+  reactions: CheckpointReaction[];
+  charts: CheckpointChart[];
+  brief: {topic: string; story: string; originalHeadline: string; angle: string} | null;
 };
 export type RecreateJob = {
   jobId: string;
+  postId?: string;
+  mode: RecreateMode;
   status: RecreateStatus;
   message: string;
   startedAt?: string | number;
   updatedAt?: string | number;
+  stages: StageView[];
+  checkpoint?: Checkpoint;
   result?: RecreateResult;
   error?: string;
+  /** The run stopped part way and can pick up from its last finished stage. */
+  resumable: boolean;
 };
 export type RecreateUpload = {name: string; dataUrl: string};
-export type RecreateRequest = {url?: string; uploads?: RecreateUpload[]; caption?: string; profileId: string; notes?: string};
+export type RecreateRequest = {url?: string; uploads?: RecreateUpload[]; caption?: string; profileId: string; notes?: string; mode: RecreateMode};
+/** A person's go-ahead at the checkpoint. The outline is sent only when they changed it. */
+export type ApproveRequest = {outline?: {slides: OutlineSlide[]; why: string}; hook: {option: number} | {text: string}; notes?: string};
+export type RecreateAction = ({action: "approve"} & ApproveRequest) | {action: "resume"} | {action: "stop"};
 /** Text fields of the form, kept with a running job so a failed run can be edited and retried after a reload. */
 export type RecreateDraftText = {mode: "link" | "screenshots"; url: string; caption: string; notes: string; profileId: string};
 export type TrackedRecreate = {
@@ -51,24 +92,41 @@ export type TrackedRecreate = {
   draft: RecreateDraftText;
 };
 
-export const RECREATE_STEPS: {status: RecreateStatus; label: string}[] = [
-  {status: "importing", label: "Importing post"},
-  {status: "researching", label: "Researching and fact-checking"},
-  {status: "writing", label: "Writing slides"},
-  {status: "building", label: "Building editable post"},
+/** The team's stages, grouped the way they run: research in parallel, the plan, the makers in parallel, then the finish. */
+export const RECREATE_LANES: {title: string; stages: StageName[]}[] = [
+  {title: "Research", stages: ["brief", "facts", "data", "reactions", "visuals"]},
+  {title: "Plan", stages: ["outline", "hooks", "approval"]},
+  {title: "Make", stages: ["copy", "charts", "images"]},
+  {title: "Finish", stages: ["deck", "review"]},
 ];
+export const RECREATE_STATUS_LABELS: Record<RecreateStatus, string> = {
+  queued: "Starting", importing: "Importing the post", researching: "Researching", planning: "Planning the slides",
+  paused: "Waiting for your review", writing: "Writing the slides", building: "Building the post", reviewing: "Reviewing the slides",
+  done: "Done", error: "Stopped",
+};
 export const MAX_RECREATE_UPLOADS = 20;
+export const MAX_RECREATE_SLIDES = 20;
+export const MAX_HOOK_CHARACTERS = 200;
 export const RECREATE_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_IMAGE_SIDE = 1600;
 const MAX_SOURCE_BYTES = 40 * 1024 * 1024;
 const ENDPOINT = "/api/engine/recreate";
 const PROFILES_ENDPOINT = "/api/engine/page-profiles";
-const STATUSES: RecreateStatus[] = ["queued", "importing", "researching", "writing", "building", "done", "error"];
+const STATUSES: RecreateStatus[] = ["queued", "importing", "researching", "planning", "paused", "writing", "building", "reviewing", "done", "error"];
+const STAGE_NAMES: StageName[] = RECREATE_LANES.flatMap(lane => lane.stages);
+const STAGE_STATUSES: StageStatus[] = ["pending", "running", "done", "skipped", "error"];
 const VERDICTS: FactCheck["verdict"][] = ["confirmed", "corrected", "unverified"];
+const SEVERITIES: ReviewIssue["severity"][] = ["must_fix", "should_fix", "note"];
+const KINDS: OutlineKind[] = ["cover", "original", "question", "reaction", "takeaway", "follow"];
+const HOOK_SOURCES: HookOption["by"][] = ["headline-model", "copywriter", "agent"];
 
 const isRecord = (value: unknown): value is Record<string, unknown> => Boolean(value) && typeof value === "object" && !Array.isArray(value);
 const text = (value: unknown, max = 4000): string => typeof value === "string" ? value.trim().slice(0, max) : "";
 const time = (value: unknown): string | number | undefined => typeof value === "string" || typeof value === "number" ? value : undefined;
+const count = (value: unknown): number => typeof value === "number" && Number.isFinite(value) ? Math.max(0, Math.round(value)) : 0;
+const list = (value: unknown): unknown[] => Array.isArray(value) ? value : [];
+const strings = (value: unknown, max = 2000): string[] => list(value).map(item => text(item, max)).filter(Boolean);
+const oneOf = <T extends string>(value: unknown, options: readonly T[], fallback: T): T => options.includes(value as T) ? value as T : fallback;
 
 export class RecreateRequestError extends Error {
   readonly status: number;
@@ -105,6 +163,7 @@ async function send(input: string, init: RequestInit, subject: string): Promise<
   if (!response.ok) throw requestFailure(response, body, subject);
   return body;
 }
+const post = (body: unknown, subject: string) => send(ENDPOINT, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}, subject);
 
 function parseProfile(value: unknown): PageProfile | null {
   if (!isRecord(value)) return null;
@@ -130,24 +189,26 @@ export async function fetchPageProfiles(signal?: AbortSignal): Promise<PageProfi
   return body.profiles.map(parseProfile).filter((profile): profile is PageProfile => profile !== null);
 }
 
-export async function startRecreate(request: RecreateRequest): Promise<string> {
-  const body = await send(ENDPOINT, {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(request)}, "Recreate post");
-  const jobId = isRecord(body) ? text(body.jobId, 200) : "";
-  if (!jobId) throw new RecreateRequestError("The server accepted the request but didn't return a job. Try again.", 200);
-  return jobId;
-}
-
 function parseFactCheck(value: unknown): FactCheck | null {
   if (!isRecord(value)) return null;
   const claim = text(value.claim, 2000);
   if (!claim) return null;
-  const verdict = VERDICTS.includes(value.verdict as FactCheck["verdict"]) ? value.verdict as FactCheck["verdict"] : "unverified";
-  const sources = Array.isArray(value.sources) ? value.sources.flatMap(source => {
+  const sources = list(value.sources).flatMap(source => {
     if (!isRecord(source)) return [];
     const url = text(source.url, 2000), title = text(source.title, 300);
     return url || title ? [{title: title || url, url}] : [];
-  }) : [];
-  return {claim, verdict, detail: text(value.detail, 4000), sources};
+  });
+  return {claim, verdict: oneOf(value.verdict, VERDICTS, "unverified"), detail: text(value.detail, 4000), sources};
+}
+
+function parseReview(value: unknown): RecreateReview | null {
+  if (!isRecord(value)) return null;
+  const open = list(value.open).flatMap((issue): ReviewIssue[] => {
+    if (!isRecord(issue)) return [];
+    const problem = text(issue.problem, 2000);
+    return problem ? [{slide: count(issue.slide), problem, fix: text(issue.fix, 2000), severity: oneOf(issue.severity, SEVERITIES, "note")}] : [];
+  });
+  return {round: count(value.round), rendered: value.rendered === true, facts: text(value.facts, 2000), design: text(value.design, 2000), sentBack: strings(value.sentBack, 40), open};
 }
 
 function parseResult(value: unknown): RecreateResult | undefined {
@@ -158,25 +219,107 @@ function parseResult(value: unknown): RecreateResult | undefined {
     deckId,
     editorUrl: text(value.editorUrl, 2000),
     name: text(value.name, 200) || "Recreated post",
-    slideCount: typeof value.slideCount === "number" && Number.isFinite(value.slideCount) ? Math.max(0, Math.round(value.slideCount)) : 0,
-    factChecks: Array.isArray(value.factChecks) ? value.factChecks.map(parseFactCheck).filter((item): item is FactCheck => item !== null) : [],
-    notes: Array.isArray(value.notes) ? value.notes.map(note => text(note, 2000)).filter(Boolean) : [],
+    slideCount: count(value.slideCount),
+    factChecks: list(value.factChecks).map(parseFactCheck).filter((item): item is FactCheck => item !== null),
+    notes: strings(value.notes),
+    review: parseReview(value.review),
   };
 }
 
-export async function fetchRecreateJob(jobId: string, signal?: AbortSignal): Promise<RecreateJob> {
-  const body = await send(`${ENDPOINT}?jobId=${encodeURIComponent(jobId)}`, {signal}, "Recreate progress");
-  if (!isRecord(body) || !STATUSES.includes(body.status as RecreateStatus)) throw new RecreateRequestError("Progress came back in an unexpected format.", 200);
-  const result = parseResult(body.result);
+function parseStage(value: unknown): StageView | null {
+  if (!isRecord(value) || !STAGE_NAMES.includes(value.stage as StageName)) return null;
   return {
-    jobId: text(body.jobId, 200) || jobId,
+    stage: value.stage as StageName,
+    title: text(value.title, 120) || String(value.stage),
+    by: oneOf(value.by, ["agent", "code", "human"] as const, "agent"),
+    status: oneOf(value.status, STAGE_STATUSES, "pending"),
+    ...(text(value.actor, 40) ? {actor: text(value.actor, 40)} : {}),
+    ...(text(value.model, 80) ? {model: text(value.model, 80)} : {}),
+    round: count(value.round),
+    summary: text(value.summary, 600),
+  };
+}
+
+function parseSlide(value: unknown): OutlineSlide | null {
+  if (!isRecord(value) || typeof value.templatePage !== "number") return null;
+  return {
+    kind: oneOf(value.kind, KINDS, "original"),
+    templatePage: Math.round(value.templatePage),
+    purpose: text(value.purpose, 1000),
+    points: strings(value.points, 1000),
+    chartId: text(value.chartId, 80) || null,
+    reactionIds: strings(value.reactionIds, 80),
+    photo: text(value.photo, 600),
+  };
+}
+
+function parseCheckpoint(value: unknown): Checkpoint | undefined {
+  if (!isRecord(value)) return undefined;
+  const outline = isRecord(value.outline) ? value.outline : {}, hooks = isRecord(value.hooks) ? value.hooks : {};
+  const slides = list(outline.slides).map(parseSlide).filter((slide): slide is OutlineSlide => slide !== null);
+  if (!slides.length) return undefined;
+  const pages = list(value.pages).flatMap((page): CheckpointPage[] => isRecord(page) && typeof page.index === "number"
+    ? [{index: Math.round(page.index), label: text(page.label, 120) || `Page ${Math.round(page.index) + 1}`, reaction: page.reaction === "reaction" || page.reaction === "reactions" ? page.reaction : null}]
+    : []);
+  const options = list(hooks.options).flatMap((option): HookOption[] => {
+    if (!isRecord(option) || !text(option.text, 400)) return [];
+    return [{text: text(option.text, 400), framework: text(option.framework, 120), by: oneOf(option.by, HOOK_SOURCES, "copywriter"), english: text(option.english, 400) || null}];
+  });
+  const reactions = list(value.reactions).flatMap((item): CheckpointReaction[] => {
+    if (!isRecord(item) || !text(item.id, 80)) return [];
+    const author = isRecord(item.author) ? item.author : {};
+    return [{
+      id: text(item.id, 80), url: text(item.url, 2000), name: text(author.name, 120), handle: text(author.handle, 80).replace(/^@/, ""),
+      verified: author.verified === true, text: text(item.text, 1200), likes: count(item.likes), reposts: count(item.reposts), why: text(item.why, 600),
+    }];
+  });
+  const charts = list(value.charts).flatMap((chart): CheckpointChart[] => isRecord(chart) && text(chart.id, 80)
+    ? [{id: text(chart.id, 80), purpose: text(chart.purpose, 600), recreates: text(chart.recreates, 300), source: text(chart.source, 600)}]
+    : []);
+  const brief = isRecord(value.brief)
+    ? {topic: text(value.brief.topic, 600), story: text(value.brief.story, 2000), originalHeadline: text(value.brief.originalHeadline, 600), angle: text(value.brief.angle, 600)}
+    : null;
+  return {
+    slides, why: text(outline.why, 2000), pages, hooks: options,
+    hookSource: oneOf(hooks.source, HOOK_SOURCES, "copywriter"), hookNote: text(hooks.note, 600),
+    reactions, charts, brief,
+  };
+}
+
+function parseJob(body: unknown, fallbackJobId = ""): RecreateJob {
+  if (!isRecord(body) || !STATUSES.includes(body.status as RecreateStatus)) throw new RecreateRequestError("Progress came back in an unexpected format.", 200);
+  const jobId = text(body.jobId, 200) || fallbackJobId;
+  if (!jobId) throw new RecreateRequestError("The server accepted the request but didn't return a job. Try again.", 200);
+  const result = parseResult(body.result), checkpoint = parseCheckpoint(body.checkpoint), error = text(body.error, 1000);
+  return {
+    jobId,
+    ...(text(body.postId, 200) ? {postId: text(body.postId, 200)} : {}),
+    mode: body.mode === "checkpoint" ? "checkpoint" : "autopilot",
     status: body.status as RecreateStatus,
     message: text(body.message, 600),
     startedAt: time(body.startedAt),
     updatedAt: time(body.updatedAt),
+    stages: list(body.stages).map(parseStage).filter((stage): stage is StageView => stage !== null),
+    ...(checkpoint ? {checkpoint} : {}),
     ...(result ? {result} : {}),
-    ...(text(body.error, 1000) ? {error: text(body.error, 1000)} : {}),
+    ...(error ? {error} : {}),
+    resumable: body.resumable === true,
   };
+}
+
+export async function startRecreate(request: RecreateRequest): Promise<RecreateJob> {
+  return parseJob(await post(request, "Recreate post"));
+}
+
+export async function fetchRecreateJob(jobId: string, signal?: AbortSignal): Promise<RecreateJob> {
+  return parseJob(await send(`${ENDPOINT}?jobId=${encodeURIComponent(jobId)}`, {signal}, "Recreate progress"), jobId);
+}
+
+/** Acts on a run. Returns its new view, or null after a stop (the next poll shows where it stopped). */
+export async function actOnRecreate(jobId: string, action: RecreateAction): Promise<RecreateJob | null> {
+  const body = await post({...action, jobId}, "Recreate");
+  if (isRecord(body) && body.stopped === true) return null;
+  return parseJob(body, jobId);
 }
 
 /** Accepts instagram.com post, reel and TV links (with or without https://) and drops tracking parameters. */
@@ -275,15 +418,25 @@ function writeTracked(key: string, value: TrackedRecreate | null) {
   } catch { /* Progress still shows in this tab; it just won't survive a reload. */ }
 }
 
+/** How long to wait before the next progress check. A paused run waits on a person, so it is checked rarely. */
+function pollDelay(status: RecreateStatus, failures: number): number {
+  const hidden = document.visibilityState === "hidden";
+  const base = status === "paused" ? (hidden ? 30_000 : 8000) : hidden ? 8000 : 2000;
+  return failures ? Math.min(20_000, base * 2 ** Math.min(failures, 3)) : base;
+}
+
 /**
  * Tracks one recreate run per workspace in this tab. The job id lives in
- * sessionStorage, so a reload resumes polling where it left off.
+ * sessionStorage, so a reload resumes polling where it left off. Polling stops
+ * when the run is done or stopped, and starts again after an action on it.
  */
 export function useRecreateJob(scope: string | undefined, onSettled?: (job: RecreateJob, tracked: TrackedRecreate | null) => boolean | void) {
   const key = scope ? `engine:recreate-job:${scope}` : "";
   const [tracked, setTracked] = useState<TrackedRecreate | null>(null);
   const [job, setJob] = useState<RecreateJob | null>(null);
   const [reconnecting, setReconnecting] = useState(false);
+  // Bumped after an action, so polling picks up a run that had stopped.
+  const [generation, setGeneration] = useState(0);
   const trackedRef = useRef(tracked), settled = useRef(onSettled), markOpenedRef = useRef(() => {});
   useEffect(() => { trackedRef.current = tracked; }, [tracked]);
   useEffect(() => { settled.current = onSettled; });
@@ -302,7 +455,7 @@ export function useRecreateJob(scope: string | undefined, onSettled?: (job: Recr
   const jobId = tracked?.jobId;
   useEffect(() => {
     if (!jobId) return;
-    let active = true, failures = 0, timer: ReturnType<typeof setTimeout> | undefined;
+    let active = true, failures = 0, status: RecreateStatus = "queued", timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     const settle = (next: RecreateJob) => {
       setJob(next);
@@ -315,37 +468,48 @@ export function useRecreateJob(scope: string | undefined, onSettled?: (job: Recr
         const next = await fetchRecreateJob(jobId, controller.signal);
         if (!active) return;
         failures = 0;
-        if (next.status === "done" && !next.result) { settle({...next, status: "error", error: "The post finished, but its result couldn't be read. Try again."}); return; }
+        status = next.status;
+        if (next.status === "done" && !next.result) { settle({...next, status: "error", error: "The post finished, but its result couldn't be read. Try again.", resumable: false}); return; }
         if (next.status === "done" || next.status === "error") { settle(next); return; }
         setJob(next);
         setReconnecting(false);
       } catch (cause) {
         if (!active) return;
-        const failure = cause instanceof RecreateRequestError ? cause : null, status = failure?.status ?? 0;
-        if (failure && status >= 400 && status < 500 && status !== 408 && status !== 429) {
-          const error = status === 404 && !failure.fromServer ? "This recreate run is no longer available. Start it again." : failure.message;
-          settle({jobId, status: "error", message: "", error});
+        const failure = cause instanceof RecreateRequestError ? cause : null, code = failure?.status ?? 0;
+        if (failure && code >= 400 && code < 500 && code !== 408 && code !== 429) {
+          const error = code === 404 && !failure.fromServer ? "This recreate run is no longer available. Start it again." : failure.message;
+          settle({jobId, mode: "autopilot", status: "error", message: "", stages: [], error, resumable: false});
           return;
         }
         failures++;
         if (failures >= 2) setReconnecting(true);
       }
-      const base = document.visibilityState === "hidden" ? 8000 : 2000;
-      timer = setTimeout(() => void tick(), failures ? Math.min(20_000, base * 2 ** Math.min(failures, 3)) : base);
+      timer = setTimeout(() => void tick(), pollDelay(status, failures));
     };
     void tick();
     return () => { active = false; controller.abort(); if (timer) clearTimeout(timer); };
-  }, [jobId]);
+  }, [jobId, generation]);
 
   const start = useCallback(async (request: RecreateRequest, details: Omit<TrackedRecreate, "jobId" | "startedAt" | "opened">) => {
-    const id = await startRecreate(request);
-    const next: TrackedRecreate = {jobId: id, startedAt: Date.now(), ...details};
+    const view = await startRecreate(request);
+    const next: TrackedRecreate = {jobId: view.jobId, startedAt: Date.now(), ...details};
     writeTracked(key, next);
-    setJob({jobId: id, status: "queued", message: "", startedAt: next.startedAt});
+    setJob(view);
     setReconnecting(false);
     setTracked(next);
     return next;
   }, [key]);
+
+  /** Approve, resume or stop the tracked run, then follow it again. */
+  const act = useCallback(async (action: RecreateAction) => {
+    const current = trackedRef.current;
+    if (!current) throw new RecreateRequestError("There's no run to update.", 0);
+    const next = await actOnRecreate(current.jobId, action);
+    if (next) setJob(next);
+    setReconnecting(false);
+    setGeneration(value => value + 1);
+    return next;
+  }, []);
 
   const markOpened = useCallback(() => {
     const current = trackedRef.current;
@@ -367,5 +531,5 @@ export function useRecreateJob(scope: string | undefined, onSettled?: (job: Recr
   }, [key]);
 
   const visibleJob = tracked && job?.jobId === tracked.jobId ? job : null;
-  return {tracked, job: visibleJob, reconnecting, start, markOpened, dismiss};
+  return {tracked, job: visibleJob, reconnecting, start, act, markOpened, dismiss};
 }
