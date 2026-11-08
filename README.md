@@ -278,6 +278,7 @@ See `.env.example` for configuration. These are not required for template editin
 
 - **Scheduled research:** Supabase, `CRON_SECRET`, and an external scheduler. On Vercel, `vercel.json` schedules the research cron hourly.
 - **Image search:** `APIFY_TOKEN` enables “Find images on X”; Google Custom Search keys enable another image source in research.
+- **Headline model:** `HEADLINE_API_KEY` lets Recreate post ask the hosted headline service for hook options and report which one a person picked; `HEADLINE_API_URL` overrides the service address. Without the key, the hooks are written by the copywriter. The first call after a quiet spell can take a few minutes while the model wakes.
 - **Large research uploads:** `BLOB_READ_WRITE_TOKEN` enables Vercel Blob storage for uploads beyond the existing video limit.
 - **Instagram channels:** configure a Meta app through `/admin/instagram-setup`.
 - **Paid memberships:** disabled for this owner deployment. Enabling access later requires `GF_ENABLE_MEMBERS=true`, `STRIPE_SECRET_KEY`, `GF_STRIPE_PRICE_ID`, and `UNLOCK_SECRET`.
