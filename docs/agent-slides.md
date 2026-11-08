@@ -2,6 +2,8 @@
 
 Engine exposes tools for agents to create and revise slide decks in the same library people use. Text stays text; images and shapes stay independent native layers. The returned `editorUrl` opens the saved deck for manual editing. Agents can work from a template, use built-in layouts, or place individual layers with exact coordinates.
 
+People can do the same work by talking to Claude in Engine's Chat panel instead (paste a link, then ask for changes); see [assistant.md](assistant.md).
+
 The API does not require an OpenAI key or a particular model. Any agent that supports MCP stdio or authenticated JSON HTTP requests can use it. Existing editor PNG, JPG, WebP, SVG, and PDF downloads remain available in the editor. The agent export tool returns an editable `.engine.json` package.
 
 ## Connect an agent

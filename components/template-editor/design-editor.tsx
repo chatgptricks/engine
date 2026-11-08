@@ -18,6 +18,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExter
 import {
   ArrowLeftIcon,
   CheckIcon,
+  CommentIcon,
   CopyIcon,
   DownloadIcon,
   ImageIcon,
@@ -89,6 +90,8 @@ import {groupMemberIds} from "@/lib/template-editor/layer-tree";
 import { translateElements } from "@/lib/template-editor/snapping";
 import { ElementInspector, type InspectorSection } from "./element-inspector";
 import { EditorIcon } from "./editor-icons";
+import type { ChatEditorBridge } from "./assistant-panel";
+import { applyChatEdits } from "@/lib/engine/assistant/chat-edits";
 import "./wysiwyg.css";
 import "./pro-tools.css";
 import "./editor-shell.css";
@@ -129,6 +132,9 @@ type Props = {
   onExit: () => void;
   onSaveTemplate: (template: DesignTemplate) => void;
   onAddDesigns?: (designs: DesignDocument[]) => boolean | void;
+  /** The Engine chat: a header button, and the bridge it uses to edit this post. */
+  chat?: {open: boolean; onToggle: () => void};
+  onChatBridge?: (bridge: ChatEditorBridge | null) => void;
 };
 
 const SHAPE_OPERATIONS = [
@@ -172,6 +178,8 @@ export function DesignEditor({
   onExit,
   onSaveTemplate,
   onAddDesigns,
+  chat,
+  onChatBridge,
 }: Props) {
   const { openMenu } = useContextMenu();
   const compactEditor=useSyncExternalStore(subscribeCompactEditor,compactEditorSnapshot,desktopEditorSnapshot);
@@ -439,18 +447,19 @@ export function DesignEditor({
     const previous = previousWorkspace.current;
     const anchor=zoomAnchor.current;
     if(anchor){node.scrollLeft=(anchor.x+workspaceLeft)*scale-anchor.screenX;node.scrollTop=(anchor.y+workspaceTop)*scale-anchor.screenY;zoomAnchor.current=null;}
-    else if (!previous || previous.fit !== fit || previous.pageId !== page.id || previous.height !== canvasHeight || previous.centerRequest !== centerRequest || previous.viewportWidth !== node.clientWidth || previous.viewportHeight !== node.clientHeight) {
+    else if (!previous || previous.fit !== fit || previous.pageId !== page.id || previous.height !== canvasHeight || previous.centerRequest !== centerRequest) {
       node.scrollLeft = (workspaceLeft + (continuous && previous && previous.pageId !== page.id ? index * FRAME_WIDTH + FRAME_WIDTH / 2 : canvasWidth / 2)) * scale - node.clientWidth / 2;
       node.scrollTop = (workspaceTop + canvasHeight / 2) * scale - node.clientHeight / 2;
     } else {
-      // Preserve the same world point at the center when zoom or padding changes.
+      // Preserve the same world point at the center when zoom, padding or the viewport changes
+      // (a panel opening beside the canvas keeps what you were looking at in the middle).
       const centerX = (node.scrollLeft + previous.viewportWidth / 2) / previous.scale - previous.left;
       const centerY = (node.scrollTop + previous.viewportHeight / 2) / previous.scale - previous.top;
       node.scrollLeft = (centerX + workspaceLeft) * scale - node.clientWidth / 2;
       node.scrollTop = (centerY + workspaceTop) * scale - node.clientHeight / 2;
     }
     previousWorkspace.current = {pageId: page.id, scale, fit, left: workspaceLeft, top: workspaceTop, height: canvasHeight, centerRequest, viewportWidth: node.clientWidth, viewportHeight: node.clientHeight};
-  }, [page.id, canvasHeight, canvasWidth, continuous, index, scale, fit, workspaceLeft, workspaceTop, centerRequest]);
+  }, [page.id, canvasHeight, canvasWidth, continuous, index, scale, fit, workspaceLeft, workspaceTop, centerRequest, workspaceSize.width, workspaceSize.height]);
   const isTemplateDraft = design.purpose === "template";
   const saveTemplateLabel = isTemplateDraft
     ? design.editingTemplateId
@@ -498,6 +507,33 @@ export function DesignEditor({
     },
     [setNotice],
   );
+  // The chat edits this post through commit(): one undo step per reply, shared live like any edit.
+  useEffect(() => {
+    if (!onChatBridge) return;
+    const bridge: ChatEditorBridge = {
+      deckId: initial.id,
+      apply: operations => {
+        if (blocked.current) return {applied: false, error: "The editor can't take edits right now (read-only, exporting or reconnecting)."};
+        try { applyChatEdits(current.current, operations); }
+        catch (error) { return {applied: false, error: error instanceof Error ? error.message : "Those edits don't fit this post."}; }
+        return commit(document => applyChatEdits(document, operations)) ? {applied: true} : {applied: false, error: "The editor couldn't apply the edits."};
+      },
+      turn: () => {
+        const document = current.current, context = historyContext.current;
+        const index = Math.max(0, document.pages.findIndex(page => page.id === context.pageId));
+        const elements = (document.continuousCanvas ?? document.pages[index]?.canvas)?.elements ?? [];
+        return {
+          deckName: document.name, slide: index + 1, slideCount: document.pages.length,
+          selection: context.selectedIds.slice(0, 10).map(id => {
+            const element = elements.find(item => item.id === id);
+            return {id, ...(element?.name ? {name: element.name} : {}), ...(element ? {type: element.type} : {})};
+          }),
+        };
+      },
+    };
+    onChatBridge(bridge);
+    return () => onChatBridge(null);
+  }, [onChatBridge, commit, initial.id]);
   const sharedHistory = collaboration?.history;
   const travel = useCallback(
     (direction: "undo" | "redo") => {
@@ -1264,6 +1300,7 @@ export function DesignEditor({
         </div>
         <div className="te-editor-header-actions">
           {collaboration&&<CollaborationBar collaboration={collaboration} />}
+          {chat&&<button type="button" className="te-button te-chat-button" aria-pressed={chat.open} aria-label="Chat" title="Ask Claude to change this post" onClick={chat.onToggle}><CommentIcon size={16}/><span>Chat</span></button>}
           {smartLayoutAvailable && <button className="te-button te-smart-layout-entry" aria-pressed={tab === "smart"} aria-controls="te-editor-panel" onClick={() => {setEditingMaster(false); openPanel("smart");}}>Smart layout</button>}
           <button className="te-button te-header-menu" aria-haspopup="menu" onClick={event=>openMenu(event,{label:"File",items:[
             {id:"save-template",label:saveTemplateLabel,disabled,onSelect:()=>setTemplateName(design.name)},
