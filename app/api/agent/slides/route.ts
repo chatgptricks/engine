@@ -1,6 +1,6 @@
 import {randomUUID} from "node:crypto";
 import {agentResponse as reply, allowedAgentOrigin, readAgentBody, resolveAgentRequest} from "@/lib/template-editor/agent-http";
-import {agentCapabilities, agentDeckSummary, agentTemplateSlots, agentDeckView, createAgentDeck, updateAgentDeck, editableDeckPackage, AgentDeckValidationError} from "@/lib/template-editor/agent-decks";
+import {agentCapabilities, agentDeckSummary, agentTemplatePages, agentTemplateSlots, agentDeckView, createAgentDeck, updateAgentDeck, editableDeckPackage, AgentDeckValidationError} from "@/lib/template-editor/agent-decks";
 import {contentHash} from "@/lib/template-editor/library-sync";
 import {getEditorLibrary, saveEditorLibrary, LibraryConflictError} from "@/lib/template-editor/persistence";
 import {libraryTemplates} from "@/lib/template-editor/template-catalog";
@@ -78,7 +78,7 @@ async function dispatch(ownerKey: string, input: Record<string, unknown>) {
   }
   if (action === "list_templates") {
     const {offset, limit} = pageRange(input), templates = libraryTemplates(library);
-    return reply({templates: templates.slice(offset, offset + limit).map(template => ({id: template.id, name: template.name, description: template.description, size: formatDimensions(template), slideCount: template.pages.length, slots: agentTemplateSlots(template)})), total: templates.length, offset, limit});
+    return reply({templates: templates.slice(offset, offset + limit).map(template => ({id: template.id, name: template.name, description: template.description, size: formatDimensions(template), slideCount: template.pages.length, pageTypes: agentTemplatePages(template), slots: agentTemplateSlots(template)})), total: templates.length, offset, limit});
   }
   const document = checkedDocument(input.deckId, library.designs);
   if (action === "export_deck") return reply({filename: `${document.name.replace(/[^a-zA-Z0-9_-]+/g, "-").slice(0, 100) || "deck"}.engine.json`, package: editableDeckPackage(document), editorUrl: editorUrl(document)});

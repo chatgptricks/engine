@@ -1,7 +1,7 @@
 /** Agent authoring uses output pixels; Engine stores editable layers on a 360-wide scene. */
 import {
   BUILT_IN_TEMPLATES, EMPTY_LIBRARY, createBlankDesign, createCanvasElement,
-  createDesign, formatDimensions, parseCanvasScene, parseLibrary, prepareSmartTemplate, sceneForPage,
+  createDesign, duplicatePage, formatDimensions, parseCanvasScene, parseLibrary, prepareSmartTemplate, sceneForPage,
   type CanvasElement, type CanvasScene, type DesignDocument, type DesignPage,
   type DesignTemplate, type EditorLibrary,
 } from "./model";
@@ -26,7 +26,7 @@ const PRESETS = {
   square: { width: 1080, height: 1080 },
   story: { width: 1080, height: 1920 },
 };
-const LIMITS = { slides: 20, elementsPerSlide: 100, operations: 200, textCharacters: 20_000, requestCharacters: 4_000_000, minSize: 100, maxSize: 8192 };
+const LIMITS = { slides: 20, elementsPerSlide: 100, operations: 200, textCharacters: 20_000, imageCharacters: 2_000_000, requestCharacters: 4_000_000, minSize: 100, maxSize: 8192 };
 const str = (maxLength: number, extra: Schema = {}): Schema => ({ type: "string", maxLength, ...extra });
 const num = (minimum: number, maximum: number): Schema => ({ type: "number", minimum, maximum });
 const choice = (values: string[]): Schema => ({ type: "string", enum: values });
@@ -48,7 +48,7 @@ const textProperties = {
   textMode: choice(["fixed", "auto-height", "auto-fit"]), listStyle: choice(["none", "bullet", "number"]),
 };
 const imageProperties = {
-  src: str(2_000_000, { minLength: 1 }), publicAlt: str(2000), fit: choice(["cover", "contain"]),
+  src: str(LIMITS.imageCharacters, { minLength: 1 }), publicAlt: str(2000), fit: choice(["cover", "contain"]),
   cropX: num(0, 100), cropY: num(0, 100), cropScale: num(.1, 20), radius: num(0, 100_000),
   flipX: bool, flipY: bool, mask: choice(["none", "ellipse", "triangle", "diamond"]),
 };
@@ -68,7 +68,9 @@ const slideSchema = obj({
   id, label: str(200), layout: choice(LAYOUTS), background: color, title: str(20_000), body: str(20_000),
   bullets: { type: "array", maxItems: 40, items: str(2000) }, image: slideImageSchema,
   elements: { type: "array", maxItems: 100, items: elementSchema },
-  slots: { type: "object", maxProperties: 100, additionalProperties: str(20_000) },
+  // Text slots allow 20,000 characters (checked per slot); photo slots take an image URL as long as `image.src`.
+  slots: { type: "object", maxProperties: 100, additionalProperties: str(LIMITS.imageCharacters) },
+  templatePage: { type: "integer", minimum: 0, maximum: LIMITS.slides - 1, description: "With templateId: 0-based index of the template page this slide copies. Set it on every slide or none; pages may repeat, reorder or be left out." },
 });
 const themeSchema = obj({
   background: color, text: color, accent: color, font: choice(FONTS),
@@ -185,6 +187,7 @@ function textLayer(text: string, box: number[], fontSize: number, name: string, 
   return makeElement({ type: "text", text, name, x: box[0], y: box[1], width: box[2], height: box[3], fontSize, fontWeight: name === "Title" ? 700 : 400, slot: name.toLowerCase(), ...extra }, scale, theme, used, "$.slides");
 }
 function makeSlide(spec: RecordValue, size: { width: number; height: number }, theme: Theme, used: Set<string>, path: string): DesignPage {
+  if (spec.templatePage !== undefined) fail(`${path}.templatePage`, "requires create_deck with templateId");
   const { width: w, height: h } = size, scale = 360 / w;
   const m = Math.min(theme.margin, w * .22, h * .22), contentW = w - m * 2, contentH = h - m * 2;
   const layout = String(spec.layout ?? (spec.image ? "split" : "content"));
@@ -264,15 +267,37 @@ export function agentTemplateSlots(template: DesignTemplate): AgentTemplateSlot[
     return [];
   }));
 }
+export type AgentTemplatePageSlot = Omit<AgentTemplateSlot, "pageId" | "pageIndex" | "pageLabel">;
+export type AgentTemplatePage = { index: number; label?: string; slots: AgentTemplatePageSlot[] };
+
+/** The template's page types, for composing a carousel of any length with
+ * `templatePage`. Pages without slots (a closing Follow page, say) are listed too. */
+export function agentTemplatePages(template: DesignTemplate): AgentTemplatePage[] {
+  const slots = agentTemplateSlots(template), pageKeys = new Set(["pageId", "pageIndex", "pageLabel"]);
+  return template.pages.map((page, index) => ({
+    index, ...(page.label ? { label: page.label } : {}),
+    slots: slots.filter(slot => slot.pageIndex === index).map(slot => Object.fromEntries(Object.entries(slot).filter(([key]) => !pageKeys.has(key))) as AgentTemplatePageSlot),
+  }));
+}
 
 function validateDocument(document: DesignDocument): DesignDocument {
   if (!parseLibrary({ ...structuredClone(EMPTY_LIBRARY), designs: [document] })) fail("$", "result exceeds Engine's editable document limits");
   return document;
 }
-function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocument, used: Set<string>, path: string): DesignPage {
-  if (spec.layout !== undefined || spec.bullets !== undefined) fail(path, "template slides support title, body, image, slots, and precise elements; omit layout and bullets");
+/** `page` is a fresh copy of a prepared template page; `listed` holds that
+ * template page's layer ids in paint order, as engine_list_templates reports
+ * them. Copies keep the order but not the ids, so listed ids and smart flows
+ * that name a layer id (rather than a slot) are resolved through it. */
+function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocument, used: Set<string>, path: string, listed: string[] = []): DesignPage {
+  if (spec.layout !== undefined || spec.bullets !== undefined) fail(path, "template slides support templatePage, title, body, image, slots, and precise elements; omit layout and bullets");
   const canvas = page.canvas ?? sceneForPage(page, document.format);
   page.canvas = canvas;
+  const listedLayers = listed.length === canvas.elements.length ? new Map(listed.map((layerId, index) => [layerId, canvas.elements[index]])) : new Map<string, CanvasElement>();
+  const anchors = new Set(canvas.elements.flatMap(element => [element.id, ...(element.slot ? [element.slot] : [])]));
+  for (const element of canvas.elements) {
+    const anchor = element.smartFlow?.after, copied = anchor && !anchors.has(anchor) ? listedLayers.get(anchor) : undefined;
+    if (copied) element.smartFlow = { ...element.smartFlow!, after: copied.id };
+  }
   if (spec.id !== undefined) page.id = String(spec.id);
   if (used.has(page.id)) fail(`${path}.id`, "must be unique across this deck");
   used.add(page.id);
@@ -283,11 +308,12 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
   if (spec.label !== undefined) page.label = String(spec.label);
   if (spec.background !== undefined) canvas.background = String(spec.background);
   const text = canvas.elements.filter(element => element.type === "text");
-  const replacements = new Map<CanvasElement, string>();
+  const replacements = new Map<CanvasElement, { value: string; path: string }>();
   for (const [key, value] of Object.entries((spec.slots ?? {}) as RecordValue)) {
-    const target = canvas.elements.find(element => element.slot === key || element.id === key || element.name === key);
+    const target = canvas.elements.find(element => element.slot === key || element.id === key || element.name === key) ?? listedLayers.get(key);
     if (!target || target.type !== "text" && target.type !== "image" && !(target.type === "shape" && (target.templateRole === "media" || target.imageFill))) fail(`${path}.slots.${key}`, "must identify an existing text, image or photo-frame slot");
-    replacements.set(target, String(value));
+    if (target.type === "text" && String(value).length > LIMITS.textCharacters) fail(`${path}.slots.${key}`, `text slots allow at most ${LIMITS.textCharacters} characters`);
+    replacements.set(target, { value: String(value), path: `${path}.slots.${key}` });
   }
   // Template copy slots in reading order; fixed brand text (handles, page furniture) is never a target.
   const copy = text.filter(element => element.type === "text" && element.smartText && !element.hidden).sort((a, b) => a.y - b.y || a.x - b.x);
@@ -295,14 +321,14 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
     const candidates = key === "title" ? ["title", "heading"] : ["body", "description"];
     const target = text.find(element => candidates.includes(element.slot ?? "")) ?? (copy.length ? copy[key === "title" ? 0 : 1] : text[key === "title" ? 0 : 1]);
     if (!target) fail(`${path}.${key}`, "template does not have a matching editable text slot");
-    replacements.set(target, String(spec[key]));
+    replacements.set(target, { value: String(spec[key]), path: `${path}.${key}` });
   }
-  for (const [element, value] of replacements) {
-    ensureEditable(element, canvas, element.type === "text" ? ["text"] : ["src"], path);
+  for (const [element, { value, path: slotPath }] of replacements) {
+    ensureEditable(element, canvas, element.type === "text" ? ["text"] : ["src"], slotPath);
     if (element.type === "text") { element.text = value; delete element.richText; delete element.wordTextures; }
     else if (element.type === "image") element.src = value;
     else if (element.type === "shape") element.imageFill = { ...(element.imageFill ?? { objectFit: "cover", cropX: 50, cropY: 50 }), src: value };
-    checkNativeElement(element, path);
+    checkNativeElement(element, slotPath);
   }
   if (spec.image) {
     const element = canvas.elements.find(element => element.type === "image" && element.templateRole === "media") ?? canvas.elements.find(element => element.type === "image" && element.templateRole !== "brand") ?? canvas.elements.find(element => element.type === "image");
@@ -325,11 +351,31 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
     const template = templates.find(candidate => candidate.id === spec.templateId);
     if (!template) fail("$.templateId", "template was not found");
     if (spec.format !== undefined || spec.size !== undefined || spec.theme !== undefined) fail("$", "templateId preserves the template dimensions and theme; omit format, size, and theme");
+    // Pages are prepared as a whole template (cover/heading/body roles, brand
+    // layers, smart flows) before any page is chosen, so a composed deck keeps
+    // exactly the constraints a full copy has.
     document = createDesign(template);
-    const slides = (spec.slides ?? template.pages.map(() => ({}))) as RecordValue[];
-    if (slides.length !== document.pages.length) fail("$.slides", `template requires exactly ${document.pages.length} slides; omit slides to copy the full template`);
-    document.pages = document.pages.map((page, index) => templateSlide(page, slides[index], document, used, `$.slides[${index}]`));
-    if (document.continuousCanvas && spec.slides !== undefined) fail("$.slides", "continuous canvas templates must be copied without slide replacements");
+    const prepared = prepareSmartTemplate(template);
+    const listed = prepared.pages.map(page => (page.canvas ?? sceneForPage(page, prepared.format)).elements.map(element => element.id));
+    const requested = spec.slides as RecordValue[] | undefined;
+    if (requested?.some(slide => slide.templatePage !== undefined)) {
+      if (document.continuousCanvas) fail("$.slides", "continuous canvas templates are copied whole; omit templatePage");
+      const sources = document.pages;
+      document.pages = requested.map((slide, index) => {
+        const path = `$.slides[${index}]`, source = slide.templatePage as number | undefined;
+        if (source === undefined) fail(`${path}.templatePage`, "is required on every slide once any slide sets templatePage");
+        if (source >= sources.length) fail(`${path}.templatePage`, `must be a page index from 0 to ${sources.length - 1}; this template has ${sources.length} pages`);
+        // The editor's page duplicate: fresh page, page image, layer, group,
+        // component-instance and word-texture ids, with groupId/parentId,
+        // reading order and rich-text texture runs remapped. Sources stay pristine.
+        return templateSlide(duplicatePage(sources[source]), slide, document, used, path, listed[source]);
+      });
+    } else {
+      const slides = requested ?? template.pages.map(() => ({}));
+      if (slides.length !== document.pages.length) fail("$.slides", `template requires exactly ${document.pages.length} slides; omit slides to copy the full template, or set templatePage on every slide to choose pages`);
+      document.pages = document.pages.map((page, index) => templateSlide(page, slides[index], document, used, `$.slides[${index}]`, listed[index]));
+      if (document.continuousCanvas && spec.slides !== undefined) fail("$.slides", "continuous canvas templates must be copied without slide replacements");
+    }
   } else {
     if (!spec.slides) fail("$.slides", "is required when templateId is omitted");
     const preset = String(spec.format ?? "presentation");
@@ -470,16 +516,19 @@ export function editableDeckPackage(document: DesignDocument): EditorLibrary {
   return { ...structuredClone(EMPTY_LIBRARY), designs: [structuredClone(document)] };
 }
 export function agentCapabilities() {
+  const composable = BUILT_IN_TEMPLATES.find(template => template.pages.length > 1 && !template.continuousCanvas);
   return {
     version: 1, coordinates: "output pixels (including fontSize); native scene width is 360",
     editable: ["text", "image", "shape"], layouts: LAYOUTS, presets: PRESETS, fonts: FONTS, limits: LIMITS,
     deckSchema: AGENT_DECK_SPEC_SCHEMA, updateSchema: AGENT_UPDATE_SCHEMA,
-    templates: BUILT_IN_TEMPLATES.map(template => ({ id: template.id, name: template.name, pages: template.pages.length, size: formatDimensions(template) })),
+    templates: BUILT_IN_TEMPLATES.map(template => ({ id: template.id, name: template.name, pages: template.pages.length, size: formatDimensions(template), pageTypes: agentTemplatePages(template) })),
+    imageSources: ["https:// or http:// URLs, or root-relative paths on the Engine origin","data:image/png|jpeg|webp|gif|avif;base64 (the bytes must match the declared type)", "data:image/svg+xml;charset=utf-8,<URI-encoded SVG> using only svg, g, path, defs and gradient elements (no text, rect, style or base64 SVG)"],
     example: { id: "agent-demo", name: "An editable presentation", format: "presentation", slides: [
       { id: "intro", layout: "title", title: "Build with editable layers", body: "Every word, image, and shape stays editable in Engine" },
       { id: "details", layout: "content", title: "A simple agent workflow", bullets: ["Read capabilities", "Create a deck", "Refine individual elements"] },
     ] },
     updateExample: { operations: [{ op: "update_slide", pageId: "intro", label: "Opening slide" }, { op: "rename", name: "My editable presentation" }] },
-    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates; slides must match the template slide count and may replace text/image slots.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace."],
+    ...(composable ? { templateExample: { name: "A carousel composed from template pages", templateId: composable.id, slides: [{ templatePage: 0 }, { templatePage: 1 }, { templatePage: 1 }, { templatePage: composable.pages.length - 1 }] } } : {}),
+    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates. Omit slides to copy every page, or pass exactly one slide per template page in order to fill its text/image slots.", "To build a carousel of any length (1–20 slides) from a template's page types, set templatePage (0-based template page index) on every slide; pages may repeat, reorder or be left out. Each slide gets fresh page and layer ids and keeps that page's smart-template rules. Setting templatePage on only some slides is an error. Template pages and their slots are listed per page as pageTypes.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Photo slots and image.src accept the imageSources listed here, up to 2,000,000 characters. Render charts as PNG data URLs; base64 SVG is rejected.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace."],
   };
 }

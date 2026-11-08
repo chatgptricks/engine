@@ -44,7 +44,7 @@ function configuration() {
   if (!token || token.length > 4096 || /[\r\n]/.test(token)) {
     throw new Error("Set ENGINE_AGENT_TOKEN to an agent access token from Engine's Agent access panel.");
   }
-  return { endpoint: new URL("/api/agent/slides", url), token };
+  return { endpoint: new URL("/api/agent/slides", url), recreate: new URL("/api/engine/recreate", url), profiles: new URL("/api/engine/page-profiles", url), token };
 }
 
 function schema(properties = {}, required = []) {
@@ -66,16 +66,26 @@ function toolDefinitions(capabilities) {
     offset: { type: "integer", minimum: 0, maximum: 10000, default: 0 },
     limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
   });
+  const uuid = { type: "string", pattern: "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$" };
   const read = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
   const write = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
   return [
     { name: "engine_capabilities", description: "Read the current editable slide schemas, supported fonts, coordinate system, formats, and size limits. Start here before creating or changing a deck.", inputSchema: schema(), annotations: read },
-    { name: "engine_list_templates", description: "List available Engine templates to use as an editable starting point, with pagination.", inputSchema: pagination, annotations: read },
+    { name: "engine_list_templates", description: "List available Engine templates to use as an editable starting point, with pagination. Each slot reports its pageIndex and pageLabel; use those page indexes as templatePage to compose a deck of any length from the template's page types.", inputSchema: pagination, annotations: read },
     { name: "engine_list_decks", description: "List saved editable decks in this token's workspace, with pagination.", inputSchema: pagination, annotations: read },
     { name: "engine_get_deck", description: "Read a complete native editable deck, an output-pixel view for inspection and authoring, its current concurrency hash, stable page/layer IDs, and editor URL. Use view coordinates for edits; the raw document uses 360-wide scene units. Read immediately before an update.", inputSchema: schema({ deckId }, ["deckId"]), annotations: read },
-    { name: "engine_create_deck", description: "Create and save a deck of independent editable text, image, and shape layers. Read engine_capabilities first. Returns the native document, concurrency hash, editor URL, and operationId. Keep text as text layers and diagrams as separate shapes.", inputSchema: schema({ spec: deckSchema, operationId }, ["spec"]), annotations: write },
+    { name: "engine_create_deck", description: "Create and save a deck of independent editable text, image, and shape layers. Read engine_capabilities first. Returns the native document, concurrency hash, editor URL, and operationId. Keep text as text layers and diagrams as separate shapes. With templateId, either omit slides, pass one slide per template page, or set templatePage (0-based template page index) on every slide to build 1–20 slides that repeat, reorder or skip template pages.", inputSchema: schema({ spec: deckSchema, operationId }, ["spec"]), annotations: write },
     { name: "engine_update_deck", description: "Update an existing native editable deck using stable IDs and expectedHash from engine_get_deck. A stale hash returns a conflict: read again and reconcile before retrying. Read engine_capabilities for supported changes. Returns the updated document, hash, editor URL, and operationId.", inputSchema: schema({ deckId, expectedHash: { type: "string", minLength: 1 }, changes: updateSchema, operationId }, ["deckId", "expectedHash", "changes"]), annotations: { ...write, destructiveHint: true } },
     { name: "engine_export_deck", description: "Return an editable .engine.json package and suggested filename for a deck, plus its editor URL. This preserves native text, images, shapes, pages, and layers for reimport; it is not a flattened slide image or PowerPoint export.", inputSchema: schema({ deckId }, ["deckId"]), annotations: read },
+    { name: "engine_list_page_profiles", description: "List the pages Engine recreates posts for: id, name, handle, language (en/es), templateId, voice, house rules and Follow line. Use a profile id with engine_recreate_post.", inputSchema: schema(), annotations: read },
+    { name: "engine_recreate_post", description: "Start recreating an Instagram post for one page: Engine imports the post (or the uploaded slide screenshots), researches and fact-checks it with live web search, rewrites it in the page's voice and language (it may add, cut or reorder slides), and saves a native editable deck in the page's template. Returns a jobId at once; the run takes a few minutes. Poll engine_recreate_status about every 15 seconds.", inputSchema: schema({
+      profileId: { type: "string", minLength: 1, maxLength: 120, description: "Page profile id from engine_list_page_profiles." },
+      url: { type: "string", minLength: 1, maxLength: 2000, description: "Instagram post or reel link. Omit when sending uploads." },
+      uploads: { type: "array", minItems: 1, maxItems: 20, description: "Slide screenshots in order, instead of a link.", items: schema({ name: { type: "string", maxLength: 200 }, dataUrl: { type: "string", description: "data:image/jpeg|png|webp;base64,…" } }, ["dataUrl"]) },
+      caption: { type: "string", maxLength: 10000, description: "The original caption, when it isn't in the link." },
+      notes: { type: "string", maxLength: 2000, description: "Direction for this post, for example an angle to take or data to use." },
+    }, ["profileId"]), annotations: { ...write, openWorldHint: true } },
+    { name: "engine_recreate_status", description: "Read a recreation's progress: status (queued, importing, researching, writing, building, done or error) and message. When done, result has deckId, editorUrl, slideCount, factChecks and notes; then use engine_get_deck to review or edit the deck.", inputSchema: schema({ jobId: { ...uuid, description: "jobId from engine_recreate_post." } }, ["jobId"]), annotations: read },
   ];
 }
 
@@ -87,6 +97,16 @@ const ACTIONS = {
   engine_create_deck: "create_deck",
   engine_update_deck: "update_deck",
   engine_export_deck: "export_deck",
+};
+// Recreate tools live outside the slides endpoint.
+const ROUTES = {
+  engine_list_page_profiles: (config) => ({ url: config.profiles, method: "GET" }),
+  engine_recreate_post: (config, args) => ({ url: config.recreate, method: "POST", body: args }),
+  engine_recreate_status: (config, args) => {
+    const url = new URL(config.recreate);
+    url.searchParams.set("jobId", args.jobId);
+    return { url, method: "GET" };
+  },
 };
 
 function validatedArguments(name, args) {
@@ -107,6 +127,22 @@ function validatedArguments(name, args) {
   }
   if (Object.hasOwn(args, "operationId") && !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(args.operationId)) {
     throw new RpcError(-32602, "operationId must be a UUID. Omit it to generate one.");
+  }
+  if (Object.hasOwn(args, "jobId") && (typeof args.jobId !== "string" || !/^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(args.jobId))) {
+    throw new RpcError(-32602, "jobId must be the UUID returned by engine_recreate_post.");
+  }
+  for (const [key, max] of [["profileId", 120], ["url", 2000], ["caption", 10000], ["notes", 2000]]) {
+    if (Object.hasOwn(args, key) && (typeof args[key] !== "string" || !args[key].trim() || args[key].length > max)) {
+      throw new RpcError(-32602, `${key} must be a nonempty string of at most ${max} characters.`);
+    }
+  }
+  if (Object.hasOwn(args, "uploads") && (!Array.isArray(args.uploads) || !args.uploads.length || args.uploads.length > 20 ||
+      args.uploads.some((item) => !object(item) || typeof item.dataUrl !== "string" || !item.dataUrl.startsWith("data:image/") ||
+        Object.keys(item).some((key) => key !== "name" && key !== "dataUrl") || (item.name !== undefined && (typeof item.name !== "string" || item.name.length > 200))))) {
+    throw new RpcError(-32602, "uploads must be 1–20 objects with a data:image dataUrl and an optional name.");
+  }
+  if (name === "engine_recreate_post" && !Object.hasOwn(args, "url") && !Object.hasOwn(args, "uploads")) {
+    throw new RpcError(-32602, "Pass an Instagram url or slide uploads.");
   }
   for (const key of ["spec", "changes"]) {
     if (Object.hasOwn(args, key) && !object(args[key])) throw new RpcError(-32602, `${key} must be an object. Read engine_capabilities for its schema.`);
@@ -152,13 +188,16 @@ function bridge(config) {
   let capabilities;
   const redact = (value) => String(value).replaceAll(config.token, "[redacted]");
   async function api(action, args = {}) {
+    return send({ url: config.endpoint, method: "POST", body: { action, ...args } }, action);
+  }
+  async function send(route, action) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
     try {
-      const response = await fetch(config.endpoint, {
-        method: "POST",
-        headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
-        body: JSON.stringify({ action, ...args }),
+      const response = await fetch(route.url, {
+        method: route.method,
+        headers: { ...(route.body ? { "content-type": "application/json" } : {}), authorization: `Bearer ${config.token}` },
+        ...(route.body ? { body: JSON.stringify(route.body) } : {}),
         redirect: "error",
         signal: controller.signal,
       });
@@ -202,7 +241,7 @@ function bridge(config) {
         protocolVersion: PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
         capabilities: { tools: {} },
         serverInfo: { name: "engine-slides", title: "Engine editable slides", version: "1.0.0" },
-        instructions: "Start with engine_capabilities for the live deck and update schemas, coordinates, fonts, and limits. Create independent native layers; use the returned editorUrl to let a person continue editing. Get the current hash before updating. Preserve operationId for any identical mutation retry.",
+        instructions: "Start with engine_capabilities for the live deck and update schemas, coordinates, fonts, and limits. Create independent native layers; use the returned editorUrl to let a person continue editing. Get the current hash before updating. Preserve operationId for any identical mutation retry. To recreate an Instagram post for one of the team's pages, call engine_list_page_profiles, then engine_recreate_post, then poll engine_recreate_status.",
       };
     }
     if (!initialized) throw new RpcError(-32000, "Initialize the MCP connection before requesting tools.");
@@ -217,7 +256,7 @@ function bridge(config) {
       if (typeof params.name !== "string") throw new RpcError(-32602, "tools/call requires a tool name.");
       const args = validatedArguments(params.name, params.arguments === undefined ? {} : params.arguments);
       try {
-        const value = await api(ACTIONS[params.name], args);
+        const value = ROUTES[params.name] ? await send(ROUTES[params.name](config, args)) : await api(ACTIONS[params.name], args);
         return toolResult(args.operationId ? { ...value, operationId: args.operationId } : value);
       } catch (error) {
         return toolResult({ error: error.message, ...(error.status ? { status: error.status } : {}), ...(args.operationId ? { operationId: args.operationId } : {}) }, true);

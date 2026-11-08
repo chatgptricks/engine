@@ -17,6 +17,7 @@
     "build:pages": "node scripts/build-pages.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.6.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",
     "@dnd-kit/utilities": "^3.2.2",
@@ -39,7 +40,8 @@
     "sharp": "^0.35.5",
     "stripe": "^22.1.1",
     "svg-to-pdfkit": "^0.1.8",
-    "yjs": "^13.6.33"
+    "yjs": "^13.6.33",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

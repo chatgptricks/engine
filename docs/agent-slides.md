@@ -43,6 +43,9 @@ Tokens belong to the workspace that created them. They grant the agent the API's
 | `engine_create_deck` | Save an editable deck from `spec`; optional UUID `operationId` |
 | `engine_update_deck` | Apply `changes` using `deckId`, `expectedHash`, and an optional UUID `operationId` |
 | `engine_export_deck` | Return `{filename, package, editorUrl}` for an editable `.engine.json` file |
+| `engine_list_page_profiles` | List the pages Engine recreates posts for: language, template, voice, house rules, Follow line |
+| `engine_recreate_post` | Start recreating an Instagram post (link or slide screenshots) for one page; returns a `jobId` |
+| `engine_recreate_status` | Read a recreation's progress and, when done, its `deckId`, `editorUrl`, fact checks and notes |
 
 List tools accept `offset` (default 0, maximum 10000) and `limit` (default 20, maximum 100). MCP tool discovery fetches the live schemas from Engine. When the server is unavailable, discovery exposes generic schemas so the capabilities tool can still diagnose the connection. Call capabilities again after changing server versions or reconnecting.
 
@@ -83,7 +86,7 @@ Start with `engine_capabilities` to discover the current contract. Its `deckSche
 }
 ```
 
-Pass that object to `engine_create_deck`. `format: "presentation"` currently means 1920 × 1080 output pixels. Capabilities also lists portrait, square, story, and custom size options, available font identifiers, and native templates. To start from a template, use its `templateId` and follow the slot and slide-count guidance returned by capabilities and `engine_list_templates`.
+Pass that object to `engine_create_deck`. `format: "presentation"` currently means 1920 × 1080 output pixels. Capabilities also lists portrait, square, story, and custom size options, available font identifiers, and native templates. To start from a template, use its `templateId` and follow the slot guidance returned by capabilities and `engine_list_templates`. Copy the template page for page, or compose any number of slides from its page types with `templatePage` (see below).
 
 ### Consistent posts from a template
 
@@ -98,11 +101,48 @@ For posts that should always look like your brand, start from a template instead
 - **Photo slots** take a new image (`slots: {"smart-media": "https://…"}` or the slide's `image`) inside a fixed frame.
 - **Fixed** layers (logos, handles, profile cards, decorative shapes) are not listed and cannot change.
 
-Fill a slide with `title`/`body` (the first and second text slots in reading order) or by slot name, and pass one entry in `slides` per template page:
+Fill a slide with `title`/`body` (the first and second text slots in reading order) or by slot name. A slot key can be the slot name or, for a slot listed without a name, the `slot`/`elementId` value `engine_list_templates` reports. To copy the template page for page, omit `slides` or pass exactly one entry per template page, in order:
 
 ```json
 {"spec": {"name": "Memory launch", "templateId": "…", "slides": [{}, {"title": "OpenAI just shipped memory for every ChatGPT user", "image": {"src": "https://…/photo.jpg", "alt": "ChatGPT memory settings"}}, {}]}}
 ```
+
+#### Compose any length from the template's page types
+
+A template's pages are page types (Cover, Text + Media, List, Follow, …). To build a carousel of any length from them, set `templatePage`, the 0-based index of the template page to copy, on each slide:
+
+- `templatePage` is valid only with `templateId`, on `engine_create_deck`. `add_slide` does not accept it.
+- If any slide sets `templatePage`, every slide must set it. Otherwise the deck is rejected with the path of the first slide that is missing it.
+- A composed deck has 1–20 slides. Template pages can repeat, appear in any order or be left out. An index outside the template (for example `4` for a 4-page template) is rejected with the valid range.
+- Each slide is a fresh copy of its template page. Engine uses the editor's **Duplicate page** to give the page, its image and every layer, group, component instance and word texture new IDs, then remaps group nesting, reading order and rich-text texture runs. Slot names stay the same on every copy, so `slots` keys and smart flows work on each copy. Supply `id` on a slide to choose its page ID, and `label` to rename it (the template's page label is kept otherwise).
+- Every copy keeps the smart-template rules a full copy has. Engine prepares the whole template first, so a Cover keeps its cover type wherever it sits, interior pages never become covers, and brand layers stay fixed.
+- Without `templatePage`, the rules above still apply: omit `slides`, or pass exactly one slide per template page.
+- Continuous canvas templates can only be copied whole.
+
+`engine_list_templates` (for every template in the workspace, including your own) and `engine_capabilities` (built-in templates) list each template's `pageTypes`: `[{"index": 0, "label": "Cover", "slots": [...]}, …]`, including pages with no slots, such as a closing Follow page. Each slot's `pageIndex` and `pageLabel` give the same mapping. `slideCount` is the number of page types.
+
+This recreates a 6-slide post from a 4-page template (0 Cover, 1 Text + Media, 2 List, 3 Follow), using Text + Media three times:
+
+```json
+{"spec": {"name": "Memory, recreated", "templateId": "…", "slides": [
+  {"templatePage": 0, "title": "OpenAI just shipped memory for every ChatGPT user"},
+  {"templatePage": 1, "title": "It remembers your projects", "slots": {"smart-media": "data:image/png;base64,iVBORw0KGgo…"}},
+  {"templatePage": 1, "title": "You can switch it off", "image": {"src": "https://…/settings.jpg", "alt": "Memory settings"}},
+  {"templatePage": 1, "title": "Or delete one memory at a time", "image": {"src": "https://…/manage.jpg", "alt": "Manage memories"}},
+  {"templatePage": 2, "title": "Try these prompts", "body": "1. Summarise my week\n2. Plan my trip"},
+  {"templatePage": 3}
+]}}
+```
+
+#### Images in photo slots
+
+Photo slots (`slots` values) and `image.src` accept up to 2,000,000 characters (text slots accept up to 20,000):
+
+- `https://` and `http://` URLs, and root-relative paths on the Engine origin such as `/media/photo.png`.
+- `data:image/png`, `jpeg`, `webp`, `gif` and `avif` URLs with `;base64,`. The decoded bytes must start with the declared format's signature, so a mislabelled file is rejected.
+- SVG only as `data:image/svg+xml;charset=utf-8,<URI-encoded SVG>`, using the passive vector grammar from the Brand importer: `svg`, `g`, `path`, `defs`, `linearGradient`, `radialGradient` and `stop`. Text, `rect`, `circle`, styles, links and embedded images are not allowed, and `data:image/svg+xml;base64,…` is always rejected.
+
+Generated charts should therefore be rendered to PNG, for example as `data:image/png;base64,…`, and dropped into the photo slot. Images count once each towards the workspace's 12 MB save budget, so keep chart PNGs reasonably small.
 
 Text that cannot fit at the readable minimum is flagged in the editor and must be shortened before that page can be exported.
 
@@ -152,6 +192,23 @@ For a fully positioned slide, use `layout: "blank"` and independent `elements`. 
 `engine_get_deck` returns an output-pixel `view` alongside the saved native `document`. Use `view.slides` and their elements to inspect positions and prepare updates in the same coordinate system as the authoring API. The raw native document stores positions on Engine's **360-wide scene**, with the conversion described in the response's `coordinates`. If working directly from the raw document at 1920 output pixels, multiply a scene value by `1920 / 360` before sending it as an agent authoring value.
 
 Image layers accept a supported image `src` and optional public alt text. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
+
+## Recreate a post for one of our pages
+
+Recreate turns someone else's Instagram post into a native, editable carousel in one page's template, voice and language (English or Spanish). It runs on the server with Claude:
+
+1. **Import:** the post's slides and caption, from the link (through Apify) or from uploaded screenshots.
+2. **Research:** every claim is checked against primary sources with live web search, and real data is found for any chart.
+3. **Write:** fresh copy in the page's voice. It may add, cut or reorder slides, and it follows the page's house rules, such as no final periods and two-line bodies.
+4. **Build:** a deck made from the page's template pages, with charts drawn into the photo slot. Fact checks, photo briefs and notes are saved as deck comments.
+
+```json
+{ "profileId": "chatgptricks", "url": "https://www.instagram.com/p/SHORTCODE/", "notes": "Optional direction for this post" }
+```
+
+Call `engine_list_page_profiles` for the ids, then `engine_recreate_post`. A run takes a few minutes, so poll `engine_recreate_status` with the `jobId` about every 15 seconds until `status` is `done` or `error`. When it's done, review the deck with `engine_get_deck` and send a person the `editorUrl`. Instead of `url`, you can send `uploads`: 1–20 `{name, dataUrl}` slide screenshots in order, plus the `caption`.
+
+Over HTTP, the same calls are `GET /api/engine/page-profiles`, `POST /api/engine/recreate` (202 `{jobId}`) and `GET /api/engine/recreate?jobId=…`, all with the agent token. The server needs `ANTHROPIC_API_KEY`, and `APIFY_TOKEN` for links. Progress is kept in server memory, so a restart loses the progress record but never a saved deck.
 
 ## Revise safely
 

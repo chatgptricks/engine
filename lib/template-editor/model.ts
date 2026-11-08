@@ -561,6 +561,8 @@ export const BUILT_IN_TEMPLATES: DesignTemplate[] = [
       }),
     ],
   },
+  // Defined at the end of this file; chatgptricks-template.ts is its entry point.
+  chatgptricksTemplate(),
 ];
 
 export function createCanvasElement<T extends CanvasElement["type"]>(
@@ -2610,4 +2612,184 @@ export function isSafeBrandSvg(source: string): boolean {
 export function isSafeBrandSvgUrl(value: unknown): boolean {
   if (typeof value !== "string" || !value.startsWith(BRAND_SVG_PREFIX)) return false;
   try { return isSafeBrandSvg(decodeURIComponent(value.slice(BRAND_SVG_PREFIX.length))); } catch { return false; }
+}
+
+/** The @chatgptricks Instagram carousel at 3:4 (1080 × 1440): Cover, Text +
+ * Media, List and Follow pages, then Reaction (one post from X) and Reactions
+ * (two stacked posts), all native layers. Each layer's role (fixed
+ * brand, text slot, photo slot) and its smart flow are authored here rather
+ * than inferred. Geometry is written in output pixels and stored on the
+ * 360-wide scene. Use it through chatgptricks-template.ts; it is defined in
+ * this file because model.ts has no runtime imports, which the TypeScript test
+ * loaders rely on. Its name is deliberately not exactly "@chatgptricks": that
+ * name turns on tuned inference rules that rename slots to smart-text-N and
+ * re-flow "Text + Media" pages around a single title. This is a function
+ * declaration so BUILT_IN_TEMPLATES can call it above; it must not read
+ * module-level constants declared after that array. */
+function chatgptricksTemplate(): DesignTemplate {
+  const px = (value: number) => value / 3;
+  const night = "#0B1014", surface = "#1A242B", white = "#F9FFFE", green = "#00D98A", grey = "#D9D9D9", dim = "#7D858A";
+  type Box = [x: number, y: number, width: number, height: number];
+  type Rule = NonNullable<TextElement["smartText"]>;
+  const at = (id: string, name: string, [x, y, width, height]: Box) => ({ id: `cgt-${id}`, name, x: px(x), y: px(y), width: px(width), height: px(height), rotation: 0, opacity: 1, locked: false });
+  const fixed = () => ({ templateRole: "brand" as const, layoutRole: "fixed" as const, protected: ["content", "position", "style", "delete"] as ProtectedProperty[] });
+  const textSlot = (slot: string) => ({ slot, layoutRole: "text" as const, textMode: "auto-fit" as const, verticalAlign: "top" as const, protected: ["position", "style", "delete"] as ProtectedProperty[] });
+  const typeset = (font: string, size: number, weight: number, color: string, lineHeight: number, tracking: number, align: TextElement["align"] = "left") => ({ font, fontSize: px(size), fontWeight: weight, italic: false, underline: false, color, align, lineHeight, letterSpacing: px(size * tracking) });
+  // Heights get a hair of slack so whole lines still divide them after floating-point rounding.
+  const fit = (role: Rule["role"], lines: Rule["lines"], size: number, min: number, maxHeight: number, baseHeight: number, soft = size, anchorBottom?: number): Rule => ({ role, lines, minFontSize: px(min), maxFontSize: px(size), maxHeight: px(maxHeight) + .01, baseHeight: px(baseHeight) + .01, softMinFontSize: px(soft), ...(anchorBottom === undefined ? {} : { anchorBottom: px(anchorBottom) }) });
+  const glow = (): CanvasShadow => ({ color: "#00000099", offsetX: 0, offsetY: px(5), blur: px(37.5), spread: 0 });
+  // A #1A242B photo placeholder with a faint picture icon, as a vector the Brand SVG grammar accepts.
+  const placeholder = (width: number, height: number, cx: number, cy: number) => {
+    const [l, t, r, b] = [cx - 60, cy - 48, cx + 60, cy + 48];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><path d="M0 0H${width}V${height}H0Z" fill="${surface}"/><g opacity="0.3"><path d="M${l} ${t}H${r}V${b}H${l}ZM${l + 6} ${t + 6}V${b - 6}H${r - 6}V${t + 6}Z" fill="${grey}" fill-rule="evenodd"/><path d="M${l + 14} ${b - 14}L${cx - 16} ${cy - 4}L${cx + 6} ${cy + 18}L${cx + 22} ${cy + 4}L${r - 14} ${b - 14}Z" fill="${grey}"/><path d="M${cx + 17} ${cy - 22}a9 9 0 1 0 18 0a9 9 0 1 0 -18 0Z" fill="${grey}"/></g></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  };
+  const photo = (id: string, name: string, slot: string, box: Box, icon: [number, number], directive: string): ImageElement => ({
+    type: "image", ...at(id, name, box), src: placeholder(Math.round(box[2]), Math.round(box[3]), ...icon), fit: "cover", cropX: 50, cropY: 50, radius: 0,
+    intrinsicWidth: Math.round(box[2]), intrinsicHeight: Math.round(box[3]), directive, slot, templateRole: "media", layoutRole: "media", protected: ["position", "delete"],
+  });
+  const fade = (id: string, name: string, y: number, height: number, from: string, to: string): ShapeElement => ({
+    type: "shape", ...at(id, name, [0, y, 1080, height]), shape: "rectangle", fill: night, stroke: "transparent", strokeWidth: 0, radius: 0,
+    gradient: { type: "linear", angle: 180, stops: [{ color: from, position: 0 }, { color: to, position: 100 }] }, ...fixed(),
+  });
+  // Full-bleed photo from the top to y 926, fading in from the top and out into the page.
+  const hero = (key: string, directive: string): CanvasElement[] => [
+    photo(`${key}-photo`, "Photo", "photo", [0, 0, 1080, 926], [540, 333], directive),
+    fade(`${key}-top-fade`, "Top fade", 0, 220, night, "#0B101400"),
+    fade(`${key}-bottom-fade`, "Bottom fade", 506, 420, "#0B101400", night),
+  ];
+  // Hairlines are 2 px tall; a layer is at least 3 px, so each draws a 2 px bar inside a 3 px box.
+  const hairline = (id: string, name: string, x: number, from: string, to: string): ShapeElement => ({
+    type: "shape", ...at(id, name, [x, 1000.724, 461, 3]), shape: "path", path: "M0 0.5H461V2.5H0Z", viewBox: "0 0 461 3", fill: white, stroke: "transparent", strokeWidth: 0, radius: 0,
+    gradient: { type: "linear", angle: 90, stops: [{ color: from, position: 0 }, { color: to, position: 100 }] }, ...fixed(),
+    smartFlow: { after: "cover-headline", gap: px(63), bottom: px(90), direction: "up" },
+  });
+  // Content pages: padding 90 top, 88 right and bottom, 72 left; title, body 23 px below, 64 px to the content.
+  const header = (key: string, title: string, body: string): TextElement[] => [
+    { type: "text", ...at(`${key}-title`, "Title", [72, 90, 920, 62.72]), text: title, ...typeset("sfpro", 56, 700, green, 1.12, -.022), ...textSlot("title"), smartText: fit("heading", 0, 56, 42, 125.44, 62.72) },
+    { type: "text", ...at(`${key}-body`, "Body", [72, 175.72, 920, 95.4]), text: body, ...typeset("sfpro", 43, 400, white, 47.7 / 43, -.012), ...textSlot("body"), smartFlow: { after: "title", gap: px(23), bottom: px(271.12 + 62.72) }, smartText: fit("body", 0, 43, 36, 95.4, 95.4) },
+  ];
+  // The source line is pinned to the bottom margin and grows upwards to two lines.
+  const source = (key: string, text: string, lines: 1 | 2): TextElement => ({
+    type: "text", ...at(`${key}-source`, "Source", [72, 1352 - 30 * lines, 920, 30 * lines]), text, ...typeset("sfpro", 24, 400, dim, 1.25, 0), ...textSlot("source"), verticalAlign: "bottom", smartText: fit("body", 0, 24, 20, 60, 60, 24, 1352),
+  });
+  const listHeading = (side: "left" | "right", x: number, word: string): TextElement => ({
+    type: "text", ...at(`list-${side}-heading`, `${side === "left" ? "Left" : "Right"} column heading`, [x, 335.12, 440, 55.2]), text: `${word} From AI`, richText: `<span style="color:${green}; font-weight:700">${word}</span> From AI`,
+    ...typeset("sfpro", 46, 400, white, 1.2, -.02), ...textSlot(`list-${side}-heading`), smartFlow: { after: "body", gap: px(64), bottom: px(335.12 + 62.72 + 110.4) }, smartText: fit("heading", 0, 46, 36, 110.4, 55.2, 46 * .9),
+  });
+  // Plain auto-fit bullet lists (one item per line): smart text would bullet every wrapped line.
+  const listItems = (side: "left" | "right", x: number, items: string[]): TextElement => ({
+    type: "text", ...at(`list-${side}-items`, `${side === "left" ? "Left" : "Right"} column items`, [x, 426.32, 440, 825.68]), text: items.join("\n"), ...typeset("sfpro", 34, 400, white, 42 / 34, -.012),
+    slot: `list-${side}-items`, layoutRole: "free", textMode: "auto-fit", autoFitMinFontSize: px(26), autoFitMaxFontSize: px(34), verticalAlign: "top", listStyle: "bullet", paragraphSpacing: px(28), protected: ["position", "delete"],
+    smartFlow: { after: `list-${side}-heading`, gap: px(36), bottom: px(1252), resize: true },
+  });
+  // Reaction pages: real posts from X as native cards under a one-line title, so a card starts 64 px under it.
+  const shortTitle = (key: string, title: string): TextElement => ({ type: "text", ...at(`${key}-title`, "Title", [72, 90, 920, 62.72]), text: title, ...typeset("sfpro", 56, 700, green, 1.12, -.022), ...textSlot("title"), smartText: fit("heading", 0, 56, 42, 62.72, 62.72) });
+  const card = (id: string, name: string, box: Box, smartFlow: NonNullable<CanvasElementBase["smartFlow"]>): ShapeElement => ({ type: "shape", ...at(id, name, box), shape: "rectangle", fill: surface, stroke: "transparent", strokeWidth: 0, radius: px(28), ...fixed(), smartFlow });
+  // A grey head-and-shoulders placeholder; the avatar layer's radius makes it round.
+  const avatarPlaceholder = (size: number) => {
+    const [c, s] = [size / 2, size / 104];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><path d="M0 0H${size}V${size}H0Z" fill="${dim}"/><g opacity="0.55"><path d="M${c - 20 * s} ${40 * s}a${20 * s} ${20 * s} 0 1 0 ${40 * s} 0a${20 * s} ${20 * s} 0 1 0 ${-40 * s} 0Z" fill="${grey}"/><path d="M${c - 36 * s} ${size}C${c - 36 * s} ${74 * s} ${c + 36 * s} ${74 * s} ${c + 36 * s} ${size}Z" fill="${grey}"/></g></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  };
+  const xPath = "M714.163 519.284L1160.89 0H1055.03L667.137 450.887L357.328 0H0L468.492 681.821L0 1226.37H105.866L515.491 750.218L842.672 1226.37H1200L714.137 519.284H714.163ZM569.165 687.828L521.697 619.934L144.011 79.6944H306.615L611.412 515.685L658.88 583.579L1055.08 1150.3H892.476L569.165 687.854V687.828Z";
+  type PostStyle = { pad: number; avatar: number; name: number; handle: number; text: number; textLine: number; textMin: number; textLines: number; textGap: number; meta: number; metaGap: number; mark: number };
+  type PostCopy = { name: string; handle: string; text: string; meta: string };
+  /** One post card's content at `top` (the card's top edge). Everything in the
+   * card follows its avatar, so a card that moves keeps its inner layout. The
+   * meta line either follows the text (`metaBottom` is the lowest it may end) or
+   * is pinned `pad` above `pinnedBottom`, the card's bottom edge. */
+  const post = (key: string, suffix: "" | "-2", top: number, s: PostStyle, copy: PostCopy, place: { avatarFlow?: NonNullable<CanvasElementBase["smartFlow"]>; textBottom: number; metaBottom?: number; pinnedBottom?: number }): CanvasElement[] => {
+    const left = 72 + s.pad, right = 992 - s.pad, width = right - left, avatarY = top + s.pad;
+    const nameX = left + s.avatar + 28, markHeight = s.mark * 1227 / 1200;
+    const [nameHeight, handleHeight, metaHeight] = [s.name * 1.2, s.handle * 1.2, s.meta * 1.25];
+    const nameY = avatarY + (s.avatar - nameHeight - handleHeight) / 2, textY = avatarY + s.avatar + s.textGap, textHeight = s.textLines * s.textLine;
+    const avatarSlot = `reaction-avatar${suffix}`, follow = (gap: number, edge?: "top") => ({ after: avatarSlot, gap: px(gap), bottom: px(1252), ...(edge ? { edge } : {}) });
+    const metaY = place.pinnedBottom === undefined ? textY + textHeight + s.metaGap : place.pinnedBottom - s.pad - metaHeight;
+    return [
+      { type: "image", ...at(`${key}-avatar${suffix}`, "Avatar", [left, avatarY, s.avatar, s.avatar]), src: avatarPlaceholder(s.avatar), fit: "cover", cropX: 50, cropY: 50, radius: px(s.avatar / 2), intrinsicWidth: s.avatar, intrinsicHeight: s.avatar,
+        directive: "The post author's profile photo from X (pbs.twimg.com)", slot: avatarSlot, templateRole: "media", layoutRole: "media", protected: ["position", "delete"], ...(place.avatarFlow ? { smartFlow: place.avatarFlow } : {}) },
+      { type: "text", ...at(`${key}-name${suffix}`, "Author name", [nameX, nameY, right - s.mark - 24 - nameX, nameHeight]), text: copy.name, ...typeset("sfpro", s.name, 700, white, 1.2, -.01), ...textSlot(`reaction-name${suffix}`), smartFlow: follow(nameY - avatarY, "top"), smartText: fit("heading", 0, s.name, s.name * .75, nameHeight, nameHeight) },
+      { type: "text", ...at(`${key}-handle${suffix}`, "Author handle", [nameX, nameY + nameHeight, right - s.mark - 24 - nameX, handleHeight]), text: copy.handle, ...typeset("sfpro", s.handle, 400, dim, 1.2, 0), ...textSlot(`reaction-handle${suffix}`), smartFlow: follow(nameY + nameHeight - avatarY, "top"), smartText: fit("body", 0, s.handle, s.handle * .75, handleHeight, handleHeight) },
+      { type: "shape", ...at(`${key}-x-mark${suffix}`, "X logo", [right - s.mark, avatarY + (s.avatar - markHeight) / 2, s.mark, markHeight]), shape: "path", path: xPath, viewBox: "0 0 1200 1227", fill: white, stroke: "transparent", strokeWidth: 0, radius: 0, ...fixed(), smartFlow: follow((s.avatar - markHeight) / 2, "top") },
+      // Post text, word for word: it wraps first, then shrinks to its minimum before it would leave the card.
+      { type: "text", ...at(`${key}-text${suffix}`, "Post text", [left, textY, width, textHeight]), text: copy.text, ...typeset("sfpro", s.text, 400, white, s.textLine / s.text, -.012), ...textSlot(`reaction-text${suffix}`), smartFlow: { after: avatarSlot, gap: px(s.textGap), bottom: px(place.textBottom) }, smartText: fit("body", 0, s.text, s.textMin, textHeight, textHeight) },
+      { type: "text", ...at(`${key}-meta${suffix}`, "Post stats", [left, metaY, width, metaHeight]), text: copy.meta, ...typeset("sfpro", s.meta, 400, dim, 1.25, 0), ...textSlot(`reaction-meta${suffix}`),
+        ...(place.pinnedBottom === undefined ? { smartFlow: { after: `reaction-text${suffix}`, gap: px(s.metaGap), bottom: px(place.metaBottom ?? 1252) }, smartText: fit("body", 0, s.meta, s.meta * .75, metaHeight, metaHeight) } : { verticalAlign: "bottom" as const, smartText: fit("body", 0, s.meta, s.meta * .75, metaHeight, metaHeight, s.meta, place.pinnedBottom - s.pad) }) },
+    ];
+  };
+  const sampleCopy = (text: string, suffix = ""): PostCopy => ({ name: `Author name${suffix}`, handle: "@handle", text, meta: "48K likes · 3.1K reposts · Nov 3, 2026" });
+  // One post: 48 px padding, a 104 px avatar and 48 px text, 12 lines: a ~280-character post with its paragraph breaks fills the card.
+  const single: PostStyle = { pad: 48, avatar: 104, name: 40, handle: 34, text: 48, textLine: 60, textMin: 36, textLines: 12, textGap: 32, meta: 30, metaGap: 32, mark: 44 };
+  // Two posts: the same padding, an 80 px avatar and body-size text (43 / 47.7 px), five lines (~160 characters) each.
+  const pair: PostStyle = { pad: 48, avatar: 80, name: 34, handle: 28, text: 43, textLine: 47.7, textMin: 32, textLines: 5, textGap: 24, meta: 28, metaGap: 24, mark: 40 };
+  const pairHeight = pair.pad * 2 + pair.avatar + pair.textGap + pair.textLines * pair.textLine + pair.metaGap + pair.meta * 1.25;
+  const layout = (sides: number): CanvasLayout => ({ showGuides: true, margins: { enabled: true, top: px(90), right: px(sides || 88), bottom: px(88), left: px(sides || 72) }, snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } });
+  const sheet = (key: string, label: string, elements: CanvasElement[], sides = 0): DesignPage => {
+    const base = page(`chatgptricks-3x4-${key}`, "folds", { template: "text", heading: "", body: "", bgMode: "color", bgColor: night, textColor: white, font: "sfpro", align: "top", textAlign: "left" });
+    const content = elements.filter(element => element.type === "text" || element.templateRole === "media").sort((a, b) => a.y - b.y || a.x - b.x);
+    return { ...base, image: { ...base.image, width: 1080, height: 1440 }, label, canvas: { background: night, elements, layout: layout(sides) }, readingOrder: content.map(element => element.id) };
+  };
+  return {
+    id: "chatgptricks-3x4",
+    name: "@chatgptricks carousel",
+    category: "Carousels",
+    format: "portrait",
+    customSize: { width: 1080, height: 1440 },
+    description: "The @chatgptricks 3:4 carousel: photo cover, text with a photo or chart, a two-column list, a Follow page, and one or two real posts from X.",
+    colorRoles: [
+      { id: "cgt-background", name: "Background", color: night }, { id: "cgt-surface", name: "Photo placeholder", color: surface },
+      { id: "cgt-text", name: "Text", color: white }, { id: "cgt-accent", name: "Accent green", color: green },
+      { id: "cgt-light-grey", name: "Light grey", color: grey }, { id: "cgt-source", name: "Source grey", color: dim },
+    ],
+    pages: [
+      sheet("cover", "Cover", [
+        ...hero("cover", "Story photo: ChatGPT on a screen, or people job hunting"),
+        hairline("cover-hairline-left", "Left hairline", 41, "#F9FFFE00", white),
+        { type: "image", ...at("cover-logo", "ChatGPT Tricks logo", [514, 976.224, 52, 52]), opacity: .9, src: "/template-editor/chatgptricks-logo.png", fit: "contain", cropX: 50, cropY: 50, radius: 0, intrinsicWidth: 831, intrinsicHeight: 832, ...fixed(), smartFlow: { after: "cover-headline", gap: px(38.5), bottom: px(90), direction: "up" } },
+        hairline("cover-hairline-right", "Right hairline", 578, white, "#F9FFFE00"),
+        // Three balanced lines at 97 px; the box bottom stays 130 px above the page bottom.
+        { type: "text", ...at("cover-headline", "Cover headline", [68, 1066.724, 944, 243.276]), text: "SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED WHILE US JOB OPENINGS FELL ALMOST 30%", richText: `SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED WHILE US JOB OPENINGS <span style="color:${green}">FELL ALMOST 30%</span>`, ...typeset("bebas", 97, 400, white, .836, -.02, "center"), ...textSlot("cover-headline"), verticalAlign: "bottom", shadow: glow(), smartText: fit("cover", 3, 97, 54, 4 * 97 * .836, 3 * 97 * .836, 97 * .85, 1310) },
+        { type: "text", ...at("cover-swipe", "Swipe for more", [0, 1334, 1080, 32]), text: "SWIPE FOR MORE", ...typeset("sfpro", 32, 700, grey, 1, .01, "center"), textMode: "fixed", verticalAlign: "top", ...fixed() },
+      ], 68),
+      sheet("media", "Text + Media", [
+        ...header("media", "AI vs Jobs", "Since ChatGPT came out, stocks went up\nand job openings went down"),
+        { ...photo("media-media", "Photo or chart", "media", [72, 335.12, 920, 916.88], [460, 458.5], "Chart or photo for this point"), smartFlow: { after: "body", gap: px(64), bottom: px(1252), resize: true } },
+        source("media", "Source: U.S. BLS job openings (JOLTS) and S&P 500 monthly average, Jan 2003 to Sep 2026. Both set to 100 in Nov 2022, when ChatGPT launched", 2),
+      ]),
+      sheet("list", "List", [
+        ...header("list", "The jobs AI can’t replace", "Anthropic looked at how people use AI at work. Office jobs are most at risk"),
+        listHeading("left", 72, "Risk"),
+        listItems("left", 72, ["Management", "Business & Finance", "Computer & Math", "Architecture & Engineering", "Life & Social Sciences", "Legal", "Education & Library", "Arts & Media", "Office & Administrative", "Sales", "Social Services"]),
+        listHeading("right", 552, "Safe"),
+        listItems("right", 552, ["Installation & Repair", "Construction", "Agriculture", "Transportation", "Production", "Protective Service", "Food & Serving", "Grounds Maintenance", "Personal Care", "Healthcare Support", "Healthcare Practitioners"]),
+        source("list", "Source: Anthropic, [study name and date]", 1),
+      ]),
+      sheet("follow", "Follow", [
+        ...hero("follow", "Screenshot of the @chatgptricks profile"),
+        // "FOLLOW THIS PAGE" sits directly above the call to action, which keeps its bottom 136 px above the page bottom.
+        { type: "text", ...at("follow-line", "Follow this page", [68, 1100.016, 944, 101.992]), text: "FOLLOW THIS PAGE", ...typeset("bebas", 122, 400, white, .836, -.02, "center"), textMode: "fixed", verticalAlign: "bottom", shadow: glow(), ...fixed(), smartFlow: { after: "cta", gap: 0, bottom: px(90), direction: "up" } },
+        { type: "text", ...at("follow-cta", "Call to action", [68, 1202.008, 944, 101.992]), text: "TO STAY ON THE SAFE SIDE", ...typeset("bebas", 122, 400, green, .836, -.02, "center"), ...textSlot("cta"), verticalAlign: "bottom", shadow: glow(), smartText: fit("cover", 0, 122, 72, 2 * 122 * .836, 122 * .836, 122 * .85, 1304) },
+      ], 68),
+      // One post card from 64 px under the title to the media bottom (1252), as on Text + Media; its stats sit at the card's foot.
+      sheet("reaction", "Reaction", [
+        card("reaction-card", "Post card", [72, 216.72, 920, 1035.28], { after: "title", gap: px(64), bottom: px(1252), resize: true }),
+        shortTitle("reaction", "How X reacted"),
+        ...post("reaction", "", 216.72, single, sampleCopy("Paste a real post from X here, word for word. Keep the author's spelling, emoji and line breaks\n\nAbout 280 characters fill this card. A longer post is cut at a word boundary and ends with …, and the deck keeps the link to the original"),
+          { avatarFlow: { after: "title", gap: px(64 + single.pad), bottom: px(1252) }, textBottom: 1252 - single.pad - single.meta * 1.25 - single.metaGap, pinnedBottom: 1252 }),
+        source("reaction", "Source: X, Nov 2026", 1),
+      ]),
+      // Two stacked posts: the first card fits its post, 40 px under it the second fills the rest down to 1252.
+      sheet("reactions", "Reactions", [
+        card("reactions-card", "Post card", [72, 216.72, 920, pairHeight], { after: "reaction-avatar-2", gap: px(pair.pad + 40), bottom: px(216.72), direction: "up", resize: true }),
+        card("reactions-card-2", "Second post card", [72, 216.72 + pairHeight + 40, 920, 1252 - 216.72 - pairHeight - 40], { after: "reaction-meta", gap: px(pair.pad + 40), bottom: px(1252), resize: true }),
+        shortTitle("reactions", "What people are saying"),
+        ...post("reactions", "", 216.72, pair, sampleCopy("A real post from X, word for word. About 160 characters fill this card, and a longer post is cut at a word boundary with …"),
+          { textBottom: 216.72 + pairHeight - pair.pad - pair.meta * 1.25 - pair.metaGap, metaBottom: 216.72 + pairHeight - pair.pad }),
+        ...post("reactions", "-2", 216.72 + pairHeight + 40, pair, sampleCopy("A second real post. This card starts 40 px under the first one and fills the page down to the source line", " 2"),
+          { avatarFlow: { after: "reaction-meta", gap: px(pair.pad + 40 + pair.pad), bottom: px(1252) }, textBottom: 1252 - pair.pad - pair.meta * 1.25 - pair.metaGap, pinnedBottom: 1252 }),
+        source("reactions", "Source: X, Nov 2026", 1),
+      ]),
+    ],
+  };
 }

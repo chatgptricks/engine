@@ -25,14 +25,14 @@ test("every bundled template can be trashed, backed up and restored without chan
   const pristine = structuredClone(model.BUILT_IN_TEMPLATES);
   let library = blank(); library.designs = model.BUILT_IN_TEMPLATES.map(model.createDesign);
   const posts = structuredClone(library.designs);
-  assert.equal(catalog.libraryTemplates(library).length, 8);
+  assert.equal(catalog.libraryTemplates(library).length, model.BUILT_IN_TEMPLATES.length);
   for (const template of model.BUILT_IN_TEMPLATES) library = catalog.deleteLibraryTemplate(library, template.id, before);
-  assert.equal(catalog.libraryTemplates(library).length, 0); assert.equal(catalog.trashedTemplates(library).length, 8);
+  assert.equal(catalog.libraryTemplates(library).length, 0); assert.equal(catalog.trashedTemplates(library).length, model.BUILT_IN_TEMPLATES.length);
   assert.deepEqual(library.designs, posts); assert.deepEqual(model.BUILT_IN_TEMPLATES, pristine);
   library = model.parseLibrary(JSON.stringify(library));
-  assert.equal(catalog.libraryTemplates(library).length, 0); assert.equal(catalog.trashedTemplates(library).length, 8);
+  assert.equal(catalog.libraryTemplates(library).length, 0); assert.equal(catalog.trashedTemplates(library).length, model.BUILT_IN_TEMPLATES.length);
   for (const template of model.BUILT_IN_TEMPLATES) library = catalog.restoreLibraryTemplate(library, template.id, later);
-  assert.equal(catalog.libraryTemplates(library).length, 8); assert.equal(catalog.trashedTemplates(library).length, 0);
+  assert.equal(catalog.libraryTemplates(library).length, model.BUILT_IN_TEMPLATES.length); assert.equal(catalog.trashedTemplates(library).length, 0);
   assert.ok(library.builtInTemplateStates.every(state => state.updatedAt === later && state.deletedAt === undefined && state.permanentlyDeleted === undefined));
   assert.deepEqual(model.parseLibrary(JSON.stringify(library)), library);
 });
@@ -60,7 +60,7 @@ test("patches merge distinct bundled IDs and old patches cannot remove saved dec
   const base = blank(), mine = catalog.deleteLibraryTemplate(base, first, before), remote = catalog.deleteLibraryTemplate(base, second, later);
   const patch = await sync.createLibraryPatch(base, mine); assert.equal(patch.collections.builtInTemplateStates.length, 1);
   const result = await sync.applyLibraryPatch(remote, patch);
-  assert.equal(result.builtInTemplateStates.length, 2); assert.equal(catalog.libraryTemplates(result).length, 6); assert.ok(model.parseLibrary(result));
+  assert.equal(result.builtInTemplateStates.length, 2); assert.equal(catalog.libraryTemplates(result).length, model.BUILT_IN_TEMPLATES.length - 2); assert.ok(model.parseLibrary(result));
   const oldPatch = await sync.createLibraryPatch(base, { ...base, designs: [model.createBlankDesign("Old client", "portrait")] });
   assert.deepEqual((await sync.applyLibraryPatch(result, oldPatch)).builtInTemplateStates, result.builtInTemplateStates);
   const omitted = structuredClone(result); delete omitted.builtInTemplateStates;

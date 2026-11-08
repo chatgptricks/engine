@@ -16,7 +16,7 @@ The agent API is `/api/agent/slides`; the local MCP entry point is `npm run agen
 
 ## Create a post
 
-1. Choose **New design** for a blank canvas, pick one of eight built-in templates, or start from **My templates**.
+1. Choose **New design** for a blank canvas, pick one of nine built-in templates, or start from **My templates**.
 2. Add independent text boxes, images, rectangles, circles, or lines. Double-click text to type directly; drag to move, use handles to resize, and rotate with the rotation handle. Center guides help align objects. Shift-click adds to a selection; drag across empty canvas to select several elements together.
 3. Add, duplicate, reorder, or remove pages. Undo and redo changes while the design is open, including active text edits. Use **⌘/Ctrl Z** to undo and **⌘/Ctrl Shift Z** or **⌘/Ctrl Y** to redo. History returns to the affected page and selection; automatic text fitting and unchanged values do not add steps or erase redo. Save fonts, palettes, logos, and images in **Brand kits**, then reuse them from the editor’s **Brand** tab.
 4. Use **Save as template** to keep the complete design as a starting point for future posts. Copies receive independent page and image identities.

@@ -8,6 +8,7 @@ import {
   CopyIcon,
   ArrowRightIcon,
   StarIcon,
+  SparkleIcon,
 } from "@/components/engine/icons";
 import {
   EMPTY_LIBRARY,
@@ -43,6 +44,8 @@ import {useStudioNavigation} from "@/lib/template-editor/use-studio-navigation";
 import {useLiveCollaboration} from "@/lib/template-editor/use-collaboration";
 import {DESIGN_PRESETS,templateCreationOptions} from "@/lib/template-editor/creation-presets";
 import {AgentAccessDialog} from "./agent-access-dialog";
+import {RecreatePost} from "./recreate-dialog";
+import type {RecreateResult} from "./recreate-job";
 import {sameDocumentContent} from "@/lib/template-editor/history";
 import "./studio.css";
 import "./library-workflows.css";
@@ -56,6 +59,8 @@ function LibraryCard({ menu, children, selection }: { menu: ContextMenuDefinitio
     <button type="button" className="te-card-menu" aria-label={`Actions for ${menu.label}`} title={`Actions for ${menu.label}`} aria-haspopup="menu" onClick={(event) => openMenu(event, menu)}>⋯</button>
   </article>;
 }
+
+const OPENING_RECREATED = "Opening your recreated post…";
 
 function WorkspaceMenu({ menu, label = "Library tools", primary = false }: { menu: ContextMenuDefinition; label?: string; primary?: boolean }) {
   const { openMenu } = useContextMenu();
@@ -106,6 +111,8 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
   const [organize, setOrganize] = useState<{kind: "design" | "template"; id: string} | null>(null);
   const [recoveriesOpen, setRecoveriesOpen] = useState(false);
   const [agentAccessOpen, setAgentAccessOpen] = useState(false);
+  const [recreateOpen, setRecreateOpen] = useState(false);
+  const [awaitingDesign, setAwaitingDesign] = useState<{id: string; refreshed: boolean} | null>(null);
   const [historyId, setHistoryId] = useState<string | null>(null);
   const [category, setCategory] = useState("All templates");
   const [message, setMessage] = useState("");
@@ -192,6 +199,32 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
     }, 0);
     return () => clearTimeout(timer);
   }, [ready, canEdit, library.designs.length, setLibrary, setActiveId, setView, libraryScope]);
+
+  useEffect(() => {
+    // A recreated post is saved on the server; open it once this tab's workspace includes it.
+    if (!awaitingDesign || !ready) return;
+    const found = library.designs.some(design => design.id === awaitingDesign.id && !design.deletedAt);
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      if (found || activeId !== awaitingDesign.id) { setAwaitingDesign(null); setMessage(current => current === OPENING_RECREATED ? "" : current); return; }
+      // Pending edits save first; that save merges the server's new post into this tab.
+      if (status !== "saved" && status !== "local") return;
+      if (!awaitingDesign.refreshed) { setAwaitingDesign({...awaitingDesign, refreshed: true}); void reloadServer(); return; }
+      setAwaitingDesign(null);
+      setActiveId(null);
+      setMessage("Your recreated post was saved, but it isn't in this workspace yet. Reload the page to find it in Projects.");
+    });
+    return () => { cancelled = true; };
+  }, [awaitingDesign, ready, library.designs, status, activeId, reloadServer, setActiveId]);
+
+  function openRecreatedDesign(result: RecreateResult) {
+    setQuery("");
+    setActiveId(result.deckId);
+    if (library.designs.some(design => design.id === result.deckId && !design.deletedAt)) return;
+    setAwaitingDesign({id: result.deckId, refreshed: false});
+    setMessage(OPENING_RECREATED);
+  }
 
   async function exportItem(item: DesignDocument | DesignTemplate, kind: "design" | "template") {
     try {await downloadPortableLibrary(selectedLibrary(library,[`${kind}:${item.id}`]),item.name);}catch(reason){setMessage(reason instanceof Error?reason.message:"Could not export this item.");}
@@ -291,6 +324,7 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
     { id: "new-design", label: "Blank post", disabled: !canEdit || library.designs.length >= 150, onSelect: openBlankDesign },
     { id: "new-carousel", label: "Carousel", disabled: !canEdit || library.designs.length >= 150, onSelect: openCarousel },
     { id: "new-template", label: "Reusable template…", disabled: !canEdit || library.designs.length >= 150 || library.templates.length >= 80, onSelect: () => { if (permission.current) setCreation({kind:"template"}); } },
+    { id: "recreate-post", label: "Recreate a post…", disabled: !canEdit, onSelect: () => setRecreateOpen(true) },
   ] };
   const libraryMenu: ContextMenuDefinition = { label: "Library tools", items: [
     { id: "agent-access", label: "Connect an AI agent…", disabled: !canEdit, onSelect: () => setAgentAccessOpen(true) },
@@ -435,6 +469,7 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
                 <span className="te-status-dot" />{statusText}
               </span>
               <WorkspaceMenu menu={libraryMenu} />
+              <button type="button" className="te-button te-agent-button" disabled={!canEdit} aria-label="Recreate post" title="Recreate an Instagram post for one of your pages" onClick={() => setRecreateOpen(true)}><SparkleIcon size={18}/><span>Recreate post</span></button>
               <button className="te-button te-primary te-create-design" disabled={!canEdit || library.designs.length >= 150} onClick={openBlankDesign}><PlusIcon size={17}/><span>Create a design</span></button>
             </div>
           </header>
@@ -627,6 +662,8 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
       {organized && organize && <OrganizeDialog key={organized.id} item={organized} library={library} canEdit={canEdit} onClose={() => setOrganize(null)} onSave={metadata => updateMetadata(organize.kind, organize.id, metadata)}/>}
       {historyId && library.designs.find(item => item.id === historyId) && <DocumentVersions document={library.designs.find(item => item.id === historyId)!} canEdit={canEdit} onClose={() => setHistoryId(null)} onRestore={document => setLibrary(current => ({...current, designs: current.designs.map(item => item.id === document.id ? document : item)}))}/>}
       {agentAccessOpen && <AgentAccessDialog onClose={() => setAgentAccessOpen(false)} />}
+      <RecreatePost scope={libraryScope} open={recreateOpen} onOpenChange={setRecreateOpen} activeDesignId={activeId} inEditor={Boolean(active)} onOpenDesign={openRecreatedDesign}
+        blockedReason={!canEdit ? "This workspace can't be edited right now. Check the save message, then try again." : library.designs.length >= 150 ? "Your workspace has reached its 150-design limit. Remove an older project or empty Trash first." : undefined} />
       {conflictOpen && (
         <Modal
           title="Load the saved version?"

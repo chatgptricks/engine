@@ -94,7 +94,7 @@ function client(t, url, env = {}) {
   };
 }
 
-test("MCP process negotiates, discovers live schemas, and calls all seven authenticated tools", async (t) => {
+test("MCP process negotiates, discovers live schemas, and calls all authenticated slide tools", async (t) => {
   const schemas = {
     deckSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
     updateSchema: { type: "object", properties: { name: { type: "string" } } },
@@ -113,7 +113,7 @@ test("MCP process negotiates, discovers live schemas, and calls all seven authen
   assert.deepEqual(init.result.capabilities, { tools: {} });
   mcp.notify("notifications/initialized");
   const listed = await mcp.request("tools/list");
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_recreate_post", "engine_recreate_status"]);
   assert.deepEqual(listed.result.tools[4].inputSchema.properties.spec, schemas.deckSchema);
   assert.deepEqual(listed.result.tools[5].inputSchema.properties.changes, schemas.updateSchema);
   await mcp.call("engine_capabilities");
@@ -203,7 +203,7 @@ test("discovery falls back while unavailable and refreshes live schemas after re
   const mcp = client(t, api.url);
   assert.equal((await mcp.init("future-version")).result.protocolVersion, "2025-11-25");
   const tools = await mcp.request("tools/list");
-  assert.equal(tools.result.tools.length, 7);
+  assert.equal(tools.result.tools.length, 10);
   assert.match(tools.result.tools[4].inputSchema.properties.spec.description, /engine_capabilities/);
   const failure = await mcp.call("engine_capabilities");
   assert.equal(failure.result.isError, true);
@@ -270,4 +270,34 @@ test("startup rejects insecure or credential-bearing URLs and missing tokens wit
     assert.equal((await accepted.init()).result.protocolVersion, "2025-11-25");
     assert.equal((await accepted.close()).code, 0);
   }
+});
+
+test("Recreate tools reach their own endpoints with the agent token and validate input", async (t) => {
+  const jobId = "0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f";
+  const api = await server(t, (entry, response) => {
+    if (entry.path === "/api/agent/slides") return json(response, {});
+    if (entry.path === "/api/engine/page-profiles") return json(response, { profiles: [{ id: "chatgptricks", language: "en" }] });
+    if (entry.path === "/api/engine/recreate") return json(response, { jobId }, 202);
+    if (entry.path === `/api/engine/recreate?jobId=${jobId}`) return json(response, { jobId, status: "researching", message: "Researching" });
+    return json(response, { error: "unexpected" }, 404);
+  });
+  const mcp = client(t, api.url);
+  await mcp.init();
+  const profiles = await mcp.call("engine_list_page_profiles");
+  assert.equal(profiles.result.structuredContent.profiles[0].id, "chatgptricks");
+  const started = await mcp.call("engine_recreate_post", { profileId: "chatgptricks", url: "https://www.instagram.com/p/DfUR7MxoA62/" });
+  assert.equal(started.result.isError, false);
+  assert.equal(started.result.structuredContent.jobId, jobId);
+  const status = await mcp.call("engine_recreate_status", { jobId });
+  assert.equal(status.result.structuredContent.status, "researching");
+  const recreateCalls = api.calls.filter((call) => call.path !== "/api/agent/slides");
+  assert.deepEqual(recreateCalls.map((call) => call.path), ["/api/engine/page-profiles", "/api/engine/recreate", `/api/engine/recreate?jobId=${jobId}`]);
+  assert.deepEqual(recreateCalls[1].body, { profileId: "chatgptricks", url: "https://www.instagram.com/p/DfUR7MxoA62/" });
+  assert.equal(recreateCalls[0].body, null);
+  assert.ok(recreateCalls.every((call) => call.headers.authorization === `Bearer ${token}`));
+  assert.equal((await mcp.call("engine_recreate_post", { profileId: "chatgptricks" })).error.code, -32602);
+  assert.equal((await mcp.call("engine_recreate_post", { url: "https://www.instagram.com/p/x/" })).error.code, -32602);
+  assert.equal((await mcp.call("engine_recreate_post", { profileId: "chatgptricks", uploads: [{ dataUrl: "https://example.com/a.png" }] })).error.code, -32602);
+  assert.equal((await mcp.call("engine_recreate_status", { jobId: "../deck" })).error.code, -32602);
+  assert.equal(api.calls.filter((call) => call.path !== "/api/agent/slides").length, 3, "invalid calls never reach Engine");
 });
