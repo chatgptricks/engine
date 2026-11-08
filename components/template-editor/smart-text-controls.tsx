@@ -24,7 +24,8 @@ export function SmartTextControls({ scene, selectedIds, disabled = false, compac
   onChange: (scene: CanvasScene, group?: string) => void;
 }) {
   const measured = useSmartScene(scene);
-  const texts = scene.elements.filter(element => selectedIds.includes(element.id) && element.type === "text" && element.smartText);
+  // Lists fit their column by themselves; a line count means nothing for them.
+  const texts = scene.elements.filter(element => selectedIds.includes(element.id) && element.type === "text" && element.smartText && element.smartText.role !== "list");
   if (!texts.length) return null;
   const warnings = [...new Set(texts.flatMap(element => measured.texts.get(element.id)?.warning ?? []))];
   const editable = !disabled && texts.every(element => canEditElement(scene, element, "content"));

@@ -561,3 +561,44 @@ test("a rebuild never replaces a deck that changed after Engine saved it: it is 
   const third=await deckLib.saveDeck(ownerKey,await build(fixed.saved.id,"AI vs Jobs (rebuilt)"),{savedAt:fixed.saved.updatedAt});
   assert.equal(third.saved.name,"AI vs Jobs (rebuilt)","the name doesn't grow with each copy");
 });
+
+test("a Text + Media slide with nothing to show hides its empty frame and says so",async()=>{
+  const texts=[{slot:"title",text:"The real warning sign is for young workers"},{slot:"body",text:"Hiring of 22 to 25 year olds is down about 14%"}];
+  const {document,pages}=await deckLib.assembleDeck({profile:english,template,templates:model.BUILT_IN_TEMPLATES,name:"Young workers",caption:"",slides:[
+    {templatePage:MEDIA,texts,slide:0},
+    {templatePage:MEDIA,texts,photoBrief:"Photo of an empty office",slide:1},
+    {templatePage:FOLLOW,texts:[{slot:"cta",text:"TO STAY AHEAD"}],slide:2},
+  ]});
+  const frame=index=>document.pages[index].canvas.elements.find(element=>element.slot==="media");
+  assert.equal(frame(0).hidden,true); assert.equal(frame(1).hidden,true,"a brief alone doesn't fill the frame");
+  const on=index=>document.comments.filter(comment=>comment.pageId===document.pages[index].id).map(comment=>comment.text);
+  assert.ok(on(0).includes("No photo or chart for this slide yet. The empty photo frame is hidden; show it in Layers to add one"));
+  assert.ok(on(1).includes("Photo to add: Photo of an empty office. The empty photo frame is hidden; show it in Layers to add one"));
+  // The Follow photo is the page's backdrop, not a frame under copy: it stays for a person to fill.
+  assert.notEqual(document.pages[2].canvas.elements.find(element=>element.slot==="photo").hidden,true);
+  const checks=review.houseChecks(document,pages,catalog,english);
+  assert.ok(!checks.some(issue=>issue.slide<=2&&/placeholder/.test(issue.problem)),"a hidden frame isn't a placeholder on the slide");
+  assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}),"the deck passes Engine's library validation");
+});
+
+test("the designer gives the photo frame its photo's or chart's shape",async()=>{
+  const sharp=nativeRequire("sharp"),wide=await sharp({create:{width:1600,height:900,channels:3,background:"#336699"}}).jpeg().toBuffer();
+  const texts=[{slot:"title",text:"Claude can now use your computer"},{slot:"body",text:"It clicks and types to finish a task for you"}];
+  const typed={unit:"%",labels:["2022","2023","2024","2025"],series:[{name:"Openings",source:"typed",fred:null,values:[10,8,7,6],emphasis:true}],from:null,markerDate:null,indexToMarker:false,markerIndex:-1,markerLabel:"",markerIcon:"none",endLabel:"value",markers:[],band:null};
+  const requested=[],original=globalThis.fetch;
+  globalThis.fetch=async url=>{requested.push(String(url));return String(url).endsWith("wide.jpg")?new Response(wide,{headers:{"content-type":"image/jpeg"}}):new Response("missing",{status:404});};
+  try {
+    const {document}=await deckLib.assembleDeck({profile:english,template,templates:model.BUILT_IN_TEMPLATES,name:"Shapes",caption:"",slides:[
+      {templatePage:COVER,texts:[{slot:"cover-headline",text:"CLAUDE USES YOUR COMPUTER"}],photo:{url:"https://cdn.example.com/cover.jpg",alt:"A laptop"},slide:0},
+      {templatePage:MEDIA,texts,photo:{url:"https://cdn.example.com/wide.jpg",alt:"A screen recording"},slide:1},
+      {templatePage:MEDIA,texts,photo:{url:"https://cdn.example.com/gone.jpg",alt:"A photo that can't be read"},slide:2},
+      {templatePage:MEDIA,texts,chart:{chart:typed},slide:3},
+    ]});
+    const frame=(index,slot="media")=>document.pages[index].canvas.elements.find(element=>element.slot===slot);
+    assert.deepEqual([frame(1).intrinsicWidth,frame(1).intrinsicHeight],[1600,900],"the photo's own size, so the frame takes its shape");
+    assert.ok(Math.abs(frame(2).intrinsicWidth/frame(2).intrinsicHeight-frame(2).width/frame(2).height)<.01,"a photo that can't be measured keeps the frame's shape");
+    assert.equal(frame(3).fit,"contain"); assert.deepEqual([frame(3).intrinsicWidth,frame(3).intrinsicHeight],[2*Math.round(frame(3).width*3),2*Math.round(frame(3).height*3)],"a chart is drawn at twice the frame's size and says so");
+    assert.ok(!requested.includes("https://cdn.example.com/cover.jpg"),"the cover photo is cropped to its fixed box, so it isn't measured");
+    assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}),"the deck passes Engine's library validation");
+  } finally { globalThis.fetch=original; }
+});

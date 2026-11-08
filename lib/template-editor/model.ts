@@ -52,8 +52,12 @@ export type CanvasElementBase = {
   templateRole?: "brand" | "media";
   /** Follow another slot. Down (default): sit `gap` below it (or below its top
    * with `edge: "top"`) and stop at `bottom`. Up: sit `gap` above it and reach
-   * no higher than `bottom`. `resize` keeps the far edge and changes height. */
-  smartFlow?: { after: string; gap: number; bottom: number; edge?: "top"; resize?: boolean; direction?: "up" };
+   * no higher than `bottom`. `resize` keeps the far edge and changes height.
+   * `media` (an image following down): the layer takes its picture's shape
+   * instead, as large as fits across `media.x` to `media.x + media.width` and
+   * down to `bottom`, centred across that span. Without the picture's size it
+   * fills the span and height like `resize`. */
+  smartFlow?: { after: string; gap: number; bottom: number; edge?: "top"; resize?: boolean; direction?: "up"; media?: { x: number; width: number } };
   /** Author's choice of how this layer behaves in copies of a template; inferred when absent. */
   layoutRole?: "fixed" | "text" | "media" | "free";
   componentId?: string;
@@ -63,6 +67,7 @@ export type CanvasElementBase = {
   /** Axis-aligned crop in scene coordinates, independent of layer rotation. */
   clipBounds?: { x: number; y: number; width: number; height: number };
 };
+export type SmartTextRole = "cover" | "heading" | "body" | "list";
 export type TextElement = CanvasElementBase & {
   type: "text";
   text: string;
@@ -82,13 +87,26 @@ export type TextElement = CanvasElementBase & {
   autoFitFontSize?: number;
   /** Copy fitting. Automatic fits first shrink type to `softMinFontSize` inside
    * `baseHeight`, then grow towards `maxHeight` (moving what follows), then
-   * shrink to `minFontSize`. `anchorBottom` keeps the bottom edge fixed. */
-  smartText?: { role: "cover" | "heading" | "body"; lines: 0 | 2 | 3 | 4; minFontSize: number; maxFontSize: number; maxHeight: number; baseHeight?: number; softMinFontSize?: number; anchorBottom?: number };
+   * shrink to `minFontSize`. `anchorBottom` keeps the bottom edge fixed and
+   * `anchorTop` the top edge (copy that starts a page's flow).
+   *
+   * A `list` (one item per paragraph) fills its box: short lists grow their
+   * type up to `maxFontSize` (wrapping items only when single lines would
+   * leave a fifth of the box empty), then open the gaps between items from
+   * `paragraphSpacing` up to `maxParagraphSpacing`, scaled with the type; long
+   * lists shrink type and gaps together down to `minFontSize`. Layers sharing
+   * a `group` (a page's list columns, their headings) share one size, gap and
+   * height, so their rows line up.
+   * `guideHeight` is what agents' copy-length guide measures against when the
+   * box may stretch past the copy the slot is written for. */
+  smartText?: { role: SmartTextRole; lines: 0 | 2 | 3 | 4; minFontSize: number; maxFontSize: number; maxHeight: number; baseHeight?: number; softMinFontSize?: number; anchorBottom?: number; anchorTop?: number; group?: string; paragraphSpacing?: number; maxParagraphSpacing?: number; guideHeight?: number };
   verticalAlign?: "top" | "middle" | "bottom";
   padding?: number;
   paragraphSpacing?: number;
   strikethrough?: boolean;
   listStyle?: "none" | "bullet" | "number";
+  /** A wrapped list item continues under its own text instead of under its marker. */
+  hangingIndent?: boolean;
   textStyleId?: string;
   textureFill?: ShapeImageFill;
   wordTextures?: (ShapeImageFill & { id: string })[];
@@ -1300,7 +1318,7 @@ export function releaseSmartLayout(scene: CanvasScene): CanvasScene {
     if (released.type === "text" && released.smartText) {
       const rule = released.smartText;
       delete released.smartText; delete released.autoFitFontSize;
-      Object.assign(released, { textMode: "auto-fit", autoFitMinFontSize: Math.min(rule.minFontSize, released.fontSize), autoFitMaxFontSize: released.fontSize });
+      Object.assign(released, { textMode: "auto-fit", autoFitMinFontSize: Math.min(rule.minFontSize, released.fontSize), autoFitMaxFontSize: released.fontSize, ...(rule.paragraphSpacing !== undefined ? { paragraphSpacing: rule.paragraphSpacing } : {}) });
     }
     return released as CanvasElement;
   }) };
@@ -1784,7 +1802,9 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
   if (value.smartFlow !== undefined) {
     const flow = value.smartFlow;
     if (!object(flow) || !string(flow.after, 200) || !flow.after || !numberIn(flow.gap, 0, 1000) || !numberIn(flow.bottom, -10000, 10000) || !optional(flow, "edge", choice(["top"])) || !optional(flow, "resize", boolean) || !optional(flow, "direction", choice(["up"]))) return null;
-    result.smartFlow = { after: flow.after, gap: flow.gap, bottom: flow.bottom, ...(flow.edge === "top" ? { edge: "top" } : {}), ...(typeof flow.resize === "boolean" ? { resize: flow.resize } : {}), ...(flow.direction === "up" ? { direction: "up" } : {}) };
+    const media = flow.media;
+    if (media !== undefined && (!object(media) || !numberIn(media.x, -10000, 10000) || !numberIn(media.width, 1, 10000))) return null;
+    result.smartFlow = { after: flow.after, gap: flow.gap, bottom: flow.bottom, ...(flow.edge === "top" ? { edge: "top" } : {}), ...(typeof flow.resize === "boolean" ? { resize: flow.resize } : {}), ...(flow.direction === "up" ? { direction: "up" } : {}), ...(media ? { media: { x: media.x as number, width: media.width as number } } : {}) };
   }
   for (const key of ["groupId", "componentId", "componentInstanceId", "componentSourceId", "colorRoleId"] as const) {
     if (!optional(value, key, identity)) return null;
@@ -1830,14 +1850,14 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
 
 function parseTextExtensions(value: Record<string, unknown>): Partial<TextElement> | null {
   if (!["autoFitMinFontSize","autoFitMaxFontSize","autoFitFontSize"].every(key=>optional(value,key,candidate=>numberIn(candidate,1,500))) || value.autoFitMinFontSize!==undefined && value.autoFitMaxFontSize!==undefined && Number(value.autoFitMinFontSize)>Number(value.autoFitMaxFontSize)) return null;
-  if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "textStyleId", identity)) return null;
+  if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "hangingIndent", boolean) || !optional(value, "textStyleId", identity)) return null;
   const result: Partial<TextElement> = {};
   if (value.smartText !== undefined) {
     const smart = value.smartText;
-    if (!object(smart) || !choice(["cover", "heading", "body"])(smart.role) || ![0, 2, 3, 4].includes(Number(smart.lines)) || typeof smart.lines !== "number" || !numberIn(smart.minFontSize, 1, 500) || !numberIn(smart.maxFontSize, smart.minFontSize as number, 500) || !numberIn(smart.maxHeight, 1, 10000) || !optional(smart, "baseHeight", candidate => numberIn(candidate, 1, 10000)) || !optional(smart, "softMinFontSize", candidate => numberIn(candidate, 1, 500)) || !optional(smart, "anchorBottom", candidate => numberIn(candidate, -10000, 10000))) return null;
-    result.smartText = { role: smart.role as "cover" | "heading" | "body", lines: smart.lines as 0 | 2 | 3 | 4, minFontSize: smart.minFontSize, maxFontSize: smart.maxFontSize, maxHeight: smart.maxHeight, ...(smart.baseHeight !== undefined ? { baseHeight: smart.baseHeight as number } : {}), ...(smart.softMinFontSize !== undefined ? { softMinFontSize: smart.softMinFontSize as number } : {}), ...(smart.anchorBottom !== undefined ? { anchorBottom: smart.anchorBottom as number } : {}) };
+    if (!object(smart) || !choice(["cover", "heading", "body", "list"])(smart.role) || ![0, 2, 3, 4].includes(Number(smart.lines)) || typeof smart.lines !== "number" || !numberIn(smart.minFontSize, 1, 500) || !numberIn(smart.maxFontSize, smart.minFontSize as number, 500) || !numberIn(smart.maxHeight, 1, 10000) || !optional(smart, "baseHeight", candidate => numberIn(candidate, 1, 10000)) || !optional(smart, "softMinFontSize", candidate => numberIn(candidate, 1, 500)) || !optional(smart, "anchorBottom", candidate => numberIn(candidate, -10000, 10000)) || !optional(smart, "anchorTop", candidate => numberIn(candidate, -10000, 10000)) || !optional(smart, "group", candidate => typeof candidate === "string" && /^[\w-]{1,40}$/.test(candidate)) || !optional(smart, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(smart, "maxParagraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(smart, "guideHeight", candidate => numberIn(candidate, 1, 10000))) return null;
+    result.smartText = { role: smart.role as SmartTextRole, lines: smart.lines as 0 | 2 | 3 | 4, minFontSize: smart.minFontSize, maxFontSize: smart.maxFontSize, maxHeight: smart.maxHeight, ...(smart.baseHeight !== undefined ? { baseHeight: smart.baseHeight as number } : {}), ...(smart.softMinFontSize !== undefined ? { softMinFontSize: smart.softMinFontSize as number } : {}), ...(smart.anchorBottom !== undefined ? { anchorBottom: smart.anchorBottom as number } : {}), ...(smart.anchorTop !== undefined ? { anchorTop: smart.anchorTop as number } : {}), ...(smart.group !== undefined ? { group: smart.group as string } : {}), ...(smart.paragraphSpacing !== undefined ? { paragraphSpacing: smart.paragraphSpacing as number } : {}), ...(smart.maxParagraphSpacing !== undefined ? { maxParagraphSpacing: smart.maxParagraphSpacing as number } : {}), ...(smart.guideHeight !== undefined ? { guideHeight: smart.guideHeight as number } : {}) };
   }
-  for (const key of ["textMode", "verticalAlign", "listStyle", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  for (const key of ["textMode", "verticalAlign", "listStyle", "hangingIndent", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
   if (value.richText !== undefined) {
     const sanitized = sanitizeRichText(value.richText);
     if (sanitized !== undefined) result.richText = sanitized;
@@ -2664,24 +2684,38 @@ function chatgptricksTemplate(): DesignTemplate {
     gradient: { type: "linear", angle: 90, stops: [{ color: from, position: 0 }, { color: to, position: 100 }] }, ...fixed(),
     smartFlow: { after: "cover-headline", gap: px(63), bottom: px(90), direction: "up" },
   });
-  // Content pages: padding 90 top, 88 right and bottom, 72 left; title, body 23 px below, 64 px to the content.
+  // Content pages follow the style guide: 72 px text margins (936 px of text), the title at 90 in
+  // 56 px bold (line height 1.04), the body 26 px under it in 42.67 px (1.115), about 64 px to the
+  // media, and the source line at the bottom margin. The boxes are where copy starts, not where it
+  // must stop: the title takes up to three lines and the body as many as it needs at full size, and
+  // what follows makes room. The header ends by headerBottom, so a photo or chart under it keeps at
+  // least 600 px. Agents are still asked for two title lines and two body lines (guideHeight).
+  const titleLine = 56 * 1.04, bodyLine = 42.67 * 1.115, bodyTop = 90 + titleLine + 26, contentTop = bodyTop + 2 * bodyLine + 64;
+  const headerBottom = 1252 - 64 - 600;
   const header = (key: string, title: string, body: string): TextElement[] => [
-    { type: "text", ...at(`${key}-title`, "Title", [72, 90, 920, 62.72]), text: title, ...typeset("sfpro", 56, 700, green, 1.12, -.022), ...textSlot("title"), smartText: fit("heading", 0, 56, 42, 125.44, 62.72) },
-    { type: "text", ...at(`${key}-body`, "Body", [72, 175.72, 920, 95.4]), text: body, ...typeset("sfpro", 43, 400, white, 47.7 / 43, -.012), ...textSlot("body"), smartFlow: { after: "title", gap: px(23), bottom: px(271.12 + 62.72) }, smartText: fit("body", 0, 43, 36, 95.4, 95.4) },
+    { type: "text", ...at(`${key}-title`, "Title", [72, 90, 936, titleLine]), text: title, ...typeset("sfpro", 56, 700, green, 1.04, -1.2 / 56), ...textSlot("title"), smartText: { ...fit("heading", 0, 56, 56, 3 * titleLine, titleLine), anchorTop: px(90), guideHeight: px(2 * titleLine) + .01 } },
+    { type: "text", ...at(`${key}-body`, "Body", [72, bodyTop, 936, 2 * bodyLine]), text: body, ...typeset("sfpro", 42.67, 400, white, 1.115, -.35 / 42.67), ...textSlot("body"), smartFlow: { after: "title", gap: px(26), bottom: px(headerBottom) }, smartText: { ...fit("body", 0, 42.67, 36, headerBottom - bodyTop, 2 * bodyLine), guideHeight: px(2 * bodyLine) + .01 } },
   ];
   // The source line is pinned to the bottom margin and grows upwards to two lines.
   const source = (key: string, text: string, lines: 1 | 2): TextElement => ({
-    type: "text", ...at(`${key}-source`, "Source", [72, 1352 - 30 * lines, 920, 30 * lines]), text, ...typeset("sfpro", 24, 400, dim, 1.25, 0), ...textSlot("source"), verticalAlign: "bottom", smartText: fit("body", 0, 24, 20, 60, 60, 24, 1352),
+    type: "text", ...at(`${key}-source`, "Source", [72, 1352 - 30 * lines, 936, 30 * lines]), text, ...typeset("sfpro", 24, 400, dim, 1.25, 0), ...textSlot("source"), verticalAlign: "bottom", smartText: fit("body", 0, 24, 20, 60, 60, 24, 1352),
   });
+  // Two 448 px columns 40 px apart across the 936 px of text.
   const listHeading = (side: "left" | "right", x: number, word: string): TextElement => ({
-    type: "text", ...at(`list-${side}-heading`, `${side === "left" ? "Left" : "Right"} column heading`, [x, 335.12, 440, 55.2]), text: `${word} From AI`, richText: `<span style="color:${green}; font-weight:700">${word}</span> From AI`,
-    ...typeset("sfpro", 46, 400, white, 1.2, -.02), ...textSlot(`list-${side}-heading`), smartFlow: { after: "body", gap: px(64), bottom: px(335.12 + 62.72 + 110.4) }, smartText: fit("heading", 0, 46, 36, 110.4, 55.2, 46 * .9),
+    type: "text", ...at(`list-${side}-heading`, `${side === "left" ? "Left" : "Right"} column heading`, [x, contentTop, 448, 55.2]), text: `${word} From AI`, richText: `<span style="color:${green}; font-weight:700">${word}</span> From AI`,
+    ...typeset("sfpro", 46, 400, white, 1.2, -.02), ...textSlot(`list-${side}-heading`), smartFlow: { after: "body", gap: px(64), bottom: px(headerBottom + 64 + 110.4) }, smartText: { ...fit("heading", 0, 46, 36, 110.4, 55.2, 46 * .9), group: "list-headings" },
   });
-  // Plain auto-fit bullet lists (one item per line): smart text would bullet every wrapped line.
+  // Bullet lists, one item per line, wrapped under their own text. The two columns share one
+  // size and gap so their rows line up. A short list fills its column down to 1252: type grows
+  // to 43 px, about the body's size (wrapping items only when single lines would leave a fifth of
+  // the column empty and every line keeps two words), then gaps open to about twice the type size;
+  // whatever is still left centres the page's copy between 90 and 1252 (balanceShortCopy in
+  // smart-text.ts). A long list shrinks to 26 px.
   const listItems = (side: "left" | "right", x: number, items: string[]): TextElement => ({
-    type: "text", ...at(`list-${side}-items`, `${side === "left" ? "Left" : "Right"} column items`, [x, 426.32, 440, 825.68]), text: items.join("\n"), ...typeset("sfpro", 34, 400, white, 42 / 34, -.012),
-    slot: `list-${side}-items`, layoutRole: "free", textMode: "auto-fit", autoFitMinFontSize: px(26), autoFitMaxFontSize: px(34), verticalAlign: "top", listStyle: "bullet", paragraphSpacing: px(28), protected: ["position", "delete"],
+    type: "text", ...at(`list-${side}-items`, `${side === "left" ? "Left" : "Right"} column items`, [x, contentTop + 55.2 + 36, 448, 1252 - contentTop - 55.2 - 36]), text: items.join("\n"), ...typeset("sfpro", 34, 400, white, 42 / 34, -.012),
+    ...textSlot(`list-${side}-items`), listStyle: "bullet", hangingIndent: true, paragraphSpacing: px(28),
     smartFlow: { after: `list-${side}-heading`, gap: px(36), bottom: px(1252), resize: true },
+    smartText: { role: "list", lines: 0, minFontSize: px(26), maxFontSize: px(43), maxHeight: px(1252 - contentTop - 55.2 - 36) + .01, baseHeight: px(1252 - contentTop - 55.2 - 36) + .01, softMinFontSize: px(34), group: "list-items", paragraphSpacing: px(28), maxParagraphSpacing: px(70) },
   });
   // Reaction pages: real posts from X as native cards under a one-line title, so a card starts 64 px under it.
   const shortTitle = (key: string, title: string): TextElement => ({ type: "text", ...at(`${key}-title`, "Title", [72, 90, 920, 62.72]), text: title, ...typeset("sfpro", 56, 700, green, 1.12, -.022), ...textSlot("title"), smartText: fit("heading", 0, 56, 42, 62.72, 62.72) });
@@ -2754,15 +2788,18 @@ function chatgptricksTemplate(): DesignTemplate {
       ], 68),
       sheet("media", "Text + Media", [
         ...header("media", "AI vs Jobs", "Since ChatGPT came out, stocks went up\nand job openings went down"),
-        { ...photo("media-media", "Photo or chart", "media", [72, 335.12, 920, 916.88], [460, 458.5], "Chart or photo for this point"), smartFlow: { after: "body", gap: px(64), bottom: px(1252), resize: true } },
+        // The frame takes its photo's or chart's shape (smartFlow.media): a landscape photo runs edge to
+        // edge, a portrait one is centred, and the title, body and media are centred together between
+        // 90 and 1252. The placeholder has the text column's shape, so it fills the column under sample copy.
+        { ...photo("media-media", "Photo or chart", "media", [72, contentTop, 936, 1252 - contentTop], [468, (1252 - contentTop) / 2], "Chart or photo for this point"), smartFlow: { after: "body", gap: px(64), bottom: px(1252), resize: true, media: { x: 0, width: px(1080) } } },
         source("media", "Source: U.S. BLS job openings (JOLTS) and S&P 500 monthly average, Jan 2003 to Sep 2026. Both set to 100 in Nov 2022, when ChatGPT launched", 2),
       ]),
       sheet("list", "List", [
         ...header("list", "The jobs AI can’t replace", "Anthropic looked at how people use AI at work. Office jobs are most at risk"),
         listHeading("left", 72, "Risk"),
         listItems("left", 72, ["Management", "Business & Finance", "Computer & Math", "Architecture & Engineering", "Life & Social Sciences", "Legal", "Education & Library", "Arts & Media", "Office & Administrative", "Sales", "Social Services"]),
-        listHeading("right", 552, "Safe"),
-        listItems("right", 552, ["Installation & Repair", "Construction", "Agriculture", "Transportation", "Production", "Protective Service", "Food & Serving", "Grounds Maintenance", "Personal Care", "Healthcare Support", "Healthcare Practitioners"]),
+        listHeading("right", 560, "Safe"),
+        listItems("right", 560, ["Installation & Repair", "Construction", "Agriculture", "Transportation", "Production", "Protective Service", "Food & Serving", "Grounds Maintenance", "Personal Care", "Healthcare Support", "Healthcare Practitioners"]),
         source("list", "Source: Anthropic, [study name and date]", 1),
       ]),
       sheet("follow", "Follow", [

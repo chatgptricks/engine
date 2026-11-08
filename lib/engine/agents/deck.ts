@@ -10,6 +10,7 @@ import { AgentDeckValidationError, createAgentDeck } from "../../template-editor
 import { checkLibrarySaveBudget } from "../../template-editor/library-budget";
 import { formatDimensions, parseLibrary, type DesignComment, type DesignDocument, type DesignTemplate } from "../../template-editor/model";
 import { getEditorLibrary, LibraryConflictError, saveEditorLibrary } from "../../template-editor/persistence";
+import { imageSize } from "../image-size";
 import type { PageProfile } from "../page-profiles";
 import { chartAltText, chartPngDataUrl } from "../recreate-chart";
 import type { ChartData } from "../recreate-data";
@@ -146,6 +147,16 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
   const { width } = formatDimensions(document), pixels = width / 360, now = new Date().toISOString(), comments: DesignComment[] = [];
   const comment = (text: string, pageId = document.pages[0].id) => comments.push({ id: randomUUID(), pageId, text: text.slice(0, 2000), createdAt: now });
   if (input.credit) comment(input.credit);
+  const frameOf = (index: number) => {
+    const slot = prepared[index].photoSlot;
+    return slot ? document.pages[index].canvas?.elements.find(element => element.slot === slot) : undefined;
+  };
+  // A frame that takes its photo's shape (smartFlow.media) needs the photo's size; one that
+  // can't be measured keeps the frame's own shape and crops the photo into it, as before.
+  const photoSizes = await Promise.all(prepared.map((item, index) => {
+    const frame = frameOf(index);
+    return item.photo && frame?.type === "image" && frame.smartFlow?.media ? imageSize(item.photo.url, input.signal) : null;
+  }));
   for (const [index, item] of prepared.entries()) {
     const page = document.pages[index], elements = page.canvas?.elements ?? [];
     const find = (slot: string) => elements.find(element => element.slot === slot);
@@ -154,26 +165,39 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
       const element = find(entry.slot);
       if (element?.type === "text") element.richText = entry.richText;
     }
-    const frame = item.photoSlot ? find(item.photoSlot) : undefined;
+    const frame = frameOf(index);
+    let filled = false;
     if (item.slide.chart && frame) {
       try {
         const chart = await resolveChart(item.slide.chart.chart, input.chartData ?? new Map(), input.signal);
         const background = page.canvas?.background;
-        const src = await chartPngDataUrl(chart, frame.width * pixels, frame.height * pixels, background && background.startsWith("#") ? { background } : {});
+        // The chart is drawn at the frame's size (a frame that takes its media's shape keeps the chart's).
+        const [chartWidth, chartHeight] = [frame.width * pixels, frame.height * pixels].map(value => Math.max(200, Math.round(value)));
+        const src = await chartPngDataUrl(chart, chartWidth, chartHeight, background && background.startsWith("#") ? { background } : {});
         const alt = chartAltText(chart, chartSources(item.slide.chart.chart));
-        if (frame.type === "image") { frame.src = src; frame.fit = "contain"; frame.publicAlt = alt; }
+        if (frame.type === "image") { frame.src = src; frame.fit = "contain"; frame.publicAlt = alt; frame.intrinsicWidth = 2 * chartWidth; frame.intrinsicHeight = 2 * chartHeight; }
         else if (frame.type === "shape") frame.imageFill = { ...(frame.imageFill ?? { objectFit: "contain", cropX: 50, cropY: 50 }), src, objectFit: "contain" };
+        filled = true;
       } catch (error) {
         if (input.signal?.aborted) throw error;
         notes.push(`Slide ${index + 1}: the chart couldn't be drawn (${message(error)}); add it by hand.`);
       }
     } else if (item.photo && frame) {
-      if (frame.type === "image") frame.publicAlt = item.photo.alt.slice(0, 2000);
+      const size = photoSizes[index];
+      if (frame.type === "image") {
+        frame.publicAlt = item.photo.alt.slice(0, 2000);
+        if (size) { frame.intrinsicWidth = size.width; frame.intrinsicHeight = size.height; }
+      }
       const credit = [item.photo.credit, item.photo.sourceUrl].filter(Boolean).join(", ");
       if (credit) comment(`Photo: ${credit}`, page.id);
-    } else if (item.slide.photoBrief?.trim() && frame) {
-      comment(`Photo to add: ${item.slide.photoBrief.trim()}`, page.id);
+      filled = true;
     }
+    // A frame that fills the space under the copy would only show the grey placeholder: it is
+    // hidden, so the copy is centred on the page instead. Showing the layer again brings it back.
+    const hidden = Boolean(frame && !filled && frame.smartFlow?.resize);
+    if (hidden) frame!.hidden = true;
+    const brief = item.slide.photoBrief?.trim();
+    if (frame && !filled && (brief || hidden)) comment(`${brief ? `Photo to add: ${brief}` : "No photo or chart for this slide yet"}${hidden ? ". The empty photo frame is hidden; show it in Layers to add one" : ""}`, page.id);
     if (item.posts.length) comment(`Real posts from X, word for word:\n${item.posts.map(post => `@${post.author.handle}: ${post.url}`).join("\n")}`, page.id);
   }
   // The template's fixed lines are English; a page in another language has its own.
