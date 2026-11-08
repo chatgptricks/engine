@@ -45,7 +45,7 @@ Tokens belong to the workspace that created them. They grant the agent the API's
 | `engine_export_deck` | Return `{filename, package, editorUrl}` for an editable `.engine.json` file |
 | `engine_list_page_profiles` | List the pages Engine recreates posts for: language, template, voice, house rules, Follow line |
 | `engine_playbook` | Read the Recreate team's playbook: the carousel shape, the house rules, and one role card per stage with its output schema |
-| `engine_recreate_post` | Start recreating an Instagram post (link or slide screenshots) for one page, in `checkpoint` or `autopilot` mode; returns a `postId` and `jobId` |
+| `engine_recreate_post` | Start recreating an Instagram post (link or slide screenshots) for one page, as an `exact` copy or a full recreation in `checkpoint` or `autopilot` mode; returns a `postId` and `jobId` |
 | `engine_recreate_status` | Read a recreation's progress: each stage's status and summary, the checkpoint while paused, and the deck, fact checks and critics' review when done |
 | `engine_recreate_approve` | Approve a paused recreation: an optional edited outline, plus a hook option or a hook of your own |
 | `engine_recreate_rerun_stage` | Rerun one stage, with optional instructions, and every stage after it |
@@ -200,9 +200,14 @@ Image layers accept a supported image `src` and optional public alt text. An age
 
 ## Recreate a post for one of our pages
 
-Recreate turns someone else's Instagram post into a native, editable carousel in one page's template, voice and language (English or Spanish). The finished post recreates the original faithfully, then answers the first questions a reader asks, shows real reactions from X, and ends with the page's Follow slide.
+Recreate turns someone else's Instagram post into a native, editable carousel in one page's template, voice and language (English or Spanish). It has two kinds of run:
 
-A team of agents does the work on the server, each with one job. Every stage saves its result into the run's **post file**, so a run can pause for a person, survive a server restart, or redo a single stage:
+- **Exact copy** (`mode: "exact"`) rebuilds the post as it is: the same slides in the same order (one slide stays one slide) with the same words. If the page's language differs from the original's, the words are translated faithfully, with no rewording. Nothing is added: no research, hook options, checkpoint, reader questions, reactions from X or extra Follow slide. Only the look changes: the template's fonts and colors, the cover headline in capitals, and no final periods. The original page's own name, handle, logo, swipe prompts and slide numbers are left out, and its "follow us" slide becomes the page's Follow slide, with the page's own first line and a second line kept within the page's limit. Photos, charts and screenshots are cut from the original slides. The caption is the original's, minus the lines that promote its creator.
+- **Full recreation** (`checkpoint` or `autopilot`) recreates the original faithfully, then answers the first questions a reader asks, shows real reactions from X, and ends with the page's Follow slide.
+
+An exact copy has three stages: `transcript` (one agent reads the original slides and copies their words into the template's pages, and marks each picture's box on the slide; Engine then fits each box to the picture's edges, leaving a chart a little room so its labels stay whole), `deck` (Engine cuts the pictures out of the original and builds the deck) and `review` (Engine's checks, then a critic compares the rendered slides with the original; a must-fix problem goes back to `transcript` once). It takes about 1–3 minutes.
+
+For a full recreation, a team of agents does the work on the server, each with one job. Every stage saves its result into the run's **post file**, so a run can pause for a person, survive a server restart, or redo a single stage:
 
 | Stage | Who | What it produces |
 | --- | --- | --- |
@@ -223,6 +228,7 @@ Call `engine_list_page_profiles` for the ids, then `engine_recreate_post`. Inste
 
 - **`checkpoint` mode** pauses with `status: "paused"` once the plan and the hook options are ready. The status then includes `checkpoint`: the outline, the hook options, the real reactions and the charts. Approve it with `engine_recreate_approve`: pass `option` (an index into `checkpoint.hooks.options`) or your own `hookText`, and optionally an edited `outline` in the same shape (reorder, cut or add slides; a reaction slide lists its posts in `reactionIds`).
 - **`autopilot` mode** (the default) approves the plan as written with the first hook option that fits the cover's headline (the shortest when none fits) and runs to the end.
+- **`exact` mode** never pauses and takes no `xPosts`. Approving, adding posts and the full recreation's stages don't apply to it; rerun or hand in `transcript`, `deck` or `review` instead.
 - When `status` is `done`, `result` has the `deckId`, `editorUrl`, fact checks, notes and the critics' `review` with any problems still open. Review the deck with `engine_get_deck` and send a person the `editorUrl`.
 - When `status` is `error`, `resumable` is true and `engine_recreate_resume` continues from the last finished stage.
 

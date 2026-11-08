@@ -19,9 +19,10 @@ export type PageProfile = {
   followCta: {line1: string; maxChars: number};
   swipeText: string;
 };
-export type RecreateMode = "checkpoint" | "autopilot";
+/** exact rebuilds the post as it is; checkpoint and autopilot run the full team (checkpoint pauses for your approval). */
+export type RecreateMode = "checkpoint" | "autopilot" | "exact";
 export type RecreateStatus = "queued" | "importing" | "researching" | "planning" | "paused" | "writing" | "building" | "reviewing" | "done" | "error";
-export type StageName = "brief" | "facts" | "data" | "reactions" | "visuals" | "outline" | "hooks" | "approval" | "copy" | "charts" | "images" | "deck" | "review";
+export type StageName = "transcript" | "brief" | "facts" | "data" | "reactions" | "visuals" | "outline" | "hooks" | "approval" | "copy" | "charts" | "images" | "deck" | "review";
 export type StageStatus = "pending" | "running" | "done" | "skipped" | "error";
 /** One agent's (or Engine's) part of the run. */
 export type StageView = {stage: StageName; title: string; by: "agent" | "code" | "human"; status: StageStatus; actor?: string; model?: string; round: number; summary: string};
@@ -82,8 +83,10 @@ export type RecreateRequest = {url?: string; uploads?: RecreateUpload[]; caption
 /** A person's go-ahead at the checkpoint. The outline is sent only when they changed it. */
 export type ApproveRequest = {outline?: {slides: OutlineSlide[]; why: string}; hook: {option: number} | {text: string}; notes?: string};
 export type RecreateAction = ({action: "approve"} & ApproveRequest) | {action: "add_posts"; xPosts: string[]} | {action: "resume"} | {action: "stop"};
-/** Text fields of the form, kept with a running job so a failed run can be edited and retried after a reload. */
-export type RecreateDraftText = {mode: "link" | "screenshots"; url: string; caption: string; notes: string; profileId: string; xPosts?: string};
+/** Text fields of the form, kept with a running job so a failed run can be edited and retried after a reload.
+ * `mode` is where the post comes from; `kind` is what to make of it: an exact copy or a full recreation. */
+export type RecreateDraftText = {mode: "link" | "screenshots"; url: string; caption: string; notes: string; profileId: string; xPosts?: string; kind?: RecreateKind};
+export type RecreateKind = "exact" | "full";
 export type TrackedRecreate = {
   jobId: string;
   startedAt: number;
@@ -100,6 +103,12 @@ export const RECREATE_LANES: {title: string; stages: StageName[]}[] = [
   {title: "Make", stages: ["copy", "charts", "images"]},
   {title: "Finish", stages: ["deck", "review"]},
 ];
+/** An exact copy's stages: the original read word for word, then the deck and its check. */
+export const EXACT_LANES: {title: string; stages: StageName[]}[] = [
+  {title: "Copy", stages: ["transcript"]},
+  {title: "Finish", stages: ["deck", "review"]},
+];
+export const lanesFor = (mode?: RecreateMode) => mode === "exact" ? EXACT_LANES : RECREATE_LANES;
 export const RECREATE_STATUS_LABELS: Record<RecreateStatus, string> = {
   queued: "Starting", importing: "Importing the post", researching: "Researching", planning: "Planning the slides",
   paused: "Waiting for your review", writing: "Writing the slides", building: "Building the post", reviewing: "Reviewing the slides",
@@ -133,7 +142,7 @@ const MAX_SOURCE_BYTES = 40 * 1024 * 1024;
 const ENDPOINT = "/api/engine/recreate";
 const PROFILES_ENDPOINT = "/api/engine/page-profiles";
 const STATUSES: RecreateStatus[] = ["queued", "importing", "researching", "planning", "paused", "writing", "building", "reviewing", "done", "error"];
-const STAGE_NAMES: StageName[] = RECREATE_LANES.flatMap(lane => lane.stages);
+const STAGE_NAMES: StageName[] = [...new Set([...EXACT_LANES, ...RECREATE_LANES].flatMap(lane => lane.stages))];
 const STAGE_STATUSES: StageStatus[] = ["pending", "running", "done", "skipped", "error"];
 const VERDICTS: FactCheck["verdict"][] = ["confirmed", "corrected", "unverified"];
 const SEVERITIES: ReviewIssue["severity"][] = ["must_fix", "should_fix", "note"];
@@ -315,7 +324,7 @@ function parseJob(body: unknown, fallbackJobId = ""): RecreateJob {
   return {
     jobId,
     ...(text(body.postId, 200) ? {postId: text(body.postId, 200)} : {}),
-    mode: body.mode === "checkpoint" ? "checkpoint" : "autopilot",
+    mode: body.mode === "checkpoint" || body.mode === "exact" ? body.mode : "autopilot",
     status: body.status as RecreateStatus,
     message: text(body.message, 600),
     startedAt: time(body.startedAt),
@@ -427,7 +436,7 @@ function readTracked(key: string): TrackedRecreate | null {
       source: text(value.source, 300),
       profileName: text(value.profileName, 200),
       opened: value.opened === true,
-      draft: {mode: draft.mode === "screenshots" ? "screenshots" : "link", url: text(draft.url, 2000), caption: text(draft.caption, 5000), notes: text(draft.notes, 2000), profileId: text(draft.profileId, 200), xPosts: text(draft.xPosts, 4000)},
+      draft: {mode: draft.mode === "screenshots" ? "screenshots" : "link", url: text(draft.url, 2000), caption: text(draft.caption, 5000), notes: text(draft.notes, 2000), profileId: text(draft.profileId, 200), xPosts: text(draft.xPosts, 4000), ...(draft.kind === "exact" || draft.kind === "full" ? {kind: draft.kind} : {})},
     };
   } catch { return null; }
 }

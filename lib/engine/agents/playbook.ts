@@ -43,7 +43,30 @@ export const HOUSE_RULES = [
   "Only real posts go on reaction cards, word for word, with their links kept",
 ];
 
+/** What an exact copy keeps, and the little the template still changes. They replace the house rules for that mode. */
+export const EXACT_RULES = [
+  "Exact copy: the same slides in the same order with the same words. One slide stays one slide. Nothing is added, cut, merged, reworded or fact-checked, even where it could be better",
+  "When the page's language differs from the original's, translate faithfully, sentence by sentence, with no rewording beyond what the language needs. Otherwise copy every word as it is, with its spelling, numbers and emoji",
+  "Only the look changes: the template's fonts, colors and layout. The cover headline is set in capitals and no text box ends with a period. [[Double brackets]] mark only words the original itself sets apart with color or weight",
+  "The original page's own branding stays out: its name, handle, logo, watermark, swipe prompts and slide numbers. Our template adds ours",
+];
+
 const CARDS: RoleCard[] = [
+  {
+    stage: "transcript", title: "Exact copy", by: "transcript",
+    job: "Read the original post slide by slide and lay each slide out on the closest page of our template, word for word, with a box around the photo, chart or screenshot to cut from it.",
+    rules: [
+      "One entry per original slide, in the original's order. Choose the page whose layout matches the slide: a photo filling the slide with a headline on it is the cover; a title or text with a picture, or a picture alone, is the text and media page; a list is the list page; a slide asking readers to follow the original creator is our Follow page. A chart, screenshot or meme never goes on the cover, whose dark fade would hide its labels, even on the first slide",
+      "Put each piece of text in the slot that plays the same part: headline, title, body, list items, source line. When the page has fewer slots, join pieces in the closest one with a line break. Leave a slot empty when the original has nothing for it",
+      "Write each sentence or phrase on one line, wherever the original's lines happen to wrap. Start a new line only where the original starts a new sentence, list item or paragraph",
+      "Our Follow page's first line is fixed: write only its second line, within the page's limit, from the original's words when they fit",
+      "The media box holds the whole picture and nothing of the slide around it: a photo without the text over or around it; a chart, screenshot or meme whole, with its own labels, borders and margins. When text sits on a photo, box the largest part of the photo without text. Pictures shown together get one box around them all",
+      "Caption: the original's own words, without lines that promote the original creator (follow, subscribe, link in bio, their handle). Keep its hashtags",
+      "Follow the teammate's notes where they ask for a change, such as leaving a slide out",
+    ],
+    bar: "Side by side with the original, a reader sees the same post in our template.",
+    output: "TranscriptSchema: name, originalLanguage, translated, slides[] {original, templatePage, texts[] {slot, text}, media {kind, box, alt}}, caption, notes[]",
+  },
   {
     stage: "brief", title: "Editor-in-chief", by: "editor",
     job: "Read the original post slide by slide and write the brief the whole team works from.",
@@ -218,8 +241,31 @@ export function roleCardFor(stage: PostStage): RoleCard {
   return card;
 }
 
+/**
+ * A system prompt for an exact copy: the page's name and language and what an
+ * exact copy keeps, but not the page's voice or house rules, which would
+ * reword the original. `card` is the transcript card by default; the critic
+ * passes its own job and rules.
+ */
+export function exactPrompt(profile: PageProfile, extra = "", card: Pick<RoleCard, "title" | "job" | "rules" | "bar"> = roleCardFor("transcript")): string {
+  const language = profile.language === "es" ? "Spanish" : "English";
+  // The copier and the critic both need the page's own Follow line and its limit.
+  const follow = `Our Follow page stands in for the original's follow slide. Its first line is always "${profile.followCta.line1}". Its second line keeps the original's words only as far as they fit in ${profile.followCta.maxChars} characters, so a shorter second line there is right, not a missing word`;
+  return [
+    `You are the ${card.title.toLowerCase()} on the team that rebuilds Instagram posts for ${profile.name} (${profile.handle}), whose posts are in ${language}. This run is an exact copy: the original post, rebuilt as it is in our template.`,
+    language === "English" ? "" : `Slide text and the caption are in ${language}. Write notes, reasons and summaries for the team in English.`,
+    profile.language === "es" ? "Keep proper accents and punctuation: á é í ó ú ñ, opening ¿ and ¡, and accents on capitals (MÁS, not MAS)." : "",
+    `Your job: ${card.job}`,
+    `Rules:\n${card.rules.map(rule => `- ${rule}`).join("\n")}`,
+    `What an exact copy keeps:\n${[...EXACT_RULES, follow].map(rule => `- ${rule}`).join("\n")}`,
+    `Quality bar: ${card.bar}`,
+    extra,
+  ].filter(Boolean).join("\n\n");
+}
+
 /** The card as a system prompt, with the page's own voice and rules. `title` names one role of a shared card (the fact critic). */
 export function rolePrompt(stage: PostStage, profile: PageProfile, extra = "", title?: string): string {
+  if (stage === "transcript") return exactPrompt(profile, extra);
   const card = roleCardFor(stage);
   const language = profile.language === "es" ? "Spanish" : "English";
   return [
@@ -239,7 +285,9 @@ export function playbook() {
     shape: CAROUSEL_SHAPE,
     houseRules: HOUSE_RULES,
     stages: CARDS.map(card => ({ ...card, by: card.by === "code" || card.by === "human" ? card.by : "agent" })),
+    exactRules: EXACT_RULES,
     notes: [
+      "An exact copy (mode exact) rebuilds the post as it is: only transcript, deck and review run. The same slides and words go on the page's template, pictures are cut from the original slides, and nothing is researched or added. The other stages belong to a full recreation (checkpoint or autopilot).",
       "Stages run in this order; research and the makers run in parallel. A checkpoint run pauses after the outline and hooks until a person approves.",
       "An outside agent can do a stage itself with engine_recreate_submit_stage; Engine checks the result against the stage's schema and reruns what depends on it.",
       "Charts and the deck are always built by Engine from the other stages.",

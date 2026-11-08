@@ -200,8 +200,38 @@ export const ReviewSchema = z.object({
 });
 export type ReviewOutput = z.infer<typeof ReviewSchema>;
 
+/** An exact copy's picture: what it is and where it sits on the original slide, on a 0-1000 grid. */
+export const MEDIA_KINDS = ["photo", "chart", "screenshot", "none"] as const;
+export const MediaBoxSchema = z.object({
+  x: z.number().describe("Left edge, 0-1000 across the original slide"),
+  y: z.number().describe("Top edge, 0-1000 down the original slide"),
+  width: z.number().describe("Width on the same grid"),
+  height: z.number().describe("Height on the same grid"),
+});
+export type MediaBox = z.infer<typeof MediaBoxSchema>;
+/** An exact copy: each original slide laid out on one of our template's pages, word for word. */
+export const TranscriptSchema = z.object({
+  name: z.string().describe("A short name for the deck"),
+  originalLanguage: z.string().describe("The original's language as a two-letter code, such as en or es"),
+  translated: z.boolean().describe("True when the words were translated into the page's language"),
+  slides: z.array(z.object({
+    original: z.number().int().describe("1-based slide number in the original"),
+    templatePage: z.number().int().describe("Index of the template page this slide uses"),
+    texts: z.array(z.object({ slot: z.string(), text: z.string() })),
+    media: z.object({
+      kind: z.enum(MEDIA_KINDS).describe("What to cut from the original slide for the page's photo slot, or none"),
+      box: MediaBoxSchema.nullable().describe("Only the picture itself: no text over or around it, no border or background. Null for none"),
+      alt: z.string().describe("What the picture shows, in plain words, for screen readers"),
+    }),
+  })).describe("One entry per original slide, in the original's order"),
+  caption: z.string(),
+  notes: z.array(z.string()),
+});
+export type TranscriptOutput = z.infer<typeof TranscriptSchema>;
+
 /** Stages an outside agent may hand in itself. Charts and the deck are built by Engine from the others. */
 export const SUBMITTABLE: Partial<Record<PostStage, z.ZodType>> = {
+  transcript: TranscriptSchema,
   brief: BriefSchema, facts: FactsSchema, data: DataSchema, reactions: ReactionsSchema, visuals: VisualsSchema,
   outline: OutlineSchema, hooks: HooksSchema, approval: ApprovalSchema, copy: CopySchema, images: ImagesSchema, review: ReviewSchema,
 };

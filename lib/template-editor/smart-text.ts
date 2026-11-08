@@ -304,6 +304,23 @@ export function mediaBox(element: CanvasScene["elements"][number], span: { x: nu
   return { x: span.x + (span.width - width) / 2, width, height: width / ratio };
 }
 
+/** The layer a flow follows. A hidden layer takes no room: a layer flowing
+ * under it flows under what that layer follows instead, as a picture moves up
+ * under the title when the copy between them is hidden. Only plain downward
+ * flows pass through; a layer riding on another's top, flowing up or inline
+ * keeps its anchor. */
+function flowAnchor(element: SceneElement, byKey: Map<string, SceneElement>): SceneElement | undefined {
+  if (!element.smartFlow) return undefined;
+  const plain = (layer: SceneElement) => Boolean(layer.smartFlow && !layer.smartFlow.direction && !layer.smartFlow.edge);
+  let anchor = byKey.get(element.smartFlow.after);
+  for (let step = 0; plain(element) && anchor?.hidden && plain(anchor) && step < 8; step++) {
+    const next = byKey.get(anchor.smartFlow!.after);
+    if (!next) break;
+    anchor = next;
+  }
+  return anchor;
+}
+
 /** Copy that can't reach the foot of its flow gives the space back: when the
  * photo or chart frame under it is hidden (there is nothing to show), keeps a
  * picture's shape that is shorter than the room left, or a list is too short
@@ -314,7 +331,7 @@ function balanceShortCopy(layout: SmartSceneLayout): SmartSceneLayout {
   type Layer = CanvasScene["elements"][number];
   const elements = layout.scene.elements;
   const byKey = new Map(elements.flatMap(element => [[element.id, element] as const, ...(element.slot ? [[element.slot, element] as const] : [])]));
-  const anchorOf = (element: Layer) => element.smartFlow && element.smartFlow.direction !== "up" ? byKey.get(element.smartFlow.after) : undefined;
+  const anchorOf = (element: Layer) => element.smartFlow && element.smartFlow.direction !== "up" ? flowAnchor(element, byKey) : undefined;
   const following = (element: Layer) => Boolean(element.smartFlow && element.smartFlow.direction !== "up" && !element.smartFlow.edge);
   const shaped = (element: Layer) => Boolean(following(element) && element.smartFlow?.media && pictureRatio(element));
   // Stretched to the foot of its flow (a picture keeping its shape has its own height).
@@ -356,7 +373,7 @@ function layoutPass(scene: CanvasScene, measure: typeof measureSmartText, caps: 
     if (visiting.has(original.id)) return original; // Malformed/cyclic imported flows stay bounded.
     visiting.add(original.id);
     let element = original;
-    const flow = original.smartFlow, anchor = flow && slots.get(flow.after);
+    const flow = original.smartFlow, anchor = flow && flowAnchor(original, slots);
     const upward = flow?.direction === "up", inline = flow?.direction === "right";
     // Upward flows: the bottom edge sits `gap` above the anchor's resolved top.
     let edge: number | undefined;

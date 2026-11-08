@@ -16,7 +16,8 @@ import {developmentDirectory} from "@/lib/template-editor/development-storage";
  * in development, with a revision check on every write.
  */
 
-export const POST_STAGES = ["brief", "facts", "data", "reactions", "visuals", "outline", "hooks", "approval", "copy", "charts", "images", "deck", "review"] as const;
+/** Every stage either mode can run. A full recreation runs all but `transcript`; an exact copy runs `transcript`, `deck` and `review`. */
+export const POST_STAGES = ["transcript", "brief", "facts", "data", "reactions", "visuals", "outline", "hooks", "approval", "copy", "charts", "images", "deck", "review"] as const;
 export type PostStage = typeof POST_STAGES[number];
 export type StageStatus = "pending" | "running" | "done" | "error" | "skipped";
 export type StageActor = "engine" | "agent" | "human";
@@ -36,7 +37,8 @@ export type StageRecord = {
   /** Set each time the stage starts, so a result from a run that was superseded is dropped. */
   attempt?: string;
 };
-export type PostMode = "checkpoint" | "autopilot";
+/** checkpoint and autopilot run the full team (checkpoint pauses for a person's approval); exact rebuilds the post as it is. */
+export type PostMode = "checkpoint" | "autopilot" | "exact";
 export type PostStatus = "running" | "paused" | "done" | "error";
 export type PostSource = {
   url?: string; caption: string; owner?: string; notes: string; slideCount: number; imageIds: string[];
@@ -208,18 +210,31 @@ export function setStage(file: PostFile, stage: PostStage, record: Partial<Stage
   file.history.push({at: now, stage, event: event ?? record.status, by});
 }
 
-/** Stages that must rerun when one changes: everything that read its output. */
+/** What each stage of a full recreation reads. A stage must rerun when one it reads changes. */
 export const STAGE_INPUTS: Record<PostStage, PostStage[]> = {
-  brief: [], facts: ["brief"], data: ["brief"], reactions: ["brief"], visuals: ["brief", "facts"],
+  transcript: [], brief: [], facts: ["brief"], data: ["brief"], reactions: ["brief"], visuals: ["brief", "facts"],
   outline: ["brief", "facts", "data", "reactions"], hooks: ["brief", "facts"], approval: ["outline", "hooks"],
   copy: ["approval", "facts", "data", "reactions"], charts: ["approval", "data"], images: ["approval", "visuals"],
   deck: ["copy", "charts", "images"], review: ["deck"],
 };
-export function downstreamOf(stage: PostStage): PostStage[] {
-  const result = new Set<PostStage>();
+/** An exact copy: the original read word for word, then the deck, then the check. */
+export const EXACT_STAGES: PostStage[] = ["transcript", "deck", "review"];
+const EXACT_INPUTS: Partial<Record<PostStage, PostStage[]>> = { transcript: [], deck: ["transcript"], review: ["deck"] };
+
+/** The stages a run in this mode goes through, in order. */
+export function stagesFor(mode: PostMode): PostStage[] {
+  return mode === "exact" ? [...EXACT_STAGES] : POST_STAGES.filter(stage => stage !== "transcript");
+}
+/** What a stage reads in this mode. */
+export function inputsOf(stage: PostStage, mode: PostMode): PostStage[] {
+  return mode === "exact" ? EXACT_INPUTS[stage] ?? [] : STAGE_INPUTS[stage];
+}
+/** Stages that must rerun when one changes: everything that read its output, in this mode (a full recreation by default). */
+export function downstreamOf(stage: PostStage, mode: PostMode = "autopilot"): PostStage[] {
+  const stages = stagesFor(mode), result = new Set<PostStage>();
   const visit = (current: PostStage) => {
-    for (const candidate of POST_STAGES) if (STAGE_INPUTS[candidate].includes(current) && !result.has(candidate)) { result.add(candidate); visit(candidate); }
+    for (const candidate of stages) if (inputsOf(candidate, mode).includes(current) && !result.has(candidate)) { result.add(candidate); visit(candidate); }
   };
   visit(stage);
-  return POST_STAGES.filter(candidate => result.has(candidate));
+  return stages.filter(candidate => result.has(candidate));
 }

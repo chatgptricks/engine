@@ -29,15 +29,24 @@ export async function originalSlides(context: StageContext): Promise<SourceImage
   return context.cache.images = await loadSourceImages(context.ownerKey, context.file.source.imageIds);
 }
 
+/**
+ * The original's slides, imported on a run's first stage: from Instagram (or the
+ * uploads), kept as private workspace images. `source` is the post's updated
+ * source record when this call imported it, for the stage to hand back.
+ */
+export async function originalPost(context: StageContext): Promise<{ images: SourceImage[]; source?: StageContext["file"]["source"] }> {
+  const { file } = context;
+  const kept = await originalSlides(context);
+  if (kept.length) return { images: kept };
+  const imported = await importSource({ url: file.source.url, uploads: context.cache.uploads, caption: file.source.caption }, context.signal);
+  const imageIds = await keepSourceImages(context.ownerKey, imported.images);
+  context.cache.images = imported.images;
+  return { images: imported.images, source: { ...file.source, url: imported.sourceUrl ?? file.source.url, caption: imported.caption, owner: imported.owner, slideCount: imported.images.length, imageIds } };
+}
+
 export const brief: StageRunner = async context => {
   const { file, profile } = context;
-  let images = await originalSlides(context), source: StageContext["file"]["source"] | undefined;
-  if (!images.length) {
-    const imported = await importSource({ url: file.source.url, uploads: context.cache.uploads, caption: file.source.caption }, context.signal);
-    const imageIds = await keepSourceImages(context.ownerKey, imported.images);
-    images = context.cache.images = imported.images;
-    source = { ...file.source, url: imported.sourceUrl ?? file.source.url, caption: imported.caption, owner: imported.owner, slideCount: images.length, imageIds };
-  }
+  const { images, source } = await originalPost(context);
   const { caption, owner, url, notes } = source ?? file.source;
   const content: Anthropic.Beta.BetaContentBlockParam[] = [
     ...images.flatMap((image, index): Anthropic.Beta.BetaContentBlockParam[] => [{ type: "text", text: `Slide ${index + 1}:` }, imageBlock(image)]),

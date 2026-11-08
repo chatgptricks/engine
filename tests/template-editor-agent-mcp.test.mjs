@@ -316,6 +316,7 @@ test("the Recreate team's tools approve, add posts, rerun, hand in and resume th
   assert.equal((await mcp.call("engine_playbook")).result.structuredContent.stages[0].stage, "copy");
   assert.equal((await mcp.call("engine_recreate_status", { postId })).result.structuredContent.status, "paused");
   await mcp.call("engine_recreate_post", { profileId: "pagina-es", url: "https://www.instagram.com/p/x/", mode: "checkpoint" });
+  await mcp.call("engine_recreate_post", { profileId: "chatgptricks", url: "https://www.instagram.com/p/y/", mode: "exact" });
   await mcp.call("engine_recreate_add_posts", { postId, xPosts: ["https://x.com/WilliamBaude/status/1985426345048617094"] });
   await mcp.call("engine_recreate_approve", { postId, option: 0, notes: "Keep it short" });
   await mcp.call("engine_recreate_rerun_stage", { postId, stage: "copy", instructions: "Make the cover shorter" });
@@ -324,6 +325,7 @@ test("the Recreate team's tools approve, add posts, rerun, hand in and resume th
   const posted = api.calls.filter((call) => call.path === "/api/engine/recreate").map((call) => call.body);
   assert.deepEqual(posted, [
     { profileId: "pagina-es", url: "https://www.instagram.com/p/x/", mode: "checkpoint" },
+    { profileId: "chatgptricks", url: "https://www.instagram.com/p/y/", mode: "exact" },
     { action: "add_posts", postId, xPosts: ["https://x.com/WilliamBaude/status/1985426345048617094"] },
     { action: "approve", postId, option: 0, notes: "Keep it short" },
     { action: "rerun_stage", postId, stage: "copy", instructions: "Make the cover shorter" },

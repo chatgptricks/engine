@@ -4,10 +4,10 @@ import {useEffect, useId, useRef, useState, type ClipboardEvent, type DragEvent,
 import {ArrowRightIcon, CheckIcon, CloseIcon, ImageIcon, PlusIcon} from "@/components/engine/icons";
 import {Modal} from "./controls";
 import {
-  MAX_HOOK_CHARACTERS, MAX_RECREATE_SLIDES, MAX_RECREATE_UPLOADS, RECREATE_IMAGE_TYPES, RECREATE_LANES, RECREATE_STATUS_LABELS,
-  fetchPageProfiles, instagramLabel, normalizeInstagramUrl, placePost, prepareRecreateUpload, recreateSetupIssue, recreateTimestamp, safeSourceUrl, useRecreateJob,
+  MAX_HOOK_CHARACTERS, MAX_RECREATE_SLIDES, MAX_RECREATE_UPLOADS, RECREATE_IMAGE_TYPES, RECREATE_STATUS_LABELS,
+  fetchPageProfiles, lanesFor, instagramLabel, normalizeInstagramUrl, placePost, prepareRecreateUpload, recreateSetupIssue, recreateTimestamp, safeSourceUrl, useRecreateJob,
   type ApproveRequest, type Checkpoint, type CheckpointReaction, type FactCheck, type HookOption, type OutlineKind, type OutlineSlide, type PageProfile,
-  type PreparedUpload, type RecreateAction, type RecreateJob, type RecreateMode, type RecreateRequest, type RecreateResult, type RecreateReview,
+  type PreparedUpload, type RecreateAction, type RecreateJob, type RecreateKind, type RecreateMode, type RecreateRequest, type RecreateResult, type RecreateReview,
   type StageName, type StageStatus, type TrackedRecreate,
 } from "./recreate-job";
 import {MAX_ADDED_POSTS, parseXPostLinks, xPostId, xPostLink} from "@/lib/engine/x-links";
@@ -15,17 +15,23 @@ import "./pro-tools.css";
 import "./dialog-tools.css";
 import "./recreate-dialog.css";
 
-type Draft = {mode: "link" | "screenshots"; url: string; uploads: PreparedUpload[]; caption: string; notes: string; xPosts: string; profileId: string; autopilot: boolean};
+/** `mode` is where the post comes from; `kind` is what to make of it. */
+type Draft = {mode: "link" | "screenshots"; kind: RecreateKind; url: string; uploads: PreparedUpload[]; caption: string; notes: string; xPosts: string; profileId: string; autopilot: boolean};
 type FieldErrors = Partial<Record<"url" | "uploads" | "profileId" | "xPosts", string>>;
 type Phase = "form" | "running" | "checkpoint" | "done" | "error";
-const EMPTY_DRAFT: Draft = {mode: "link", url: "", uploads: [], caption: "", notes: "", xPosts: "", profileId: "", autopilot: false};
+const EMPTY_DRAFT: Draft = {mode: "link", kind: "full", url: "", uploads: [], caption: "", notes: "", xPosts: "", profileId: "", autopilot: false};
 const PROFILE_MEMORY = "engine:recreate-profile";
 const AUTOPILOT_MEMORY = "engine:recreate-autopilot";
+const KIND_MEMORY = "engine:recreate-kind";
 const NOTE_IDEAS = ["Make it simpler", "Add a chart", "Use the latest stock data"];
 const VERDICT_LABELS: Record<FactCheck["verdict"], string> = {confirmed: "Confirmed", corrected: "Corrected", unverified: "Unverified"};
 const KIND_LABELS: Record<OutlineKind, string> = {cover: "Cover", original: "From the original", question: "Reader question", reaction: "Reaction from X", takeaway: "Takeaway", follow: "Follow"};
 const HOOK_SOURCES: Record<HookOption["by"], string> = {"headline-model": "From the headline model", copywriter: "By the copywriter", agent: "From an agent"};
-const MODE_LABELS: Record<RecreateMode, string> = {checkpoint: "You review the plan", autopilot: "Autopilot"};
+const MODE_LABELS: Record<RecreateMode, string> = {checkpoint: "You review the plan", autopilot: "Autopilot", exact: "Exact copy"};
+const KINDS: {value: RecreateKind; title: string; detail: string}[] = [
+  {value: "exact", title: "Exact copy", detail: "The same slides and words, in the page's template"},
+  {value: "full", title: "Full recreation", detail: "Researched, planned and rewritten in the page's voice"},
+];
 const STAGE_STATES: Record<StageStatus, string> = {pending: "waiting", running: "working", done: "done", skipped: "skipped", error: "failed"};
 let profileCache: PageProfile[] | null = null;
 
@@ -40,6 +46,16 @@ function rememberedAutopilot(): boolean | null {
 }
 function rememberAutopilot(on: boolean) {
   try { window.localStorage.setItem(AUTOPILOT_MEMORY, on ? "1" : "0"); } catch { /* Only a convenience. */ }
+}
+function rememberedKind(): RecreateKind | null {
+  try { const value = window.localStorage.getItem(KIND_MEMORY); return value === "exact" || value === "full" ? value : null; } catch { return null; }
+}
+function rememberKind(kind: RecreateKind) {
+  try { window.localStorage.setItem(KIND_MEMORY, kind); } catch { /* Only a convenience. */ }
+}
+/** What a run is making, from the job once it is known and from the form until then. */
+function runMode(tracked: TrackedRecreate, job: RecreateJob | null): RecreateMode | undefined {
+  return job?.mode ?? (tracked.draft.kind === "exact" ? "exact" : undefined);
 }
 function errorMessage(cause: unknown, fallback: string): string {
   return cause instanceof Error && cause.message ? cause.message : fallback;
@@ -117,11 +133,11 @@ export function RecreatePost({scope, open, onOpenChange, blockedReason, activeDe
   }
   function editAndRetry() {
     const saved = tracked?.draft;
-    setDraft(current => current.url || current.uploads.length || current.caption || current.notes || current.xPosts || !saved ? current : {...current, ...saved, xPosts: saved.xPosts ?? ""});
+    setDraft(current => current.url || current.uploads.length || current.caption || current.notes || current.xPosts || !saved ? current : {...current, ...saved, kind: saved.kind ?? current.kind, xPosts: saved.xPosts ?? ""});
     recreate.dismiss();
   }
   function startAnother() {
-    setDraft(current => ({...EMPTY_DRAFT, mode: current.mode, profileId: current.profileId, autopilot: current.autopilot}));
+    setDraft(current => ({...EMPTY_DRAFT, mode: current.mode, kind: current.kind, profileId: current.profileId, autopilot: current.autopilot}));
     recreate.dismiss();
   }
 
@@ -177,13 +193,15 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
   useEffect(() => {
     let active = true;
     queueMicrotask(() => {
-      const remembered = rememberedAutopilot();
+      const remembered = rememberedAutopilot(), kind = rememberedKind();
       if (active && remembered !== null) setDraft(current => current.autopilot === remembered ? current : {...current, autopilot: remembered});
+      if (active && kind) setDraft(current => current.kind === kind ? current : {...current, kind});
     });
     return () => { active = false; };
   }, [setDraft]);
 
   const profile = profiles?.find(item => item.id === draft.profileId);
+  const exact = draft.kind === "exact";
   const update = (patch: Partial<Draft>) => setDraft(current => ({...current, ...patch}));
   const clearError = (field: keyof FieldErrors) => setErrors(current => current[field] ? {...current, [field]: undefined} : current);
 
@@ -248,7 +266,8 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
     else if (draft.mode === "link" && !url) next.url = "That doesn't look like an Instagram post link. It should look like instagram.com/p/…";
     if (draft.mode === "screenshots" && !draft.uploads.length) next.uploads = "Add at least one slide screenshot.";
     if (!profile) next.profileId = profiles?.length === 0 ? "No page profiles are set up yet." : "Choose the page this post is for.";
-    const posts = parseXPostLinks(draft.xPosts);
+    // An exact copy adds nothing, so posts from X are left out.
+    const posts = parseXPostLinks(exact ? "" : draft.xPosts);
     if (posts.invalid.length) next.xPosts = `${posts.invalid.length === 1 ? `"${posts.invalid[0].slice(0, 40)}" isn't` : `${posts.invalid.length} of these aren't`} a link to a post on X.`;
     else if (posts.links.length > MAX_ADDED_POSTS) next.xPosts = `Add at most ${MAX_ADDED_POSTS} posts.`;
     setErrors(next);
@@ -259,7 +278,7 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
     setBusy(true);
     setSubmitError("");
     const notes = draft.notes.trim(), caption = draft.caption.trim();
-    const mode: RecreateMode = draft.autopilot ? "autopilot" : "checkpoint";
+    const mode: RecreateMode = exact ? "exact" : draft.autopilot ? "autopilot" : "checkpoint";
     const xPosts = posts.links.length ? {xPosts: posts.links} : {};
     const request: RecreateRequest = draft.mode === "link"
       ? {url: url!, profileId: profile.id, mode, ...(notes ? {notes} : {}), ...xPosts}
@@ -269,7 +288,7 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
       await onStart(request, {
         source: draft.mode === "link" ? instagramLabel(url!) : plural(draft.uploads.length, "screenshot"),
         profileName: profileLabel(profile),
-        draft: {mode: draft.mode, url: draft.url, caption: draft.caption, notes: draft.notes, profileId: draft.profileId, xPosts: draft.xPosts},
+        draft: {mode: draft.mode, kind: draft.kind, url: draft.url, caption: draft.caption, notes: draft.notes, profileId: draft.profileId, xPosts: draft.xPosts},
       });
     } catch (cause) {
       setSubmitError(errorMessage(cause, "Recreate couldn't start. Try again."));
@@ -280,7 +299,16 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
   const setup = submitError ? recreateSetupIssue(submitError) : null;
   return <form noValidate onSubmit={submit} onPaste={onPaste}>
     <fieldset disabled={busy} className="te-pro-panel te-tool-dialog te-recreate">
-      <p className="te-recreate-intro">Turn an Instagram post into a new editable post for one of your pages. A team of agents researches it, plans the slides and writes them in the page&apos;s voice.</p>
+      <p className="te-recreate-intro">{exact
+        ? <>Rebuild an Instagram post as it is in one of your pages&apos; templates: the same slides in the same order, with the same words. Photos and charts are cut from the original, and nothing is added.</>
+        : <>Turn an Instagram post into a new editable post for one of your pages. A team of agents researches it, plans the slides and writes them in the page&apos;s voice.</>}</p>
+      <div className="te-recreate-kind" role="radiogroup" aria-label="What to make">
+        {KINDS.map(option => <label key={option.value} className={draft.kind === option.value ? "is-selected" : ""}>
+          <input type="radio" name={`${id}-kind`} value={option.value} checked={draft.kind === option.value} onChange={() => { update({kind: option.value}); rememberKind(option.value); clearError("xPosts"); setSubmitError(""); }}/>
+          <strong>{option.title}</strong>
+          <small>{option.detail}</small>
+        </label>)}
+      </div>
       <div className="te-recreate-segment" role="radiogroup" aria-label="Post source">
         {([["link", "Instagram link"], ["screenshots", "Screenshots"]] as const).map(([value, label]) => <label key={value} className={draft.mode === value ? "is-selected" : ""}>
           <input type="radio" name={`${id}-mode`} value={value} checked={draft.mode === value} onChange={() => { update({mode: value}); setErrors({}); setSubmitError(""); }}/>
@@ -327,33 +355,34 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
           </>}
         </select>
         <small id={`${id}-profile-help`} className={errors.profileId || profileError ? "te-recreate-invalid" : profile ? "te-recreate-voice" : ""} title={!errors.profileId && !profileError && profile?.voice ? profile.voice : undefined}>
-          {errors.profileId ?? (profileError || (profile ? <>{profile.language === "es" ? "Spanish" : "English"}{profile.voice ? ` · ${profile.voice}` : ""}</> : "Its voice, language, template and follow line are used."))}
+          {errors.profileId ?? (profileError || (profile ? exact ? <>{profile.language === "es" ? "Spanish" : "English"} · a post in another language is translated faithfully</> : <>{profile.language === "es" ? "Spanish" : "English"}{profile.voice ? ` · ${profile.voice}` : ""}</>
+            : exact ? "Its template, language and follow line are used." : "Its voice, language, template and follow line are used."))}
         </small>
       </label>
       {profileError && <button type="button" className="te-text-button te-recreate-retry" onClick={() => { setProfileError(""); setProfileAttempt(value => value + 1); }}>Try loading pages again</button>}
 
       <label className="te-recreate-field">
         <span id={`${id}-notes-label`}>Notes <small className="te-recreate-optional">Optional</small></span>
-        <textarea aria-labelledby={`${id}-notes-label`} rows={2} maxLength={2000} placeholder="Anything to change, add or keep" value={draft.notes} onChange={event => update({notes: event.target.value})}/>
+        <textarea aria-labelledby={`${id}-notes-label`} rows={2} maxLength={2000} placeholder={exact ? "Anything the copy should keep in mind" : "Anything to change, add or keep"} value={draft.notes} onChange={event => update({notes: event.target.value})}/>
       </label>
-      <div className="te-recreate-ideas" aria-label="Note ideas">
+      {!exact && <div className="te-recreate-ideas" aria-label="Note ideas">
         {NOTE_IDEAS.map(idea => <button key={idea} type="button" aria-label={`Add note: ${idea}`} onClick={() => addNote(idea)}>+ {idea}</button>)}
-      </div>
+      </div>}
 
-      <label className="te-recreate-field">
+      {!exact && <label className="te-recreate-field">
         <span id={`${id}-xposts-label`}>Posts from X <small className="te-recreate-optional">Optional</small></span>
         <textarea ref={xPostsRef} aria-labelledby={`${id}-xposts-label`} aria-describedby={`${id}-xposts-help`} aria-invalid={Boolean(errors.xPosts)} rows={2} maxLength={4000} spellCheck={false} placeholder="https://x.com/…/status/…" value={draft.xPosts} onChange={event => { update({xPosts: event.target.value}); clearError("xPosts"); }}/>
         <small id={`${id}-xposts-help`} className={errors.xPosts ? "te-recreate-invalid" : ""}>{errors.xPosts ?? `One link per line, up to ${MAX_ADDED_POSTS}. They go on the reaction slides as they look on X.`}</small>
-      </label>
+      </label>}
 
-      <label className="te-recreate-switch">
+      {!exact && <label className="te-recreate-switch">
         <input type="checkbox" role="switch" checked={draft.autopilot} aria-describedby={`${id}-autopilot-help`} onChange={event => { update({autopilot: event.target.checked}); rememberAutopilot(event.target.checked); }}/>
         <span className="te-recreate-switch-track" aria-hidden/>
         <span className="te-recreate-switch-text">
           <strong>Autopilot</strong>
           <small id={`${id}-autopilot-help`}>{draft.autopilot ? "The team picks the hook and finishes the post on its own." : "The team pauses so you can check the slide plan and pick the hook."}</small>
         </span>
-      </label>
+      </label>}
     </fieldset>
     {blockedReason && <p className="te-dialog-status te-recreate-blocked" role="status">{blockedReason}</p>}
     {submitError && <div className="te-dialog-error te-recreate-alert" role="alert">
@@ -388,11 +417,11 @@ function RecreateSummary({tracked, mode}: {tracked: TrackedRecreate; mode?: Recr
 }
 
 /** Each agent's part of the run, grouped the way the stages run. */
-function RecreateLanes({job}: {job: RecreateJob | null}) {
+function RecreateLanes({job, mode}: {job: RecreateJob | null; mode?: RecreateMode}) {
   const stages = new Map(job?.stages.map(stage => [stage.stage, stage]));
   const hint = (name: StageName, status: StageStatus) => name === "approval" && status === "pending" ? job?.mode === "autopilot" ? "Autopilot uses the first hook that fits the cover and the plan as written" : "Waits for you to check the plan" : "";
   return <div className="te-recreate-lanes">
-    {RECREATE_LANES.map(lane => <section key={lane.title} className="te-recreate-lane" aria-label={lane.title}>
+    {lanesFor(job?.mode ?? mode).map(lane => <section key={lane.title} className="te-recreate-lane" aria-label={lane.title}>
       <h3>{lane.title}</h3>
       <ol>
         {lane.stages.map(name => {
@@ -429,12 +458,12 @@ function RecreateProgress({tracked, job, reconnecting, onAct, onClose}: {tracked
   }
   return <>
     <div className="te-pro-panel te-tool-dialog te-recreate te-recreate-wide">
-      <RecreateSummary tracked={tracked} mode={job?.mode}/>
+      <RecreateSummary tracked={tracked} mode={runMode(tracked, job)}/>
       <p className="te-recreate-message" role="status" aria-live="polite">{message}</p>
-      <RecreateLanes job={job}/>
+      <RecreateLanes job={job} mode={runMode(tracked, job)}/>
       {reconnecting && <p className="te-dialog-status">Connection lost. Retrying…</p>}
       {stopError && <p className="te-dialog-error te-recreate-alert" role="alert">{stopError}</p>}
-      <p className="te-recreate-time"><span>{elapsed}</span> since it started · usually 5–10 minutes · it keeps going if you close this</p>
+      <p className="te-recreate-time"><span>{elapsed}</span> since it started · usually {runMode(tracked, job) === "exact" ? "1–3" : "5–10"} minutes · it keeps going if you close this</p>
     </div>
     <div className="te-dialog-footer">
       <button type="button" className="te-text-button te-recreate-another" disabled={stopping || !job} onClick={stop}>{stopping ? "Stopping…" : "Stop"}</button>
@@ -773,7 +802,7 @@ function RecreateDone({tracked, job, result, isOpen, onOpen, onClose, onAnother}
         </div>
       </div>
       <RecreateCritics review={result.review} fallback={criticsFallback}/>
-      <RecreateSection title="Fact-check" aside={counts.map(([verdict, count]) => `${count} ${verdict}`).join(" · ")}>
+      {job.mode !== "exact" && <RecreateSection title="Fact-check" aside={counts.map(([verdict, count]) => `${count} ${verdict}`).join(" · ")}>
         {result.factChecks.length ? <ul className="te-recreate-facts">
           {result.factChecks.map((item, index) => <li key={index} className={`is-${item.verdict}`}>
             <span className="te-recreate-verdict">{VERDICT_LABELS[item.verdict]}</span>
@@ -787,7 +816,7 @@ function RecreateDone({tracked, job, result, isOpen, onOpen, onClose, onAnother}
             </ul>}
           </li>)}
         </ul> : <p>No claims needed checking.</p>}
-      </RecreateSection>
+      </RecreateSection>}
       {result.notes.length > 0 && <RecreateSection title="Notes">
         <ul className="te-recreate-notes">{result.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>
       </RecreateSection>}
@@ -827,7 +856,7 @@ function RecreateFailure({tracked, job, error, onResume, onRetry, onScreenshots,
   }
   return <>
     <div className="te-pro-panel te-tool-dialog te-recreate te-recreate-wide">
-      <RecreateSummary tracked={tracked} mode={job?.mode}/>
+      <RecreateSummary tracked={tracked} mode={runMode(tracked, job)}/>
       <div className="te-dialog-error te-recreate-alert" role="alert">
         <strong>{setup ? "Setup needed" : "Something went wrong"}</strong>
         <span>{error}</span>
@@ -855,7 +884,7 @@ function RecreateFailure({tracked, job, error, onResume, onRetry, onScreenshots,
 }
 
 function RecreateIndicator({phase, job, reconnecting, compact, onOpen, onDismiss}: {phase: Phase; job: RecreateJob | null; reconnecting: boolean; compact?: boolean; onOpen: () => void; onDismiss: () => void}) {
-  const [title, detail] = phase === "done" ? [compact ? "Fact-check" : "Your recreated post is ready", "Review the fact-check"]
+  const [title, detail] = phase === "done" ? job?.mode === "exact" ? [compact ? "Copy ready" : "Your exact copy is ready", "Open it and check the notes"] : [compact ? "Fact-check" : "Your recreated post is ready", "Review the fact-check"]
     : phase === "error" ? [compact ? "Recreate stopped" : "Recreate didn't finish", job?.resumable ? "Resume or see what happened" : "See what happened"]
     : phase === "checkpoint" ? [compact ? "Check the plan" : "Ready for your review", "Pick the hook and approve the plan"]
     : [compact ? "Recreating…" : "Recreating post", reconnecting ? "Reconnecting…" : job && job.status !== "queued" ? `${RECREATE_STATUS_LABELS[job.status]}…` : "Starting…"];

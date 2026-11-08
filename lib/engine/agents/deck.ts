@@ -57,8 +57,9 @@ export type AssembledSlide = {
   templatePage: number;
   texts: { slot: string; text: string }[];
   chart?: { chart: WrittenChart; source?: string } | null;
-  /** On the first slide of a photo pair, `seam` is the share of the photo on that slide, and `size` the photo's own size when it is known (otherwise it is measured). */
-  photo?: { url: string; alt: string; credit?: string; sourceUrl?: string; seam?: number; size?: { width: number; height: number } } | null;
+  /** On the first slide of a photo pair, `seam` is the share of the photo on that slide. `size` is the photo's own size when it is known (otherwise it is
+   * measured), and `fit: "contain"` shows all of it, for a chart or screenshot cut from an original slide. */
+  photo?: { url: string; alt: string; credit?: string; sourceUrl?: string; seam?: number; size?: { width: number; height: number }; fit?: "contain" } | null;
   /** The photo a person should add when none was placed. */
   photoBrief?: string;
   /** Real posts for a Reaction page. They go on as many Reaction pages as they need: one long
@@ -223,7 +224,8 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
   // can't be measured keeps the frame's own shape and crops the photo into it, as before.
   const photoSizes = await Promise.all(prepared.map((item, index) => {
     const frame = frameOf(index);
-    return item.photo && frame?.type === "image" && frame.smartFlow?.media ? imageSize(item.photo.url, input.signal) : null;
+    // A photo's known size is used as it is: a data URL (a picture cut from an original slide) can't be measured over the network.
+    return item.photo && frame?.type === "image" && frame.smartFlow?.media ? item.photo.size ?? imageSize(item.photo.url, input.signal) : null;
   }));
   for (const [index, item] of prepared.entries()) {
     const page = document.pages[index], elements = page.canvas?.elements ?? [];
@@ -255,6 +257,7 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
       if (frame.type === "image") {
         frame.publicAlt = item.photo.alt.slice(0, 2000);
         if (size) { frame.intrinsicWidth = size.width; frame.intrinsicHeight = size.height; }
+        if (item.photo.fit) frame.fit = item.photo.fit;
       }
       const credit = [item.photo.credit, item.photo.sourceUrl].filter(Boolean).join(", ");
       if (credit) comment(`Photo: ${credit}`, page.id);
@@ -392,7 +395,12 @@ export const deck: StageRunner = async context => {
   });
   // Decks from a guide's template get the guide's cover touches: gradient words, the remark and topic logos.
   if (context.guide) assembled.notes.push(...applyGuideToDeck(assembled.document, context.guide, { swipeText: profile.swipeText }));
-  const result = await saveDeck(context.ownerKey, assembled.document, previous ? { savedAt: previous.savedAt } : undefined);
+  return saveBuiltDeck(context.ownerKey, assembled, previous);
+};
+
+/** Saves a built deck (a rebuild replaces the one Engine saved before) and returns the deck stage's output. */
+export async function saveBuiltDeck(ownerKey: string, assembled: { document: DesignDocument; notes: string[]; pages: AssembledPage[] }, previous?: DeckOutput): Promise<{ output: DeckOutput }> {
+  const result = await saveDeck(ownerKey, assembled.document, previous ? { savedAt: previous.savedAt } : undefined);
   if (!result.saved) {
     if (!previous) throw new RecreateError(result.held, 409);
     // The person's version stands; the review reads it as it is.
@@ -405,4 +413,4 @@ export const deck: StageRunner = async context => {
       notes: [...copied, ...assembled.notes], pages: assembled.pages, held: "",
     } satisfies DeckOutput,
   };
-};
+}

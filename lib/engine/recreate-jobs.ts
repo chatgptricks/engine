@@ -7,15 +7,15 @@
  */
 import { editorUrl } from "./agents/deck";
 import { roleCardFor } from "./agents/playbook";
-import type { Approval, Brief, ChartsOutput, CopyOutput, DataOutput, DeckOutput, Facts, HooksOutput, ImagesOutput, Outline, ReactionsOutput, ReviewOutput, VisualsOutput } from "./agents/schemas";
-import { POST_STAGES, type PostFile, type PostStage } from "./post-files";
+import type { Approval, Brief, ChartsOutput, CopyOutput, DataOutput, DeckOutput, Facts, HooksOutput, ImagesOutput, Outline, ReactionsOutput, ReviewOutput, TranscriptOutput, VisualsOutput } from "./agents/schemas";
+import { POST_STAGES, stagesFor, type PostFile, type PostStage } from "./post-files";
 
 export type RecreateStatus = "queued" | "importing" | "researching" | "planning" | "paused" | "writing" | "building" | "reviewing" | "done" | "error";
 export const jobIdFor = (postId: string) => postId.replace(/^post-/, "");
 export const postIdFor = (jobId: string) => `post-${jobId}`;
 
 const PHASE: Record<PostStage, RecreateStatus> = {
-  brief: "researching", facts: "researching", data: "researching", reactions: "researching", visuals: "researching",
+  transcript: "writing", brief: "researching", facts: "researching", data: "researching", reactions: "researching", visuals: "researching",
   outline: "planning", hooks: "planning", approval: "planning", copy: "writing", charts: "writing", images: "writing",
   deck: "building", review: "reviewing",
 };
@@ -27,12 +27,13 @@ function statusOf(file: PostFile, active: boolean): RecreateStatus {
   if (file.status === "error" || !active && file.status === "running") return "error";
   if (file.status === "paused") return "paused";
   const running = POST_STAGES.filter(stage => file.stages[stage]?.status === "running");
-  if (running.includes("brief") && !file.source.imageIds.length) return "importing";
+  if ((running.includes("brief") || running.includes("transcript")) && !file.source.imageIds.length) return "importing";
   if (running.length) return PHASE[running.at(-1)!];
   if (!Object.keys(file.stages).length) return "queued";
-  const next = POST_STAGES.find(stage => !["done", "skipped"].includes(file.stages[stage]?.status ?? ""));
+  const next = stagesFor(file.mode).find(stage => !["done", "skipped"].includes(file.stages[stage]?.status ?? ""));
   return next ? PHASE[next] : "building";
 }
+const LANGUAGES: Record<string, string> = { en: "English", es: "Spanish", pt: "Portuguese", fr: "French", de: "German", it: "Italian" };
 
 /** One line on what a finished stage produced. */
 function summary(file: PostFile, stage: PostStage): string {
@@ -42,6 +43,12 @@ function summary(file: PostFile, stage: PostStage): string {
   if (record.status === "error") return record.error ?? "Failed";
   if (record.status !== "done") return record.instructions ? `To fix: ${record.instructions.split("\n").slice(1, 3).join(" ").slice(0, 200)}` : "";
   switch (stage) {
+    case "transcript": {
+      const t = record.output as TranscriptOutput, cut = t.slides.filter(slide => slide.media.box).length;
+      const from = LANGUAGES[t.originalLanguage.toLowerCase()];
+      const words = t.translated ? `Translated ${plural(t.slides.length, "slide")}${from ? ` from ${from}` : ""}` : `Copied ${plural(t.slides.length, "slide")} word for word`;
+      return `${words}${cut ? `; ${plural(cut, "picture")} to cut from the original` : ""}`;
+    }
     case "brief": { const b = record.output as Brief; return `Read ${plural(b.slides.length, "slide")}: ${b.topic}`; }
     case "facts": {
       const f = record.output as Facts, corrected = f.claims.filter(claim => claim.verdict === "corrected").length;
@@ -112,7 +119,8 @@ export function postView(file: PostFile, active: boolean) {
   return {
     jobId: jobIdFor(file.id), postId: file.id, mode: file.mode, status, message,
     startedAt: file.createdAt, updatedAt: file.updatedAt,
-    stages: POST_STAGES.map(stage => {
+    // Only the stages this run's mode goes through: an exact copy shows three.
+    stages: stagesFor(file.mode).map(stage => {
       const record = file.stages[stage], card = roleCardFor(stage);
       return {
         stage, title: card.title, by: card.by === "code" || card.by === "human" ? card.by : "agent",
