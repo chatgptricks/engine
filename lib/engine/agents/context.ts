@@ -1,4 +1,5 @@
 /** What every Recreate stage is given, and what it hands back to the orchestrator. */
+import type { BrandGuide } from "../../template-editor/brand-guide";
 import type { DesignTemplate } from "../../template-editor/model";
 import type { PageProfile } from "../page-profiles";
 import type { PostFile, PostSource, PostStage } from "../post-files";
@@ -15,6 +16,8 @@ export type StageContext = {
   profile: PageProfile;
   template: DesignTemplate;
   templates: DesignTemplate[];
+  /** The page's brand guide (Brand → Guides), when it follows one. Its brief is already in `profile.voice`. */
+  guide?: BrandGuide | null;
   signal: AbortSignal;
   usage: UsageMeter;
   cache: RunCache;

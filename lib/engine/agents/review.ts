@@ -10,6 +10,7 @@ import sharp from "sharp";
 import type { DesignDocument } from "../../template-editor/model";
 import type { PageProfile } from "../page-profiles";
 import { renderSlides, type SlideRender } from "../slide-render";
+import { guideDeckChecks, guideExampleBlocks } from "./brand";
 import { ask, imageBlock, type SourceImage } from "./claude";
 import { need, outputOf, type StageContext, type StageRunner } from "./context";
 import { commentOnDeck, loadDeck } from "./deck";
@@ -39,7 +40,8 @@ export function houseChecks(document: DesignDocument, pages: DeckPage[], catalog
     for (const element of page.canvas?.elements ?? []) {
       if (element.hidden || !element.slot || element.templateRole === "brand" || element.slot.startsWith("reaction-")) continue;
       if (element.type === "image") {
-        if (element.templateRole === "media" && /^data:image\/svg\+xml/.test(element.src)) {
+        // Topic logos are often vector logos (SVG), never placeholders: they stay hidden until filled.
+        if (element.templateRole === "media" && !element.slot.startsWith("topic-logo") && /^data:image\/svg\+xml/.test(element.src)) {
           add(slide, "The photo slot still shows the template's placeholder", element.directive ? `Add a photo: ${element.directive}` : "Add a photo", "should_fix", "none");
         }
         continue;
@@ -107,10 +109,11 @@ async function factCritic(context: StageContext, document: DesignDocument, pages
 }
 
 async function designCritic(context: StageContext, renders: SlideRender[], document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[], found: Issue[]): Promise<CriticOutput> {
-  const originals = await originalSlides(context);
+  const [originals, examples] = await Promise.all([originalSlides(context), guideExampleBlocks(context.ownerKey, context.guide)]);
   const ours = await Promise.all(renders.map(render => forCritic(render.png)));
   const labelOf = (pageId: string) => catalog.find(item => item.index === pages.find(entry => entry.pageId === pageId)?.templatePage)?.label;
   const content: Anthropic.Beta.BetaContentBlockParam[] = [
+    ...examples,
     ...originals.flatMap((image, index): Anthropic.Beta.BetaContentBlockParam[] => [{ type: "text", text: `Original slide ${index + 1}:` }, imageBlock(image)]),
     ...ours.flatMap((image, index): Anthropic.Beta.BetaContentBlockParam[] => [{ type: "text", text: `Our slide ${index + 1}${labelOf(renders[index].pageId) ? ` (${labelOf(renders[index].pageId)})` : ""}:` }, imageBlock(image)]),
     { type: "text", text: [
@@ -124,6 +127,7 @@ async function designCritic(context: StageContext, renders: SlideRender[], docum
       "You see the original post's slides, then ours, rendered exactly as Export draws them at 1080×1440, shown smaller.",
       "Check each of our slides as a reader on a phone would: is every word readable, nothing cut off, the chart clear, the spacing even? Then check the whole post against the original: does it keep the original's slides, chart and story?",
       "A grey template placeholder in a photo slot is fine when a person adds that photo (the Follow page's profile screenshot): report it with route none.",
+      ...(context.guide ? [`Hold every slide to the ${context.guide.name} brand guide in your instructions${examples.length ? " and the approved example posts shown first" : ""}: colors, type, margins, spacing, the cover and how media sits on the page. Anything that breaks the guide is an issue; name the guide rule it breaks.`] : []),
       "Post cards are real posts from X: never ask to change their words. Verdict ship when nothing is must_fix. Slide numbers are ours.",
     ].join("\n"), "design critic"),
     content,
@@ -168,7 +172,7 @@ export const review: StageRunner = async context => {
     if (context.signal.aborted) throw error;
     checks.push({ slide: 0, problem: `The slides couldn't be rendered (${message(error)})`, fix: "Open the post and check every slide by eye", severity: "note", route: "none" });
   }
-  checks.unshift(...houseChecks(document, pages, catalog, profile, renders));
+  checks.unshift(...houseChecks(document, pages, catalog, profile, renders), ...guideDeckChecks(document, profile, context.guide));
   const critic = async (run: () => Promise<CriticOutput>, who: string) => {
     try { return await run(); } catch (error) {
       if (context.signal.aborted) throw error;

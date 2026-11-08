@@ -7,6 +7,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { AgentDeckValidationError, createAgentDeck } from "../../template-editor/agent-decks";
+import { applyGuideToDeck } from "../../template-editor/guide-template";
 import { checkLibrarySaveBudget } from "../../template-editor/library-budget";
 import { formatDimensions, parseLibrary, X_BADGES, type CanvasElement, type DesignComment, type DesignDocument, type DesignTemplate } from "../../template-editor/model";
 import { getEditorLibrary, LibraryConflictError, saveEditorLibrary } from "../../template-editor/persistence";
@@ -329,6 +330,8 @@ export const deck: StageRunner = async context => {
     factChecks: facts?.claims ?? [], notes, chartData: context.cache.chartData, signal: context.signal,
     credit: `Made by Recreate for ${profile.name}. The team's working file is ${file.id}; agents can read it with engine_recreate_status.`,
   });
+  // Decks from a guide's template get the guide's cover touches: gradient words, the remark and topic logos.
+  if (context.guide) assembled.notes.push(...applyGuideToDeck(assembled.document, context.guide, { swipeText: profile.swipeText }));
   const result = await saveDeck(context.ownerKey, assembled.document, previous ? { savedAt: previous.savedAt } : undefined);
   if (!result.saved) {
     if (!previous) throw new RecreateError(result.held, 409);

@@ -122,7 +122,9 @@ test("built-in chatgptricks and Spanish example profiles ship with the briefed d
   assert.equal(en.builtIn,true);
   assert.equal(en.overridden,false);
   assert.match(en.voice,/2\.7M/);
-  assert.match(en.voice,/no hype/i);
+  assert.match(en.voice,/no clickbait/i);
+  assert.match(en.voice,/INSANE goes on a cover only when the story backs it up/,"hype words are allowed on covers the story backs up");
+  assert.equal(en.brandId,"chatgptricks","the page follows the ChatGPTricks brand guide");
   const rules=en.rules.join("\n");
   for(const pattern of [/no final periods/i,/two lines/i,/75 characters/,/simple words/i,/primary source/i,/source line/i,/ALL CAPS/,/green/i,/one scale/i,/21 characters/,/fear-bait/i]) assert.match(rules,pattern);
   assert.ok(en.rules.every(rule=>!rule.endsWith(".")),"house style: no final periods in rules either");
@@ -171,6 +173,8 @@ test("savePageProfile validates fields and lengths before any write",async t=>{
     [{...valid,swipeText:""},400],
     [{...valid,swipeText:"S".repeat(41)},400],
     [{...valid,templateId:"has spaces"},400],
+    [{...valid,brandId:"Not An Id"},400],
+    [{...valid,brandId:42},400],
   ];
   for(const [input,status] of invalid) await rejectsProfile(savePageProfile("owner-a",input),status);
   await assert.rejects(savePageProfile("owner-a",{...valid,language:"fr",handle:"bad handle",format:{bodyMaxLines:0}}),error=>error.issues.length===3&&/2 more issues/.test(error.message));
@@ -180,8 +184,9 @@ test("savePageProfile validates fields and lengths before any write",async t=>{
 
 test("custom pages get language defaults, a derived id, and can be listed, fetched and deleted",async t=>{
   const f=fixture(t),{savePageProfile,listPageProfiles,getPageProfile,deletePageProfile}=f.profiles();
-  const saved=await savePageProfile("owner-a",{name:"Página Dos",handle:"pagina_dos",language:"es",voice:"  Spanish AI news.\nShort and plain.  ",rules:["Sin punto final",""," "],templateId:"my-template",ignored:"field"});
+  const saved=await savePageProfile("owner-a",{name:"Página Dos",handle:"pagina_dos",language:"es",voice:"  Spanish AI news.\nShort and plain.  ",rules:["Sin punto final",""," "],templateId:"my-template",brandId:"chatgptricks",ignored:"field"});
   assert.equal(saved.id,"pagina-dos");
+  assert.equal(saved.brandId,"chatgptricks");
   assert.equal(saved.handle,"@pagina_dos");
   assert.equal(saved.voice,"Spanish AI news.\nShort and plain.");
   assert.deepEqual(plain(saved.rules),["Sin punto final"]);
@@ -200,6 +205,8 @@ test("custom pages get language defaults, a derived id, and can be listed, fetch
   const edited=await savePageProfile("owner-a",{id:"pagina-dos",templateId:null,format:{bodyMaxLines:4}});
   assert.equal(edited.name,"Página Dos","fields left out keep their saved value");
   assert.equal(edited.templateId,undefined,"null clears the template");
+  assert.equal(edited.brandId,"chatgptricks","fields left out keep their saved brand");
+  assert.equal((await savePageProfile("owner-a",{id:"pagina-dos",brandId:null})).brandId,undefined,"null clears the brand");
   assert.deepEqual(plain(edited.format),{noFinalPeriods:true,bodyMaxLines:4});
 
   assert.equal(await deletePageProfile("owner-a","pagina-dos"),true);
