@@ -1,4 +1,5 @@
 import { resolveEngineAccess } from "@/lib/engine/member";
+import { isBlockedHost } from "@/lib/engine/public-url";
 
 export const runtime = "nodejs";
 
@@ -15,22 +16,6 @@ export const runtime = "nodejs";
  * Guards: http(s) only, no internal/private hosts (SSRF), reject cross-site
  * callers (so it isn't an open proxy), image content-type only, hard timeout.
  */
-
-function isBlockedHost(host: string): boolean {
-  const h = host.toLowerCase();
-  return (
-    h === "localhost" ||
-    h === "::1" ||
-    h.endsWith(".local") ||
-    h.endsWith(".internal") ||
-    /^127\./.test(h) ||
-    /^0\./.test(h) ||
-    /^10\./.test(h) ||
-    /^169\.254\./.test(h) ||
-    /^192\.168\./.test(h) ||
-    /^172\.(1[6-9]|2\d|3[0-1])\./.test(h)
-  );
-}
 
 export async function GET(request: Request) {
   if (!(await resolveEngineAccess())) {
