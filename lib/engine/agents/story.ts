@@ -14,6 +14,7 @@ import { EngineHooksSchema, headlineEngineInstructions, type EngineHooks } from 
 import { coverPage, describePages, reactionPageFor, templatePages, type PageCatalog } from "./pages";
 import { rolePrompt } from "./playbook";
 import { OutlineSchema, type Brief, type DataOutput, type Facts, type HookOption, type HooksOutput, type Outline, type OutlineSlide, type ReactionsOutput } from "./schemas";
+import { pairedPages } from "./pages";
 
 export const MAX_SLIDES = 20;
 /** The headline model can take minutes to wake; past this the copywriter writes the hooks. */
@@ -21,12 +22,13 @@ export const HOOKS_TIMEOUT_MS = 6 * 60_000;
 
 /**
  * Keeps an outline to what the template and research can fill: real pages,
- * charts the data stage built, and reaction slides with real posts, each on the
- * Reaction page with as many cards as it has posts (up to the most a page holds).
- * The deck still moves posts that don't fit one page together onto the next.
+ * charts the data stage built, reaction slides with real posts, each on the
+ * Reaction page with as many cards as it has posts (up to the most a page holds),
+ * and photo pairs on two slides in a row (a lone half becomes a one-slide photo
+ * page). The deck still moves posts that don't fit one page together onto the next.
  */
 export function normalizeOutline(outline: Outline, pages: PageCatalog[], known: { charts: string[]; reactions: string[] }): Outline {
-  const slides = outline.slides.flatMap((slide): OutlineSlide[] => {
+  const planned = outline.slides.flatMap((slide): OutlineSlide[] => {
     const page = pages.find(candidate => candidate.index === slide.templatePage);
     if (!page) return [];
     if (page.cards || slide.kind === "reaction") {
@@ -37,6 +39,14 @@ export function normalizeOutline(outline: Outline, pages: PageCatalog[], known: 
     }
     return [{ ...slide, chartId: slide.chartId && known.charts.includes(slide.chartId) ? slide.chartId : null, reactionIds: [] }];
   }).slice(0, MAX_SLIDES);
+  const placed = pairedPages(planned.map(slide => ({ page: pages.find(page => page.index === slide.templatePage)!, chart: Boolean(slide.chartId) })), pages);
+  const slides = planned.flatMap((slide, index): OutlineSlide[] => {
+    const page = placed[index];
+    if (!page) return [];
+    // A pair's photo is chosen once, for its first slide.
+    if (page.pair) return [{ ...slide, photo: page.pair.part === "start" ? slide.photo || planned[index + 1].photo : "" }];
+    return [{ ...slide, templatePage: page.index }];
+  });
   return { slides, why: outline.why };
 }
 

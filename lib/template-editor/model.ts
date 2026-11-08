@@ -159,6 +159,11 @@ export type ImageElement = CanvasElementBase & PhotoMetadata & {
   mask?: "none" | "ellipse" | "triangle" | "diamond";
   intrinsicWidth?: number;
   intrinsicHeight?: number;
+  /** One photo across two neighboring slides: the "start" half on one page and
+   * the "end" half on the next share this id, the photo and its size, and the
+   * end half sits one page width (360) to the left. spanning-photos.ts keeps
+   * them in step; each page frame clips its own half. */
+  span?: { id: string; part: "start" | "end" };
 };
 export type ShapeElement = CanvasElementBase & {
   type: "shape";
@@ -634,7 +639,7 @@ export const BUILT_IN_TEMPLATES: DesignTemplate[] = [
     ],
   },
   // Defined at the end of this file; chatgptricks-template.ts is its entry point.
-  chatgptricksTemplate(),
+  withWidePhotoPair(chatgptricksTemplate()),
 ];
 
 export function createCanvasElement<T extends CanvasElement["type"]>(
@@ -2303,10 +2308,12 @@ export function parseCanvas(value: unknown): CanvasScene | null {
       )
         return null;
       if (!optional(element, "cropScale", candidate => numberIn(candidate, 0.1, 20)) || !optional(element, "flipX", boolean) || !optional(element, "flipY", boolean) || !optional(element, "mask", choice(["none", "ellipse", "triangle", "diamond"])) || !optional(element, "intrinsicWidth", candidate => numberIn(candidate, 1, 100_000)) || !optional(element, "intrinsicHeight", candidate => numberIn(candidate, 1, 100_000))) return null;
+      if (!optional(element, "span", candidate => object(candidate) && identity(candidate.id) && choice(["start", "end"])(candidate.part))) return null;
       const imageExtensions: Partial<ImageElement> = {};
       const photoMetadata = parsePhotoMetadata(element);
       if (!photoMetadata) return null;
       for (const key of ["publicAlt", "previewSrc", "cropScale", "flipX", "flipY", "mask", "intrinsicWidth", "intrinsicHeight"] as const) if (element[key] !== undefined) Object.assign(imageExtensions, { [key]: element[key] });
+      if (object(element.span)) imageExtensions.span = { id: element.span.id as string, part: element.span.part as "start" | "end" };
       scene.elements.push({
         ...photoMetadata,
         ...imageExtensions,
@@ -2692,6 +2699,61 @@ export function isSafeBrandSvg(source: string): boolean {
 export function isSafeBrandSvgUrl(value: unknown): boolean {
   if (typeof value !== "string" || !value.startsWith(BRAND_SVG_PREFIX)) return false;
   try { return isSafeBrandSvg(decodeURIComponent(value.slice(BRAND_SVG_PREFIX.length))); } catch { return false; }
+}
+
+/** Appends the @chatgptricks Wide photo pair as the template's last two pages: one photo that
+ * starts on the first page and continues on the second, as linked halves (see
+ * spanning-photos.ts, which keeps them in step and lays the pages out with the
+ * same numbers). Each page has a one-line title and a two-line body at fixed
+ * heights, so the title, body and photo form one block, balanced between 90 and
+ * 1252, and both titles sit level. The photo keeps its own proportions, as large
+ * as fits: up to 2160 wide and 916.88 tall. The placeholder is 16:9, centered on
+ * the seam. The source line is on the second page only. A function declaration
+ * that uses only locals, like chatgptricksTemplate, so BUILT_IN_TEMPLATES can call it. */
+function withWidePhotoPair(template: DesignTemplate): DesignTemplate {
+  const px = (value: number) => value / 3;
+  const night = "#0B1014", surface = "#1A242B", white = "#F9FFFE", green = "#00D98A", grey = "#D9D9D9", dim = "#7D858A";
+  const at = (id: string, name: string, x: number, y: number, width: number, height: number) => ({ id: `cgt-${id}`, name, x: px(x), y: px(y), width: px(width), height: px(height), rotation: 0, opacity: 1, locked: false });
+  const typeset = (size: number, weight: number, color: string, lineHeight: number, tracking: number) => ({ font: "sfpro", fontSize: px(size), fontWeight: weight, italic: false, underline: false, color, align: "left" as const, lineHeight, letterSpacing: px(size * tracking) });
+  const textSlot = (slot: string) => ({ slot, layoutRole: "text" as const, textMode: "auto-fit" as const, verticalAlign: "top" as const, protected: ["position", "style", "delete"] as ProtectedProperty[] });
+  // Same rule shape as chatgptricksTemplate's: heights get a hair of slack for floating-point rounding.
+  const fit = (role: "heading" | "body", size: number, min: number, height: number, anchorBottom?: number): NonNullable<TextElement["smartText"]> => ({ role, lines: 0, minFontSize: px(min), maxFontSize: px(size), maxHeight: px(height) + .01, baseHeight: px(height) + .01, softMinFontSize: px(size), ...(anchorBottom === undefined ? {} : { anchorBottom: px(anchorBottom) }) });
+  const header = (key: string, title: string, body: string): TextElement[] => [
+    { type: "text", ...at(`${key}-title`, "Title", 72, 90, 920, 62.72), text: title, ...typeset(56, 700, green, 1.12, -.022), ...textSlot("title"), smartText: fit("heading", 56, 42, 62.72) },
+    { type: "text", ...at(`${key}-body`, "Body", 72, 175.72, 920, 95.4), text: body, ...typeset(43, 400, white, 47.7 / 43, -.012), ...textSlot("body"), smartText: fit("body", 43, 36, 95.4) },
+  ];
+  // A 16:9 #1A242B placeholder with a faint picture icon in the middle of each half.
+  const icon = (cx: number, cy: number) => {
+    const [l, t, r, b] = [cx - 60, cy - 48, cx + 60, cy + 48];
+    return `<path d="M${l} ${t}H${r}V${b}H${l}ZM${l + 6} ${t + 6}V${b - 6}H${r - 6}V${t + 6}Z" fill="${grey}" fill-rule="evenodd"/><path d="M${l + 14} ${b - 14}L${cx - 16} ${cy - 4}L${cx + 6} ${cy + 18}L${cx + 22} ${cy + 4}L${r - 14} ${b - 14}Z" fill="${grey}"/><path d="M${cx + 17} ${cy - 22}a9 9 0 1 0 18 0a9 9 0 1 0 -18 0Z" fill="${grey}"/>`;
+  };
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900"><path d="M0 0H1600V900H0Z" fill="${surface}"/><g opacity="0.3">${icon(400, 450)}${icon(1200, 450)}</g></svg>`;
+  const height = 1252 - 90 - (62.72 + 23 + 95.4) - 64, width = height * 16 / 9, top = 90 + 62.72 + 23 + 95.4 + 64;
+  const photo = (key: string, name: string, x: number, part: "start" | "end"): ImageElement => ({
+    type: "image", ...at(`${key}-photo`, name, x, top, width, height), src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, fit: "cover", cropX: 50, cropY: 50, radius: 0,
+    intrinsicWidth: 1600, intrinsicHeight: 900, directive: "A wide landscape photo for this point. It runs across both slides, so keep faces and text off the seam",
+    ...(part === "start" ? { slot: "wide-photo", templateRole: "media" as const } : {}), layoutRole: "media", protected: ["delete"], span: { id: "wide-photo", part },
+  });
+  const source: TextElement = {
+    type: "text", ...at("wide-end-source", "Source", 72, 1322, 920, 30), text: "Source: [source and photo credit]", ...typeset(24, 400, dim, 1.25, 0), ...textSlot("source"), verticalAlign: "bottom", smartText: fit("body", 24, 20, 60, 1352),
+  };
+  // The end half sits exactly one page width (360) to the left of the start half.
+  const start = photo("wide-start", "Wide photo", 1080 - width / 2, "start"), end: ImageElement = { ...photo("wide-end", "Wide photo (continued)", 0, "end"), x: start.x - 360 };
+  const sheet = (key: string, label: string, elements: CanvasElement[]): DesignPage => {
+    const base = page(`chatgptricks-3x4-${key}`, "folds", { template: "text", heading: "", body: "", bgMode: "color", bgColor: night, textColor: white, font: "sfpro", align: "top", textAlign: "left" });
+    const content = elements.filter(element => element.type === "text" || element.templateRole === "media").sort((a, b) => a.y - b.y || a.x - b.x);
+    const layout: CanvasLayout = { showGuides: true, margins: { enabled: true, top: px(90), right: px(88), bottom: px(88), left: px(72) }, snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } };
+    return { ...base, image: { ...base.image, width: 1080, height: 1440 }, label, canvas: { background: night, elements, layout }, readingOrder: content.map(element => element.id) };
+  };
+  return {
+    ...template,
+    description: `${template.description} Pages ${template.pages.length} and ${template.pages.length + 1} are the Wide photo pair: one photo runs across both slides.`,
+    pages: [
+      ...template.pages,
+      sheet("wide-start", "Wide photo · start", [start, ...header("wide-start", "Where AI gets built", "A photo can start on one slide\nand finish on the next")]),
+      sheet("wide-end", "Wide photo · end", [end, ...header("wide-end", "Swipe to see the rest", "Each slide shows its own half\nof the same photo"), source]),
+    ],
+  };
 }
 
 /** The @chatgptricks Instagram carousel at 3:4 (1080 × 1440): Cover, Text +

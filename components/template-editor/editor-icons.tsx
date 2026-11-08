@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "more";
+export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more";
 
 /** One visual language for tools, property shortcuts, and their selected states. */
 export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: EditorIconName }) {
@@ -19,6 +19,7 @@ export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name:
     merge: "M3 3h11v6h7v12H9v-7H3Z",
     group: "M3 8V3h5m8 0h5v5m0 8v5h-5m-8 0H3v-5M7 7h6v6H7Zm4 4h6v6h-6",
     unlock: "M8 10V7a4 4 0 0 1 8 0M5 10h14v11H5Zm7 4v3",
+    span: "M2 4h9v16H2Zm11 0h9v16h-9ZM5 9h14v6H5Z",
     more: "M5 12h.01M12 12h.01M19 12h.01",
   };
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d={paths[name]} /></svg>;

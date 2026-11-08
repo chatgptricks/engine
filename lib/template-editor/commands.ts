@@ -41,7 +41,8 @@ export function isElementHidden(scene: CanvasScene, element: CanvasElement): boo
 }
 export function canEditElement(scene: CanvasScene, element: CanvasElement, property: ProtectedProperty): boolean {
   if (element.templateRole === "brand") return false;
-  if (element.templateRole === "media" && (property === "position" || property === "delete")) return false;
+  // A template photo stays in its frame, except a spanning photo, whose seam moves.
+  if (element.templateRole === "media" && (property === "delete" || property === "position" && !(element.type === "image" && element.span))) return false;
   if (element.type === "text" && element.smartText && property !== "content") return false;
   return !isElementLocked(scene, element) && !element.protected?.includes(property);
 }

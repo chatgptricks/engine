@@ -8,6 +8,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
 import type { DesignDocument } from "../../template-editor/model";
+import { seamOf, spanPairs } from "../../template-editor/spanning-photos";
 import type { PageProfile } from "../page-profiles";
 import { renderSlides, type SlideRender } from "../slide-render";
 import { guideDeckChecks, guideExampleBlocks } from "./brand";
@@ -83,6 +84,18 @@ async function forCritic(png: Buffer): Promise<SourceImage> {
   return { mediaType: "image/jpeg", base64: jpeg.toString("base64") };
 }
 
+/** Slides that show one photo across the slide edge, with the share of it on the first. */
+export function photoPairs(document: DesignDocument) {
+  return spanPairs(document).map(pair => ({ first: pair.startPage + 1, second: pair.endPage + 1, startId: document.pages[pair.startPage].id, endId: document.pages[pair.endPage].id, seam: Math.round(seamOf(pair.start) * 100) }));
+}
+/** Two rendered slides side by side, as a reader swipes from one to the next. */
+async function sideBySide(left: Buffer, right: Buffer): Promise<SourceImage> {
+  const [first, second] = await Promise.all([left, right].map(png => sharp(png).resize({ width: 648 }).toBuffer({ resolveWithObject: true })));
+  const jpeg = await sharp({ create: { width: 1296, height: Math.max(first.info.height, second.info.height), channels: 3, background: "#000000" } })
+    .composite([{ input: first.data, left: 0, top: 0 }, { input: second.data, left: 648, top: 0 }]).jpeg({ quality: 82 }).toBuffer();
+  return { mediaType: "image/jpeg", base64: jpeg.toString("base64") };
+}
+
 const listIssues = (issues: Issue[]) => issues.map(issue => `- ${issue.slide ? `Slide ${issue.slide}` : "Whole post"}: ${issue.problem}`).join("\n");
 
 async function factCritic(context: StageContext, document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[]): Promise<CriticOutput> {
@@ -112,10 +125,15 @@ async function designCritic(context: StageContext, renders: SlideRender[], docum
   const [originals, examples] = await Promise.all([originalSlides(context), guideExampleBlocks(context.ownerKey, context.guide)]);
   const ours = await Promise.all(renders.map(render => forCritic(render.png)));
   const labelOf = (pageId: string) => catalog.find(item => item.index === pages.find(entry => entry.pageId === pageId)?.templatePage)?.label;
+  // Slides that share one photo are also shown side by side, so the critic can judge the split.
+  const rendered = (pageId: string) => renders.find(render => render.pageId === pageId)?.png;
+  const pairs = photoPairs(document).filter(pair => rendered(pair.startId) && rendered(pair.endId));
+  const joined = await Promise.all(pairs.map(pair => sideBySide(rendered(pair.startId)!, rendered(pair.endId)!)));
   const content: Anthropic.Beta.BetaContentBlockParam[] = [
     ...examples,
     ...originals.flatMap((image, index): Anthropic.Beta.BetaContentBlockParam[] => [{ type: "text", text: `Original slide ${index + 1}:` }, imageBlock(image)]),
     ...ours.flatMap((image, index): Anthropic.Beta.BetaContentBlockParam[] => [{ type: "text", text: `Our slide ${index + 1}${labelOf(renders[index].pageId) ? ` (${labelOf(renders[index].pageId)})` : ""}:` }, imageBlock(image)]),
+    ...joined.flatMap((image, index): Anthropic.Beta.BetaContentBlockParam[] => [{ type: "text", text: `Our slides ${pairs[index].first} and ${pairs[index].second} side by side. One photo runs across them, ${pairs[index].seam}% of it on slide ${pairs[index].first}:` }, imageBlock(image)]),
     { type: "text", text: [
       `OUR SLIDES AS TEXT\n${slideText(document, pages, catalog)}`,
       found.length ? `CODE ALREADY FOUND THESE (don't repeat them)\n${listIssues(found)}` : "",
@@ -129,7 +147,8 @@ async function designCritic(context: StageContext, renders: SlideRender[], docum
       "A grey template placeholder in a photo slot is fine when a person adds that photo (the Follow page's profile screenshot): report it with route none.",
       ...(context.guide ? [`Hold every slide to the ${context.guide.name} brand guide in your instructions${examples.length ? " and the approved example posts shown first" : ""}: colors, type, margins, spacing, the cover and how media sits on the page. Anything that breaks the guide is an issue; name the guide rule it breaks.`] : []),
       "Post cards are real posts from X: never ask to change their words. Verdict ship when nothing is must_fix. Slide numbers are ours.",
-    ].join("\n"), "design critic"),
+      pairs.length ? "Slides shown side by side share one photo, split where the slides meet. Check that the halves read as one photo and that the split misses faces and text. A split through a face or text is must_fix for images: give the seam to use, the share of the photo on the first slide (0.1 to 0.9)." : "",
+    ].filter(Boolean).join("\n"), "design critic"),
     content,
   });
 }

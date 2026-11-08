@@ -48,6 +48,7 @@ const pagesLib=load("lib/engine/agents/pages.ts");
 const playbookLib=load("lib/engine/agents/playbook.ts");
 const claude=load("lib/engine/agents/claude.ts");
 const model=load("lib/template-editor/model.ts");
+const spans=load("lib/template-editor/spanning-photos.ts");
 const profiles=load("lib/engine/page-profiles.ts");
 const template=model.BUILT_IN_TEMPLATES.find(item=>item.id==="chatgptricks-3x4");
 const english=profiles.builtInPageProfiles().find(item=>item.id==="chatgptricks");
@@ -55,6 +56,7 @@ const spanish=profiles.builtInPageProfiles().find(item=>item.id==="pagina-es");
 const catalog=pagesLib.templatePages(template);
 const pageIndex=label=>catalog.find(page=>page.label===label).index;
 const COVER=pageIndex("Cover"),MEDIA=pageIndex("Text + Media"),FOLLOW=pageIndex("Follow"),REACTION=pageIndex("Reaction"),REACTIONS=pageIndex("Two reactions"),THREE=pageIndex("Three reactions");
+const WIDE=catalog.find(page=>page.pair?.part==="start").index,WIDE_END=catalog.find(page=>page.pair?.part==="end").index;
 const env=profile=>async()=>({profile,template,templates:model.BUILT_IN_TEMPLATES});
 let owners=0;
 const owner=()=>`owner-agents-${++owners}`;
@@ -322,6 +324,27 @@ test("normalizeOutline keeps the plan to real pages, built charts and real posts
   assert.equal(pagesLib.reactionPageFor(catalog,5).index,THREE); assert.equal(pagesLib.reactionPageFor(catalog,0).index,REACTION);
 });
 
+test("a photo pair stays two slides in a row, and a lone half becomes a Text + Media slide",()=>{
+  assert.deepEqual([catalog[WIDE].pair,catalog[WIDE_END].pair],[{part:"start",with:WIDE_END},{part:"end",with:WIDE}]);
+  assert.equal(pagesLib.singlePhotoPage(catalog).index,MEDIA);
+  const described=pagesLib.describePages(catalog);
+  assert.ok(described.includes(`one landscape photo runs across this page and page ${WIDE_END}`)&&described.includes(`Page ${WIDE_END} always comes right after it`),"the planner reads how the pair works");
+  const slide=(extra)=>({kind:"original",templatePage:MEDIA,purpose:"x",points:[],chartId:null,reactionIds:[],photo:"",...extra});
+  const result=story.normalizeOutline({why:"",slides:[
+    slide({templatePage:WIDE}),slide({templatePage:WIDE_END,photo:"The data center at dusk"}),
+    slide({templatePage:WIDE,purpose:"lone first half"}),
+    slide({purpose:"between"}),
+    slide({templatePage:WIDE_END,purpose:"lone second half"}),
+    slide({templatePage:WIDE,chartId:"main"}),slide({templatePage:WIDE_END,purpose:"after the chart"}),
+  ]},catalog,{charts:["main"],reactions:[]});
+  assert.deepEqual(result.slides.map(item=>item.templatePage),[WIDE,WIDE_END,MEDIA,MEDIA,MEDIA,MEDIA,MEDIA]);
+  assert.deepEqual([result.slides[0].photo,result.slides[1].photo],["The data center at dusk",""],"the pair's photo is planned on its first slide");
+  assert.equal(result.slides[5].chartId,"main","a chart never runs across two slides: it keeps a slide of its own");
+  const cut=story.normalizeOutline({why:"",slides:[...Array.from({length:19},()=>slide()),slide({templatePage:WIDE}),slide({templatePage:WIDE_END})]},catalog,{charts:[],reactions:[]});
+  assert.equal(cut.slides.length,20);
+  assert.equal(cut.slides[19].templatePage,MEDIA,"a pair cut off at the 20-slide limit keeps its first half as a Text + Media slide");
+});
+
 test("distinctHooks drops near-duplicates, even behind a JUST IN: label",()=>{
   const kept=story.distinctHooks([
     {text:"STOCKS NEARLY DOUBLED WHILE JOB OPENINGS FELL 30%"},
@@ -412,6 +435,57 @@ test("the designer fills post cards word for word, keeps links, places photos an
   assert.ok(broken.some(issue=>issue.slide===1&&/capitals/.test(issue.problem)));
   assert.ok(broken.some(issue=>issue.slide===1&&/ends with a period/.test(issue.problem)));
   assert.ok(broken.some(issue=>issue.slide===4&&/Follow line/.test(issue.problem)));
+});
+
+test("the designer places one photo across the pair, at the art director's seam, and the critics see the pair",async()=>{
+  const url="https://pbs.twimg.com/media/wide.jpg?format=jpg&name=large";
+  const {document,notes,pages}=await deckLib.assembleDeck({
+    profile:english,template,templates:model.BUILT_IN_TEMPLATES,name:"Data centers",caption:"Caption",
+    slides:[
+      {templatePage:COVER,texts:[{slot:"cover-headline",text:"AI NEEDS [[POWER]]"}],slide:0},
+      {templatePage:WIDE,texts:[{slot:"title",text:"Where AI gets built"},{slot:"body",text:"One site uses as much power as a city"}],photo:{url,alt:"A data center at dusk",credit:"@dc on X",sourceUrl:"https://x.com/dc/status/1",seam:.4,size:{width:2000,height:1000}},slide:1},
+      {templatePage:WIDE_END,texts:[{slot:"title",text:"It never sleeps"},{slot:"body",text:"Cooling runs day and night"},{slot:"source",text:"Source: IEA, 2026"}],slide:2},
+      {templatePage:WIDE_END,texts:[{slot:"title",text:"On its own"},{slot:"body",text:"No first half before it"}],slide:3},
+    ],
+  });
+  const [pair,...others]=spans.spanPairs(document);
+  assert.equal(others.length,0);
+  assert.deepEqual([pair.startPage,pair.endPage],[1,2]);
+  assert.equal(pair.start.src,url);
+  assert.equal(pair.end.src,url,"both halves show the same photo");
+  assert.equal(Math.round(spans.seamOf(pair.start)*100),40,"the art director's seam");
+  assert.ok(Math.abs(pair.start.width/pair.start.height-2)<.01,"the frame takes the photo's own 2:1 shape");
+  assert.ok(pair.start.x>=-1e-6&&pair.end.x+pair.end.width<=360+1e-6,"the photo is whole: neither outer edge is cut");
+  assert.deepEqual([pair.start.publicAlt,pair.end.publicAlt],["A data center at dusk","A data center at dusk"],"both halves are described");
+  assert.ok(document.comments.some(comment=>comment.pageId===document.pages[1].id&&comment.text==="Photo: @dc on X, https://x.com/dc/status/1"));
+  assert.equal(pages[3].templatePage,MEDIA,"a lone second half becomes a Text + Media slide");
+  assert.ok(notes.some(note=>/Wide photo · end page didn't have the page that shares its photo next to it, so it became a Text \+ Media slide/.test(note)));
+  assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}),"the deck passes Engine's library validation");
+  assert.deepEqual(review.photoPairs(document).map(item=>[item.first,item.second,item.seam]),[[2,3,40]],"the critics are told which slides share the photo");
+  assert.ok(playbookLib.roleCardFor("review").rules.some(rule=>/split through a face or text is must_fix for images/.test(rule)));
+});
+
+test("the art director gives the photo pair a seam, kept to the editor's range, and only the pair",async()=>{
+  const makers=load("lib/engine/agents/makers.ts");
+  const outline={why:"",slides:[
+    {kind:"cover",templatePage:COVER,purpose:"Hook",points:[],chartId:null,reactionIds:[],photo:"A chip"},
+    {kind:"original",templatePage:WIDE,purpose:"The campus",points:[],chartId:null,reactionIds:[],photo:"The data center"},
+    {kind:"original",templatePage:WIDE_END,purpose:"The rest",points:[],chartId:null,reactionIds:[],photo:""},
+  ]};
+  const candidates=["wide","chip"].map(id=>({id,url:`https://example.com/${id}.jpg`,description:id,sourceUrl:"https://example.com",credit:"example.com"}));
+  const file={id:"post-test",source:{caption:"",notes:""},stages:{approval:{status:"done",output:{outline,hook:{text:"AI NEEDS POWER",option:0},notes:""}},visuals:{status:"done",output:{candidates,note:""}}}};
+  const asked=[],real=claude.ask;
+  claude.ask=async call=>{asked.push(call);return {picks:[{slide:1,candidate:"chip",alt:"A chip",seam:.3},{slide:2,candidate:"wide",alt:"A data center at dusk",seam:38},{slide:3,candidate:"wide",alt:"Again",seam:null}],notes:[]};};
+  try {
+    const {output}=await makers.images({ownerKey:owner(),file,profile:english,template,templates:model.BUILT_IN_TEMPLATES,signal:new AbortController().signal,usage:new claude.UsageMeter(),cache:{chartData:new Map()},round:0});
+    assert.deepEqual(output.photos.map(photo=>[photo.slide,photo.url,photo.seam]),[[0,"https://example.com/chip.jpg",undefined],[1,"https://example.com/wide.jpg",.38]],"a seam only on the pair's first slide, read as a share");
+    const text=asked[0].content.filter(block=>block.type==="text").map(block=>block.text).join("\n");
+    assert.match(text,/slide 2 \(Wide photo · start\): The campus; wanted: The data center\. One photo across slides 2 and 3/);
+    assert.ok(!/slide 3 \(/.test(text),"the second half needs no photo of its own");
+    assert.match(asked[0].system,/Choose a landscape photo \(wider than tall\) and give its seam/);
+  } finally {
+    claude.ask=real;
+  }
 });
 
 test("the designer puts one to three posts on a page by size and draws each account as X does",async()=>{

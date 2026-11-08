@@ -26,6 +26,8 @@ export type LayersPanelProps = {
   onExitGroup?: () => void;
   isolatedGroupId?: string;
   onGroupContextMenu?: (event: MouseEvent, groupId: string) => void;
+  /** Extra words after a layer's type, such as "across slides 2–3". */
+  notes?: ReadonlyMap<string, string>;
 };
 
 function typeName(element: CanvasElement) {
@@ -77,7 +79,7 @@ export function layerDragSelection(scene:CanvasScene,selectedIds:readonly string
   return ids.filter(id=>{const item=scene.elements.find(element=>element.id===id);return item&&!isElementLocked(scene,item);});
 }
 
-export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, height, disabled = false, onContextMenu, onMenuClick, onDuplicate, onDelete, onLocate, onEnterGroup, onExitGroup, isolatedGroupId, onGroupContextMenu }: LayersPanelProps) {
+export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, height, disabled = false, onContextMenu, onMenuClick, onDuplicate, onDelete, onLocate, onEnterGroup, onExitGroup, isolatedGroupId, onGroupContextMenu, notes }: LayersPanelProps) {
   const [query, setQuery] = useState("");
   const [multiSelect, setMultiSelect] = useState(false);
   const [rename, setRename] = useState<{ id: string; value: string } | null>(null);
@@ -226,7 +228,7 @@ export function LayersPanel({ scene, selectedIds, onSelect, onChange, width, hei
             <button type="button" className="te-layer-select" disabled={disabled} aria-pressed={selectedSet.has(element.id)} aria-label={`Select layer ${name}${hidden ? ", hidden" : ""}${effectiveLocked ? ", locked" : ""}`} onClick={(event) => choose(element, event.shiftKey || event.metaKey || event.ctrlKey)} onDoubleClick={() => { if (!multiSelect) beginRename(element); }}>
               {multiSelect && <span className="te-layer-selection-check" aria-hidden="true">{selectedSet.has(element.id) ? "✓" : ""}</span>}
               <Thumbnail element={element} />
-              <span className="te-layer-description"><strong>{name}</strong><span>{typeName(element)}{effectiveLocked ? " · Locked" : ""}{hidden ? " · Hidden" : ""}</span></span>
+              <span className="te-layer-description"><strong>{name}</strong><span>{typeName(element)}{notes?.has(element.id) ? ` · ${notes.get(element.id)}` : ""}{effectiveLocked ? " · Locked" : ""}{hidden ? " · Hidden" : ""}</span></span>
             </button>
             <div className="te-layer-row-tools">
               <button type="button" disabled={disabled || (hidden && !element.hidden)} className={hidden ? "is-on" : ""} aria-label={`${hidden ? "Show" : "Hide"} layer ${name}`} title={hidden ? "Show layer" : "Hide layer"} aria-pressed={!hidden} onClick={() => toggle(element.id, "hidden")}><Eye hidden={hidden} /></button>

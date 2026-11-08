@@ -12,7 +12,9 @@ export function constrainSmartTemplate(previous: CanvasScene, next: CanvasScene)
     if (original.type === "text" && original.smartText && changed.type === "text") {
       byId.set(original.id, { ...original, text: changed.text, richText: changed.richText, wordTextures: changed.wordTextures, smartText: { ...original.smartText, lines: changed.smartText?.lines ?? original.smartText.lines } });
     } else if (original.templateRole === "media") {
-      byId.set(original.id, { ...changed, templateRole: original.templateRole, protected: original.protected, smartFlow: original.smartFlow, slot: original.slot, x: original.x, y: original.y, width: original.width, height: original.height, rotation: original.rotation, hidden: original.hidden, groupId: original.groupId });
+      // A spanning photo moves and resizes with its seam (spanning-photos.ts keeps it in place).
+      const geometry = original.type === "image" && original.span && changed.type === "image" && changed.span ? changed : original;
+      byId.set(original.id, { ...changed, templateRole: original.templateRole, protected: original.protected, smartFlow: original.smartFlow, slot: original.slot, x: geometry.x, y: geometry.y, width: geometry.width, height: geometry.height, rotation: geometry.rotation, hidden: original.hidden, groupId: original.groupId });
     } else byId.set(original.id, original);
   }
   const elements = next.elements.map(element => byId.get(element.id)!);
