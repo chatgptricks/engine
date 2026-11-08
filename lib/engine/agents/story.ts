@@ -1,15 +1,17 @@
 /**
  * The story desk: the story editor plans the slides, and the hook options are
- * gathered from the headline model (best first), with near-duplicates dropped
- * and other styles added by the copywriter when the model's lines all sound
- * alike. Spanish pages see the model's lines adapted to Spanish.
+ * gathered from the headline model (best first), with near-duplicates dropped,
+ * plus lines from the copywriter, who writes them with the headline engine
+ * (Ivan's headline skill: archetype, original check, options from plain to most
+ * viral, top pick). Spanish pages see the model's lines adapted to Spanish.
  */
 import { z } from "zod";
 import { isHeadlineModelConfigured, requestHeadlines } from "../headline-model";
 import { ask, RecreateError } from "./claude";
 import { need, outputOf, rerunNote, type StageRunner } from "./context";
 import { reactionTextLines } from "../x-reactions";
-import { describePages, reactionPageFor, templatePages, type PageCatalog } from "./pages";
+import { EngineHooksSchema, headlineEngineInstructions, type EngineHooks } from "./headline-engine";
+import { coverPage, describePages, reactionPageFor, templatePages, type PageCatalog } from "./pages";
 import { rolePrompt } from "./playbook";
 import { OutlineSchema, type Brief, type DataOutput, type Facts, type HookOption, type HooksOutput, type Outline, type OutlineSlide, type ReactionsOutput } from "./schemas";
 
@@ -91,13 +93,35 @@ export function hookStory(b: Brief, f?: Facts): string {
   return [b.story.trim(), ...corrected].join(" ").slice(0, 1500);
 }
 
-const MoreHooks = z.object({ hooks: z.array(z.object({ text: z.string(), framework: z.string().describe("story, number, stakes, question-free statement or another style") })) });
+/**
+ * The engine's lines in the order to offer them: the top pick (or the original
+ * it kept), then the 4-7 band where most winners live, then the boldest, then
+ * the plain ones; lines that fit the cover before lines that don't.
+ */
+export function engineHookOrder(engine: EngineHooks, room?: number): HookOption[] {
+  const fits = (text: string) => !room || Array.from(text.trim()).length <= room;
+  const band = (level: number) => level >= 4 && level <= 7 ? 0 : level >= 8 ? 1 : 2;
+  const lines: (HookOption & { rank: number })[] = engine.hooks.map((hook, index) => ({
+    text: hook.text.trim(), framework: hook.framework || engine.archetype, by: "copywriter" as const, english: null,
+    rank: index === engine.topPick ? -1 : band(hook.level) * 10 - Math.min(hook.level, 9) / 10,
+  }));
+  const original = engine.original.text.trim();
+  if ((engine.original.verdict === "keep" || engine.original.verdict === "light-edit") && original) {
+    lines.push({ text: original, framework: engine.original.verdict === "keep" ? "original" : "original, light edit", by: "copywriter", english: null, rank: engine.topPick < 0 ? -2 : 5 });
+  }
+  return lines.filter(line => line.text)
+    .sort((a, b) => Number(!fits(a.text)) - Number(!fits(b.text)) || a.rank - b.rank)
+    .map(line => ({ text: line.text, framework: line.framework, by: line.by, english: line.english }));
+}
+
 const Adapted = z.object({ hooks: z.array(z.object({ english: z.string(), text: z.string() })) });
 
 export const hooks: StageRunner = async context => {
   const { file, profile } = context;
   const b = need<Brief>(file, "brief"), f = outputOf<Facts>(file, "facts");
   const story = hookStory(b, f);
+  const cover = coverPage(templatePages(context.template));
+  const room = (cover?.text.find(slot => /headline/i.test(slot.slot)) ?? cover?.text[0])?.maxCharacters;
   let options: HookOption[] = [], modelOptions: HooksOutput["modelOptions"] = [], source: HooksOutput["source"] = "copywriter", checked = story, note = "";
   if (isHeadlineModelConfigured()) {
     try {
@@ -116,7 +140,7 @@ export const hooks: StageRunner = async context => {
   if (profile.language === "es" && options.length) {
     const adapted = await ask({
       role: "hooks", what: "adapt the hooks to Spanish", effort: "medium", signal: context.signal, usage: context.usage, schema: Adapted,
-      system: rolePrompt("hooks", profile, "Adapt each English cover hook into natural Spanish with the same meaning and punch. Keep ALL CAPS and accents (MÁS, not MAS). Return every line, in order."),
+      system: rolePrompt("hooks", profile, "Adapt each English cover hook into natural Spanish with the same meaning and punch: native phrasing, the same energy and cadence, never word for word, no corporate filler. Keep ALL CAPS and accents (MÁS, not MAS). Return every line, in order."),
       content: options.map(option => option.text).join("\n"),
     });
     options = options.flatMap((option, index): HookOption[] => {
@@ -124,16 +148,22 @@ export const hooks: StageRunner = async context => {
       return match?.text.trim() ? [{ ...option, english: option.text, text: match.text.trim() }] : [];
     });
   }
-  const styles = new Set(options.map(option => option.framework || "plain"));
-  const wanted = Math.max(5 - options.length, options.length >= 3 && styles.size <= 1 ? 2 : 0);
-  if (wanted > 0) {
-    const more = await ask({
-      role: "hooks", what: "write hook options", effort: "medium", signal: context.signal, usage: context.usage, schema: MoreHooks,
-      system: rolePrompt("hooks", profile, `Write ${wanted} cover hooks in ${profile.language === "es" ? "Spanish" : "English"}, ALL CAPS, each in a different style from the lines already there, all true to the facts.`),
-      content: [`STORY\n${story}`, `ORIGINAL HEADLINE\n${b.originalHeadline}`, options.length ? `LINES ALREADY THERE (don't repeat their style or words)\n${options.map(option => `- ${option.text}`).join("\n")}` : "", rerunNote(context)].filter(Boolean).join("\n\n"),
-    });
-    options = distinctHooks([...options, ...more.hooks.map(hook => ({ text: hook.text.trim(), framework: hook.framework, by: "copywriter" as const, english: null }))]);
-  }
+  // The copywriter always adds lines of its own, written with the headline engine (or plainly, when
+  // the brand guide asks), so a person sees both sources.
+  const wanted = Math.max(5 - options.length, 2);
+  const plain = context.guide?.hooks.method === "plain";
+  const engine = await ask({
+    role: "hooks", what: plain ? "write hook options in the page's voice" : "write hook options with the headline engine", effort: "medium", signal: context.signal, usage: context.usage, schema: EngineHooksSchema,
+    system: rolePrompt("hooks", profile, [
+      headlineEngineInstructions({ language: profile.language, room, notes: context.guide?.hooks.notes, plain }),
+      `Write 10 cover hooks in ${profile.language === "es" ? "Spanish" : "English"}${plain ? "" : " with the headline engine"}, least to most viral, all true to the facts${options.length ? ", each different in style and words from the lines already there" : ""}. Then name your top pick.`,
+    ].join("\n\n")),
+    content: [`STORY\n${story}`, `ORIGINAL HEADLINE\n${b.originalHeadline || "(none)"}`, options.length ? `LINES ALREADY THERE (don't repeat their style or words)\n${options.map(option => `- ${option.text}`).join("\n")}` : "", rerunNote(context)].filter(Boolean).join("\n\n"),
+  });
+  const written = engineHookOrder(engine, room);
+  options = distinctHooks([...options, ...written], options.length + wanted);
+  const engineNote = `${plain ? "Plain hooks" : "Headline engine"}: ${engine.archetype.toLowerCase()} story, original headline ${engine.original.verdict}${written[0] ? `, top pick “${written[0].text}”` : ""}${engine.why.trim() ? ` (${engine.why.trim()})` : ""}.`;
+  note = [note, engineNote].filter(Boolean).join(" ");
   if (!options.length) throw new RecreateError("No hook options could be written. Try again.", 502);
   return { output: { options, source, story: checked, modelOptions, note } satisfies HooksOutput };
 };

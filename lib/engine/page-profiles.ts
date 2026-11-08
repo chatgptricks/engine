@@ -32,6 +32,8 @@ export interface PageProfile {
   handle: string;
   language: PageLanguage;
   templateId?: string;
+  /** The brand guide this page follows (Brand → Guides). Its brief, checks and examples reach every agent. */
+  brandId?: string;
   /** Plain-English brief for the writer. */
   voice: string;
   /** House rules the writer must follow. */
@@ -86,7 +88,8 @@ const BUILT_INS: readonly PageProfile[] = [
     handle: "@chatgptricks",
     language: "en",
     templateId: "chatgptricks-3x4",
-    voice: "AI and tech page for about 2.7M followers. Punchy, plain and accurate: short sentences, everyday words, and a clear reason the news matters to a regular person. No hype words (insane, game-changer, mind-blowing, revolutionary) and no clickbait.",
+    brandId: "chatgptricks",
+    voice: "AI and tech page for about 2.7M followers. Punchy, plain and accurate: short sentences, everyday words, and a clear reason the news matters to a regular person. No clickbait. A hype word like INSANE goes on a cover only when the story backs it up.",
     rules: [
       "No final periods: no text box ever ends with a period",
       "Body text under each title is at most two lines (about 75 characters), in super simple words most people understand",
@@ -106,7 +109,8 @@ const BUILT_INS: readonly PageProfile[] = [
     handle: "@tu_pagina",
     language: "es",
     templateId: "chatgptricks-3x4",
-    voice: "Spanish-language AI and tech page. Punchy, plain and accurate: short sentences, everyday words, and a clear reason the news matters to a regular person. Write natural, neutral Spanish that readers in Latin America and Spain both understand. No hype words (increíble, brutal, revolucionario) and no clickbait.",
+    brandId: "chatgptricks",
+    voice: "Spanish-language AI and tech page. Punchy, plain and accurate: short sentences, everyday words, and a clear reason the news matters to a regular person. Write natural, neutral Spanish that readers in Latin America and Spain both understand. No clickbait. A strong word like BRUTAL goes on a cover only when the story backs it up.",
     rules: [
       "No final periods: no text box ever ends with a period, in Spanish as in English",
       "Body text under each title is at most two lines (about 75 characters), in super simple Spanish words most people understand. Spanish runs longer than English, so cut words instead of adding lines",
@@ -184,6 +188,11 @@ function validate(candidate: Record<string, unknown>, updatedAt: string): PagePr
     if (typeof candidate.templateId !== "string" || !TEMPLATE_ID.test(candidate.templateId)) issues.push("templateId must be a template id of up to 200 letters, numbers, dots, dashes, colons or underscores.");
     else templateId = candidate.templateId;
   }
+  let brandId: string | undefined;
+  if (candidate.brandId !== undefined && candidate.brandId !== null && candidate.brandId !== "") {
+    if (typeof candidate.brandId !== "string" || !ID.test(candidate.brandId)) issues.push("brandId must be a brand guide id: lowercase letters, numbers or dashes.");
+    else brandId = candidate.brandId;
+  }
   const voice = line("voice", candidate.voice, PAGE_PROFILE_LIMITS.voice, true);
   const rules: string[] = [];
   if (!Array.isArray(candidate.rules)) issues.push("rules must be a list of strings.");
@@ -209,6 +218,7 @@ function validate(candidate: Record<string, unknown>, updatedAt: string): PagePr
   return {
     id, name, handle, language: language as PageLanguage,
     ...(templateId ? {templateId} : {}),
+    ...(brandId ? {brandId} : {}),
     voice, rules,
     format: {noFinalPeriods: format.noFinalPeriods as boolean, bodyMaxLines},
     followCta: {line1, maxChars},
@@ -231,7 +241,7 @@ function merged(base: PageProfile | undefined, input: Record<string, unknown>): 
   };
 }
 
-const KNOWN_FIELDS = ["id", "name", "handle", "language", "templateId", "voice", "rules", "format", "followCta", "swipeText"] as const;
+const KNOWN_FIELDS = ["id", "name", "handle", "language", "templateId", "brandId", "voice", "rules", "format", "followCta", "swipeText"] as const;
 function pickInput(input: Record<string, unknown>): Record<string, unknown> {
   const picked: Record<string, unknown> = {};
   for (const field of KNOWN_FIELDS) if (input[field] !== undefined) picked[field] = input[field];

@@ -10,6 +10,7 @@
  * file is the record, so nothing is lost when the process stops.
  */
 import { randomUUID } from "node:crypto";
+import type { BrandGuide } from "../../template-editor/brand-guide";
 import type { DesignTemplate } from "../../template-editor/model";
 import { getEditorLibrary } from "../../template-editor/persistence";
 import { libraryTemplates } from "../../template-editor/template-catalog";
@@ -18,6 +19,7 @@ import { getPageProfile, PageProfileError, type PageProfile } from "../page-prof
 import { createPostFile, downstreamOf, getPostFile, POST_STAGES, PostFileError, setStage, STAGE_INPUTS, updatePostFile, type PostFile, type PostMode, type PostStage, type StageActor } from "../post-files";
 import { MAX_ADDED_POSTS, xPostId, xPostLink } from "../x-links";
 import { fetchXPosts } from "../x-reactions";
+import { loadGuide, withGuideBrief } from "./brand";
 import { RecreateError, UsageMeter } from "./claude";
 import { outputOf, type RunCache, type StageContext, type StageResult, type StageRunner } from "./context";
 import { deck } from "./deck";
@@ -40,7 +42,8 @@ const MAX_ACTIVE_PER_OWNER = 4;
 const RUN_DEADLINE_MS = 45 * 60_000;
 const CACHE_TTL_MS = 3 * 60 * 60_000, MAX_CACHES = 8;
 
-export type Environment = { profile: PageProfile; template: DesignTemplate; templates: DesignTemplate[] };
+/** `guide` is the page's brand guide; `profile.voice` already carries its brief for every role. */
+export type Environment = { profile: PageProfile; template: DesignTemplate; templates: DesignTemplate[]; guide?: BrandGuide | null };
 export type RunOptions = {
   /** Tests swap in their own stages. */
   runners?: Partial<Record<PostStage, StageRunner>>;
@@ -88,7 +91,8 @@ export async function loadEnvironment(ownerKey: string, profileId: string): Prom
   const templates = libraryTemplates(library);
   const template = templates.find(candidate => candidate.id === profile.templateId);
   if (!template) throw new RecreateError(`${profile.name} has no template yet. Pick one in its page profile.`, 409);
-  return { profile, template, templates };
+  const guide = await loadGuide(ownerKey, profile);
+  return { profile: withGuideBrief(profile, guide), template, templates, guide };
 }
 
 // ── The run ─────────────────────────────────────────────────────────────────

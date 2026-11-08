@@ -52,6 +52,7 @@ export const copy: StageRunner = async context => {
     "List slots (names ending in -items): 3-5 short items, one per line, separated by line breaks. No bullet characters or numbering.",
     `Body text under a title is at most ${format.bodyMaxLines} lines.${format.noFinalPeriods ? " No text box ends with a period." : ""}`,
     follow ? `Follow page (page ${follow.index}): its first line "${profile.followCta.line1}" is fixed. Its text slot takes only the second line, at most ${profile.followCta.maxChars} characters.` : "",
+    pages.some(page => page.text.some(slot => slot.slot === "cover-remark")) ? `cover-remark: a brief line under the cover headline, in capitals, at most about 30 characters, when there's something worth saying (for example HERE'S OUR TOP 16 SELECTION for a list post). Otherwise write "${profile.swipeText}".` : "",
     "caption: our voice and language. A hook line, 2-4 short lines of context, a source line, then up to 5 relevant hashtags.",
   ].filter(Boolean).join("\n\n");
   const written = await ask({

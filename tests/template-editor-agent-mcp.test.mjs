@@ -17,7 +17,7 @@ async function server(t, handler) {
   const instance = http.createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
-    const entry = { path: request.url, headers: request.headers, body: raw ? JSON.parse(raw) : null };
+    const entry = { method: request.method, path: request.url, headers: request.headers, body: raw ? JSON.parse(raw) : null };
     calls.push(entry);
     await handler(entry, response, calls);
   });
@@ -113,7 +113,7 @@ test("MCP process negotiates, discovers live schemas, and calls all authenticate
   assert.deepEqual(init.result.capabilities, { tools: {} });
   mcp.notify("notifications/initialized");
   const listed = await mcp.request("tools/list");
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template"]);
   assert.deepEqual(listed.result.tools[4].inputSchema.properties.spec, schemas.deckSchema);
   assert.deepEqual(listed.result.tools[5].inputSchema.properties.changes, schemas.updateSchema);
   await mcp.call("engine_capabilities");
@@ -203,7 +203,7 @@ test("discovery falls back while unavailable and refreshes live schemas after re
   const mcp = client(t, api.url);
   assert.equal((await mcp.init("future-version")).result.protocolVersion, "2025-11-25");
   const tools = await mcp.request("tools/list");
-  assert.equal(tools.result.tools.length, 16);
+  assert.equal(tools.result.tools.length, 22);
   assert.match(tools.result.tools[4].inputSchema.properties.spec.description, /engine_capabilities/);
   const failure = await mcp.call("engine_capabilities");
   assert.equal(failure.result.isError, true);
@@ -343,6 +343,55 @@ test("the Recreate team's tools approve, add posts, rerun, hand in and resume th
     ["engine_recreate_add_posts", { xPosts: ["https://x.com/a/status/1"] }],
     ["engine_recreate_status", { postId: "post-../../x" }],
     ["engine_recreate_post", { profileId: "chatgptricks", url: "https://www.instagram.com/p/x/", mode: "fast" }],
+  ]) assert.equal((await mcp.call(tool, args)).error?.code, -32602, `${tool} ${JSON.stringify(args)} is refused`);
+  assert.equal(api.calls.length, before, "invalid calls never reach Engine");
+});
+
+test("brand tools read, save, restore, check and design through the brands endpoints", async (t) => {
+  const api = await server(t, (entry, response) => {
+    if (entry.path === "/api/agent/slides") return json(response, {});
+    if (entry.path.startsWith("/api/engine/brands")) return json(response, { ok: true, path: entry.path });
+    return json(response, { error: "unexpected" }, 404);
+  });
+  const mcp = client(t, api.url);
+  await mcp.init();
+  await mcp.call("engine_list_brands");
+  await mcp.call("engine_get_brand", { brandId: "chatgptricks" });
+  await mcp.call("engine_get_brand", { brandId: "chatgptricks", version: 2 });
+  await mcp.call("engine_save_brand", { guide: { id: "chatgptricks", bannedWords: ["BREAKING:"] }, expectedVersion: 3, note: "Ban BREAKING:" });
+  await mcp.call("engine_restore_brand", { brandId: "chatgptricks", version: 1 });
+  await mcp.call("engine_check_deck", { deckId: "deck-1" });
+  await mcp.call("engine_check_deck", { templateId: "chatgptricks-guide-es", brandId: "chatgptricks" });
+  await mcp.call("engine_design_template", { brandId: "chatgptricks", language: "es" });
+  const calls = api.calls.filter((call) => call.path !== "/api/agent/slides");
+  assert.deepEqual(calls.map((call) => [call.method, call.path]), [
+    ["GET", "/api/engine/brands"],
+    ["GET", "/api/engine/brands?id=chatgptricks"],
+    ["GET", "/api/engine/brands?id=chatgptricks&version=2"],
+    ["PUT", "/api/engine/brands"],
+    ["POST", "/api/engine/brands"],
+    ["POST", "/api/engine/brands/check"],
+    ["POST", "/api/engine/brands/check"],
+    ["POST", "/api/engine/brands/templates"],
+  ]);
+  assert.deepEqual(calls[3].body, { guide: { id: "chatgptricks", bannedWords: ["BREAKING:"] }, expectedVersion: 3, note: "Ban BREAKING:" });
+  assert.deepEqual(calls[4].body, { action: "restore", id: "chatgptricks", version: 1 });
+  assert.deepEqual(calls[5].body, { deckId: "deck-1" });
+  assert.deepEqual(calls[7].body, { brandId: "chatgptricks", language: "es" });
+  assert.ok(calls.every((call) => call.headers.authorization === `Bearer ${token}`));
+  const before = api.calls.length;
+  for (const [tool, args] of [
+    ["engine_get_brand", {}],
+    ["engine_get_brand", { brandId: "../x" }],
+    ["engine_get_brand", { brandId: "chatgptricks", version: 0 }],
+    ["engine_save_brand", { guide: "text" }],
+    ["engine_save_brand", { guide: { name: "No id" } }],
+    ["engine_save_brand", { guide: { id: "x" }, note: "n".repeat(201) }],
+    ["engine_restore_brand", { brandId: "chatgptricks" }],
+    ["engine_check_deck", {}],
+    ["engine_check_deck", { deckId: "deck-1", templateId: "t" }],
+    ["engine_design_template", { brandId: "chatgptricks", language: "fr" }],
+    ["engine_design_template", { language: "en" }],
   ]) assert.equal((await mcp.call(tool, args)).error?.code, -32602, `${tool} ${JSON.stringify(args)} is refused`);
   assert.equal(api.calls.length, before, "invalid calls never reach Engine");
 });
