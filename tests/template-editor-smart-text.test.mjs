@@ -307,6 +307,26 @@ test("template drafts join imported title fragments into one readable block", ()
   assert.ok(texts[0].width > 120);
 });
 
+test("a layer that follows hidden copy takes its place, so a title-only page keeps its title above the picture", () => {
+  const copy = {role: "body", lines: 0, minFontSize: 12, maxFontSize: 20, maxHeight: 110, anchorTop: 30};
+  const title = text({slot: "title", text: "AI vs Jobs", y: 30, height: 24, smartText: {...copy, role: "heading", maxHeight: 40}});
+  const body = text({slot: "body", text: "", y: 62, height: 30, hidden: true, smartText: copy, smartFlow: {after: "title", gap: 8, bottom: 196}});
+  const media = model.createCanvasElement("image", {slot: "media", x: 24, y: 111, width: 312, height: 306, intrinsicWidth: 1000, intrinsicHeight: 500,
+    smartFlow: {after: "body", gap: 20, bottom: 417, resize: true, media: {x: 0, width: 360}}});
+  const list = text({slot: "list-left-heading", text: "Risk", y: 100, height: 20, smartText: copy, smartFlow: {after: "body", gap: 10, bottom: 417}});
+  const rider = model.createCanvasElement("shape", {slot: "badge", y: 300, width: 10, height: 10, smartFlow: {after: "body", edge: "top", gap: 2, bottom: 417}});
+  const laid = smart.layoutSmartScene({background: "#111111", elements: [title, body, media, list, rider]}, metrics).scene.elements;
+  const [heading, , picture, heading2, badge] = laid;
+  assert.ok(heading.y + heading.height <= picture.y, "the title stays above the picture, not centred behind it");
+  assert.equal(picture.y - (heading.y + heading.height), 20, "the picture flows under the title with its own gap");
+  assert.ok(Math.abs(picture.width / picture.height - 2) < 1e-9 && picture.width === 360, "and keeps its shape across the span");
+  assert.equal(heading2.y, heading.y + heading.height + 10, "a list heading after hidden copy moves up too");
+  assert.equal(badge.y, 300, "a layer riding on hidden copy's edge keeps its place");
+  // Shown again, the copy is back between them.
+  const shown = smart.layoutSmartScene({background: "#111111", elements: [title, {...body, hidden: false, text: "Stocks went up"}, media, list, rider]}, metrics).scene.elements;
+  assert.equal(shown[2].y, shown[1].y + shown[1].height + 20);
+});
+
 test("a check mark follows a name's last line, a card hugs its copy past a hidden photo, and a centred flow moves as one", () => {
   const copy = {role: "body", lines: 0, minFontSize: 12, maxFontSize: 20, maxHeight: 110};
   const title = text({slot: "title", text: "Title", y: 0, height: 24, smartText: {...copy, maxHeight: 24}, smartCenter: {top: 50, bottom: 450}});

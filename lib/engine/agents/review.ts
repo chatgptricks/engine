@@ -16,12 +16,14 @@ import { ask, imageBlock, type SourceImage } from "./claude";
 import { need, outputOf, type StageContext, type StageRunner } from "./context";
 import { commentOnDeck, loadDeck } from "./deck";
 import { coverPage, followPage, templatePages, type PageCatalog } from "./pages";
-import { rolePrompt } from "./playbook";
+import { exactPrompt, rolePrompt } from "./playbook";
 import { originalSlides } from "./research";
 import { CriticSchema, type ChartsOutput, type CriticOutput, type DataOutput, type DeckOutput, type Facts, type Issue, type ReviewOutput } from "./schemas";
 
 /** Fix rounds after the first review: the critics send work back at most this many times. */
 export const MAX_FIX_ROUNDS = 2;
+/** An exact copy has one thing to fix, the copy itself, so it gets one round. */
+export const MAX_EXACT_FIX_ROUNDS = 1;
 const RENDER_BUDGET_MS = 150_000;
 /** Two short lines of body text. Spanish runs a little longer, and smart text shrinks to fit, so over this is a should-fix. */
 const BODY_LIMIT = 80;
@@ -29,8 +31,12 @@ const message = (error: unknown) => error instanceof Error ? error.message : Str
 
 type DeckPage = DeckOutput["pages"][number];
 
-/** House rules code can check on the saved deck, plus pages Export would refuse. */
-export function houseChecks(document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[], profile: PageProfile, renders?: Pick<SlideRender, "pageId" | "exportError">[] | null): Issue[] {
+/**
+ * House rules code can check on the saved deck, plus pages Export would refuse.
+ * An exact copy (`exact`) keeps the original's words, so its bodies may run
+ * long; its cover is set in capitals in code.
+ */
+export function houseChecks(document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[], profile: PageProfile, renders?: Pick<SlideRender, "pageId" | "exportError">[] | null, options: { exact?: boolean } = {}): Issue[] {
   const issues: Issue[] = [];
   const add = (slide: number, problem: string, fix: string, severity: Issue["severity"], route: Issue["route"]) => issues.push({ slide, problem, fix, severity, route });
   const cover = coverPage(catalog), follow = followPage(catalog);
@@ -54,14 +60,14 @@ export function houseChecks(document: DesignDocument, pages: DeckPage[], catalog
         continue;
       }
       if (noFinalPeriods && text.split("\n").some(line => /(?<!\.)\.$/.test(line.trim()))) add(slide, `The ${slot} text ends with a period`, "Drop the final period", "must_fix", "copy");
-      if (slot === "body" && [...text].length > BODY_LIMIT) add(slide, `The body is ${[...text].length} characters, more than two short lines`, "Cut it to about 75 characters, one short sentence", "should_fix", "copy");
-      if (templatePage === cover?.index && slot === headline && text !== text.toLocaleUpperCase(locale)) add(slide, "The cover headline isn't in capitals", "Write the cover headline in ALL CAPS", "must_fix", "copy");
+      if (!options.exact && slot === "body" && [...text].length > BODY_LIMIT) add(slide, `The body is ${[...text].length} characters, more than two short lines`, "Cut it to about 75 characters, one short sentence", "should_fix", "copy");
+      if (!options.exact && templatePage === cover?.index && slot === headline && text !== text.toLocaleUpperCase(locale)) add(slide, "The cover headline isn't in capitals", "Write the cover headline in ALL CAPS", "must_fix", "copy");
       if (follow && templatePage === follow.index && slot === "cta" && [...text].length > profile.followCta.maxChars) {
         add(slide, `The Follow line is ${[...text].length} characters, over its ${profile.followCta.maxChars}`, `Write a Follow line of at most ${profile.followCta.maxChars} characters`, "must_fix", "copy");
       }
     }
     const render = renders?.find(item => item.pageId === page.id);
-    if (render?.exportError) add(slide, render.exportError, "Shorten the text so Export accepts the slide", "must_fix", "copy");
+    if (render?.exportError) add(slide, render.exportError, options.exact ? "Move this slide's words to a page with room for them, keeping every word" : "Shorten the text so Export accepts the slide", "must_fix", "copy");
   });
   return issues;
 }
@@ -121,8 +127,24 @@ async function factCritic(context: StageContext, document: DesignDocument, pages
   });
 }
 
-async function designCritic(context: StageContext, renders: SlideRender[], document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[], found: Issue[]): Promise<CriticOutput> {
-  const [originals, examples] = await Promise.all([originalSlides(context), guideExampleBlocks(context.ownerKey, context.guide)]);
+/** The design critic's card for an exact copy: fidelity to the original, never better words. */
+const EXACT_CRITIC = {
+  title: "Design critic",
+  job: "Check an exact copy against the original: the same slides and words, nothing cut off, and every picture cut cleanly from the original slide.",
+  rules: [
+    "You see the original post's slides, then ours, rendered exactly as Export draws them at 1080×1440, shown smaller",
+    "Every word on each original slide is on our matching slide, in the same order (translated faithfully when the page's language differs). A missing, added or changed word is must_fix for copy, naming the exact words. Our Follow page is the one exception: its fixed first line and its limited second line, below, are right as they are",
+    "Nothing is cut off, overflowing or unreadable. Text that doesn't fit is must_fix for copy: a page with more room, never fewer words",
+    "Each photo, chart or screenshot is a clean cut of the original's: no stray text from the original slide, no border, bar or background around it, and nothing that matters cut off. A bad cut is must_fix for images, saying which part of the original slide to keep",
+    "Never ask to change, shorten or improve the original's words, and don't judge the story. The template's look is not an issue: its fonts, colors and layout, the cover in capitals, no final periods, and the original page's own branding left out",
+    "A grey placeholder in the Follow page's photo slot is fine: a person adds the profile screenshot. Report it with route none",
+    "Verdict ship when nothing is must_fix. Slide numbers are ours",
+  ],
+  bar: "Side by side with the original, a reader sees the same post in our template.",
+};
+
+async function designCritic(context: StageContext, renders: SlideRender[], document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[], found: Issue[], exact = false): Promise<CriticOutput> {
+  const [originals, examples] = await Promise.all([originalSlides(context), exact ? Promise.resolve([]) : guideExampleBlocks(context.ownerKey, context.guide)]);
   const ours = await Promise.all(renders.map(render => forCritic(render.png)));
   const labelOf = (pageId: string) => catalog.find(item => item.index === pages.find(entry => entry.pageId === pageId)?.templatePage)?.label;
   // Slides that share one photo are also shown side by side, so the critic can judge the split.
@@ -139,6 +161,7 @@ async function designCritic(context: StageContext, renders: SlideRender[], docum
       found.length ? `CODE ALREADY FOUND THESE (don't repeat them)\n${listIssues(found)}` : "",
     ].filter(Boolean).join("\n\n") },
   ];
+  if (exact) return ask({ role: "designCritic", what: "check the copy against the original", signal: context.signal, usage: context.usage, schema: CriticSchema, system: exactPrompt(context.profile, "", EXACT_CRITIC), content });
   return ask({
     role: "designCritic", what: "review the rendered slides", signal: context.signal, usage: context.usage, schema: CriticSchema,
     system: rolePrompt("review", context.profile, [
@@ -154,24 +177,25 @@ async function designCritic(context: StageContext, renders: SlideRender[], docum
 }
 
 /** The critics' report as one deck comment: what they checked and what is still open. */
-export function reviewComment(review: ReviewOutput): string {
+export function reviewComment(review: ReviewOutput, exact = false): string {
   const open = [...review.checks, ...(review.facts?.issues ?? []), ...(review.design?.issues ?? [])].filter(issue => issue.severity !== "note");
   return [
     `Review by Recreate's critics${review.round ? ` (after ${review.round} fix round${review.round === 1 ? "" : "s"})` : ""}`,
-    review.facts ? `Facts: ${review.facts.summary}` : "Facts: not checked",
+    review.facts ? `Facts: ${review.facts.summary}` : exact ? "Facts: not checked, as an exact copy keeps the original's words" : "Facts: not checked",
     review.design ? `Design: ${review.design.summary}` : review.rendered ? "Design: not checked" : "Design: the slides couldn't be rendered here, so only code checked them",
     open.length ? `Still to fix:\n${open.map(issue => `• ${issue.slide ? `Slide ${issue.slide}` : "Post"}: ${issue.problem}. Fix: ${issue.fix}`).join("\n")}` : "Nothing left to fix.",
   ].join("\n");
 }
 
-/** The issues one route fixes, as instructions for its rerun. */
-export function fixInstructions(review: ReviewOutput, route: Issue["route"]): string {
+/** The issues one route (or several, all fixed by one stage) fixes, as instructions for its rerun. */
+export function fixInstructions(review: ReviewOutput, route: Issue["route"] | Issue["route"][]): string {
+  const routes = Array.isArray(route) ? route : [route];
   const issues = [...review.checks, ...(review.facts?.issues ?? []), ...(review.design?.issues ?? [])]
-    .filter(issue => issue.route === route && issue.severity !== "note");
+    .filter(issue => routes.includes(issue.route) && issue.severity !== "note");
   return [
     "The critics found these problems in the finished post. Fix every one; keep everything else exactly as it was.",
     ...issues.map(issue => `- ${issue.slide ? `Slide ${issue.slide}` : "Whole post"} (${issue.severity === "must_fix" ? "must fix" : "should fix"}): ${issue.problem}. Fix: ${issue.fix}`),
-    route === "data" ? "Keep every chart's id, so the slides still find their charts." : "",
+    routes.includes("data") ? "Keep every chart's id, so the slides still find their charts." : "",
   ].filter(Boolean).join("\n").slice(0, 4000);
 }
 
@@ -191,7 +215,11 @@ export const review: StageRunner = async context => {
     if (context.signal.aborted) throw error;
     checks.push({ slide: 0, problem: `The slides couldn't be rendered (${message(error)})`, fix: "Open the post and check every slide by eye", severity: "note", route: "none" });
   }
-  checks.unshift(...houseChecks(document, pages, catalog, profile, renders), ...guideDeckChecks(document, profile, context.guide));
+  // An exact copy keeps the original's words: no length or caps rules, and the guide's checks are notes,
+  // since only the template's look could fix them.
+  const exact = file.mode === "exact";
+  const guideChecks = guideDeckChecks(document, profile, context.guide).map(issue => exact ? { ...issue, route: "none" as const } : issue);
+  checks.unshift(...houseChecks(document, pages, catalog, profile, renders, { exact }), ...guideChecks);
   const critic = async (run: () => Promise<CriticOutput>, who: string) => {
     try { return await run(); } catch (error) {
       if (context.signal.aborted) throw error;
@@ -200,14 +228,15 @@ export const review: StageRunner = async context => {
     }
   };
   const [facts, design] = await Promise.all([
-    critic(() => factCritic(context, document, pages, catalog), "fact critic"),
-    renders?.length ? critic(() => designCritic(context, renders!, document, pages, catalog, checks), "design critic") : Promise.resolve(null),
+    exact ? Promise.resolve(null) : critic(() => factCritic(context, document, pages, catalog), "fact critic"),
+    renders?.length ? critic(() => designCritic(context, renders!, document, pages, catalog, checks, exact), "design critic") : Promise.resolve(null),
   ]);
   const issues = [...checks, ...(facts?.issues ?? []), ...(design?.issues ?? [])];
-  // A person's edits stand: nothing is sent back over them.
-  const sendable = built.held || context.round >= MAX_FIX_ROUNDS ? [] : issues.filter(issue => issue.severity === "must_fix" && issue.route !== "none");
+  // A person's edits stand: nothing is sent back over them. An exact copy has no charts to rebuild.
+  const rounds = exact ? MAX_EXACT_FIX_ROUNDS : MAX_FIX_ROUNDS;
+  const sendable = built.held || context.round >= rounds ? [] : issues.filter(issue => issue.severity === "must_fix" && issue.route !== "none" && !(exact && issue.route === "data"));
   const routes = sendable.flatMap(issue => issue.route === "none" ? [] : [issue.route]);
   const output: ReviewOutput = { round: context.round, rendered: Boolean(renders), checks, facts, design, sentBack: [...new Set(routes)] };
-  if (!output.sentBack.length) await commentOnDeck(context.ownerKey, built.deckId, [reviewComment(output)]);
+  if (!output.sentBack.length) await commentOnDeck(context.ownerKey, built.deckId, [reviewComment(output, exact)]);
   return { output };
 };

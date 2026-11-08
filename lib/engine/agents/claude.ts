@@ -14,14 +14,14 @@ export function isRecreateConfigured(): boolean {
   return Boolean(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
 }
 
-export type AgentRole = "editor" | "facts" | "data" | "reactions" | "visuals" | "story" | "hooks" | "copy" | "art" | "factCritic" | "designCritic";
+export type AgentRole = "transcript" | "editor" | "facts" | "data" | "reactions" | "visuals" | "story" | "hooks" | "copy" | "art" | "factCritic" | "designCritic";
 const OPUS = "claude-opus-5-5", SONNET = "claude-sonnet-5-5";
 const DEFAULT_MODEL: Record<AgentRole, string> = {
-  editor: OPUS, facts: OPUS, data: SONNET, reactions: SONNET, visuals: SONNET, story: OPUS,
+  transcript: OPUS, editor: OPUS, facts: OPUS, data: SONNET, reactions: SONNET, visuals: SONNET, story: OPUS,
   hooks: SONNET, copy: OPUS, art: SONNET, factCritic: OPUS, designCritic: OPUS,
 };
 const ENV_NAME: Record<AgentRole, string> = {
-  editor: "EDITOR", facts: "FACTS", data: "DATA", reactions: "REACTIONS", visuals: "VISUALS", story: "STORY",
+  transcript: "TRANSCRIPT", editor: "EDITOR", facts: "FACTS", data: "DATA", reactions: "REACTIONS", visuals: "VISUALS", story: "STORY",
   hooks: "HOOKS", copy: "COPY", art: "ART", factCritic: "FACT_CRITIC", designCritic: "DESIGN_CRITIC",
 };
 

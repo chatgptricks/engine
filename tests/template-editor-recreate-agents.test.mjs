@@ -101,7 +101,7 @@ function team(custom={}) {
   for(const stage of posts.POST_STAGES) {
     if(stage==="approval"&&!custom.approval)continue; // autopilot uses Engine's own auto-approval
     runners[stage]=async context=>{
-      for(const input of posts.STAGE_INPUTS[stage])assert.ok(["done","skipped"].includes(context.file.stages[input]?.status),`${stage} started before ${input} finished`);
+      for(const input of posts.inputsOf(stage,context.file.mode))assert.ok(["done","skipped"].includes(context.file.stages[input]?.status),`${stage} started before ${input} finished`);
       calls.push({stage,round:context.round,instructions:context.instructions,previous:context.previous});
       await new Promise(resolve=>setTimeout(resolve,2));
       if(custom[stage])return custom[stage](context,calls.filter(call=>call.stage===stage).length);

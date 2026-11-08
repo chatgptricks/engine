@@ -29,9 +29,9 @@ function parseStart(body: Record<string, unknown>) {
     });
   }
   if (!url && !uploads?.length) throw new RecreateError("Paste an Instagram post link or upload the post's slides.");
-  if (body.mode !== undefined && body.mode !== "checkpoint" && body.mode !== "autopilot") throw new RecreateError("mode is checkpoint (pause for your approval) or autopilot.");
+  if (body.mode !== undefined && body.mode !== "checkpoint" && body.mode !== "autopilot" && body.mode !== "exact") throw new RecreateError("mode is exact (rebuild the post as it is), checkpoint (pause for your approval) or autopilot.");
   // Autopilot by default, so clients written before the checkpoint get a finished deck as before.
-  const mode: PostMode = body.mode === "checkpoint" ? "checkpoint" : "autopilot";
+  const mode: PostMode = body.mode === "checkpoint" || body.mode === "exact" ? body.mode : "autopilot";
   return { profileId, url, uploads, caption: text(body.caption, 10_000), notes: text(body.notes, 2000), mode, xPosts: xPostsOf(body.xPosts) };
 }
 

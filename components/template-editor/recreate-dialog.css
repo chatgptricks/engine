@@ -12,6 +12,19 @@
 .te-tool-dialog.te-recreate .te-recreate-segment input[type=radio] { position:absolute; width:1px; height:1px; min-height:0; padding:0; margin:0; opacity:0; pointer-events:none; }
 .te-tool-dialog.te-recreate .te-recreate-segment label:has(input:focus-visible) { outline:2px solid #ddd; outline-offset:2px; }
 
+/* What to make: an exact copy or a full recreation. Native radios, styled as two cards. */
+.te-recreate-kind { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.te-tool-dialog.te-recreate .te-recreate-kind label { position:relative; display:grid; gap:3px; align-content:start; padding:11px 13px; border:1px solid #ffffff12; border-radius:10px; background:#ffffff05; color:#ffffffb8; cursor:pointer; transition:background .15s,border-color .15s,color .15s; }
+.te-tool-dialog.te-recreate .te-recreate-kind label:hover { color:#fff; background:#ffffff0a; }
+.te-tool-dialog.te-recreate .te-recreate-kind label.is-selected { color:#e6d8ff; background:#ad83f522; border-color:#b28bf8aa; }
+.te-tool-dialog.te-recreate .te-recreate-kind input[type=radio] { position:absolute; width:1px; height:1px; min-height:0; padding:0; margin:0; opacity:0; pointer-events:none; }
+.te-tool-dialog.te-recreate .te-recreate-kind label:has(input:focus-visible) { outline:2px solid #ddd; outline-offset:2px; }
+.te-tool-dialog.te-recreate .te-recreate-kind strong { color:inherit; font-size:13px; font-weight:550; }
+.te-recreate-kind small { color:#ffffff99; font-size:12px; line-height:1.45; }
+.te-recreate-kind label.is-selected small { color:#e6d8ffb3; }
+@media (prefers-reduced-motion:reduce) { .te-tool-dialog.te-recreate .te-recreate-kind label { transition:none; } }
+@media (max-width:440px) { .te-recreate-kind { grid-template-columns:1fr; } }
+
 /* Stacked fields. */
 .te-tool-dialog.te-recreate label.te-recreate-field { display:grid; gap:7px; align-items:stretch; color:#ffffffe6; font-size:13px; }
 .te-recreate-field > span { display:flex; align-items:baseline; gap:8px; font-weight:500; }
