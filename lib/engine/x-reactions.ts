@@ -15,9 +15,15 @@
  * demo mode (a few runs a month, not through the API) and sends `{noResults: true}`
  * placeholders instead of posts, which fetchXReactions reports as X_PAID_PLAN.
  * The token is never put in an error, a log or a result.
+ *
+ * `fetchXPost` and `fetchXPosts` read posts a person added by link from the
+ * public data X's own embed widget uses, which needs no Apify plan or token.
  */
 
 import { X_CARD } from "../template-editor/model";
+import { MAX_ADDED_POSTS, xPostId } from "./x-links";
+
+export { MAX_ADDED_POSTS, xPostId };
 
 /** X's check mark: blue for paid accounts, gold for organizations, grey for governments. */
 export type XBadge = "blue" | "gold" | "grey";
@@ -446,4 +452,81 @@ export async function fetchXReactions({ terms, since, max = 30, language = "en",
   if (items.length && items.every(isPlaceholder) && await paidPlanAsked(token, fetcher, signal)) throw new XReactionsError(X_PAID_PLAN, 402);
   // The actor's like floor is loose, so it is applied again here.
   return normalizeTweets(items, floor).slice(0, limit);
+}
+
+const EMBED_URL = "https://cdn.syndication.twimg.com/tweet-result";
+const EMBED_TIMEOUT_MS = 15_000;
+const EMBED_MAX_BYTES = 1_000_000;
+
+/** The token X's own embed widget sends with a post id. */
+export const xEmbedToken = (id: string) => ((Number(id) / 1e15) * Math.PI).toString(36).replace(/(0+|\.)/g, "");
+
+/** The body as text, or null when it's bigger than `limit` bytes (the rest is never downloaded). */
+async function readCapped(response: Response, limit: number): Promise<string | null> {
+  const declared = Number(response.headers.get("content-length"));
+  if (Number.isFinite(declared) && declared > limit) { await response.body?.cancel().catch(() => undefined); return null; }
+  if (!response.body) { const body = await response.text(); return Buffer.byteLength(body) > limit ? null : body; }
+  const reader = response.body.getReader(), chunks: Uint8Array[] = [];
+  for (let size = 0; ;) {
+    const { done, value } = await reader.read();
+    if (done) return Buffer.concat(chunks).toString("utf8");
+    size += value.byteLength;
+    if (size > limit) { await reader.cancel().catch(() => undefined); return null; }
+    chunks.push(value);
+  }
+}
+
+/**
+ * One post from X, by its link or id, read from the public data X's own embed
+ * widget uses, so it needs no Apify plan or token. It comes back like a searched
+ * post: verbatim text, the author's check mark and photo shape, the post's photo,
+ * likes and date. Throws XReactionsError in plain words when the link isn't a post
+ * on X or X won't show the post (deleted, protected or age-restricted).
+ */
+export async function fetchXPost(value: string, { signal, fetch: fetcher = fetch }: { signal?: AbortSignal; fetch?: typeof fetch } = {}): Promise<XReaction> {
+  const id = xPostId(value);
+  if (!id) throw new XReactionsError(`"${String(value ?? "").trim().slice(0, 80)}" isn't a link to a post on X.`, 400);
+  const unavailable = () => new XReactionsError(`X won't show post ${id}. It may be deleted, from a protected account or age-restricted.`, 404);
+  const url = new URL(EMBED_URL);
+  url.search = new URLSearchParams({ id, lang: "en", token: xEmbedToken(id) }).toString();
+  const timeout = AbortSignal.timeout(EMBED_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetcher(url, { headers: { Accept: "application/json" }, redirect: "error", signal: signal ? AbortSignal.any([signal, timeout]) : timeout });
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
+    throw new XReactionsError(timeout.aborted ? `X took too long to send post ${id}. Try again.` : `Couldn't reach X for post ${id}. Try again in a minute.`, 502);
+  }
+  // X answers 404 for a missing post and 400 for an id it doesn't know.
+  if (response.status === 404 || response.status === 400) { await response.body?.cancel().catch(() => undefined); throw unavailable(); }
+  if (!response.ok) { await response.body?.cancel().catch(() => undefined); throw new XReactionsError(`X couldn't send post ${id} (HTTP ${response.status}). Try again in a minute.`, response.status === 429 ? 429 : 502); }
+  const body = await readCapped(response, EMBED_MAX_BYTES);
+  let item: Item | undefined;
+  try { item = body ? record(JSON.parse(body)) : undefined; } catch { item = undefined; }
+  // A deleted or restricted post comes back empty or as a "tombstone".
+  if (!item || !Object.keys(item).length || text(item.__typename) === "TweetTombstone" || record(item.tombstone)) throw unavailable();
+  const post = normalizeTweet(item);
+  if (!post) throw new XReactionsError(`Post ${id} can't go on a card: it's a repost, an ad or has no text.`, 422);
+  return post;
+}
+
+/** Several posts by link, in order and without repeats, at most MAX_ADDED_POSTS. Posts X
+ * won't show are left out and explained in `problems`, so one bad link never stops the rest. */
+export async function fetchXPosts(values: string[], options: { signal?: AbortSignal; fetch?: typeof fetch } = {}): Promise<{ posts: XReaction[]; problems: string[] }> {
+  const problems: string[] = [], seen = new Set<string>(), wanted: string[] = [];
+  for (const value of values.map(item => String(item ?? "").trim()).filter(Boolean)) {
+    const id = xPostId(value);
+    if (!id) problems.push(`"${value.slice(0, 80)}" isn't a link to a post on X.`);
+    else if (!seen.has(id)) { seen.add(id); wanted.push(id); }
+  }
+  if (wanted.length > MAX_ADDED_POSTS) problems.push(`Only the first ${MAX_ADDED_POSTS} posts were added.`);
+  const results = await Promise.allSettled(wanted.slice(0, MAX_ADDED_POSTS).map(id => fetchXPost(id, options)));
+  const posts = results.flatMap(result => result.status === "fulfilled" ? [result.value] : []);
+  for (const result of results) {
+    if (result.status === "fulfilled") continue;
+    if (options.signal?.aborted) throw options.signal.reason ?? result.reason;
+    if (!(result.reason instanceof XReactionsError)) throw result.reason;
+    problems.push(result.reason.message);
+  }
+  return { posts, problems };
 }

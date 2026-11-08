@@ -1,10 +1,11 @@
 import { after } from "next/server";
 import { agentResponse as reply, allowedAgentOrigin, readAgentBody, resolveAgentRequest } from "@/lib/template-editor/agent-http";
-import { approveRecreate, isRunning, resumeRecreate, rerunRecreateStage, startRecreate, stopRun, submitRecreateStage, type Started } from "@/lib/engine/agents/orchestrator";
+import { addRecreatePosts, approveRecreate, isRunning, resumeRecreate, rerunRecreateStage, startRecreate, stopRun, submitRecreateStage, type AddedPosts, type Started } from "@/lib/engine/agents/orchestrator";
 import { playbook } from "@/lib/engine/agents/playbook";
 import { isRecreateConfigured, RecreateError } from "@/lib/engine/recreate";
 import { postIdFor, postView } from "@/lib/engine/recreate-jobs";
 import { getPostFile, isPostFileId, POST_STAGES, PostFileError, type PostMode, type PostStage } from "@/lib/engine/post-files";
+import { MAX_ADDED_POSTS, parseXPostLinks } from "@/lib/engine/x-links";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -31,7 +32,17 @@ function parseStart(body: Record<string, unknown>) {
   if (body.mode !== undefined && body.mode !== "checkpoint" && body.mode !== "autopilot") throw new RecreateError("mode is checkpoint (pause for your approval) or autopilot.");
   // Autopilot by default, so clients written before the checkpoint get a finished deck as before.
   const mode: PostMode = body.mode === "checkpoint" ? "checkpoint" : "autopilot";
-  return { profileId, url, uploads, caption: text(body.caption, 10_000), notes: text(body.notes, 2000), mode };
+  return { profileId, url, uploads, caption: text(body.caption, 10_000), notes: text(body.notes, 2000), mode, xPosts: xPostsOf(body.xPosts) };
+}
+
+/** Links to posts on X for the reaction slides: a list, or one per line. */
+function xPostsOf(value: unknown): string[] | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value !== "string" && !(Array.isArray(value) && value.every(item => typeof item === "string"))) throw new RecreateError("xPosts is a list of links to posts on X.");
+  const { links, invalid } = parseXPostLinks(Array.isArray(value) ? value.slice(0, 50) : value.slice(0, 20_000));
+  if (invalid.length) throw new RecreateError(`These aren't links to posts on X: ${invalid.slice(0, 3).map(item => `"${item.slice(0, 60)}"`).join(", ")}.`);
+  if (links.length > MAX_ADDED_POSTS) throw new RecreateError(`Add at most ${MAX_ADDED_POSTS} posts from X.`);
+  return links.length ? links : undefined;
 }
 
 function postIdOf(body: Record<string, unknown> | URLSearchParams): string {
@@ -46,7 +57,7 @@ function stageOf(value: unknown): PostStage {
   return value as PostStage;
 }
 
-async function act(ownerKey: string, by: "human" | "agent", body: Record<string, unknown>): Promise<Started | { file: null; postId: string }> {
+async function act(ownerKey: string, by: "human" | "agent", body: Record<string, unknown>): Promise<Started | AddedPosts | { file: null; postId: string }> {
   const action = body.action;
   if (action === "start" || action === undefined) return startRecreate(ownerKey, parseStart(body));
   const postId = postIdOf(body);
@@ -63,19 +74,26 @@ async function act(ownerKey: string, by: "human" | "agent", body: Record<string,
     case "rerun_stage": return rerunRecreateStage(ownerKey, postId, stageOf(body.stage), text(body.instructions, 2000), by);
     case "submit_stage": return submitRecreateStage(ownerKey, postId, stageOf(body.stage), body.output, by);
     case "resume": return resumeRecreate(ownerKey, postId);
+    case "add_posts": {
+      const links = xPostsOf(body.xPosts);
+      if (!links) throw new RecreateError("Paste at least one link to a post on X in xPosts.");
+      return addRecreatePosts(ownerKey, postId, links, by);
+    }
     case "stop": {
       const file = await getPostFile(ownerKey, postId);
       if (!file) throw new RecreateError("That post's working file doesn't exist or has expired.", 404);
       stopRun(postId);
       return { file: null, postId };
     }
-    default: throw new RecreateError("action is start, approve, rerun_stage, submit_stage, resume or stop.");
+    default: throw new RecreateError("action is start, approve, rerun_stage, submit_stage, add_posts, resume or stop.");
   }
 }
 
 /**
- * Start a run: `{url?, uploads?, caption?, profileId, notes?, mode?}` → 202 `{jobId, postId, status}`.
- * Act on one: `{action: "approve" | "rerun_stage" | "submit_stage" | "resume" | "stop", postId, …}`.
+ * Start a run: `{url?, uploads?, caption?, profileId, notes?, mode?, xPosts?}` → 202 `{jobId, postId, status}`.
+ * `xPosts` are links to posts on X for the reaction slides; they need no Apify plan.
+ * Act on one: `{action: "approve" | "rerun_stage" | "submit_stage" | "add_posts" | "resume" | "stop", postId, …}`.
+ * `add_posts` (`{xPosts}`) adds posts from X by link at the checkpoint; nothing reruns.
  * People and agent tokens both work; only a person's hook pick is sent to the headline model.
  */
 export async function POST(request: Request) {
@@ -95,6 +113,7 @@ export async function POST(request: Request) {
     const { file, done } = started;
     // The run goes on after the response; `next start` waits for it on a graceful shutdown.
     after(() => done);
+    if ("problems" in started) return reply({ ...postView(file, isRunning(file.id)), added: started.added, ...(started.problems.length ? { problems: started.problems } : {}) });
     return reply(postView(file, isRunning(file.id)), 202);
   } catch (error) {
     if (error instanceof RecreateError || error instanceof PostFileError) return reply({ error: error.message }, error.status);

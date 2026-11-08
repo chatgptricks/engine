@@ -115,6 +115,7 @@ const CARDS: RoleCard[] = [
       "One idea per slide; every slide earns its place. Six to ten slides unless the original is longer",
       "Use only facts and numbers from the research. A chart only where the data stage built one",
       "Reaction slides name the reaction ids and use the Reaction page with that many cards. Each card is as tall as its post, so a page holds one long post (or a post with a photo), two medium ones or three short ones: about 16 lines of text in all on one card, 10 across two, 5 across three. Posts that don't fit continue on another page",
+      "Posts marked \"Added by you\" were chosen by the person: put them on the reaction slides before any others",
     ],
     bar: "A reader who swipes through gets the original's point plus the answers they wanted.",
     output: "OutlineSchema: slides[] {kind, templatePage, purpose, points[], chartId, reactionIds[], photo}, why",

@@ -5,19 +5,20 @@ import {ArrowRightIcon, CheckIcon, CloseIcon, ImageIcon, PlusIcon} from "@/compo
 import {Modal} from "./controls";
 import {
   MAX_HOOK_CHARACTERS, MAX_RECREATE_SLIDES, MAX_RECREATE_UPLOADS, RECREATE_IMAGE_TYPES, RECREATE_LANES, RECREATE_STATUS_LABELS,
-  fetchPageProfiles, instagramLabel, normalizeInstagramUrl, prepareRecreateUpload, recreateSetupIssue, recreateTimestamp, safeSourceUrl, useRecreateJob,
+  fetchPageProfiles, instagramLabel, normalizeInstagramUrl, placePost, prepareRecreateUpload, recreateSetupIssue, recreateTimestamp, safeSourceUrl, useRecreateJob,
   type ApproveRequest, type Checkpoint, type CheckpointReaction, type FactCheck, type HookOption, type OutlineKind, type OutlineSlide, type PageProfile,
   type PreparedUpload, type RecreateAction, type RecreateJob, type RecreateMode, type RecreateRequest, type RecreateResult, type RecreateReview,
   type StageName, type StageStatus, type TrackedRecreate,
 } from "./recreate-job";
+import {MAX_ADDED_POSTS, parseXPostLinks, xPostId, xPostLink} from "@/lib/engine/x-links";
 import "./pro-tools.css";
 import "./dialog-tools.css";
 import "./recreate-dialog.css";
 
-type Draft = {mode: "link" | "screenshots"; url: string; uploads: PreparedUpload[]; caption: string; notes: string; profileId: string; autopilot: boolean};
-type FieldErrors = Partial<Record<"url" | "uploads" | "profileId", string>>;
+type Draft = {mode: "link" | "screenshots"; url: string; uploads: PreparedUpload[]; caption: string; notes: string; xPosts: string; profileId: string; autopilot: boolean};
+type FieldErrors = Partial<Record<"url" | "uploads" | "profileId" | "xPosts", string>>;
 type Phase = "form" | "running" | "checkpoint" | "done" | "error";
-const EMPTY_DRAFT: Draft = {mode: "link", url: "", uploads: [], caption: "", notes: "", profileId: "", autopilot: false};
+const EMPTY_DRAFT: Draft = {mode: "link", url: "", uploads: [], caption: "", notes: "", xPosts: "", profileId: "", autopilot: false};
 const PROFILE_MEMORY = "engine:recreate-profile";
 const AUTOPILOT_MEMORY = "engine:recreate-autopilot";
 const NOTE_IDEAS = ["Make it simpler", "Add a chart", "Use the latest stock data"];
@@ -116,7 +117,7 @@ export function RecreatePost({scope, open, onOpenChange, blockedReason, activeDe
   }
   function editAndRetry() {
     const saved = tracked?.draft;
-    setDraft(current => current.url || current.uploads.length || current.caption || current.notes || !saved ? current : {...current, ...saved});
+    setDraft(current => current.url || current.uploads.length || current.caption || current.notes || current.xPosts || !saved ? current : {...current, ...saved, xPosts: saved.xPosts ?? ""});
     recreate.dismiss();
   }
   function startAnother() {
@@ -130,7 +131,7 @@ export function RecreatePost({scope, open, onOpenChange, blockedReason, activeDe
     {open && <Modal title={title} onClose={close}>
       {phase === "form" && <RecreateForm draft={draft} setDraft={setDraft} blockedReason={blockedReason} onStart={recreate.start} onClose={close}/>}
       {phase === "running" && tracked && <RecreateProgress tracked={tracked} job={job} reconnecting={recreate.reconnecting} onAct={recreate.act} onClose={close}/>}
-      {phase === "checkpoint" && tracked && job?.checkpoint && <RecreateCheckpoint key={planKey(job)} tracked={tracked} job={job} checkpoint={job.checkpoint} onApprove={request => recreate.act({action: "approve", ...request})} onClose={close}/>}
+      {phase === "checkpoint" && tracked && job?.checkpoint && <RecreateCheckpoint key={planKey(job)} tracked={tracked} job={job} checkpoint={job.checkpoint} onApprove={request => recreate.act({action: "approve", ...request})} onAddPosts={xPosts => recreate.act({action: "add_posts", xPosts})} onClose={close}/>}
       {phase === "done" && tracked && job?.result && <RecreateDone tracked={tracked} job={job} result={job.result} isOpen={Boolean(inEditor) && activeDesignId === job.result.deckId} onOpen={() => openResult(job.result!)} onClose={close} onAnother={startAnother}/>}
       {phase === "error" && tracked && <RecreateFailure tracked={tracked} job={job} error={job?.error || job?.message || "Recreate failed. Try again."} onResume={() => recreate.act({action: "resume"})} onRetry={editAndRetry} onScreenshots={() => { editAndRetry(); setDraft(current => ({...current, mode: "screenshots"})); }} onClose={close}/>}
     </Modal>}
@@ -151,7 +152,7 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
   const [errors, setErrors] = useState<FieldErrors>({});
   const [submitError, setSubmitError] = useState(""), [busy, setBusy] = useState(false);
   const [preparing, setPreparing] = useState(0), [uploadNotice, setUploadNotice] = useState(""), [dragging, setDragging] = useState(false);
-  const urlRef = useRef<HTMLInputElement>(null), fileRef = useRef<HTMLInputElement>(null), addRef = useRef<HTMLButtonElement>(null), profileRef = useRef<HTMLSelectElement>(null);
+  const urlRef = useRef<HTMLInputElement>(null), fileRef = useRef<HTMLInputElement>(null), addRef = useRef<HTMLButtonElement>(null), profileRef = useRef<HTMLSelectElement>(null), xPostsRef = useRef<HTMLTextAreaElement>(null);
   const firstFieldRef = useRef<HTMLElement | null>(null);
   useInitialFocus(firstFieldRef);
 
@@ -247,23 +248,28 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
     else if (draft.mode === "link" && !url) next.url = "That doesn't look like an Instagram post link. It should look like instagram.com/p/…";
     if (draft.mode === "screenshots" && !draft.uploads.length) next.uploads = "Add at least one slide screenshot.";
     if (!profile) next.profileId = profiles?.length === 0 ? "No page profiles are set up yet." : "Choose the page this post is for.";
+    const posts = parseXPostLinks(draft.xPosts);
+    if (posts.invalid.length) next.xPosts = `${posts.invalid.length === 1 ? `"${posts.invalid[0].slice(0, 40)}" isn't` : `${posts.invalid.length} of these aren't`} a link to a post on X.`;
+    else if (posts.links.length > MAX_ADDED_POSTS) next.xPosts = `Add at most ${MAX_ADDED_POSTS} posts.`;
     setErrors(next);
     if (next.url) { urlRef.current?.focus(); return; }
     if (next.uploads) { addRef.current?.focus(); return; }
     if (next.profileId || !profile) { profileRef.current?.focus(); return; }
+    if (next.xPosts) { xPostsRef.current?.focus(); return; }
     setBusy(true);
     setSubmitError("");
     const notes = draft.notes.trim(), caption = draft.caption.trim();
     const mode: RecreateMode = draft.autopilot ? "autopilot" : "checkpoint";
+    const xPosts = posts.links.length ? {xPosts: posts.links} : {};
     const request: RecreateRequest = draft.mode === "link"
-      ? {url: url!, profileId: profile.id, mode, ...(notes ? {notes} : {})}
-      : {uploads: draft.uploads.map(({name, dataUrl}) => ({name, dataUrl})), profileId: profile.id, mode, ...(caption ? {caption} : {}), ...(notes ? {notes} : {})};
+      ? {url: url!, profileId: profile.id, mode, ...(notes ? {notes} : {}), ...xPosts}
+      : {uploads: draft.uploads.map(({name, dataUrl}) => ({name, dataUrl})), profileId: profile.id, mode, ...(caption ? {caption} : {}), ...(notes ? {notes} : {}), ...xPosts};
     try {
       rememberProfile(profile.id);
       await onStart(request, {
         source: draft.mode === "link" ? instagramLabel(url!) : plural(draft.uploads.length, "screenshot"),
         profileName: profileLabel(profile),
-        draft: {mode: draft.mode, url: draft.url, caption: draft.caption, notes: draft.notes, profileId: draft.profileId},
+        draft: {mode: draft.mode, url: draft.url, caption: draft.caption, notes: draft.notes, profileId: draft.profileId, xPosts: draft.xPosts},
       });
     } catch (cause) {
       setSubmitError(errorMessage(cause, "Recreate couldn't start. Try again."));
@@ -333,6 +339,12 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
       <div className="te-recreate-ideas" aria-label="Note ideas">
         {NOTE_IDEAS.map(idea => <button key={idea} type="button" aria-label={`Add note: ${idea}`} onClick={() => addNote(idea)}>+ {idea}</button>)}
       </div>
+
+      <label className="te-recreate-field">
+        <span id={`${id}-xposts-label`}>Posts from X <small className="te-recreate-optional">Optional</small></span>
+        <textarea ref={xPostsRef} aria-labelledby={`${id}-xposts-label`} aria-describedby={`${id}-xposts-help`} aria-invalid={Boolean(errors.xPosts)} rows={2} maxLength={4000} spellCheck={false} placeholder="https://x.com/…/status/…" value={draft.xPosts} onChange={event => { update({xPosts: event.target.value}); clearError("xPosts"); }}/>
+        <small id={`${id}-xposts-help`} className={errors.xPosts ? "te-recreate-invalid" : ""}>{errors.xPosts ?? `One link per line, up to ${MAX_ADDED_POSTS}. They go on the reaction slides as they look on X.`}</small>
+      </label>
 
       <label className="te-recreate-switch">
         <input type="checkbox" role="switch" checked={draft.autopilot} aria-describedby={`${id}-autopilot-help`} onChange={event => { update({autopilot: event.target.checked}); rememberAutopilot(event.target.checked); }}/>
@@ -443,7 +455,15 @@ function fromEditable(slide: EditableSlide): OutlineSlide {
 }
 
 /** The checkpoint: a person checks the slide plan, picks the hook and approves before anything is written. */
-function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onClose}: {tracked: TrackedRecreate; job: RecreateJob; checkpoint: Checkpoint; onApprove: (request: ApproveRequest) => Promise<unknown>; onClose: () => void}) {
+function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, onClose}: {
+  tracked: TrackedRecreate;
+  job: RecreateJob;
+  checkpoint: Checkpoint;
+  onApprove: (request: ApproveRequest) => Promise<unknown>;
+  /** Adds posts from X by link to the run's reactions; nothing reruns. */
+  onAddPosts: (links: string[]) => Promise<unknown>;
+  onClose: () => void;
+}) {
   const id = useId();
   const [slides, setSlides] = useState<EditableSlide[]>(() => checkpoint.slides.map(toEditable));
   // An option's index, -1 for the person's own words, null before they choose.
@@ -451,7 +471,11 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onClose}: {tra
   const [notes, setNotes] = useState("");
   const [errors, setErrors] = useState<CheckpointErrors>({slide: {}});
   const [busy, setBusy] = useState(false), [submitError, setSubmitError] = useState("");
+  const [postLink, setPostLink] = useState(""), [adding, setAdding] = useState(false), [postError, setPostError] = useState(""), [postNotice, setPostNotice] = useState("");
   const nextKey = useRef(checkpoint.slides.length);
+  // Adding a post waits on X; the slides it lands on are the ones on screen by then.
+  const slidesRef = useRef(slides);
+  useEffect(() => { slidesRef.current = slides; }, [slides]);
   const firstHookRef = useRef<HTMLInputElement>(null);
   useInitialFocus(firstHookRef);
 
@@ -508,6 +532,41 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onClose}: {tra
   function togglePost(slide: EditableSlide, postId: string) {
     const ids = slide.reactionIds.includes(postId) ? slide.reactionIds.filter(item => item !== postId) : [...slide.reactionIds, postId].slice(0, maxPosts);
     patch(slide.key, {reactionIds: ids, templatePage: reactionPage(Math.max(1, ids.length)) ?? slide.templatePage});
+  }
+  /** Reads a post from X by its link, adds it to the posts the slides can use and puts it on a reaction slide. */
+  async function addPost() {
+    if (adding) return;
+    const postId = xPostId(postLink);
+    setPostNotice("");
+    if (!postId) {
+      setPostError(postLink.trim() ? "That isn't a link to a post on X." : "Paste a link to a post on X.");
+      focusLater(`${id}-xpost`);
+      return;
+    }
+    setPostError("");
+    if (!checkpoint.reactions.some(post => post.id === postId)) {
+      setAdding(true);
+      try { await onAddPosts([xPostLink(postId)]); }
+      catch (cause) {
+        setPostError(errorMessage(cause, "That post couldn't be added. Try again."));
+        setAdding(false);
+        focusLater(`${id}-xpost`);
+        return;
+      }
+      setAdding(false);
+    }
+    setPostLink("");
+    focusLater(`${id}-xpost`);
+    const placed = placePost(slidesRef.current, postId, {
+      maxPosts, page: reactionPage,
+      slide: templatePage => ({kind: "reaction", templatePage, purpose: "Show how people reacted on X", points: [], chartId: null, reactionIds: [], photo: "", key: `s${nextKey.current++}`, pointsText: ""}),
+    });
+    if (!placed) { setPostNotice("Added. Make room on a reaction slide to show it."); return; }
+    if (!placed.changed) { setPostNotice(`That post is already on slide ${placed.at + 1}.`); return; }
+    setSlides(placed.slides);
+    const key = placed.slides[placed.at].key;
+    setErrors(current => ({...current, slides: undefined, slide: {...current.slide, [key]: ""}}));
+    setPostNotice(placed.created ? `Added on a new slide ${placed.at + 1}.` : `Added to slide ${placed.at + 1}.`);
   }
 
   async function approve(event: FormEvent<HTMLFormElement>) {
@@ -642,6 +701,15 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onClose}: {tra
           <button id={`${id}-add`} type="button" className="te-button" disabled={slides.length >= MAX_RECREATE_SLIDES} onClick={() => add("question")}><PlusIcon size={14}/>Add a slide</button>
           {checkpoint.reactions.length > 0 && maxPosts > 0 && <button type="button" className="te-button" disabled={slides.length >= MAX_RECREATE_SLIDES} onClick={() => add("reaction")}><PlusIcon size={14}/>Add a reaction slide</button>}
         </div>
+        {maxPosts > 0 && <div className="te-recreate-field te-recreate-add-post">
+          <label htmlFor={`${id}-xpost`}>Add a post from X <small className="te-recreate-optional">Optional</small></label>
+          <div className="te-recreate-add-post-row">
+            <input id={`${id}-xpost`} type="url" inputMode="url" autoComplete="off" spellCheck={false} maxLength={300} placeholder="https://x.com/name/status/…" value={postLink} aria-invalid={Boolean(postError)} aria-describedby={`${id}-xpost-help${postError ? ` ${id}-xpost-error` : ""}`} onChange={event => { setPostLink(event.target.value); setPostError(""); }} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void addPost(); } }}/>
+            <button type="button" className="te-button" disabled={adding} onClick={() => void addPost()}>{adding ? "Adding…" : "Add post"}</button>
+          </div>
+          {postError && <small id={`${id}-xpost-error`} className="te-recreate-invalid" role="alert">{postError}</small>}
+          <small id={`${id}-xpost-help`} role="status">{postNotice || "It goes on a reaction slide, word for word as it looks on X."}</small>
+        </div>}
       </RecreateSection>
 
       <label className="te-recreate-field">

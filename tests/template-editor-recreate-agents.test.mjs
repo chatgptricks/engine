@@ -520,6 +520,99 @@ test("the X reactions agent searches X itself, a few times at most, and may only
   assert.ok(playbookLib.roleCardFor("reactions").rules.some(rule=>/search again/.test(rule)));
 });
 
+test("posts added by link lead the reactions and need no Apify plan",async()=>{
+  const research=load("lib/engine/agents/research.ts");
+  const embed=id=>({__typename:"Tweet",id_str:id,text:`Post ${id} about the job market`,created_at:"2026-11-05T19:08:45.000Z",favorite_count:7291,user:{name:`Person ${id}`,screen_name:`person${id}`,is_blue_verified:true}});
+  const original=globalThis.fetch,hosts=[];
+  globalThis.fetch=async url=>{
+    const address=new URL(url),id=address.searchParams.get("id");hosts.push(address.hostname);
+    return id==="404"?new Response("",{status:404}):new Response(JSON.stringify(embed(id)),{status:200,headers:{"Content-Type":"application/json"}});
+  };
+  try {
+    const file={source:{caption:"",notes:"",slideCount:0,imageIds:[],xPosts:["https://x.com/i/status/301","https://x.com/i/status/404","https://x.com/i/status/302"]},stages:{brief:{status:"done",output:OUTPUTS.brief}}};
+    const result=await research.reactions({file,profile:english,signal:undefined,usage:[]});
+    assert.equal(result.status,undefined,"the stage succeeds with the added posts although X can't be searched");
+    assert.deepEqual(result.output.reactions.map(post=>[post.id,post.url,post.why]),[["301","https://x.com/person301/status/301","Added by you"],["302","https://x.com/person302/status/302","Added by you"]]);
+    assert.match(result.output.note,/won't show post 404/); assert.match(result.output.note,/APIFY_TOKEN/);
+    assert.deepEqual([...new Set(hosts)],["cdn.syndication.twimg.com"],"only X's embed data is asked, never Apify");
+    // Without added posts the stage is skipped as before.
+    const none=await research.reactions({file:{...file,source:{...file.source,xPosts:[]}},profile:english,signal:undefined,usage:[]});
+    assert.equal(none.status,"skipped");
+  } finally {
+    globalThis.fetch=original;
+  }
+  assert.ok(playbookLib.roleCardFor("outline").rules.some(rule=>/Added by you/.test(rule)),"the story editor puts them first");
+});
+
+test("at the checkpoint a person adds posts from X by link: nothing reruns, and the approval can use them",async()=>{
+  const embed=id=>({__typename:"Tweet",id_str:id,text:`Post ${id} about the job market`,created_at:"2026-11-05T19:08:45.000Z",favorite_count:7291,user:{name:`Person ${id}`,screen_name:`person${id}`,is_blue_verified:true}});
+  const original=globalThis.fetch,asked=[];
+  globalThis.fetch=async url=>{
+    const id=new URL(url).searchParams.get("id");asked.push(id);
+    return id==="404"?new Response("",{status:404}):new Response(JSON.stringify(embed(id)),{status:200,headers:{"Content-Type":"application/json"}});
+  };
+  try {
+    // X couldn't be searched, so the plan has no reaction slide yet.
+    const crew=team({
+      reactions:async()=>({status:"skipped",output:{reactions:[],note:"X reactions need APIFY_TOKEN on the server."}}),
+      outline:async()=>({output:{...OUTPUTS.outline,slides:OUTPUTS.outline.slides.filter(slide=>slide.kind!=="reaction")}}),
+    });
+    const ownerKey=owner(),{file,done}=await start(ownerKey,crew,"checkpoint");
+    await done;
+    const calls=crew.calls.length;
+    const added=await orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/301","https://x.com/i/status/404"],"human");
+    await added.done;
+    assert.equal(added.added,1);
+    assert.match(added.problems.join(" "),/won't show post 404/);
+    assert.equal(crew.calls.length,calls,"nothing reruns: the plan and the hooks stay");
+    const paused=await read(ownerKey,file.id);
+    assert.equal(paused.status,"paused");
+    assert.equal(paused.stages.reactions.status,"done");
+    assert.deepEqual(paused.stages.reactions.output.reactions.map(item=>[item.id,item.url,item.why]),[["301","https://x.com/person301/status/301","Added by you"]]);
+    assert.equal(paused.stages.reactions.output.note,"X reactions need APIFY_TOKEN on the server.","the search's note stays");
+    assert.deepEqual(paused.source.xPosts,["https://x.com/i/status/301"],"only posts X showed are kept as added");
+    assert.ok(paused.history.some(entry=>entry.stage==="reactions"&&entry.by==="human"&&/added a post from X by link/.test(entry.event)));
+    assert.deepEqual(jobs.postView(paused,false).checkpoint.reactions.map(item=>item.id),["301"]);
+    // The same post again, by another kind of link, changes nothing and asks X nothing.
+    const fetched=asked.length;
+    const again=await orchestrator.addRecreatePosts(ownerKey,file.id,["https://twitter.com/person301/status/301?s=20"],"human");
+    assert.equal(again.added,0); assert.equal(asked.length,fetched);
+    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/404"],"human"),/won't show post 404/);
+    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,Array.from({length:8},(_,index)=>`https://x.com/i/status/${500+index}`),"human"),/at most 8 posts/);
+    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://example.com/a/status/1"],"human"),/isn't a link to a post on X/);
+    assert.equal(asked.length,fetched+1,"refused links never reach X");
+    // The approval puts the added post on a reaction slide.
+    const slides=jobs.postView(paused,false).checkpoint.outline.slides;
+    const planned=[...slides.slice(0,-1),{kind:"reaction",templatePage:REACTION,purpose:"How X reacted",points:[],chartId:null,reactionIds:["301"],photo:""},slides.at(-1)];
+    const approved=await orchestrator.approveRecreate(ownerKey,file.id,{outline:{slides:planned,why:"With the post I added"},option:0},"agent",{runners:crew.runners,environment:env(english)});
+    await approved.done;
+    const finished=await read(ownerKey,file.id);
+    assert.deepEqual(finished.stages.approval.output.outline.slides.find(slide=>slide.kind==="reaction").reactionIds,["301"]);
+    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/302"],"human"),/already approved/);
+  } finally {
+    globalThis.fetch=original;
+  }
+});
+
+test("a post added at the checkpoint goes on the last reaction slide with room, or on a new one before Follow",()=>{
+  const job=load("components/template-editor/recreate-job.ts");
+  const page=count=>count>=3?THREE:count===2?REACTIONS:REACTION;
+  const slide=templatePage=>({kind:"reaction",templatePage,purpose:"New",points:[],chartId:null,reactionIds:[],photo:"",key:"new"});
+  const base=OUTPUTS.outline.slides.map((item,index)=>({...item,key:`s${index}`}));
+  let placed=job.placePost(base,"301",{maxPosts:3,page,slide});
+  assert.deepEqual([placed.at,placed.created,placed.changed],[2,false,true],"the plan's two-post slide has room for a third");
+  assert.deepEqual([placed.slides[2].reactionIds,placed.slides[2].templatePage],[["101","102","301"],THREE]);
+  assert.equal(base[2].reactionIds.length,2,"the slides passed in are left as they were");
+  const same=job.placePost(placed.slides,"102",{maxPosts:3,page,slide});
+  assert.deepEqual([same.at,same.changed,same.slides],[2,false,placed.slides],"a post already on a slide stays where it is");
+  placed=job.placePost(placed.slides,"302",{maxPosts:3,page,slide});
+  assert.deepEqual([placed.at,placed.created],[3,true]);
+  assert.deepEqual(placed.slides.map(item=>item.kind),["cover","original","reaction","reaction","follow"],"a new reaction slide goes before Follow");
+  assert.deepEqual([placed.slides[3].reactionIds,placed.slides[3].templatePage,placed.slides[3].key],[["302"],REACTION,"new"]);
+  const full=Array.from({length:job.MAX_RECREATE_SLIDES},(_,index)=>({...base[0],key:`f${index}`}));
+  assert.equal(job.placePost(full,"303",{maxPosts:3,page,slide}),null,"no room for another slide");
+});
+
 test("photos also come from the pages the facts cite: public, full-size images only",async()=>{
   const research=load("lib/engine/agents/research.ts"),sharp=nativeRequire("sharp");
   const png=(width,height)=>sharp({create:{width,height,channels:3,background:"#336699"}}).png().toBuffer();

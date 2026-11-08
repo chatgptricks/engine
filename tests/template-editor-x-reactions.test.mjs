@@ -166,6 +166,40 @@ test("trimReaction shortens at a word boundary with … and never splits an emoj
   assert.ok(x.reactionLines(x.trimReaction("word ".repeat(200),280,{lines:5,perLine:38}),38)<=5);
 });
 
+test("posts added by link are read from X's embed data, without Apify",async()=>{
+  const links=load("lib/engine/x-links.ts");
+  // Links from X or Twitter (with a handle, /i/web/, a photo path or a share query) and bare ids; nothing else.
+  for (const value of ["https://x.com/WilliamBaude/status/2118420271333777856?s=20","x.com/WilliamBaude/status/2118420271333777856","https://twitter.com/i/web/status/2118420271333777856","https://mobile.twitter.com/WilliamBaude/statuses/2118420271333777856/photo/1"," 2118420271333777856 "])
+    assert.equal(links.xPostId(value),"2118420271333777856",value);
+  for (const value of ["https://x.com/WilliamBaude","https://evil.example/x.com/a/status/1","https://x.com.evil.example/a/status/1","https://user:pw@x.com/a/status/1","https://x.com:8443/a/status/1","hello",""])
+    assert.equal(links.xPostId(value),null,value);
+  assert.deepEqual(plain(links.parseXPostLinks("https://x.com/a/status/1\nhttps://twitter.com/b/status/1, nope 2")),{links:["https://x.com/i/status/1","https://x.com/i/status/2"],invalid:["nope"]});
+  const embed={__typename:"Tweet",id_str:"2118420271333777856",text:"Yesterday while I was at lunch, Claude deleted a year of con law lecture notes and my current syllabus. https://t.co/o3XB8Uiugk",
+    created_at:"2026-11-05T19:08:45.000Z",favorite_count:7291,user:{name:"William Baude",screen_name:"WilliamBaude",profile_image_url_https:"https://pbs.twimg.com/profile_images/2110968185717428224/sYEkjNW0_normal.jpg",is_blue_verified:false},
+    entities:{media:[{url:"https://t.co/o3XB8Uiugk"}]},mediaDetails:[{type:"photo",media_url_https:"https://pbs.twimg.com/media/HWYj89XW8AABX1T.png",original_info:{width:758,height:372}}]};
+  const calls=[],answer=(status,body)=>new Response(typeof body==="string"?body:JSON.stringify(body),{status,headers:{"Content-Type":"application/json"}});
+  const fetch=async(url,init)=>{
+    calls.push({url:String(url),init});
+    const id=new URL(url).searchParams.get("id");
+    return id===embed.id_str?answer(200,embed):id==="404"?answer(404,""):id==="5"?answer(200,{__typename:"TweetTombstone",tombstone:{text:{text:"Age-restricted adult content."}}}):id==="6"?answer(200,"<html>"):answer(200,{});
+  };
+  // No Apify token is needed.
+  const post=await noToken.fetchXPost("https://x.com/WilliamBaude/status/2118420271333777856?s=20",{fetch});
+  assert.equal(post.url,"https://x.com/WilliamBaude/status/2118420271333777856"); assert.equal(post.likes,7291);
+  assert.equal(post.text,"Yesterday while I was at lunch, Claude deleted a year of con law lecture notes and my current syllabus."); assert.equal(post.media.height,372);
+  const asked=new URL(calls[0].url);
+  assert.equal(asked.origin+asked.pathname,"https://cdn.syndication.twimg.com/tweet-result");
+  assert.equal(asked.searchParams.get("id"),"2118420271333777856"); assert.equal(asked.searchParams.get("token"),noToken.xEmbedToken("2118420271333777856"));
+  assert.equal(calls[0].init.redirect,"error"); assert.equal(JSON.stringify(calls[0].init.headers).includes("Authorization"),false,"nothing secret is sent");
+  // Deleted, protected and age-restricted posts, and links that aren't posts on X, fail in plain words.
+  for (const [value,status,words] of [["404",404,/won't show post 404/],["5",404,/age-restricted/],["6",404,/won't show/],["7",404,/won't show/],["https://example.com/a/status/1",400,/isn't a link to a post on X/]])
+    await assert.rejects(noToken.fetchXPost(value,{fetch}),error=>error.name==="XReactionsError"&&error.status===status&&words.test(error.message),value);
+  // Several at once: in order, each read once, and one bad link never stops the rest.
+  const several=await noToken.fetchXPosts(["https://x.com/WilliamBaude/status/2118420271333777856","2118420271333777856","nope","404"],{fetch});
+  assert.deepEqual(several.posts.map(item=>item.id),["2118420271333777856"]);
+  assert.equal(several.problems.length,2); assert.match(several.problems[0],/"nope" isn't a link/); assert.match(several.problems[1],/won't show post 404/);
+});
+
 test("reactionSlots fills a card's slots and formatReactionMeta writes the stats for the deck's notes",()=>{
   const reaction=x.normalizeTweet(item({likeCount:48213,retweetCount:3120,createdAt:"Tue Nov 03 09:00:00 +0000 2026"}));
   assert.equal(x.formatReactionMeta(reaction),"48.2K likes · 3.1K reposts · Nov 3, 2026");
