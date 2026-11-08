@@ -6,6 +6,7 @@
  */
 import type Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
+import { SEAM_MAX, SEAM_MIN } from "../../template-editor/spanning-photos";
 import { ask, RecreateError } from "./claude";
 import { resolveChart } from "./charts";
 import { need, outputOf, rerunNote, type StageRunner } from "./context";
@@ -90,9 +91,14 @@ export const charts: StageRunner = async context => {
 };
 
 const PhotoPicks = z.object({
-  picks: z.array(z.object({ slide: z.number().int().describe("Slide number as listed"), candidate: z.string().describe("Candidate id"), alt: z.string().describe("Plain description of the photo for screen readers") })),
+  picks: z.array(z.object({
+    slide: z.number().int().describe("Slide number as listed"), candidate: z.string().describe("Candidate id"), alt: z.string().describe("Plain description of the photo for screen readers"),
+    seam: z.number().nullable().describe("Only for a photo across two slides: the share of the photo on the first slide, from 0.1 to 0.9 (0.5 is the middle), so the slide edge misses faces and text. Otherwise null"),
+  })),
   notes: z.array(z.string()),
 });
+/** A seam inside the range the editor allows, read as a share even when given as a percentage. */
+const seamWithin = (value: number) => Math.round(Math.min(SEAM_MAX, Math.max(SEAM_MIN, value > 1 ? value / 100 : value)) * 100) / 100;
 /** X serves a small rendition for previews. */
 const smallImage = (url: string) => /pbs\.twimg\.com\/media\//.test(url) ? url.replace(/([?&]name=)[^&]+/, "$1small") : url;
 
@@ -102,16 +108,19 @@ export const images: StageRunner = async context => {
   const pages = templatePages(template);
   const needs = approval.outline.slides.flatMap((slide, index) => {
     const page = pages.find(candidate => candidate.index === slide.templatePage);
-    return page?.photo.length && !slide.chartId && !page.reaction ? [{ slide: index + 1, page: page.label, purpose: slide.purpose, photo: slide.photo }] : [];
+    return page?.photo.length && !slide.chartId && !page.reaction ? [{ slide: index + 1, page: page.label, purpose: slide.purpose, photo: slide.photo, across: page.pair?.part === "start" }] : [];
   });
   if (!needs.length) return { status: "skipped", output: { photos: [], notes: [] } satisfies ImagesOutput };
   const missing = (list: typeof needs) => list.map(item => `Slide ${item.slide} (${item.page}): add a photo${item.photo ? ` of ${item.photo}` : ""}`);
   if (!candidates.length) return { output: { photos: [], notes: missing(needs) } satisfies ImagesOutput };
-  const listing = `SLIDES THAT NEED A PHOTO\n${needs.map(item => `- slide ${item.slide} (${item.page}): ${item.purpose}${item.photo ? `; wanted: ${item.photo}` : ""}`).join("\n")}`;
+  const listing = `SLIDES THAT NEED A PHOTO\n${needs.map(item => `- slide ${item.slide} (${item.page}): ${item.purpose}${item.photo ? `; wanted: ${item.photo}` : ""}${item.across ? `. One photo across slides ${item.slide} and ${item.slide + 1}, split at the slide edge as people swipe: a landscape photo, with its seam` : ""}`).join("\n")}`;
   const described = `CANDIDATES\n${candidates.map(item => `- ${item.id}: ${item.description || "(no description)"} [${item.credit}]`).join("\n")}`;
   const pick = (content: string | Anthropic.Beta.BetaContentBlockParam[]) => ask({
     role: "art", what: "choose the photos", effort: "medium", signal: context.signal, usage: context.usage, schema: PhotoPicks,
-    system: rolePrompt("images", profile, "Choose at most one candidate per slide; leave a slide out when nothing fits. A candidate may be used once."), content,
+    system: rolePrompt("images", profile, [
+      "Choose at most one candidate per slide; leave a slide out when nothing fits. A candidate may be used once.",
+      needs.some(item => item.across) ? "A photo across two slides shows whole, split where the slides meet. Choose a landscape photo (wider than tall) and give its seam: the share of the photo on the first slide, so the split misses faces and text. Give null for every other slide." : "",
+    ].filter(Boolean).join(" ")), content,
   });
   let picked: z.infer<typeof PhotoPicks>;
   try {
@@ -127,10 +136,11 @@ export const images: StageRunner = async context => {
   }
   const used = new Set<string>(), photos: ImagesOutput["photos"] = [];
   for (const choice of picked.picks) {
-    const candidate = candidates.find(item => item.id === choice.candidate), slide = choice.slide - 1;
-    if (!candidate || used.has(candidate.id) || photos.some(photo => photo.slide === slide) || !needs.some(item => item.slide === choice.slide)) continue;
+    const candidate = candidates.find(item => item.id === choice.candidate), slide = choice.slide - 1, need = needs.find(item => item.slide === choice.slide);
+    if (!candidate || used.has(candidate.id) || photos.some(photo => photo.slide === slide) || !need) continue;
     used.add(candidate.id);
-    photos.push({ slide, url: candidate.url, alt: choice.alt, credit: candidate.credit, sourceUrl: candidate.sourceUrl });
+    const seam = need.across && typeof choice.seam === "number" && Number.isFinite(choice.seam) ? { seam: seamWithin(choice.seam) } : {};
+    photos.push({ slide, url: candidate.url, alt: choice.alt, credit: candidate.credit, sourceUrl: candidate.sourceUrl, ...seam });
   }
   return { output: { photos, notes: [...picked.notes, ...missing(needs.filter(item => !photos.some(photo => photo.slide === item.slide - 1)))] } satisfies ImagesOutput };
 };

@@ -1,6 +1,7 @@
 /** The built-in @chatgptricks carousel at Instagram's 3:4 size (1080 × 1440).
  *
- * Pages, in order: Cover, Text + Media, List, Follow, Reaction, Reactions. Every
+ * Pages, in order: Cover, Text + Media, List, Follow, Reaction, Reactions, then
+ * the Wide photo pair (Wide photo · start, Wide photo · end). Every
  * layer is a native text, image or shape layer. Agents fill a copy by slot name, for example
  * `createAgentDeck({name, templateId: CHATGPTRICKS_TEMPLATE_ID, slides: [{slots: {"cover-headline": "…"}}, …]})`.
  * The logo, hairlines, photo fades, "SWIPE FOR MORE", "FOLLOW THIS PAGE", the
@@ -15,6 +16,13 @@
  * (about 280 characters on Reaction, 160 per card on Reactions). Keep the
  * post's link (XReaction.url) in the deck's caption or notes. Use these pages
  * only for real posts.
+ *
+ * The Wide photo pair (pages 6 and 7) shows one photo that starts on page 6 and
+ * continues on page 7, split at the seam as people swipe. Always use them
+ * together, page 6 then page 7, and fill `wide-photo` once, on page 6: the
+ * frame takes the photo's own proportions (pass the photo's size as
+ * `photoSize`) and an optional `seam` (0.1 to 0.9, the share of the photo on
+ * page 6) keeps faces and text off the cut. The source line is on page 7.
  *
  * The definition lives in model.ts (see `chatgptricksTemplate` there) so that
  * model.ts keeps no runtime imports; this module is its typed entry point. */
@@ -32,6 +40,9 @@ export const CHATGPTRICKS_SLOTS = [
   { page: 3, label: "Follow", text: ["cta"], photo: ["photo"] },
   { page: 4, label: "Reaction", text: ["title", "reaction-name", "reaction-handle", "reaction-text", "reaction-meta", "source"], photo: ["reaction-avatar"] },
   { page: 5, label: "Reactions", text: ["title", "reaction-name", "reaction-handle", "reaction-text", "reaction-meta", "reaction-name-2", "reaction-handle-2", "reaction-text-2", "reaction-meta-2", "source"], photo: ["reaction-avatar", "reaction-avatar-2"] },
+  // One photo across pages 6 and 7: filled once, on page 6.
+  { page: 6, label: "Wide photo · start", text: ["title", "body"], photo: ["wide-photo"] },
+  { page: 7, label: "Wide photo · end", text: ["title", "body", "source"], photo: [] },
 ] as const;
 
 function find(): DesignTemplate {

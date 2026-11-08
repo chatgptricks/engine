@@ -9,6 +9,7 @@ import { randomUUID } from "node:crypto";
 import { AgentDeckValidationError, createAgentDeck } from "../../template-editor/agent-decks";
 import { checkLibrarySaveBudget } from "../../template-editor/library-budget";
 import { formatDimensions, parseLibrary, type DesignComment, type DesignDocument, type DesignTemplate } from "../../template-editor/model";
+import { spanPairs } from "../../template-editor/spanning-photos";
 import { getEditorLibrary, LibraryConflictError, saveEditorLibrary } from "../../template-editor/persistence";
 import type { PageProfile } from "../page-profiles";
 import { chartAltText, chartPngDataUrl } from "../recreate-chart";
@@ -17,7 +18,8 @@ import { reactionSlots, type XReaction } from "../x-reactions";
 import { RecreateError } from "./claude";
 import { chartSources, resolveChart } from "./charts";
 import { need, outputOf, type StageRunner } from "./context";
-import { cardsOn, templatePages } from "./pages";
+import { cardsOn, pairedPages, templatePages } from "./pages";
+import { photoSize } from "./research";
 import type { Approval, ChartsOutput, CopyOutput, DataOutput, DeckOutput, FactCheck, Facts, ImagesOutput, ReactionsOutput, WrittenChart } from "./schemas";
 
 const ACCENT = "#00D98A";
@@ -53,7 +55,8 @@ export type AssembledSlide = {
   templatePage: number;
   texts: { slot: string; text: string }[];
   chart?: { chart: WrittenChart; source?: string } | null;
-  photo?: { url: string; alt: string; credit?: string; sourceUrl?: string } | null;
+  /** On the first slide of a photo pair, `seam` is the share of the photo on that slide, and `size` the photo's own size when it is known (otherwise it is measured). */
+  photo?: { url: string; alt: string; credit?: string; sourceUrl?: string; seam?: number; size?: { width: number; height: number } } | null;
   /** The photo a person should add when none was placed. */
   photoBrief?: string;
   /** Real posts for a Reaction (one card) or Reactions (two) page. */
@@ -100,9 +103,17 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
     return [{ slide, page, posts, index: slide.slide ?? index }];
   });
   if (chosen.length > MAX_DECK_SLIDES) notes.push(`Kept the first ${MAX_DECK_SLIDES} slides; Engine decks hold at most ${MAX_DECK_SLIDES}.`);
-  if (!chosen.length) throw new RecreateError("Claude didn't produce any slides for this template. Try again.", 502);
+  // Pages that share one photo only work as two slides in a row; a lone half becomes a one-slide photo page.
+  const kept = chosen.slice(0, MAX_DECK_SLIDES), paired = pairedPages(kept.map(item => ({ page: item.page, chart: Boolean(item.slide.chart) })), catalog);
+  const placed = kept.flatMap((item, index) => {
+    const page = paired[index];
+    if (page === item.page) return [item];
+    notes.push(page ? `A slide on the ${item.page.label} page didn't have the page that shares its photo next to it, so it became a ${page.label} slide.` : `Skipped a slide on the ${item.page.label} page: the page that shares its photo isn't next to it.`);
+    return page ? [{ ...item, page }] : [];
+  });
+  if (!placed.length) throw new RecreateError("Claude didn't produce any slides for this template. Try again.", 502);
 
-  const prepared = chosen.slice(0, MAX_DECK_SLIDES).map(item => {
+  const prepared = placed.map(item => {
     const names = new Set(item.page.text.map(slot => slot.slot));
     const texts = item.slide.texts.filter(entry => {
       if (names.has(entry.slot)) return true;
@@ -115,16 +126,20 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
     const photo = !item.slide.chart && photoSlot && item.slide.photo && usableImage(item.slide.photo.url) ? item.slide.photo : null;
     return { ...item, texts, cards, photoSlot, photo };
   });
+  // A photo across two slides keeps its own proportions, so its frame takes the photo's size.
+  const sizes = await Promise.all(prepared.map(item => item.page.pair?.part === "start" && item.photo ? item.photo.size ?? photoSize(item.photo.url, input.signal ?? new AbortController().signal) : null));
 
   const id = input.id ?? `recreate-${randomUUID()}`;
   const build = (withImages: boolean) => createAgentDeck({
     id, name: input.name.trim().slice(0, 200) || "Recreated post", templateId: template.id,
     caption: cleanSlideText(input.caption, false).slice(0, 20_000),
-    slides: prepared.map(item => {
+    slides: prepared.map((item, index) => {
       const slots: Record<string, string> = Object.fromEntries(item.texts.map(entry => [entry.slot, entry.text]));
       for (const [slot, value] of Object.entries(item.cards)) if (withImages || !slot.startsWith("reaction-avatar")) slots[slot] = value;
       if (withImages && item.photo && item.photoSlot) slots[item.photoSlot] = item.photo.url;
-      return { templatePage: item.page.index, slots };
+      const size = sizes[index], seam = item.photo?.seam;
+      const across = withImages && item.photo && item.page.pair?.part === "start" ? { ...(size ? { photoSize: size } : {}), ...(seam !== undefined ? { seam } : {}) } : {};
+      return { templatePage: item.page.index, slots, ...across };
     }),
   }, input.templates);
   let document: DesignDocument;
@@ -188,6 +203,8 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
     comment(`Fact check\n${lines.join("\n")}`);
   }
   if (notes.length) comment(`Notes from Recreate\n${notes.map(note => `• ${note}`).join("\n")}`);
+  // A photo across two slides is described the same on both.
+  for (const pair of spanPairs(document)) if (pair.start.publicAlt) pair.end.publicAlt = pair.start.publicAlt;
   document.comments = [...(document.comments ?? []), ...comments];
   document.tags = [...new Set([...(document.tags ?? []), "recreated", profile.id])].slice(0, 20);
   return { document, notes, pages: prepared.map((item, index) => ({ pageId: document.pages[index].id, templatePage: item.page.index, slide: item.index })) };
@@ -283,7 +300,7 @@ export const deck: StageRunner = async context => {
     return {
       templatePage: slide.templatePage, slide: index, texts: words?.texts ?? [],
       chart: spec && check?.ok !== false ? { chart: spec.chart, source: spec.source } : null,
-      photo: photo ? { url: photo.url, alt: photo.alt, credit: photo.credit, sourceUrl: photo.sourceUrl } : null,
+      photo: photo ? { url: photo.url, alt: photo.alt, credit: photo.credit, sourceUrl: photo.sourceUrl, ...(photo.seam !== undefined ? { seam: photo.seam } : {}) } : null,
       photoBrief: slide.photo,
       reactions: slide.reactionIds.flatMap(id => posts.filter(post => post.id === id).slice(0, 1)),
     };

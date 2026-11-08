@@ -5,6 +5,7 @@ import {
   type CanvasElement, type CanvasScene, type DesignDocument, type DesignPage,
   type DesignTemplate, type EditorLibrary,
 } from "./model";
+import { findSpan, hasSpans, isSpanHalf, reconcileSpans, seamOf, setSeam, spanPairs, spanPhoto, syncSpans, unlinkSpan } from "./spanning-photos";
 
 type RecordValue = Record<string, unknown>;
 type Schema = Record<string, unknown>;
@@ -51,7 +52,10 @@ const imageProperties = {
   src: str(LIMITS.imageCharacters, { minLength: 1 }), publicAlt: str(2000), fit: choice(["cover", "contain"]),
   cropX: num(0, 100), cropY: num(0, 100), cropScale: num(.1, 20), radius: num(0, 100_000),
   flipX: bool, flipY: bool, mask: choice(["none", "ellipse", "triangle", "diamond"]),
+  // The photo's own size in pixels: a spanning photo's frame takes its proportions.
+  intrinsicWidth: num(1, 100_000), intrinsicHeight: num(1, 100_000),
 };
+const seamSchema = (description: string): Schema => ({ ...num(.1, .9), description });
 const shapeProperties = {
   shape: choice(["rectangle", "ellipse", "triangle", "diamond", "polygon", "star", "arrow"]),
   fill: color, stroke: color, strokeWidth: num(0, 10_000), radius: num(0, 100_000),
@@ -60,7 +64,10 @@ const shapeProperties = {
 };
 const elementSchema: Schema = { oneOf: [
   obj({ ...baseProperties, type: { const: "text" }, ...textProperties }, ["type", "text", "x", "y", "width", "height"]),
-  obj({ ...baseProperties, type: { const: "image" }, ...imageProperties }, ["type", "src", "x", "y", "width", "height"]),
+  obj({ ...baseProperties, type: { const: "image" }, ...imageProperties,
+    span: { const: "next", description: "Continue this photo on the next slide: Engine places the whole photo across the seam in its own proportions (intrinsicWidth/intrinsicHeight, or the frame's), keeping its height, on the next slide when that slide shows no photo of its own and otherwise on a new slide after this one" },
+    seam: seamSchema("With span: the share of the photo on this slide, from 0.1 to 0.9 (default 0.5). Choose it so the cut misses faces and text"),
+  }, ["type", "src", "x", "y", "width", "height"]),
   obj({ ...baseProperties, type: { const: "shape" }, ...shapeProperties }, ["type", "x", "y", "width", "height"]),
 ] };
 const slideImageSchema = obj({ src: imageProperties.src, alt: str(2000), fit: imageProperties.fit }, ["src"]);
@@ -71,6 +78,8 @@ const slideSchema = obj({
   // Text slots allow 20,000 characters (checked per slot); photo slots take an image URL as long as `image.src`.
   slots: { type: "object", maxProperties: 100, additionalProperties: str(LIMITS.imageCharacters) },
   templatePage: { type: "integer", minimum: 0, maximum: LIMITS.slides - 1, description: "With templateId: 0-based index of the template page this slide copies. Set it on every slide or none; pages may repeat, reorder or be left out." },
+  seam: seamSchema("With templateId, on a page whose photo continues on the next page (pageTypes marks it with pair, such as the @chatgptricks Wide photo pair): the share of the photo on this slide, from 0.1 to 0.9 (default 0.5). Choose it so the cut misses faces and text"),
+  photoSize: obj({ width: num(1, 100_000), height: num(1, 100_000) }, ["width", "height"], { description: "With templateId, on that same page: the photo's size in pixels, so the frame takes its proportions instead of the placeholder's 16:9" }),
 });
 const themeSchema = obj({
   background: color, text: color, accent: color, font: choice(FONTS),
@@ -100,6 +109,8 @@ export const AGENT_UPDATE_SCHEMA: Schema = {
     operation("remove_slide", { pageId: id }, ["pageId"]),
     operation("move_slide", { pageId: id, index: { type: "integer", minimum: 0, maximum: 19 } }, ["pageId", "index"]),
     operation("update_slide", { pageId: id, background: color, label: str(200) }, ["pageId"]),
+    operation("span_photo", { pageId: id, elementId: id, seam: seamSchema("The share of the photo on this slide, from 0.1 to 0.9. Default: 0.5, or the photo's current seam when it already spans") }, ["pageId", "elementId"]),
+    operation("unlink_span", { pageId: id, elementId: id }, ["pageId", "elementId"]),
     operation("rename", { name: str(200, { minLength: 1 }) }, ["name"]),
     operation("caption", { caption: str(20_000) }, ["caption"]),
   ] } } }, ["operations"]),
@@ -174,7 +185,10 @@ function checkNativeElement(element: CanvasElement, path: string): CanvasElement
   if (!parseCanvasScene({ background: "#ffffff", elements: [{ ...element, groupId: undefined }] })) fail(path, "element contains an unsupported image URL or values outside Engine's editable layer limits");
   return element;
 }
-function makeElement(input: RecordValue, scale: number, theme: Theme, used: Set<string>, path: string): CanvasElement {
+function makeElement(source: RecordValue, scale: number, theme: Theme, used: Set<string>, path: string): CanvasElement {
+  // span and seam ask for a spanning photo once every slide exists (see SpanRequest); they aren't layer properties.
+  const { span, seam, ...input } = source;
+  if (seam !== undefined && span === undefined) fail(`${path}.seam`, "requires span: \"next\"");
   const type = input.type as CanvasElement["type"];
   const defaults: RecordValue = type === "text" ? { font: theme.font, color: theme.text, fontSize: theme.bodySize * scale, textMode: "auto-fit", verticalAlign: "top" }
     : type === "shape" ? { fill: theme.accent, stroke: "transparent" } : {};
@@ -186,7 +200,30 @@ function makeElement(input: RecordValue, scale: number, theme: Theme, used: Set<
 function textLayer(text: string, box: number[], fontSize: number, name: string, theme: Theme, scale: number, used: Set<string>, extra: RecordValue = {}): CanvasElement {
   return makeElement({ type: "text", text, name, x: box[0], y: box[1], width: box[2], height: box[3], fontSize, fontWeight: name === "Title" ? 700 : 400, slot: name.toLowerCase(), ...extra }, scale, theme, used, "$.slides");
 }
-function makeSlide(spec: RecordValue, size: { width: number; height: number }, theme: Theme, used: Set<string>, path: string): DesignPage {
+/** An image that should continue on the next slide, applied once that slide exists. */
+type SpanRequest = { pageId: string; elementId: string; seam?: number; path: string };
+function spanRequest(input: RecordValue, pageId: string, element: CanvasElement, path: string, requests: SpanRequest[]) {
+  if (input.span !== undefined) requests.push({ pageId, elementId: element.id, ...(input.seam !== undefined ? { seam: Number(input.seam) } : {}), path });
+}
+function applySpanRequests(document: DesignDocument, requests: SpanRequest[]): DesignDocument {
+  for (const request of requests) {
+    try { document = spanPhoto(document, request.pageId, request.elementId, request.seam ?? .5).design; }
+    catch (error) { fail(`${request.path}.span`, error instanceof Error ? error.message : "could not continue on the next slide"); }
+  }
+  return document;
+}
+/** Every half of a spanning photo needs its partner right next to it. */
+function requireSpanPartners(document: DesignDocument, paths: string[]) {
+  const linked = new Set(spanPairs(document).flatMap(pair => [pair.start, pair.end]));
+  document.pages.forEach((page, index) => {
+    const lonely = (page.canvas?.elements ?? []).find(element => isSpanHalf(element) && !linked.has(element));
+    if (!lonely || !isSpanHalf(lonely)) return;
+    fail(`${paths[index] ?? `$.slides[${index}]`}.templatePage`, lonely.span.part === "start"
+      ? "starts a photo that continues on the next slide: put the template page that shows its second half right after it (for @chatgptricks, page 6 then page 7)"
+      : "shows the second half of the previous slide's photo: put the template page that starts it right before it (for @chatgptricks, page 6 then page 7)");
+  });
+}
+function makeSlide(spec: RecordValue, size: { width: number; height: number }, theme: Theme, used: Set<string>, path: string, requests: SpanRequest[] = []): DesignPage {
   if (spec.templatePage !== undefined) fail(`${path}.templatePage`, "requires create_deck with templateId");
   const { width: w, height: h } = size, scale = 360 / w;
   const m = Math.min(theme.margin, w * .22, h * .22), contentW = w - m * 2, contentH = h - m * 2;
@@ -239,9 +276,13 @@ function makeSlide(spec: RecordValue, size: { width: number; height: number }, t
       }
     }
   } else if (title || body || bullets.length || spec.image) fail(path, "blank layout accepts precise elements only");
-  for (const [index, element] of ((spec.elements ?? []) as RecordValue[]).entries()) elements.push(makeElement(element, scale, theme, used, `${path}.elements[${index}]`));
+  for (const [index, element] of ((spec.elements ?? []) as RecordValue[]).entries()) {
+    const made = makeElement(element, scale, theme, used, `${path}.elements[${index}]`);
+    elements.push(made); spanRequest(element, page.id, made, `${path}.elements[${index}]`, requests);
+  }
   if (elements.length > LIMITS.elementsPerSlide) fail(`${path}.elements`, "combined generated and precise layers exceed 100 elements");
   if (spec.slots !== undefined) fail(`${path}.slots`, "slots require templateId");
+  if (spec.seam !== undefined || spec.photoSize !== undefined) fail(`${path}.${spec.seam !== undefined ? "seam" : "photoSize"}`, "requires templateId; use span: \"next\" on an image element instead");
   page.canvas = { background: String(spec.background ?? theme.background), elements };
   page.readingOrder = elements.filter(element => element.type !== "shape").map(element => element.id);
   return page;
@@ -268,16 +309,24 @@ export function agentTemplateSlots(template: DesignTemplate): AgentTemplateSlot[
   }));
 }
 export type AgentTemplatePageSlot = Omit<AgentTemplateSlot, "pageId" | "pageIndex" | "pageLabel">;
-export type AgentTemplatePage = { index: number; label?: string; slots: AgentTemplatePageSlot[] };
+/** `pair`: one photo starts on this page and continues on the page `with` (or the reverse). */
+export type AgentTemplatePage = { index: number; label?: string; slots: AgentTemplatePageSlot[]; pair?: { part: "start" | "end"; with: number; note: string } };
 
 /** The template's page types, for composing a carousel of any length with
  * `templatePage`. Pages without slots (a closing Follow page, say) are listed too. */
 export function agentTemplatePages(template: DesignTemplate): AgentTemplatePage[] {
   const slots = agentTemplateSlots(template), pageKeys = new Set(["pageId", "pageIndex", "pageLabel"]);
-  return template.pages.map((page, index) => ({
-    index, ...(page.label ? { label: page.label } : {}),
-    slots: slots.filter(slot => slot.pageIndex === index).map(slot => Object.fromEntries(Object.entries(slot).filter(([key]) => !pageKeys.has(key))) as AgentTemplatePageSlot),
-  }));
+  const pairs = spanPairs(template);
+  return template.pages.map((page, index) => {
+    const pair = pairs.find(item => item.startPage === index || item.endPage === index);
+    const photo = pair && (pair.start.slot ?? "the photo");
+    return {
+      index, ...(page.label ? { label: page.label } : {}),
+      slots: slots.filter(slot => slot.pageIndex === index).map(slot => Object.fromEntries(Object.entries(slot).filter(([key]) => !pageKeys.has(key))) as AgentTemplatePageSlot),
+      ...(pair ? { pair: { part: pair.startPage === index ? "start" as const : "end" as const, with: pair.startPage === index ? pair.endPage : pair.startPage,
+        note: `One photo runs across pages ${pair.startPage} and ${pair.endPage}: use them together, page ${pair.startPage} then page ${pair.endPage}, and fill ${photo} once, on page ${pair.startPage}. Give its photoSize and a seam there so the cut misses faces and text.` } } : {}),
+    };
+  });
 }
 
 function validateDocument(document: DesignDocument): DesignDocument {
@@ -288,7 +337,10 @@ function validateDocument(document: DesignDocument): DesignDocument {
  * template page's layer ids in paint order, as engine_list_templates reports
  * them. Copies keep the order but not the ids, so listed ids and smart flows
  * that name a layer id (rather than a slot) are resolved through it. */
-function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocument, used: Set<string>, path: string, listed: string[] = []): DesignPage {
+/** A Wide photo's seam and size, applied once both of its pages exist. */
+type SeamRequest = { pageId: string; elementId: string; seam?: number; path: string };
+const isEndHalf = (element: CanvasElement | undefined) => isSpanHalf(element) && element.span.part === "end";
+function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocument, used: Set<string>, path: string, listed: string[] = [], requests: { spans: SpanRequest[]; seams: SeamRequest[] } = { spans: [], seams: [] }): DesignPage {
   if (spec.layout !== undefined || spec.bullets !== undefined) fail(path, "template slides support templatePage, title, body, image, slots, and precise elements; omit layout and bullets");
   const canvas = page.canvas ?? sceneForPage(page, document.format);
   page.canvas = canvas;
@@ -312,6 +364,7 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
   for (const [key, value] of Object.entries((spec.slots ?? {}) as RecordValue)) {
     const target = canvas.elements.find(element => element.slot === key || element.id === key || element.name === key) ?? listedLayers.get(key);
     if (!target || target.type !== "text" && target.type !== "image" && !(target.type === "shape" && (target.templateRole === "media" || target.imageFill))) fail(`${path}.slots.${key}`, "must identify an existing text, image or photo-frame slot");
+    if (isEndHalf(target)) fail(`${path}.slots.${key}`, "is the second half of the previous slide's photo; fill the photo on that slide");
     if (target.type === "text" && String(value).length > LIMITS.textCharacters) fail(`${path}.slots.${key}`, `text slots allow at most ${LIMITS.textCharacters} characters`);
     replacements.set(target, { value: String(value), path: `${path}.slots.${key}` });
   }
@@ -333,20 +386,34 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
   if (spec.image) {
     const element = canvas.elements.find(element => element.type === "image" && element.templateRole === "media") ?? canvas.elements.find(element => element.type === "image" && element.templateRole !== "brand") ?? canvas.elements.find(element => element.type === "image");
     if (!element || element.type !== "image") fail(`${path}.image`, "template has no editable image layer");
+    if (isEndHalf(element)) fail(`${path}.image`, "this page shows the second half of the previous slide's photo; give the image on that slide");
     ensureEditable(element, canvas, ["src", "publicAlt", "fit"], `${path}.image`);
     const image = spec.image as RecordValue;
     element.src = String(image.src); element.publicAlt = String(image.alt ?? "");
     if (image.fit !== undefined) element.fit = image.fit as "cover" | "contain";
     checkNativeElement(element, `${path}.image`);
   }
+  if (spec.seam !== undefined || spec.photoSize !== undefined) {
+    const start = canvas.elements.find(element => isSpanHalf(element) && element.span.part === "start");
+    if (!start || start.type !== "image") fail(`${path}.${spec.seam !== undefined ? "seam" : "photoSize"}`, "applies only to a page whose photo continues on the next page, such as the first page of the @chatgptricks Wide photo pair");
+    if (spec.photoSize) {
+      ensureEditable(start, canvas, ["src"], `${path}.photoSize`);
+      const photoSize = spec.photoSize as { width: number; height: number };
+      start.intrinsicWidth = photoSize.width; start.intrinsicHeight = photoSize.height;
+    }
+    requests.seams.push({ pageId: page.id, elementId: start.id, ...(spec.seam !== undefined ? { seam: Number(spec.seam) } : {}), path });
+  }
   const size = formatDimensions(document), theme = themeFor(size);
-  for (const [index, element] of ((spec.elements ?? []) as RecordValue[]).entries()) canvas.elements.push(makeElement(element, 360 / size.width, theme, used, `${path}.elements[${index}]`));
+  for (const [index, element] of ((spec.elements ?? []) as RecordValue[]).entries()) {
+    const made = makeElement(element, 360 / size.width, theme, used, `${path}.elements[${index}]`);
+    canvas.elements.push(made); spanRequest(element, page.id, made, `${path}.elements[${index}]`, requests.spans);
+  }
   return page;
 }
 export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BUILT_IN_TEMPLATES): DesignDocument {
   const spec = checked(input, AGENT_DECK_SPEC_SCHEMA);
-  const used = new Set<string>();
-  let document: DesignDocument;
+  const used = new Set<string>(), requests = { spans: [] as SpanRequest[], seams: [] as SeamRequest[] };
+  let document: DesignDocument, paths: string[] = [];
   if (spec.templateId !== undefined) {
     const template = templates.find(candidate => candidate.id === spec.templateId);
     if (!template) fail("$.templateId", "template was not found");
@@ -368,12 +435,13 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
         // The editor's page duplicate: fresh page, page image, layer, group,
         // component-instance and word-texture ids, with groupId/parentId,
         // reading order and rich-text texture runs remapped. Sources stay pristine.
-        return templateSlide(duplicatePage(sources[source]), slide, document, used, path, listed[source]);
+        return templateSlide(duplicatePage(sources[source]), slide, document, used, path, listed[source], requests);
       });
+      paths = requested.map((_, index) => `$.slides[${index}]`);
     } else {
       const slides = requested ?? template.pages.map(() => ({}));
       if (slides.length !== document.pages.length) fail("$.slides", `template requires exactly ${document.pages.length} slides; omit slides to copy the full template, or set templatePage on every slide to choose pages`);
-      document.pages = document.pages.map((page, index) => templateSlide(page, slides[index], document, used, `$.slides[${index}]`, listed[index]));
+      document.pages = document.pages.map((page, index) => templateSlide(page, slides[index], document, used, `$.slides[${index}]`, listed[index], requests));
       if (document.continuousCanvas && spec.slides !== undefined) fail("$.slides", "continuous canvas templates must be copied without slide replacements");
     }
   } else {
@@ -386,8 +454,12 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
     document = createBlankDesign(String(spec.name), format);
     document.customSize = { ...size };
     const theme = themeFor(size, spec.theme);
-    document.pages = (spec.slides as RecordValue[]).map((slide, index) => makeSlide(slide, size, theme, used, `$.slides[${index}]`));
+    document.pages = (spec.slides as RecordValue[]).map((slide, index) => makeSlide(slide, size, theme, used, `$.slides[${index}]`, requests.spans));
   }
+  // Spanning photos: both halves next to each other, the seam and photo shape applied, then any span requests.
+  requireSpanPartners(document, paths);
+  for (const request of requests.seams) document = setSeam(document, request.pageId, request.elementId, request.seam ?? .5);
+  document = applySpanRequests(reconcileSpans(document).design, requests.spans);
   document.id = String(spec.id ?? document.id);
   if (used.has(document.id)) fail("$.id", "must differ from page and element identifiers");
   document.name = String(spec.name).trim();
@@ -415,11 +487,20 @@ function ensureEditable(element: CanvasElement, scene: CanvasScene, properties: 
 function allIds(document: DesignDocument) {
   return new Set([document.id, ...document.pages.flatMap(page => [page.id, page.image.id, ...(page.canvas?.elements.map(element => element.id) ?? [])]), ...(document.masterScene?.elements.map(element => element.id) ?? []), ...(document.continuousCanvas?.elements.map(element => element.id) ?? [])]);
 }
+/** The spanning photos' halves before an operation, enough for syncSpans to see what changed. */
+function spanSnapshot(document: DesignDocument): DesignDocument | undefined {
+  if (!hasSpans(document)) return undefined;
+  return { ...document, pages: document.pages.map(page => page.canvas ? { ...page, canvas: { ...page.canvas, elements: page.canvas.elements.filter(isSpanHalf).map(element => structuredClone(element)) } } : page) };
+}
 export function updateAgentDeck(document: DesignDocument, input: unknown): DesignDocument {
-  const spec = checked(input, AGENT_UPDATE_SCHEMA), next = structuredClone(document);
+  const spec = checked(input, AGENT_UPDATE_SCHEMA);
+  let next = structuredClone(document), before: DesignDocument | undefined;
   validateDocument(next);
   const size = formatDimensions(next), scale = 360 / size.width, theme = themeFor(size), used = allIds(next);
   for (const [index, operation] of (spec.operations as RecordValue[]).entries()) {
+    // Each operation's edits to one half of a spanning photo reach the other half before the next operation.
+    if (before) next = syncSpans(before, next).design;
+    before = spanSnapshot(next);
     const path = `$.operations[${index}]`, op = String(operation.op);
     if (op === "rename") {
       const name = String(operation.name).trim(); if (!name) fail(`${path}.name`, "must include a visible character");
@@ -431,7 +512,9 @@ export function updateAgentDeck(document: DesignDocument, input: unknown): Desig
       if (next.pages.length >= LIMITS.slides) fail(path, "deck already contains the maximum 20 slides");
       const target = Number(operation.index ?? next.pages.length);
       if (target > next.pages.length) fail(`${path}.index`, "is outside the slide list");
-      next.pages.splice(target, 0, makeSlide(operation.slide as RecordValue, size, theme, used, `${path}.slide`));
+      const spans: SpanRequest[] = [];
+      next.pages.splice(target, 0, makeSlide(operation.slide as RecordValue, size, theme, used, `${path}.slide`, spans));
+      next = applySpanRequests(next, spans);
       continue;
     }
     const pageIndex = next.pages.findIndex(page => page.id === operation.pageId);
@@ -458,7 +541,25 @@ export function updateAgentDeck(document: DesignDocument, input: unknown): Desig
     if (op === "add_element") {
       if (canvas.elements.length >= 100) fail(path, "slide already contains the maximum 100 elements");
       const element = makeElement(operation.element as RecordValue, scale, theme, used, `${path}.element`);
-      canvas.elements.push(element); if (page.readingOrder) page.readingOrder.push(element.id); continue;
+      canvas.elements.push(element); if (page.readingOrder) page.readingOrder.push(element.id);
+      const spans: SpanRequest[] = [];
+      spanRequest(operation.element as RecordValue, page.id, element, `${path}.element`, spans);
+      next = applySpanRequests(next, spans);
+      continue;
+    }
+    if (op === "span_photo" || op === "unlink_span") {
+      const element = canvas.elements.find(item => item.id === operation.elementId);
+      if (!element || element.type !== "image") fail(`${path}.elementId`, "must identify an image on this slide");
+      ensureEditable(element, canvas, [], path);
+      const place = findSpan(next, page.id, element.id);
+      if (op === "unlink_span") {
+        if (!place) fail(`${path}.elementId`, "this image doesn't continue on another slide");
+        next = unlinkSpan(next, page.id, element.id);
+        continue;
+      }
+      try { next = spanPhoto(next, page.id, element.id, operation.seam !== undefined ? Number(operation.seam) : place ? seamOf(place.start) : .5).design; }
+      catch (error) { fail(path, error instanceof Error ? error.message : "could not continue on the next slide"); }
+      continue;
     }
     const elementIndex = canvas.elements.findIndex(element => element.id === operation.elementId);
     if (elementIndex < 0) fail(`${path}.elementId`, "element was not found on this slide");
@@ -482,12 +583,19 @@ export function updateAgentDeck(document: DesignDocument, input: unknown): Desig
       canvas.elements[elementIndex] = updated;
     }
   }
+  if (before) next = syncSpans(before, next).design;
   next.updatedAt = new Date().toISOString();
   return validateDocument(next);
 }
 /** Inspect and patch using the same pixel coordinate system as the authoring API. */
 export function agentDeckView(document: DesignDocument) {
   const size = formatDimensions(document), scale = size.width / 360;
+  // Each half of a spanning photo names its partner slide and the seam (the share of the photo on the first slide).
+  type SpanView = { id: string; part: "start" | "end"; partnerPageId: string; seam: number };
+  const spans = new Map<CanvasElement, SpanView>(spanPairs(document).flatMap(pair => {
+    const seam = Math.round(seamOf(pair.start) * 1000) / 1000;
+    return [[pair.start, { ...pair.start.span, partnerPageId: document.pages[pair.endPage].id, seam }], [pair.end, { ...pair.end.span, partnerPageId: document.pages[pair.startPage].id, seam }]];
+  }));
   const viewScene = (scene: CanvasScene) => ({
     background: scene.background,
     elements: scene.elements.map(element => ({
@@ -495,6 +603,7 @@ export function agentDeckView(document: DesignDocument) {
       ...(element.clipBounds ? { clipBounds: toScene(element.clipBounds, scale) } : {}),
       ...(element.shadow ? { shadow: { ...element.shadow, offsetX: element.shadow.offsetX * scale, offsetY: element.shadow.offsetY * scale, blur: element.shadow.blur * scale, spread: element.shadow.spread * scale } } : {}),
       ...(element.strokeDash ? { strokeDash: element.strokeDash.map(length => length * scale) } : {}),
+      ...(spans.has(element) ? { span: spans.get(element) } : {}),
     })),
     ...(scene.groups ? { groups: structuredClone(scene.groups) } : {}),
   });
@@ -529,6 +638,6 @@ export function agentCapabilities() {
     ] },
     updateExample: { operations: [{ op: "update_slide", pageId: "intro", label: "Opening slide" }, { op: "rename", name: "My editable presentation" }] },
     ...(composable ? { templateExample: { name: "A carousel composed from template pages", templateId: composable.id, slides: [{ templatePage: 0 }, { templatePage: 1 }, { templatePage: 1 }, { templatePage: composable.pages.length - 1 }] } } : {}),
-    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates. Omit slides to copy every page, or pass exactly one slide per template page in order to fill its text/image slots.", "To build a carousel of any length (1–20 slides) from a template's page types, set templatePage (0-based template page index) on every slide; pages may repeat, reorder or be left out. Each slide gets fresh page and layer ids and keeps that page's smart-template rules. Setting templatePage on only some slides is an error. Template pages and their slots are listed per page as pageTypes.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Photo slots and image.src accept the imageSources listed here, up to 2,000,000 characters. Render charts as PNG data URLs; base64 SVG is rejected.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace."],
+    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates. Omit slides to copy every page, or pass exactly one slide per template page in order to fill its text/image slots.", "To build a carousel of any length (1–20 slides) from a template's page types, set templatePage (0-based template page index) on every slide; pages may repeat, reorder or be left out. Each slide gets fresh page and layer ids and keeps that page's smart-template rules. Setting templatePage on only some slides is an error. Template pages and their slots are listed per page as pageTypes.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Photo slots and image.src accept the imageSources listed here, up to 2,000,000 characters. Render charts as PNG data URLs; base64 SVG is rejected.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace.", "Spanning photos: one photo can start on one slide and continue on the next, split at the seam as people swipe. In a template, use the two pages pageTypes marks with pair together and in order, fill the photo once on the first and give its photoSize and seam (0.1 to 0.9, the share of the photo on that slide, chosen so the cut misses faces and text). In any deck, add an image with span: \"next\" (and seam), or use span_photo on an existing image; span_photo on a photo that already spans moves its seam. update_element on either half updates both, remove_element removes both, unlink_span leaves two ordinary photos, and a slide moved away from its partner unlinks them. engine_get_deck shows each half's span with its partnerPageId and seam."],
   };
 }

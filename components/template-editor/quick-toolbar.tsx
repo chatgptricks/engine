@@ -13,6 +13,7 @@ import { photoContent, updatePhotoContent } from "@/lib/template-editor/photo-fr
 import { textRangeTogglePatch, type TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
 import { SmartTextControls } from "./smart-text-controls";
 import { PaintPicker } from "./paint-picker";
+import { SpanToolbarControls, type SpanControl } from "./span-photo-controls";
 import "./element-inspector.css";
 
 type Props = {
@@ -41,9 +42,11 @@ type Props = {
   onUnlock?: () => void;
   /** Template drafts: page height (scene units) for the "In posts" role picker. */
   templateDraftHeight?: number;
+  /** Span, or the Spans menu and Seam slider, for one selected photo. */
+  span?: SpanControl;
 };
 
-export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, onUnlock, onDuplicate, onDelete, outputScale = 3 }: Props) {
+export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, span, onUnlock, onDuplicate, onDelete, outputScale = 3 }: Props) {
   const selected=scene.elements.filter(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element));
   const unlocked=selected.filter(element=>!isElementLocked(scene,element));
   const propertySelection=unlocked.length?unlocked:selected;
@@ -122,6 +125,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
         {onReplacePhoto&&selected.length===1&&(allPhotos||allShapes)&&<button type="button" className="te-context-action" disabled={disabled||!canEditElement(scene,selected[0],"content")} onClick={onReplacePhoto}><EditorIcon name="photo"/>{allPhotos?"Replace photo":"Add photo"}</button>}
         {allPhotos&&inspectAction("photo","Photo","photo","Photo properties")}
         {onCrop&&selected.length===1&&allPhotos&&<button type="button" className="te-context-action" aria-label={cropping?"Finish crop":"Crop photo"} aria-pressed={cropping} disabled={disabled||!canCrop} onClick={onCrop}><EditorIcon name="crop"/>{cropping?"Done crop":"Crop"}</button>}
+        {span&&selected.length===1&&allPhotos&&<SpanToolbarControls control={span} disabled={disabled}/>}
         {!onInspect&&onEdit&&<button type="button" aria-label="Edit selection properties" onClick={onEdit}>{allPhotos?"Edit photo":"Edit"}</button>}
         {onInspect?inspectAction("position","Position","position","Position selection"):onPosition&&<button type="button" aria-label="Position selection" onClick={onPosition}>Position</button>}
         {inspectAction("effects","Effects","effects")}

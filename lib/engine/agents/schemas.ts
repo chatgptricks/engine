@@ -152,7 +152,10 @@ export const ChartsSchema = z.object({
 export type ChartsOutput = z.infer<typeof ChartsSchema>;
 
 export const ImagesSchema = z.object({
-  photos: z.array(z.object({ slide: z.number().int().describe("0-based outline slide"), url: z.string(), alt: z.string(), credit: z.string(), sourceUrl: z.string() })),
+  photos: z.array(z.object({
+    slide: z.number().int().describe("0-based outline slide"), url: z.string(), alt: z.string(), credit: z.string(), sourceUrl: z.string(),
+    seam: z.number().min(0.1).max(0.9).optional().describe("Only on the first slide of a photo pair (one photo across two slides): the share of the photo on that slide, so the split misses faces and text. Default 0.5"),
+  })),
   notes: z.array(z.string()),
 });
 export type ImagesOutput = z.infer<typeof ImagesSchema>;

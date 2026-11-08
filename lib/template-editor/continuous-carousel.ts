@@ -50,6 +50,32 @@ function assertPersistablePosition(element: CanvasElement): void {
   }
 }
 
+/** A spanning photo's start half covers both of its slides once they share one
+ * canvas, so its end half goes and the photo is one layer again. Halves without
+ * a partner on the neighboring slide simply stop being halves. */
+function joinSpanningPhotos(scenes: CanvasScene[]): CanvasScene[] {
+  const joined = scenes.map(() => new Set<string>());
+  scenes.forEach((scene, index) => {
+    const next = scenes[index + 1];
+    if (!next) return;
+    for (const start of scene.elements) {
+      if (start.type !== "image" || start.span?.part !== "start") continue;
+      const end = next.elements.find(candidate => candidate.type === "image" && candidate.span?.part === "end" && candidate.span.id === start.span?.id && !joined[index + 1].has(candidate.id));
+      if (end) joined[index + 1].add(end.id);
+    }
+  });
+  return scenes.map((scene, index) => ({
+    ...scene,
+    elements: scene.elements.flatMap((element): CanvasElement[] => {
+      if (joined[index].has(element.id)) return [];
+      if (element.type !== "image" || !element.span) return [element];
+      const plain = { ...element };
+      delete plain.span;
+      return [plain];
+    }),
+  }));
+}
+
 /** Combine page artwork into a single wide scene without changing document or
  * existing page IDs. Geometry, type, image crops and hidden layers are retained.
  * Metadata pages are emptied after flattening so image data is not duplicated. */
@@ -66,7 +92,7 @@ export function enableContinuousCarousel(design: DesignDocument): DesignDocument
     blank.canvas = { background: firstScene.background, elements: [] };
     sourcePages.push(blank);
   }
-  const scenes = sourcePages.map(page => sceneForPage(page, design.format));
+  const scenes = joinSpanningPhotos(sourcePages.map(page => sceneForPage(page, design.format)));
   const firstBackground = scenes[0].background;
   const mixedBackgrounds = scenes.some(scene => scene.background !== firstBackground);
   // An alpha rectangle over an opaque shared background would change its color.
@@ -138,8 +164,10 @@ export function sliceSceneForPage(design: SliceSource, page: DesignPage | number
 }
 
 /** Separate a wide scene into independent pages. Crossing layers receive an
- * independent copy on every intersected page. Completely parked artwork is
- * retained on page one so switching modes never silently discards layers. */
+ * independent copy on every intersected page; a photo across exactly two
+ * neighboring slides becomes the linked halves of a spanning photo (see
+ * spanning-photos.ts). Completely parked artwork is retained on page one so
+ * switching modes never silently discards layers. */
 export function splitContinuousCarousel(design: DesignDocument): DesignDocument {
   if (!design.continuousCanvas) return design;
   assertPageCount(design);
@@ -149,6 +177,14 @@ export function splitContinuousCarousel(design: DesignDocument): DesignDocument 
   const height = pageHeight(design);
   const width = design.pages.length * CONTINUOUS_PAGE_WIDTH;
   const parked = new Set(source.elements.filter(element => !elementIntersectsCanvas(element, width, height)).map(element => element.id));
+  const spanning = new Map(source.elements.flatMap(element => {
+    if (element.type !== "image") return [];
+    const crossed = design.pages.flatMap((_, index) => elementIntersectsCanvas(shifted(element, -index * CONTINUOUS_PAGE_WIDTH), CONTINUOUS_PAGE_WIDTH, height) ? [index] : []);
+    // Only a photo wholly on its two slides links up, so linking never moves or crops it.
+    const left = crossed[0] * CONTINUOUS_PAGE_WIDTH;
+    const whole = !element.rotation && element.x >= left - 1e-6 && element.x + element.width <= left + 2 * CONTINUOUS_PAGE_WIDTH + 1e-6;
+    return crossed.length === 2 && crossed[1] === crossed[0] + 1 && whole ? [[element.id, { id: crypto.randomUUID(), first: crossed[0] }] as const] : [];
+  }));
   const pages = design.pages.map((page, index) => {
     const elements: CanvasElement[] = [];
     for (const element of source.elements) {
@@ -156,6 +192,12 @@ export function splitContinuousCarousel(design: DesignDocument): DesignDocument 
       if (!elementIntersectsCanvas(copy, CONTINUOUS_PAGE_WIDTH, height) && !(index === 0 && parked.has(element.id))) continue;
       assertPersistablePosition(copy);
       copy.id = crypto.randomUUID();
+      const link = spanning.get(element.id);
+      if (link && copy.type === "image") {
+        copy.span = { id: link.id, part: index === link.first ? "start" : "end" };
+        // A template slot belongs to the start half, as on the Wide photo pages.
+        if (copy.span.part === "end") { delete copy.slot; delete copy.templateRole; }
+      }
       elements.push(copy);
     }
     const used = new Set(elements.map(element => element.groupId).filter(Boolean));

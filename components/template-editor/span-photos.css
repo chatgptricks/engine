@@ -1,0 +1,22 @@
+/* Spanning photos: the Seam slider, the neighbor peek and the page strip link. */
+.te-photo-span-seam { display: inline-flex; align-items: center; gap: 7px; padding: 0 4px; font-size: 11px; color: #c9c4d4; white-space: nowrap; }
+.te-photo-span-seam input[type="range"] { width: 96px; padding: 0; accent-color: #bda0fc; }
+.te-photo-span-seam output { min-width: 30px; color: #eee; font-variant-numeric: tabular-nums; }
+
+.te-photo-span-peek { position: absolute; }
+.te-photo-span-peek-page { position: absolute; inset: 0; overflow: hidden; padding: 0; border: 0; background: transparent; cursor: pointer; opacity: .6; transition: opacity .15s; }
+.te-photo-span-peek-page:hover, .te-photo-span-peek-page:focus-visible { opacity: .85; }
+.te-photo-span-peek-page:focus-visible { outline: 2px solid #bda0fc; outline-offset: 2px; }
+.te-photo-span-peek-frame { position: absolute; left: 0; top: 0; display: block; transform-origin: top left; pointer-events: none; }
+/* The slide edge between the two halves: the seam. */
+.te-photo-span-peek::after { content: ""; position: absolute; top: 0; bottom: 0; border-left: 1px dashed #bda0fc; pointer-events: none; }
+.te-photo-span-peek.is-after::after { left: 0; }
+.te-photo-span-peek.is-before::after { right: 0; }
+.te-photo-span-peek-label { position: absolute; top: -22px; font-size: 11px; line-height: 16px; color: #a39baf; white-space: nowrap; pointer-events: none; }
+.te-photo-span-peek.is-after .te-photo-span-peek-label { left: 8px; }
+.te-photo-span-peek.is-before .te-photo-span-peek-label { right: 8px; }
+
+.te-page-span-link { position: absolute; top: 26px; right: -15px; z-index: 1; display: grid; place-items: center; width: 18px; height: 18px; border: 1px solid #bda0fc80; border-radius: 9px; background: #28232f; color: #d9c8ff; pointer-events: none; }
+.te-simple-editor .te-page-span-link { right: -17px; top: 24px; }
+.te-notice .te-notice-undo { margin-left: auto; padding: 3px 9px; border: 1px solid #ffffff2b; border-radius: 5px; color: #d9c8ff; font-size: 11px; }
+.te-notice .te-notice-undo + button { margin-left: 0; }

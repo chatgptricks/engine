@@ -84,6 +84,9 @@ type Marquee = {
 };
 const HANDLES: Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
 
+/** One half of a photo that spans two slides: it resizes from its corners, keeping its proportions. */
+const isSpanningHalf = (element: CanvasElement | undefined) => element?.type === "image" && Boolean(element.span);
+
 /** Keep constant-size controls from covering each other on thin artwork. */
 export function resizeHandlePolicy(box: Pick<Box,"width"|"height">, scale = 1, shape = false, grouped = false): Handle[] {
   const physicalWidth=box.width*scale,physicalHeight=box.height*scale;
@@ -516,6 +519,8 @@ type CanvasEditorProps = {
   pasteboardBounds?: { x: number; y: number; width: number; height: number };
   /** Show editor-only boundaries for a continuous carousel. */
   slideWidth?: number;
+  /** Extra words for a layer's selection label, such as "across slides 2–3". */
+  layerNotes?: ReadonlyMap<string, string>;
   /** Previous-slide guide; never part of the design or export renderer. */
   onionScene?: CanvasScene;
   onionOpacity?: number;
@@ -584,6 +589,7 @@ export function CanvasEditor({
   penClosed=false,penColor="#222222",onCancelDrawing,onRegisterDrawingControls,onDrawingPointCount,
   drawingMode,
   onDrawPath,
+  layerNotes,
 }: CanvasEditorProps) {
   const root = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -1051,7 +1057,7 @@ export function CanvasEditor({
     active.moved = true;
     active.dropPoint=point; active.bypassFrame=event.altKey || Boolean(active.originalScene);
     const sourceImage=active.ids.length===1?scene.elements.find(element=>element.id===active.ids[0]):undefined;
-    const frame=active.kind === "move" && !active.bypassFrame && sourceImage?.type === "image" && canEditElement(scene,sourceImage,"content") && canEditElement(scene,sourceImage,"delete") ? findPhotoFrameAtPoint(scene,point,{excludedIds:active.ids,isolationGroupId:isolatedGroupId}) : null;
+    const frame=active.kind === "move" && !active.bypassFrame && sourceImage?.type === "image" && !sourceImage.span && canEditElement(scene,sourceImage,"content") && canEditElement(scene,sourceImage,"delete") ? findPhotoFrameAtPoint(scene,point,{excludedIds:active.ids,isolationGroupId:isolatedGroupId}) : null;
     active.dropTargetId=frame?.id;setDragFrameId(frame?.id??null);
     const sourceElements = active.source.elements.filter((element) =>
       active.ids.includes(element.id),
@@ -1071,7 +1077,7 @@ export function CanvasEditor({
                 sourceElements[0],
                 active.handle!,
                 delta,
-                event.shiftKey,
+                event.shiftKey || isSpanningHalf(sourceElements[0]),
                 event.altKey,
               ),
             ]
@@ -1404,7 +1410,7 @@ export function CanvasEditor({
         >
           {!selectionArea && !editingId && (
             <span className="te-canvas-layer-label">
-              {selected.length === 1 ? `${isElementLocked(currentScene,selected[0]) ? "Locked · " : ""}${selected[0].name || selected[0].type}` : `${selected.length} layers selected`}
+              {selected.length === 1 ? `${isElementLocked(currentScene,selected[0]) ? "Locked · " : ""}${selected[0].name || selected[0].type}${layerNotes?.has(selected[0].id) ? ` · ${layerNotes.get(selected[0].id)}` : ""}` : `${selected.length} layers selected`}
             </span>
           )}
           {!disabled &&
@@ -1412,7 +1418,7 @@ export function CanvasEditor({
             !selectionArea &&
             selected.every((element) => canEditElement(currentScene,element,"position")) && (
               <>
-                {resizeHandlePolicy(selectionBox,viewScale,selected.length===1&&selected[0].type==="shape",selected.length>1).map((handle) => (
+                {resizeHandlePolicy(selectionBox,viewScale,selected.length===1&&selected[0].type==="shape",selected.length>1||isSpanningHalf(selected[0])).map((handle) => (
                   <button
                     key={handle}
                     type="button"
@@ -1425,7 +1431,8 @@ export function CanvasEditor({
                     onKeyDown={event=>{if(event.key.startsWith("Arrow")){event.preventDefault();event.stopPropagation();onChange(keyboardCanvasTransform(scene,selectedIds,event.key,(event.shiftKey?10:1)/outputScale,handle),"keyboard-resize");}}}
                   />
                 ))}
-                <span className="te-canvas-rotate-line" />
+                {/* A spanning photo stays upright, so neither slide crops a corner. */}
+                {!selected.some(isSpanningHalf)&&<><span className="te-canvas-rotate-line" />
                 <button
                   type="button"
                   className="te-canvas-rotate"
@@ -1451,7 +1458,7 @@ export function CanvasEditor({
                       strokeLinejoin="round"
                     />
                   </svg>
-                </button>
+                </button></>}
               </>
             )}
         </div>

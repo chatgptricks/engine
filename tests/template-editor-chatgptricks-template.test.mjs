@@ -33,7 +33,7 @@ const close = (actual, expected, message) => near(actual, expected, message, .02
 const layer = (pageIndex, id) => template.pages[pageIndex].canvas.elements.find(element => element.id === `cgt-${id}`);
 const bySlot = (canvas, slot) => canvas.elements.find(element => element.slot === slot);
 const FIXED = ["cover-top-fade", "cover-bottom-fade", "cover-hairline-left", "cover-logo", "cover-hairline-right", "cover-swipe", "follow-top-fade", "follow-bottom-fade", "follow-line", "reaction-card", "reaction-x-mark", "reactions-card", "reactions-card-2", "reactions-x-mark", "reactions-x-mark-2"];
-const LABELS = ["Cover", "Text + Media", "List", "Follow", "Reaction", "Reactions"];
+const LABELS = ["Cover", "Text + Media", "List", "Follow", "Reaction", "Reactions", "Wide photo · start", "Wide photo · end"];
 
 test("the template is a built-in 3:4 carousel without changing Engine's formats", () => {
   assert.equal(CHATGPTRICKS_TEMPLATE_ID, "chatgptricks-3x4");
@@ -45,7 +45,7 @@ test("the template is a built-in 3:4 carousel without changing Engine's formats"
   // Reaction pages come after Follow, so the first four page indexes never move.
   assert.deepEqual(template.pages.map(page => page.label), LABELS);
   assert.deepEqual(CHATGPTRICKS_SLOTS.map(page => page.label), LABELS);
-  assert.deepEqual(CHATGPTRICKS_SLOTS.map(page => page.page), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(CHATGPTRICKS_SLOTS.map(page => page.page), [0, 1, 2, 3, 4, 5, 6, 7]);
   // The exact "@chatgptricks" name would switch on inference rules that rename these slots.
   assert.equal(model.isChatGPTricksTemplate(template), false);
   assert.ok(agent.agentCapabilities().templates.some(item => item.id === "chatgptricks-3x4" && item.size.height === 1440));
@@ -99,6 +99,9 @@ test("agents see the copy and photo slots; brand furniture stays fixed", () => {
   const card = suffix => [[`reaction-avatar${suffix}`, "photo", null], [`reaction-name${suffix}`, "text", "heading"], [`reaction-handle${suffix}`, "text", "body"], [`reaction-text${suffix}`, "text", "body"], [`reaction-meta${suffix}`, "text", "body"]];
   assert.deepEqual(summary(4), [["title", "text", "heading"], ...card(""), ["source", "text", "body"]]);
   assert.deepEqual(summary(5), [["title", "text", "heading"], ...card(""), ...card("-2"), ["source", "text", "body"]]);
+  // The Wide photo pair takes its one photo on page 6; page 7 shows the rest of it.
+  assert.deepEqual(summary(6), [["title", "text", "heading"], ["body", "text", "body"], ["wide-photo", "photo", null]]);
+  assert.deepEqual(summary(7), [["title", "text", "heading"], ["body", "text", "body"], ["source", "text", "body"]]);
   for (const page of CHATGPTRICKS_SLOTS) {
     assert.deepEqual(new Set(summary(page.page).filter(slot => slot[1] === "text").map(slot => slot[0])), new Set(page.text));
     assert.deepEqual(summary(page.page).filter(slot => slot[1] === "photo").map(slot => slot[0]), [...page.photo]);
@@ -127,11 +130,16 @@ test("createAgentDeck fills every slot and keeps the template's look", () => {
     { slots: { cta: "TO REMEMBER MORE" } },
     { slots: { title: "How X reacted", "reaction-name": "Ada Lovelace", "reaction-handle": "@ada", "reaction-text": "Memory is the feature\n\nI have wanted since day one 🎉", "reaction-meta": "48K likes · 3.1K reposts · Nov 3, 2026", "reaction-avatar": avatar, source: "Source: X, @ada" } },
     { slots: { title: "What people are saying", "reaction-name": "Ada", "reaction-text": "First", "reaction-name-2": "Grace", "reaction-handle-2": "@grace", "reaction-text-2": "Second", "reaction-avatar-2": avatar, "reaction-meta-2": "12 likes" } },
+    { slots: { title: "Where it remembers", body: "Your notes live in one place", "wide-photo": photo } },
+    { slots: { title: "And where it forgets", body: "Delete a memory any time", source: "Source: OpenAI" } },
   ] });
   assert.equal(deck.templateId, "chatgptricks-3x4");
   assert.deepEqual(model.formatDimensions(deck), { width: 1080, height: 1440 });
   assert.ok(model.parseLibrary(agent.editableDeckPackage(deck)));
-  const [cover, media, list, follow, reaction, reactions] = deck.pages.map(page => page.canvas);
+  const [cover, media, list, follow, reaction, reactions, wideStart, wideEnd] = deck.pages.map(page => page.canvas);
+  // One photo slot fills both halves of the Wide photo pair.
+  assert.equal(bySlot(wideStart, "wide-photo").src, photo); assert.equal(wideEnd.elements.find(element => element.span).src, photo);
+  assert.equal(bySlot(wideEnd, "source").text, "Source: OpenAI");
   const headline = bySlot(cover, "cover-headline");
   assert.equal(headline.text, "OPENAI JUST GAVE CHATGPT A MEMORY FOR EVERY USER"); assert.equal(headline.richText, undefined);
   assert.equal(headline.font, "bebas"); assert.equal(headline.color, "#F9FFFE");
@@ -155,10 +163,10 @@ test("createAgentDeck fills every slot and keeps the template's look", () => {
   // The template itself is untouched by the copy.
   assert.equal(bySlot(template.pages[3].canvas, "cta").text, "TO STAY ON THE SAFE SIDE");
   // Fixed layers refuse copy; the cover photo also takes the slide-level image.
-  assert.throws(() => agent.createAgentDeck({ name: "Bad", templateId: "chatgptricks-3x4", slides: [{ slots: { "Swipe for more": "TAP" } }, {}, {}, {}, {}, {}] }), error => error instanceof agent.AgentDeckValidationError);
+  assert.throws(() => agent.createAgentDeck({ name: "Bad", templateId: "chatgptricks-3x4", slides: [{ slots: { "Swipe for more": "TAP" } }, {}, {}, {}, {}, {}, {}, {}] }), error => error instanceof agent.AgentDeckValidationError);
   // The post cards and X marks are brand layers, not slots.
   for (const name of ["Post card", "X logo"]) assert.throws(() => agent.createAgentDeck({ name: "Bad", templateId: "chatgptricks-3x4", slides: [{ templatePage: 4, slots: { [name]: "x" } }] }), error => error instanceof agent.AgentDeckValidationError, name);
-  const imaged = agent.createAgentDeck({ name: "Image", templateId: "chatgptricks-3x4", slides: [{ title: "A NEW COVER", image: { src: photo, alt: "A phone" } }, {}, {}, {}, {}, {}] });
+  const imaged = agent.createAgentDeck({ name: "Image", templateId: "chatgptricks-3x4", slides: [{ title: "A NEW COVER", image: { src: photo, alt: "A phone" } }, {}, {}, {}, {}, {}, {}, {}] });
   assert.equal(bySlot(imaged.pages[0].canvas, "photo").src, photo); assert.equal(bySlot(imaged.pages[0].canvas, "cover-headline").text, "A NEW COVER");
 });
 

@@ -80,6 +80,9 @@ import { enableContinuousCarousel, splitContinuousCarousel } from "@/lib/templat
 import { elementIntersectsCanvas, elementVisualBounds, sceneVisualBounds } from "@/lib/template-editor/canvas-geometry";
 import { BrandPanel } from "./brand-panel";
 import { QuickToolbar } from "./quick-toolbar";
+import { useSpanPhotos } from "./span-photo-controls";
+import { SpanPeek } from "./span-peek";
+import { describeSpanChange, spanPairs, syncSpans, withoutSpans } from "@/lib/template-editor/spanning-photos";
 import { useContextMenu, type ContextMenuItem } from "./context-menu";
 import { copySelection, duplicateSelection, pasteSelection, removeSelection, setSelectionLocked, reorderSelection, alignSelection, groupSelection, ungroupSelection, setGroupHidden, setGroupLocked, expandGroupSelection, scopeSelection, constrainSceneToIsolation, canEditElement, isElementHidden, isElementLocked, fillShapeWithImage, type SceneCommandResult } from "@/lib/template-editor/commands";
 import {groupMemberIds} from "@/lib/template-editor/layer-tree";
@@ -228,6 +231,8 @@ export function DesignEditor({
   }, [smartContextEnabled]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [notice, setNotice] = useState("");
+  /** The notice that offers Undo, while it is the one showing. */
+  const [undoNotice, setUndoNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
   const [exportDialog,setExportDialog]=useState(false);
   const [textureTarget,setTextureTarget]=useState<{element:TextElement;context:string;words?:number[];photos:ShapeImageFill[];background:string}|null>(null);
@@ -387,6 +392,14 @@ export function DesignEditor({
     setPageId(target);
     onCurrentPageChange?.(target,"push");
   }
+  /** Opens a page with these layers selected (a spanning photo's other half). */
+  function openPageWith(id: string, ids: string[]) {
+    if (id !== page.id) { selectPage(id); restoredNavigationPage.current = resolveDesignPageId(current.current, id); }
+    setSelected(ids);
+  }
+  const scenePreviewListeners = useRef(new Set<(preview: CanvasScene | null) => void>());
+  const subscribeScenePreview = useCallback((listener: (preview: CanvasScene | null) => void) => { scenePreviewListeners.current.add(listener); return () => { scenePreviewListeners.current.delete(listener); }; }, []);
+  const handleScenePreview = useCallback((preview: CanvasScene | null) => { publishScenePreview(preview); for (const listener of scenePreviewListeners.current) listener(preview); }, [publishScenePreview]);
   function fitPage() {
     zoomAnchor.current=null;
     setZoom(1);
@@ -462,13 +475,15 @@ export function DesignEditor({
     (change: (d: DesignDocument) => DesignDocument, group = "") => {
       if (blocked.current) return false;
       const previous = current.current;
-      let changed:DesignDocument;
+      let changed:DesignDocument,spanned:{unlinked:number[];onePage:number[]}={unlinked:[],onePage:[]};
       try{changed=change(previous);
         changed={...changed,pages:changed.pages.map(page=>{
           const source=previous.pages.find(original=>original.id===page.id)?.canvas;
           if(!source||!page.canvas||source===page.canvas||!source.elements.some(element=>element.templateRole||element.type==="text"&&element.smartText)||!page.canvas.elements.some(element=>source.elements.some(original=>original.id===element.id)))return page;
           return {...page,canvas:layoutSmartScene(constrainSmartTemplate(source,page.canvas)).scene};
         })};
+        // Spanning photos: the twin of an edited half follows it (spanning-photos.ts).
+        const synced=syncSpans(previous,changed);changed=synced.design;spanned=synced;
       }catch(error){setNotice(error instanceof Error?error.message:'Could not apply this change.');return false;}
       if(sameDocumentContent(changed,previous))return true;
       const next = { ...changed, updatedAt: new Date().toISOString() };
@@ -477,6 +492,8 @@ export function DesignEditor({
       setHistoryState({ undo: h.past.length > 0, redo: h.future.length>0 });
       current.current = next;
       setDesign(next);
+      const spanNotice=describeSpanChange(spanned);
+      if(spanNotice){setNotice(spanNotice);setUndoNotice(spanNotice);}
       return true;
     },
     [setNotice],
@@ -511,6 +528,10 @@ export function DesignEditor({
     },
     [setSelected,setEditingMaster,setIsolatedGroupId,setNotice,onCurrentPageChange,sharedHistory],
   );
+  const spans = useSpanPhotos({
+    design, pageId: page.id, selectedIds: selected, enabled: !editingMaster && !continuous && !isolatedGroupId, disabled,
+    commit, endGesture: closeEditingHistory, openPage: openPageWith, notify: setNotice, openMenu,
+  });
   function changeScene(next: CanvasScene, group = "") {
       return commit(
         (d) => {
@@ -990,20 +1011,25 @@ export function DesignEditor({
     const liveSource = current.current.pages.find((p) => p.id === source.id);
     if (!liveSource) return;
     const sourceIndex = current.current.pages.indexOf(liveSource);
-    const next = duplicatePage(liveSource);
+    // A duplicate gets ordinary photos, and a new page never splits a photo that spans two slides.
+    const next = withoutSpans(duplicatePage(liveSource));
     if (!duplicate)
       next.canvas = { background: source.canvas?.background ?? scene.background, elements: [] };
+    const pairs = spanPairs(current.current);
+    let insertAfter = sourceIndex;
+    for (let pair = pairs.find(item => item.startPage === insertAfter); pair; pair = pairs.find(item => item.startPage === insertAfter)) insertAfter = pair.endPage;
     const accepted = commit((d) => ({
       ...d,
       pages: [
-        ...d.pages.slice(0, sourceIndex + 1),
+        ...d.pages.slice(0, insertAfter + 1),
         next,
-        ...d.pages.slice(sourceIndex + 1),
+        ...d.pages.slice(insertAfter + 1),
       ],
     }));
     if (!accepted) return;
     selectPage(next.id);
     setSelected([]);
+    if (insertAfter !== sourceIndex) setNotice(`Added as slide ${insertAfter + 2}, so the photo across slides ${sourceIndex + 1} and ${sourceIndex + 2} stays whole.`);
   }
   function movePage(from: number, to: number) {
     if (continuous || from === to || from < 0 || to < 0 || to >= design.pages.length) return;
@@ -1258,6 +1284,7 @@ export function DesignEditor({
       {notice && (
         <div className="te-notice te-editor-notice" role="status">
           {notice}
+          {notice===undoNotice&&historyState.undo&&<button type="button" className="te-text-button te-notice-undo" disabled={disabled} onClick={()=>{if(travel("undo")){setNotice("");setUndoNotice("");}}}>Undo</button>}
           <button
             onClick={() => setNotice("")}
             aria-label="Dismiss notification"
@@ -1478,7 +1505,7 @@ export function DesignEditor({
               }} />}
             {tab === "layers" && <>
               {selected.length>0&&<button type="button" className="te-button te-full" onClick={()=>openInspector()}><EditorIcon name="position"/>Edit selected elements</button>}
-              <LayersPanel scene={scene} selectedIds={selected} width={canvasWidth} height={canvasHeight} disabled={disabled}
+              <LayersPanel scene={scene} selectedIds={selected} width={canvasWidth} height={canvasHeight} disabled={disabled} notes={spans.layerNotes}
               isolatedGroupId={isolatedGroupId??undefined} onEnterGroup={enterGroup} onExitGroup={()=>setIsolatedGroupId(null)}
               onGroupContextMenu={(event,id)=>openMenu(event,{label:scene.groups?.find(g=>g.id===id)?.name??'Group',items:[{id:'isolate',label:'Edit group',onSelect:()=>enterGroup(id)},{id:'group-lock',label:'Toggle lock',disabled:Boolean(isolatedGroupId)&&!groupMemberIds(scene,id).some(member=>isolatedIds?.has(member)),onSelect:()=>applyCommand(live=>setGroupLocked(live,id,!live.groups?.find(g=>g.id===id)?.locked))},{id:'group-hidden',label:'Toggle visibility',disabled:Boolean(isolatedGroupId)&&!groupMemberIds(scene,id).some(member=>isolatedIds?.has(member)),onSelect:()=>applyCommand(live=>setGroupHidden(live,id,!live.groups?.find(g=>g.id===id)?.hidden))}]})}
               onSelect={selectLayers} onChange={changeScene} onLocate={locateLayer}
@@ -1628,7 +1655,7 @@ export function DesignEditor({
             </>}
           </div>
           {navigationMode==="nodes"&&!pathTool&&<div className="te-node-toolbar-host" ref={setNodeToolbarHost}/>}
-          {!pathTool&&navigationMode==="select"&&<QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene} templateDraftHeight={isTemplateDraft&&!editingMaster&&!continuous?canvasHeight:undefined}
+          {!pathTool&&navigationMode==="select"&&<QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene} templateDraftHeight={isTemplateDraft&&!editingMaster&&!continuous?canvasHeight:undefined} span={spans.control}
             outputScale={format.width/FRAME_WIDTH}
             onFormatText={formatText}
             onTextTexture={openTextTexture}
@@ -1674,6 +1701,8 @@ export function DesignEditor({
 
           >
             <div className="te-pasteboard" style={{width: pasteboardBounds.width * scale, height: pasteboardBounds.height * scale}}>
+            {spans.place&&<SpanPeek design={design} place={spans.place} scale={scale} left={workspaceLeft} top={workspaceTop} height={canvasHeight} subscribe={subscribeScenePreview}
+              onOpen={()=>{const place=spans.place!;const other=place.side==="start"?{page:design.pages[place.endPage],half:place.end}:{page:design.pages[place.startPage],half:place.start};openPageWith(other.page.id,[other.half.id]);}}/>}
             <div
               className="te-canvas-stage te-free-stage"
               style={{
@@ -1703,7 +1732,8 @@ export function DesignEditor({
                     peers={collaboration?.peers}
                     collaborationPageId={collaboration ? collaborationPageId : undefined}
                     onCursorChange={collaboration ? publishCursor : undefined}
-                    onScenePreview={collaboration ? publishScenePreview : undefined}
+                    onScenePreview={handleScenePreview}
+                    layerNotes={spans.layerNotes}
                     onHistory={travel}
                     onRegisterHistoryBridge={registerHistoryBridge}
                     onHistoryBoundary={closeEditingHistory}
@@ -1821,12 +1851,13 @@ export function DesignEditor({
                     selectPage(p.id);
                     setSelected([]);
                   }}
-                  aria-label={`Page ${i + 1}`}
+                  aria-label={`Page ${i + 1}${spans.links.has(i) ? `, shares a photo with page ${i + 2}` : ""}`}
                   aria-pressed={p.id === page.id}
                 >
                   <DesignPreview design={design} page={p} />
                   <span>{i + 1}</span>
                 </button>
+                {spans.links.has(i) && <span className="te-page-span-link" title={`Slides ${i + 1} and ${i + 2} share a photo`}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></span>}
                 <button className="te-page-more" aria-label={`Page ${i + 1} actions`} aria-haspopup="menu" onClick={(event) => pageMenu(event, p)}>•••</button>
                 </div>
               ))}
