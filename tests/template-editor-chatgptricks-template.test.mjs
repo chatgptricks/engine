@@ -105,7 +105,7 @@ test("agents see the copy and photo slots; brand furniture stays fixed", () => {
   const summary = page => slots.filter(slot => slot.pageIndex === page).map(slot => [slot.slot, slot.type, slot.role ?? null]);
   assert.deepEqual(summary(0), [["photo", "photo", null], ["cover-headline", "text", "cover"]]);
   assert.deepEqual(summary(1), [["title", "text", "heading"], ["body", "text", "body"], ["media", "photo", null], ["source", "text", "body"]]);
-  assert.deepEqual(summary(2), [["title", "text", "heading"], ["body", "text", "body"], ["list-left-heading", "text", "heading"], ["list-right-heading", "text", "heading"], ["list-left-items", "text", null], ["list-right-items", "text", null], ["source", "text", "body"]]);
+  assert.deepEqual(summary(2), [["title", "text", "heading"], ["body", "text", "body"], ["list-left-heading", "text", "heading"], ["list-right-heading", "text", "heading"], ["list-left-items", "text", "list"], ["list-right-items", "text", "list"], ["source", "text", "body"]]);
   assert.deepEqual(summary(3), [["photo", "photo", null], ["cta", "text", "cover"]]);
   // The hidden photo layers aren't slots to write; Recreate fills and shows them.
   const card = suffix => [[`reaction-avatar${suffix}`, "photo", null], [`reaction-name${suffix}`, "text", "heading"], [`reaction-handle${suffix}`, "text", "body"], [`reaction-text${suffix}`, "text", "body"]];
@@ -197,13 +197,24 @@ test("geometry matches the HTML slides", () => {
   near(layer(0, "cover-swipe").y, scene(1334)); near(layer(0, "cover-swipe").fontSize, scene(32));
   near(layer(0, "cover-photo").height, scene(926)); near(layer(0, "cover-top-fade").height, scene(220)); near(layer(0, "cover-bottom-fade").y, scene(506));
   const title = layer(1, "media-title"), body = layer(1, "media-body"), media = layer(1, "media-media"), source = layer(1, "media-source");
-  near(title.x, scene(72)); near(title.y, scene(90)); near(title.width, scene(920)); near(title.fontSize, scene(56)); assert.equal(title.color, "#00D98A");
-  near(body.y - (title.y + title.height), scene(23)); near(body.fontSize, scene(43)); near(body.fontSize * body.lineHeight, scene(47.7)); assert.equal(Math.floor(body.smartText.maxHeight / (body.fontSize * body.lineHeight)), 2, "two body lines");
-  near(media.y - (body.y + body.height), scene(64)); near(media.width, scene(920)); assert.equal(media.smartFlow.after, "body"); assert.equal(media.smartFlow.resize, true);
+  // The style guide: 72 px text margins and 936 px of text; a 56 px bold title (line height 1.04, about -1.2 px
+  // tracking), the body 26 px under it in 42.67 px (1.115, about -0.35 px), and about 64 px to the media.
+  for (const text of [title, body, source]) { near(text.x, scene(72)); near(text.width, scene(936)); }
+  near(title.y, scene(90)); near(title.fontSize, scene(56)); near(title.lineHeight, 1.04); near(title.letterSpacing, scene(-1.2)); assert.equal(title.color, "#00D98A");
+  near(title.smartText.minFontSize, title.smartText.maxFontSize, "titles keep one size across the series");
+  near(body.y - (title.y + title.height), scene(26)); near(body.fontSize, scene(42.67)); near(body.lineHeight, 1.115); near(body.letterSpacing, scene(-.35));
+  assert.equal(Math.floor(body.smartText.baseHeight / (body.fontSize * body.lineHeight)), 2, "two body lines");
+  assert.equal(Math.floor(body.smartText.guideHeight / (body.fontSize * body.lineHeight)), 2, "agents still write two body lines");
+  near(body.smartFlow.bottom, scene(1252 - 64 - 600), "longer copy grows until the media is down to 600 px");
+  assert.equal(Math.floor(title.smartText.maxHeight / (title.fontSize * title.lineHeight)), 3, "a title takes up to three lines");
+  near(media.y - (body.y + body.height), scene(64)); near(media.x, scene(72)); near(media.width, scene(936)); assert.equal(media.smartFlow.after, "body"); assert.equal(media.smartFlow.resize, true);
+  assert.deepEqual(media.smartFlow.media, { x: 0, width: scene(1080) }, "a photo may run edge to edge");
+  assert.ok(Math.abs(media.intrinsicWidth / media.intrinsicHeight - media.width / media.height) < .01, "the placeholder has the text column's shape");
   near(source.smartText.anchorBottom, scene(1440 - 88)); near(source.fontSize, scene(24)); assert.equal(source.color, "#7D858A");
   near(source.y - (media.y + media.height), scene(40));
-  const items = layer(2, "list-left-items"), heading = layer(2, "list-left-heading");
-  near(layer(2, "list-right-heading").x, scene(552)); near(heading.width, scene(440)); near(items.y - (heading.y + heading.height), scene(36));
+  const items = layer(2, "list-left-items"), heading = layer(2, "list-left-heading"), rightItems = layer(2, "list-right-items");
+  near(heading.y, media.y, "the lists start where the media does"); near(layer(2, "list-right-heading").x, scene(560)); near(heading.width, scene(448)); near(items.y - (heading.y + heading.height), scene(36));
+  near(rightItems.x + rightItems.width, scene(1008), "two 448 px columns 40 px apart fill the 936 px of text"); near(items.y + items.height, scene(1252));
   assert.equal(items.listStyle, "bullet"); near(items.paragraphSpacing, scene(28)); near(items.fontSize * items.lineHeight, scene(42));
   assert.match(heading.richText, /color:#00D98A; font-weight:700">Risk<\/span> From AI/);
   const cta = layer(3, "follow-cta"), follow = layer(3, "follow-line");
@@ -226,7 +237,7 @@ test("smart layout keeps the logo row on the headline and the media under the co
   bySlot(page, "body").text = "One line";
   const content = smart.layoutSmartScene(page, measure).scene;
   const body = bySlot(content, "body"), media = bySlot(content, "media");
-  close(body.height, scene(47.7)); close(media.y - (body.y + body.height), scene(64)); close(media.y + media.height, scene(1252));
+  close(body.height, scene(42.67 * 1.115)); close(media.y - (body.y + body.height), scene(64)); close(media.y + media.height, scene(1252));
   const follow = smart.layoutSmartScene(structuredClone(template.pages[3].canvas), measure).scene;
   const cta = bySlot(follow, "cta"), line = follow.elements.find(element => element.id === "cgt-follow-line");
   close(cta.y + cta.height, scene(1304)); close(line.y + line.height, cta.y);
@@ -330,4 +341,115 @@ test("smart layout: each card hugs its post, photo and check mark, and the page 
   // A blank line between paragraphs is kept.
   const paragraphs = fill(4, { "reaction-text": "Line one\n\nLine three" });
   assert.equal(paragraphs.texts.get(bySlot(paragraphs.scene, "reaction-text").id).lines.length, 3);
+});
+
+// Deterministic stand-in for browser text metrics, shared by the flexible-layout tests below.
+const metrics = (element, words = smart.smartWords(element)) => ({ size: element.fontSize, widths: words.map(word => word.text.length * element.fontSize * .45), space: element.fontSize * .25 });
+const laidOut = (pageIndex, slots, edit = () => {}) => {
+  const canvas = structuredClone(template.pages[pageIndex].canvas);
+  for (const [slot, text] of Object.entries(slots)) { const element = bySlot(canvas, slot); element.text = text; delete element.richText; }
+  edit(canvas);
+  return smart.layoutSmartScene(canvas, metrics);
+};
+// Where a list's items end: its box runs on to the foot of its column.
+const itemsEnd = (layout, slot) => { const element = bySlot(layout.scene, slot); return element.y + layout.texts.get(element.id).height; };
+
+test("copy grows past its box before it shrinks, and the media under it gives way", () => {
+  const dense = laidOut(1, { title: "Job openings peaked at 12.3M in March 2022, eight months before ChatGPT came out", body: "That was the month the Fed started raising rates\nSome experts blame rates, tariffs and immigration rules more than AI" });
+  const title = bySlot(dense.scene, "title"), body = bySlot(dense.scene, "body"), media = bySlot(dense.scene, "media");
+  assert.equal(dense.texts.get(title.id).lines.length, 3); close(dense.texts.get(title.id).fontSize, scene(56), "three title lines at full size");
+  assert.ok(dense.texts.get(body.id).lines.length > 2); close(dense.texts.get(body.id).fontSize, scene(42.67), "the body keeps its size");
+  assert.equal(dense.texts.get(title.id).overflow || dense.texts.get(body.id).overflow, false);
+  close(title.y, scene(90)); close(body.y - (title.y + title.height), scene(26)); close(media.y - (body.y + body.height), scene(64));
+  close(media.y + media.height, scene(1252)); assert.ok(media.height >= scene(600) - .02, "the media keeps at least 600 px");
+  // The empty frame keeps its shape, so with less room it narrows, centred.
+  assert.ok(media.width < scene(936)); close(media.x + media.width / 2, scene(540));
+});
+
+test("a photo keeps its shape: a landscape one runs edge to edge, a portrait one is centred", () => {
+  const sized = (width, height) => canvas => Object.assign(bySlot(canvas, "media"), { intrinsicWidth: width, intrinsicHeight: height });
+  const copy = { title: "Claude can now use your computer", body: "It moves the cursor, clicks and types to finish a task for you" };
+  // 16:9 across the whole 1080 px; the title, body and photo are centred together between 90 and 1252.
+  const wide = laidOut(1, copy, sized(1600, 900)).scene;
+  const [title, body, photo] = ["title", "body", "media"].map(slot => bySlot(wide, slot));
+  close(photo.x, 0); close(photo.width, scene(1080)); close(photo.height, scene(1080 * 9 / 16));
+  close(body.y - (title.y + title.height), scene(26)); close(photo.y - (body.y + body.height), scene(64), "the gaps hold");
+  assert.ok(title.y > scene(90) + 1, "the group moves down"); close(title.y - scene(90), scene(1252) - (photo.y + photo.height), "as much room above as below");
+  // 9:16 as tall as the room under the copy, centred with the background on both sides.
+  const tall = laidOut(1, copy, sized(900, 1600)).scene, upright = bySlot(tall, "media");
+  close(bySlot(tall, "title").y, scene(90)); close(upright.y + upright.height, scene(1252));
+  close(upright.width / upright.height, 9 / 16); close(upright.x + upright.width / 2, scene(540));
+  // Laid out again, the page stays put (the editor saves each layout).
+  const again = smart.layoutSmartScene(wide, metrics).scene;
+  for (const slot of ["title", "body", "media"]) { const [before, after] = [bySlot(wide, slot), bySlot(again, slot)]; for (const key of ["x", "y", "width", "height"]) close(after[key], before[key], `${slot} ${key}`); }
+  // A frame without the shape rule (decks saved before it) still fills the column to 1252, cropping its photo.
+  const legacy = laidOut(1, copy, canvas => { sized(1600, 900)(canvas); delete bySlot(canvas, "media").smartFlow.media; }).scene, cropped = bySlot(legacy, "media");
+  close(cropped.x, scene(72)); close(cropped.width, scene(936)); close(cropped.y + cropped.height, scene(1252)); close(bySlot(legacy, "title").y, scene(90));
+  // A picture of unknown size fills the room it has.
+  const unknown = bySlot(laidOut(1, copy, canvas => { const frame = bySlot(canvas, "media"); delete frame.intrinsicWidth; delete frame.intrinsicHeight; }).scene, "media");
+  close(unknown.x, 0); close(unknown.width, scene(1080)); close(unknown.y + unknown.height, scene(1252));
+  // Saved and loaded again, the rule survives; a broken one is refused.
+  const library = document => model.parseLibrary({ ...model.EMPTY_LIBRARY, designs: [document] });
+  const deck = agent.createAgentDeck({ name: "Shape", templateId: "chatgptricks-3x4", slides: [{ templatePage: 1, slots: copy }] });
+  assert.deepEqual(bySlot(library(deck).designs[0].pages[0].canvas, "media").smartFlow.media, { x: 0, width: scene(1080) });
+  bySlot(deck.pages[0].canvas, "media").smartFlow.media = { x: 0, width: 0 };
+  assert.equal(library(deck), null);
+});
+
+test("titles keep one size, and body copy never ends on a single word", () => {
+  // A title that needs a fourth line asks for shorter copy instead of shrinking.
+  const long = laidOut(1, { title: "One two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty" });
+  const title = long.texts.get(bySlot(long.scene, "title").id);
+  close(title.fontSize, scene(56)); assert.equal(title.overflow, true); assert.match(title.warning, /shortening/);
+  // The first eleven words fill a line, so greedy wrapping would leave "dropped" alone; "job" moves down with it.
+  const words = "Since then the share of new graduates who found a job dropped";
+  const body = laidOut(1, { body: words }), fitted = body.texts.get(bySlot(body.scene, "body").id);
+  assert.deepEqual(fitted.lines.map(line => line.text), ["Since then the share of new graduates who found a", "job dropped"]);
+  // A second paragraph is its own: each ends on two words or more.
+  const two = laidOut(1, { body: `${words}\n${words}` }), both = two.texts.get(bySlot(two.scene, "body").id);
+  assert.deepEqual(both.lines.map(line => line.text), ["Since then the share of new graduates who found a", "job dropped", "Since then the share of new graduates who found a", "job dropped"]);
+});
+
+test("lists fill their column with one shared size and gap", () => {
+  // The sample's 11 items already fill their columns: the header stays at the top and the items reach the foot.
+  const full = laidOut(2, {});
+  close(bySlot(full.scene, "title").y, scene(90));
+  for (const slot of ["list-left-items", "list-right-items"]) assert.ok(itemsEnd(full, slot) > scene(1252) - 1, `${slot} reaches the foot of its column`);
+  // Short lists grow to the body's size and open their gaps; both columns share them, so rows line up.
+  const short = laidOut(2, { "list-left-items": "Cooks\nMechanics\nBartenders", "list-right-items": "Lifeguards\nRoofers" });
+  const [left, right] = ["list-left-items", "list-right-items"].map(slot => short.texts.get(bySlot(short.scene, slot).id));
+  close(left.fontSize, scene(43)); close(right.fontSize, left.fontSize); close(right.paragraphSpacing, left.paragraphSpacing);
+  assert.ok(left.paragraphSpacing > scene(28) * 43 / 34, "gaps open past the authored ratio");
+  close(bySlot(short.scene, "list-left-items").y, bySlot(short.scene, "list-right-items").y);
+  // On single lines these items would stop growing short of 43 px with most of the column empty, so they wrap and reach 43 px.
+  const wrapped = laidOut(2, { "list-left-items": "Computer & Math 94%\nBusiness & Finance 94%\nManagement 91%", "list-right-items": "Installation & Repair 4%\nTransportation 12%" });
+  const grown = wrapped.texts.get(bySlot(wrapped.scene, "list-left-items").id), lineHeight = grown.fontSize * bySlot(wrapped.scene, "list-left-items").lineHeight;
+  close(grown.fontSize, scene(43)); assert.ok((grown.height - 2 * grown.paragraphSpacing) / lineHeight > 3.5, "an item wraps onto a second line");
+  // Wrapping "Grounds Maintenance 4%" would leave a word alone on a line, so the columns stay on single lines.
+  const kept = laidOut(2, { "list-left-items": "Computer & Math 94%\nBusiness & Finance 94%\nManagement 91%", "list-right-items": "Grounds Maintenance 4%\nTransportation 12%" });
+  const single = kept.texts.get(bySlot(kept.scene, "list-right-items").id), singleLine = single.fontSize * bySlot(kept.scene, "list-right-items").lineHeight;
+  assert.ok(single.fontSize < scene(43)); close((single.height - single.paragraphSpacing) / singleLine, 2, "two items, two lines");
+  // Long lists (the 22 job groups under their full names) shrink type and gaps together instead of running out of the column.
+  const long = laidOut(2, {
+    "list-left-items": "Management\nBusiness & Financial Operations\nComputer & Mathematical\nArchitecture & Engineering\nLife, Physical & Social Science\nLegal\nEducational Instruction & Library\nArts, Design, Entertainment, Sports & Media\nOffice & Administrative Support\nSales & Related\nCommunity & Social Service",
+    "list-right-items": "Installation, Maintenance & Repair\nConstruction & Extraction\nFarming, Fishing & Forestry\nTransportation & Material Moving\nProduction\nProtective Service\nFood Preparation & Serving Related\nBuilding & Grounds Cleaning & Maintenance\nPersonal Care & Service\nHealthcare Support\nHealthcare Practitioners & Technical",
+  });
+  const fitted = long.texts.get(bySlot(long.scene, "list-left-items").id);
+  assert.equal(fitted.overflow, false); assert.ok(fitted.fontSize < scene(34) && fitted.fontSize >= scene(26) - 1e-6, `shrinks to fit, got ${fitted.fontSize * 3} px`);
+  close(bySlot(long.scene, "title").y, scene(90)); assert.ok(itemsEnd(long, "list-left-items") <= scene(1252) + .02);
+});
+
+test("copy that can't reach the foot of the page is centred on it", () => {
+  // A short list: the space it can't fill is shared above the title and below the items.
+  const short = laidOut(2, { "list-left-items": "Cooks\nMechanics\nBartenders", "list-right-items": "Lifeguards\nRoofers" });
+  const title = bySlot(short.scene, "title"), bottom = Math.max(itemsEnd(short, "list-left-items"), itemsEnd(short, "list-right-items"));
+  assert.ok(title.y > scene(90) + 1, "the copy moves down"); close(title.y - scene(90), scene(1252) - bottom, "as much space above as below");
+  for (const slot of ["list-left-items", "list-right-items"]) { const items = bySlot(short.scene, slot); close(items.y + items.height, scene(1252), `${slot} still ends at the foot`); }
+  close(bySlot(short.scene, "list-left-heading").y - (bySlot(short.scene, "body").y + bySlot(short.scene, "body").height), scene(64), "the 64 px header gap holds");
+  // A hidden photo frame (nothing to show) gives its space back the same way; a visible one keeps the header at the top.
+  const hide = canvas => { bySlot(canvas, "media").hidden = true; };
+  const empty = laidOut(1, { title: "The real warning sign is for young workers", body: "Hiring of 22 to 25 year olds is down about 14%" }, hide);
+  const emptyTitle = bySlot(empty.scene, "title"), emptyBody = bySlot(empty.scene, "body");
+  assert.ok(emptyTitle.y > scene(90) + 1); close(emptyTitle.y - scene(90), scene(1252) - (emptyBody.y + emptyBody.height));
+  close(bySlot(laidOut(1, { title: "The real warning sign is for young workers" }).scene, "title").y, scene(90));
 });

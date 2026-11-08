@@ -5,10 +5,10 @@
  */
 import type Anthropic from "@anthropic-ai/sdk";
 import { createHash } from "node:crypto";
-import sharp from "sharp";
 import { z } from "zod";
 import { searchXImages } from "../apify";
 import { curateImages } from "../image-curator";
+import { imageSize } from "../image-size";
 import { publicHttpUrl } from "../public-url";
 import { imagesFromPage } from "../research-engine";
 import type { StoryImage } from "../types";
@@ -243,23 +243,12 @@ export function citedPages(facts: Facts | undefined, max = 8): string[] {
   return [...counts].sort((a, b) => b[1] - a[1]).slice(0, max).map(([url]) => url);
 }
 
-const MIN_PHOTO_SIDE = 480, MAX_PHOTO_BYTES = 12 * 1024 * 1024, PHOTOS_PER_PAGE = 4, MAX_PAGE_PHOTOS = 24;
+const MIN_PHOTO_SIDE = 480, PHOTOS_PER_PAGE = 4, MAX_PAGE_PHOTOS = 24;
 
 /** The size of a public JPEG, PNG, WebP or GIF at least 480 px on its short side and not a banner, or null. */
 export async function photoSize(address: string, signal: AbortSignal, fetcher: typeof fetch = fetch): Promise<{ width: number; height: number } | null> {
-  const url = publicHttpUrl(address);
-  if (!url) return null;
-  try {
-    const response = await fetcher(url, { headers: { "User-Agent": "EngineBot/1.0 (+https://github.com/chatgptricks/engine)", Accept: "image/*" }, redirect: "follow", signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]) });
-    if (!response.ok || !/^image\/(jpeg|png|webp|gif)\b/i.test(response.headers.get("content-type") ?? "") || Number(response.headers.get("content-length") ?? 0) > MAX_PHOTO_BYTES) { await response.body?.cancel().catch(() => undefined); return null; }
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length > MAX_PHOTO_BYTES) return null;
-    const { width = 0, height = 0 } = await sharp(bytes).metadata();
-    return Math.min(width, height) >= MIN_PHOTO_SIDE && Math.max(width, height) <= 3 * Math.min(width, height) ? { width, height } : null;
-  } catch (error) {
-    if (signal.aborted) throw error;
-    return null;
-  }
+  const size = await imageSize(address, signal, fetcher);
+  return size && Math.min(size.width, size.height) >= MIN_PHOTO_SIDE && Math.max(size.width, size.height) <= 3 * Math.min(size.width, size.height) ? size : null;
 }
 
 /** Real images from the cited pages, each checked to be a public, full-size photo or chart. */

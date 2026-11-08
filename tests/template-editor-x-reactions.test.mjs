@@ -277,7 +277,7 @@ test("posts are packed onto Reaction pages by size: one long, two medium or thre
   const [shrunk]=x.reactionPhotoSizes([post("word ".repeat(120).trim(),tall)]);
   assert.ok(shrunk.width<column,"a tall photo beside a long post shrinks"); assert.ok(Math.abs(shrunk.height/shrunk.width-1600/900)<1e-9,"keeping its proportions");
   const used=x.reactionCardHeight(x.reactionTextLines(post("word ".repeat(120).trim(),tall)),shrunk.height);
-  assert.ok(used<=1352-90-62.72-64+1e-6,"and the card fits above the bottom margin");
+  assert.ok(used<=1352-90-56*1.04-64+1e-6,"and the card fits above the bottom margin");
   assert.deepEqual(x.reactionPhotoSizes([short]),[null]);
 });
 

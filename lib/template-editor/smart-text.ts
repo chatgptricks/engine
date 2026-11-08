@@ -4,7 +4,8 @@ import { scaleRichTextFonts, splitRichLines } from "./rich-text-editing";
 
 export type SmartWord = { text: string; html: string; paragraph: number };
 export type SmartMetrics = { widths: number[]; space: number; size: number };
-export type SmartTextLayout = { fontSize: number; height: number; lines: { text: string; html: string; width: number }[]; warning?: string; overflow: boolean };
+/** `paragraphSpacing` is set for lists, whose gaps open up to fill their box. */
+export type SmartTextLayout = { fontSize: number; height: number; lines: { text: string; html: string; width: number }[]; warning?: string; overflow: boolean; paragraphSpacing?: number };
 export type SmartSceneLayout = { scene: CanvasScene; texts: Map<string, SmartTextLayout> };
 
 /** Balanced HTML fragments keep colored words, emphasis and texture bindings. */
@@ -83,6 +84,12 @@ export function fitSmartText(element: TextElement, metrics: SmartMetrics, words 
       ends.push(words.length);
       // Balance short headlines. Body copy keeps paragraph boundaries and rhythm.
       if (balance && rule.role !== "body" && ends.length <= 8 && !tooLong && words.every(word => word.paragraph === words[0].paragraph)) ends = partition(widths, space, width, ends.length, rule.role === "cover" && words.length >= ends.length * 2 ? 2 : 1) ?? ends;
+      // Body copy never ends a paragraph on one word: the word before it moves down too, when its line keeps two.
+      if (balance && rule.role === "body") for (let line = 1; line < ends.length; line++) {
+        const start = ends[line - 1], end = ends[line], before = line > 1 ? ends[line - 2] : 0;
+        const lastOfParagraph = end === words.length || words[end].paragraph !== words[start].paragraph;
+        if (lastOfParagraph && end - start === 1 && start - before >= 3 && words[start - 1].paragraph === words[start].paragraph && widths[start - 1] + space + widths[start] <= width) ends[line - 1] = start - 1;
+      }
     }
     const blankLines = requested ? 0 : ends.slice(0, -1).reduce((total, end) => total + Math.max(0, words[end].paragraph - words[end - 1].paragraph - 1), 0);
     const height = (ends.length + blankLines) * size * element.lineHeight + Math.max(0, ends.length + blankLines - 1) * (element.paragraphSpacing ?? 0) + 2 * (element.padding ?? 0);
@@ -121,6 +128,73 @@ export function fitSmartText(element: TextElement, metrics: SmartMetrics, words 
     return [...Array.from({length:blankLines}, () => ({text:"", html:"<br>", width:0})), { text: subset.map(word => word.text).join(" "), html: subset.map(word => word.html).join(" "), width: used }];
   });
   return { fontSize: chosen, height: Math.ceil(result.height * 100) / 100, lines, overflow, warning: overflow ? "This text needs shortening to fit legibly. Use fewer words or another slide." : requested && lines.length !== requested ? `Add more words to fill ${requested} balanced lines. Using ${lines.length} for now.` : undefined };
+}
+
+/** The bullet or number column, as wide as `.te-canvas-list-prefix`; wrapped lines hang under the item's text. */
+export const LIST_MARKER_EM = 1.35;
+
+/** Largest value in [from, to] that passes a monotonic `test`, or null when even `from` fails. */
+function largestPassing(from: number, to: number, test: (value: number) => boolean): number | null {
+  let lo = from, hi = Math.max(from, to);
+  if (test(hi)) return hi;
+  if (!test(lo)) return null;
+  for (let step = 0; step < 14; step++) { const middle = (lo + hi) / 2; if (test(middle)) lo = middle; else hi = middle; }
+  return Math.floor(lo * 100) / 100;
+}
+
+/** A bulleted (or numbered) list: each paragraph is one item. A list that fits
+ * at its authored size fills its column: type grows up to `maxFontSize` while
+ * no item needs another line or, when single lines would still leave a fifth
+ * of the column empty, as far as the wrapped items fit with two words on every
+ * line; then the gaps open, up
+ * to `maxParagraphSpacing` scaled with the type. A list that doesn't fit
+ * shrinks type and gaps together down to `minFontSize`. `fixed` sets the size
+ * outright and caps the gap (the shared values of a group of columns). */
+export function fitSmartList(element: TextElement, metrics: SmartMetrics, words = smartWords(element), fixed?: { fontSize: number; paragraphSpacing?: number }): SmartTextLayout {
+  const rule = element.smartText!, pad = element.padding ?? 0;
+  const width = Math.max(1, element.width - 2 * pad - .5), available = Math.max(1, rule.maxHeight - 2 * pad);
+  const items = splitRichLines(element.richText, element.text), count = Math.max(1, items.length);
+  const marker = element.listStyle && element.listStyle !== "none" ? LIST_MARKER_EM : 0, hang = element.hangingIndent ? marker : 0;
+  const base = element.fontSize, baseSpacing = rule.paragraphSpacing ?? element.paragraphSpacing ?? 0;
+  const spacingAt = (size: number) => baseSpacing * size / base;
+  const itemWords = new Array<number>(count).fill(0);
+  for (const word of words) itemWords[word.paragraph] = (itemWords[word.paragraph] ?? 0) + 1;
+  function wrap(size: number) {
+    const ratio = size / metrics.size, first = Math.max(1, width - marker * size), rest = Math.max(1, width - hang * size);
+    const widths = words.map((word, index) => Math.max(.01, (metrics.widths[index] - element.letterSpacing * word.text.length) * ratio + element.letterSpacing * word.text.length));
+    const space = Math.max(0, (metrics.space - element.letterSpacing) * ratio + element.letterSpacing);
+    const lines = new Array<number>(count).fill(1);
+    let used = 0, limit = first;
+    words.forEach((word, index) => {
+      if (index === 0 || word.paragraph !== words[index - 1].paragraph) { used = widths[index]; limit = first; return; }
+      if (used + space + widths[index] > limit) { lines[word.paragraph]++; used = widths[index]; limit = rest; } else used += space + widths[index];
+    });
+    // `lone`: some wrapped item can't give each of its lines two words.
+    return { lines: lines.reduce((total, value) => total + value, 0), fits: widths.every(value => value <= first), lone: lines.some((value, item) => value > 1 && itemWords[item] < 2 * value) };
+  }
+  const textHeight = (size: number) => wrap(size).lines * size * element.lineHeight;
+  const fits = (size: number, spacing: number) => wrap(size).fits && textHeight(size) + (count - 1) * spacing <= available + .01;
+  // The gap that fills the column at `size`, at least the authored ratio and at most `maxParagraphSpacing`
+  // scaled with the type. Half a point of slack, so browser rounding never pushes the last line past the box.
+  const gapAt = (size: number) => count > 1 ? Math.max(spacingAt(size), Math.min(Math.max(spacingAt(size), (rule.maxParagraphSpacing ?? 0) * size / base), (available - .5 - textHeight(size)) / (count - 1))) : spacingAt(size);
+  let size: number;
+  if (fixed) size = fixed.fontSize;
+  else if (fits(base, baseSpacing)) {
+    const natural = wrap(base).lines, top = Math.max(base, rule.maxFontSize);
+    size = largestPassing(base, top, candidate => wrap(candidate).lines <= natural && fits(candidate, spacingAt(candidate))) ?? base;
+    // Wrapping to fill the column is only worth it when no line is left with a single word.
+    if (textHeight(size) + (count - 1) * gapAt(size) < .8 * available) size = largestPassing(size, top, candidate => fits(candidate, spacingAt(candidate)) && !wrap(candidate).lone) ?? size;
+  } else {
+    const low = Math.min(rule.minFontSize, base);
+    size = largestPassing(low, base, candidate => fits(candidate, spacingAt(candidate))) ?? low;
+  }
+  const spacing = Math.min(gapAt(size), fixed?.paragraphSpacing ?? Infinity);
+  const overflow = !fits(size, spacing), height = textHeight(size) + (count - 1) * spacing + 2 * pad;
+  const lines = items.map((_, paragraph) => {
+    const own = words.filter(word => word.paragraph === paragraph);
+    return { text: own.map(word => word.text).join(" "), html: own.map(word => word.html).join(" "), width: 0 };
+  });
+  return { fontSize: size, paragraphSpacing: Math.floor(spacing * 100) / 100, height: Math.ceil(height * 100) / 100, lines, overflow, warning: overflow ? "This list needs fewer or shorter items to fit legibly." : undefined };
 }
 
 const metricCache = new Map<string, SmartMetrics>();
@@ -176,7 +250,103 @@ function centreFlows(elements: SceneElement[]): SceneElement[] {
   return shifts.size ? elements.map(element => shifts.has(element.id) ? { ...element, y: element.y + shifts.get(element.id)! } : element) : elements;
 }
 
+/** What the layers of one `group` share: the smallest size, then (once they all
+ * have it) the smallest gap, and the tallest height. */
+type GroupCap = { fontSize: number; paragraphSpacing?: number; height: number };
+
+/** Lays out a page's copy. Layers in a `group` are fitted on their own first,
+ * then again at the group's shared size and gap. Each pass moves a centred flow
+ * (`smartCenter`) as one block (see `centreFlows`); copy that can't reach the
+ * foot of its flow is then centred on it (see `balanceShortCopy`). */
 export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText): SmartSceneLayout {
+  let caps = new Map<string, GroupCap>(), layout = layoutPass(scene, measure, caps);
+  for (let pass = 0; pass < 3; pass++) {
+    const next = groupCaps(layout);
+    if (sameCaps(caps, next)) break;
+    caps = next; layout = layoutPass(scene, measure, caps);
+  }
+  return balanceShortCopy(layout);
+}
+
+function groupCaps({ scene, texts }: SmartSceneLayout): Map<string, GroupCap> {
+  const members = new Map<string, { fontSize: number; paragraphSpacing?: number; height: number }[]>();
+  for (const element of scene.elements) {
+    const group = element.type === "text" && !element.hidden ? element.smartText?.group : undefined, fitted = texts.get(element.id);
+    if (group && fitted) members.set(group, [...(members.get(group) ?? []), { fontSize: fitted.fontSize, paragraphSpacing: fitted.paragraphSpacing, height: element.height }]);
+  }
+  const caps = new Map<string, GroupCap>();
+  for (const [group, list] of members) {
+    if (list.length < 2) continue;
+    const fontSize = Math.min(...list.map(member => member.fontSize));
+    // A gap measured at another size says nothing about this one, so the gap is shared only once every member has the shared size.
+    const gaps = list.every(member => Math.abs(member.fontSize - fontSize) < .01) ? list.flatMap(member => member.paragraphSpacing ?? []) : [];
+    caps.set(group, { fontSize, ...(gaps.length ? { paragraphSpacing: Math.min(...gaps) } : {}), height: Math.max(...list.map(member => member.height)) });
+  }
+  return caps;
+}
+function sameCaps(a: Map<string, GroupCap>, b: Map<string, GroupCap>) {
+  const near = (x?: number, y?: number) => x === y || x !== undefined && y !== undefined && Math.abs(x - y) < .01;
+  return a.size === b.size && [...b].every(([group, cap]) => { const other = a.get(group); return other && near(other.fontSize, cap.fontSize) && near(other.paragraphSpacing, cap.paragraphSpacing) && near(other.height, cap.height); });
+}
+
+/** The shape (width over height) of a picture whose size is known. */
+function pictureRatio(element: CanvasScene["elements"][number]): number | undefined {
+  return element.type === "image" && element.intrinsicWidth && element.intrinsicHeight ? element.intrinsicWidth / element.intrinsicHeight : undefined;
+}
+
+/** Where a `smartFlow.media` layer goes: its picture's shape, as large as fits
+ * across the span and `height`, centred across the span. A picture of unknown
+ * size fills the whole area. */
+export function mediaBox(element: CanvasScene["elements"][number], span: { x: number; width: number }, height: number): { x: number; width: number; height: number } {
+  const ratio = pictureRatio(element);
+  if (!ratio) return { x: span.x, width: span.width, height };
+  const width = Math.min(span.width, height * ratio);
+  return { x: span.x + (span.width - width) / 2, width, height: width / ratio };
+}
+
+/** Copy that can't reach the foot of its flow gives the space back: when the
+ * photo or chart frame under it is hidden (there is nothing to show), keeps a
+ * picture's shape that is shorter than the room left, or a list is too short
+ * to fill its column, the copy (with that picture) is centred between the top
+ * of its flow (`anchorTop`) and that foot, so the page has no empty block at
+ * the bottom. A frame something else still follows keeps its place. */
+function balanceShortCopy(layout: SmartSceneLayout): SmartSceneLayout {
+  type Layer = CanvasScene["elements"][number];
+  const elements = layout.scene.elements;
+  const byKey = new Map(elements.flatMap(element => [[element.id, element] as const, ...(element.slot ? [[element.slot, element] as const] : [])]));
+  const anchorOf = (element: Layer) => element.smartFlow && element.smartFlow.direction !== "up" ? byKey.get(element.smartFlow.after) : undefined;
+  const following = (element: Layer) => Boolean(element.smartFlow && element.smartFlow.direction !== "up" && !element.smartFlow.edge);
+  const shaped = (element: Layer) => Boolean(following(element) && element.smartFlow?.media && pictureRatio(element));
+  // Stretched to the foot of its flow (a picture keeping its shape has its own height).
+  const stretched = (element: Layer) => Boolean(following(element) && (element.smartFlow?.resize || element.smartFlow?.media) && !shaped(element));
+  const isList = (element: Layer) => element.type === "text" && element.smartText?.role === "list";
+  // A list's box runs to the foot of its flow; its items may stop short of it.
+  const reach = (element: Layer) => element.y + (isList(element) ? layout.texts.get(element.id)?.height ?? element.height : element.height);
+  const shifts = new Map<string, number>();
+  for (const foot of elements) {
+    const flow = foot.smartFlow;
+    if (!flow || !(stretched(foot) || shaped(foot)) || !foot.hidden && !isList(foot) && !shaped(foot)) continue;
+    if (elements.some(other => !other.hidden && anchorOf(other) === foot)) continue;
+    let root = anchorOf(foot);
+    for (let steps = 0; root && anchorOf(root) && steps < 50; steps++) root = anchorOf(root);
+    if (!root || root.hidden || root.type !== "text" || root.smartText?.anchorTop === undefined) continue;
+    const block = new Set([root.id]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const element of elements) if (!block.has(element.id) && !element.hidden && block.has(anchorOf(element)?.id ?? "")) { block.add(element.id); grew = true; }
+    }
+    const shift = (flow.bottom - Math.max(...elements.filter(element => block.has(element.id)).map(reach))) / 2;
+    if (shift > .5) for (const id of block) shifts.set(id, shift);
+  }
+  if (!shifts.size) return layout;
+  // A layer stretched to the foot of its flow keeps that foot.
+  return { ...layout, scene: { ...layout.scene, elements: elements.map(element => {
+    const shift = shifts.get(element.id);
+    return shift ? { ...element, y: element.y + shift, ...(stretched(element) ? { height: Math.max(1, element.height - shift) } : {}) } : element;
+  }) } };
+}
+
+function layoutPass(scene: CanvasScene, measure: typeof measureSmartText, caps: Map<string, GroupCap>): SmartSceneLayout {
   const texts = new Map<string, SmartTextLayout>(), resolved = new Map<string, SceneElement>(), visiting = new Set<string>();
   // A centred flow is laid out from the top of its space, then moved as a block (centreFlows).
   const start = scene.elements.map(element => element.smartCenter && !element.smartFlow && element.y !== element.smartCenter.top ? { ...element, y: element.smartCenter.top } : element);
@@ -199,18 +369,30 @@ export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText)
       } else {
         const y = other.y + (flow!.edge === "top" ? 0 : other.height) + flow!.gap;
         element = { ...element, y, ...(flow!.resize ? { height: Math.max(1, flow!.bottom - y) } : {}) };
+        if (flow!.media && !flow!.edge && element.type === "image") element = { ...element, ...mediaBox(element, flow!.media, Math.max(1, flow!.bottom - y)) };
       }
     }
     if (element.type === "text" && element.smartText && !element.hidden) {
-      const rule = element.smartText, bottomEdge = edge ?? rule.anchorBottom;
+      const rule = element.smartText, bottomEdge = edge ?? rule.anchorBottom, cap = rule.group ? caps.get(rule.group) : undefined;
       let maximum = rule.maxHeight;
       if (flow && !upward && !inline) maximum = Math.min(maximum, Math.max(1, flow.bottom - element.y));
       if (flow && upward && edge !== undefined) maximum = Math.min(maximum, Math.max(1, edge - flow.bottom));
-      const candidate = { ...element, smartText: { ...rule, maxHeight: maximum } };
-      const words = smartWords(element), layout = fitSmartText(candidate, measure(candidate, words), words);
+      const words = smartWords(element);
+      let layout: SmartTextLayout;
+      if (rule.role === "list") {
+        const candidate = { ...element, smartText: { ...rule, maxHeight: maximum } };
+        layout = fitSmartList(candidate, measure(candidate, words), words, cap ? { fontSize: cap.fontSize, ...(cap.paragraphSpacing !== undefined ? { paragraphSpacing: cap.paragraphSpacing } : {}) } : undefined);
+      } else {
+        // A group's shared size caps each member; the tallest member sets the height they all keep.
+        const shared = cap ? { maxFontSize: Math.min(rule.maxFontSize, cap.fontSize), minFontSize: Math.min(rule.minFontSize, cap.fontSize), ...(rule.softMinFontSize !== undefined ? { softMinFontSize: Math.min(rule.softMinFontSize, cap.fontSize) } : {}) } : {};
+        const candidate = { ...element, smartText: { ...rule, maxHeight: maximum, ...shared } };
+        layout = fitSmartText(candidate, measure(candidate, words), words);
+      }
       texts.set(element.id, layout);
-      const height = Math.min(maximum, layout.height);
-      element = { ...element, autoFitFontSize: layout.fontSize, height, textMode: "auto-fit", ...(bottomEdge !== undefined ? { y: bottomEdge - height } : {}) };
+      // A list keeps its whole box: the canvas wraps its items, and nothing follows it.
+      const height = rule.role === "list" ? maximum : Math.min(maximum, Math.max(layout.height, cap?.height ?? 0));
+      const top = bottomEdge !== undefined ? { y: bottomEdge - height } : rule.anchorTop !== undefined && !flow ? { y: rule.anchorTop } : {};
+      element = { ...element, autoFitFontSize: layout.fontSize, height, textMode: "auto-fit", ...(layout.paragraphSpacing !== undefined ? { paragraphSpacing: layout.paragraphSpacing } : {}), ...top };
     }
     const hug = flow?.hug;
     let hugged = hug && slots.get(hug.after);
@@ -226,7 +408,7 @@ export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText)
     visiting.delete(original.id); resolved.set(original.id, element); return element;
   }
   const elements = centreFlows(start.map(resolve));
-  const changed = elements.some((element, index) => { const before = scene.elements[index]; return element.x !== before.x || element.y !== before.y || element.height !== before.height || element.type === "text" && before.type === "text" && element.autoFitFontSize !== before.autoFitFontSize; });
+  const changed = elements.some((element, index) => { const before = scene.elements[index]; return element.x !== before.x || element.y !== before.y || element.width !== before.width || element.height !== before.height || element.type === "text" && before.type === "text" && (element.autoFitFontSize !== before.autoFitFontSize || element.paragraphSpacing !== before.paragraphSpacing); });
   return { scene: changed ? { ...scene, elements } : scene, texts };
 }
 

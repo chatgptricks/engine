@@ -203,6 +203,25 @@ export function commitCanvasGesture(scene: CanvasScene, active: Gesture, cancel 
   return mergeGesture(target,active);
 }
 
+/** A picture that takes its own shape (smartFlow.media) needs that shape on file:
+ * once its image has loaded, a size that disagrees with the image is replaced
+ * by the image's own. */
+function withPictureSizes(scene: CanvasScene, node: HTMLElement | null): CanvasScene {
+  if (!node) return scene;
+  let changed = false;
+  const elements = scene.elements.map(element => {
+    if (element.type !== "image" || !element.smartFlow?.media) return element;
+    const image = node.querySelector<HTMLImageElement>(`[data-element-id="${CSS.escape(element.id)}"] img[data-media-shape]`);
+    // currentSrc is the picture on show, which lags `src` while a new one loads.
+    if (!image?.complete || !image.naturalWidth || !image.naturalHeight || image.currentSrc !== image.src) return element;
+    const known = element.intrinsicWidth && element.intrinsicHeight ? element.intrinsicWidth / element.intrinsicHeight : 0;
+    if (known && Math.abs(image.naturalWidth / image.naturalHeight / known - 1) < .005) return element;
+    changed = true;
+    return { ...element, intrinsicWidth: image.naturalWidth, intrinsicHeight: image.naturalHeight };
+  });
+  return changed ? { ...scene, elements } : scene;
+}
+
 function rotate(point: Point, degrees: number): Point {
   const radians = degrees * RAD;
   return {
@@ -290,10 +309,10 @@ function SceneElement({ element, smartLayout }: { element: CanvasElement; smartL
       <feMerge><feMergeNode in="shadow" /><feMergeNode in="SourceGraphic" /></feMerge>
     </filter></defs></svg>}
     {element.type === "text" ? <div className={`te-canvas-text-frame${(element.textMode ?? "fixed") !== "auto-height" ? " is-fixed" : ""}`} style={{ justifyContent: element.verticalAlign === "middle" ? "center" : element.verticalAlign === "bottom" ? "flex-end" : "flex-start", "--te-paragraph-spacing": `${element.paragraphSpacing ?? 0}px` } as CSSProperties}>
-      <div className={`te-canvas-text gf-font-${element.font}`} style={textStyle(element)}>{lines.map((line, index) => <div className="te-canvas-text-line" key={index}>{element.listStyle && element.listStyle !== "none" && <span className="te-canvas-list-prefix" aria-hidden="true">{element.listStyle === "number" ? `${index + 1}. ` : "• "}</span>}<span dangerouslySetInnerHTML={{ __html: line || "<br>" }} /></div>)}</div>
+      <div className={`te-canvas-text gf-font-${element.font}${element.hangingIndent ? " is-hanging" : ""}`} style={textStyle(element)}>{lines.map((line, index) => <div className="te-canvas-text-line" key={index}>{element.listStyle && element.listStyle !== "none" && <span className="te-canvas-list-prefix" aria-hidden="true">{element.listStyle === "number" ? `${index + 1}. ` : "• "}</span>}<span dangerouslySetInnerHTML={{ __html: line || "<br>" }} /></div>)}</div>
     </div> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
+      <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
     </div></div> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
       <clipPath id={photoClipId} clipPathUnits="userSpaceOnUse">{geometry({fillRule,clipRule:fillRule})}</clipPath>
       {strokeAlign === "outside" && <mask id={outsideMaskId} maskUnits="userSpaceOnUse" x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} style={{maskType:"luminance"}}><rect x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} fill="white" />{geometry({fill:"black",fillRule})}</mask>}
@@ -624,6 +643,9 @@ export function CanvasEditor({
   });
   const [fontRevision,setFontRevision]=useState(0);
   useEffect(()=>{const loaded=()=>{clearSmartTextMeasurements();setFontRevision(revision=>revision+1);};document.fonts?.addEventListener("loadingdone",loaded);return()=>document.fonts?.removeEventListener("loadingdone",loaded);},[]);
+  // A picture that takes its own shape (smartFlow.media) lays the page out again once it has loaded.
+  const [pictureRevision,setPictureRevision]=useState(0);
+  useEffect(()=>{const node=root.current;if(!node)return;const loaded=(event:Event)=>{if(event.target instanceof HTMLImageElement&&event.target.dataset.mediaShape)setPictureRevision(revision=>revision+1);};node.addEventListener("load",loaded,true);return()=>node.removeEventListener("load",loaded,true);},[]);
   const [dragFrameId,setDragFrameId]=useState<string|null>(null);
   const currentScene = live ?? scene;
   const smartView = useSmartScene(currentScene);
@@ -716,7 +738,7 @@ export function CanvasEditor({
   useEffect(()=>{onRegisterHistoryBridge?.({flush:()=>{updateEditing();return editingAccepted.current;}});return()=>onRegisterHistoryBridge?.(null);});
   useLayoutEffect(()=>{
     if(disabled||live||editingId)return;
-    const smart = layoutSmartScene(scene);
+    const smart = layoutSmartScene(withPictureSizes(scene,root.current));
     let changed=smart.scene!==scene;
     const elements=smart.scene.elements.map(element=>{
       if(element.type === "text" && element.smartText)return element;
@@ -735,7 +757,7 @@ export function CanvasEditor({
       changed=true;return {...element,autoFitFontSize:size};
     });
     if(changed)onChange({...scene,elements},"text-fit");
-  },[scene,disabled,live,editingId,onChange,isolatedGroupId,inScope,fontRevision]);
+  },[scene,disabled,live,editingId,onChange,isolatedGroupId,inScope,fontRevision,pictureRevision]);
 
   useLayoutEffect(() => {
     if (!editingId || !editingNode.current) return;

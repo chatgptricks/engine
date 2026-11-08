@@ -3,7 +3,7 @@ import {
   BUILT_IN_TEMPLATES, EMPTY_LIBRARY, createBlankDesign, createCanvasElement,
   createDesign, duplicatePage, formatDimensions, parseCanvasScene, parseLibrary, prepareSmartTemplate, sceneForPage,
   type CanvasElement, type CanvasScene, type DesignDocument, type DesignPage,
-  type DesignTemplate, type EditorLibrary,
+  type DesignTemplate, type EditorLibrary, type SmartTextRole,
 } from "./model";
 
 type RecordValue = Record<string, unknown>;
@@ -246,7 +246,7 @@ function makeSlide(spec: RecordValue, size: { width: number; height: number }, t
   page.readingOrder = elements.filter(element => element.type !== "shape").map(element => element.id);
   return page;
 }
-export type AgentTemplateSlot = { pageId: string; pageIndex: number; pageLabel?: string; elementId: string; slot: string; type: "text" | "photo"; role?: "cover" | "heading" | "body"; sample?: string; maxCharacters?: number; fixedStyle: boolean };
+export type AgentTemplateSlot = { pageId: string; pageIndex: number; pageLabel?: string; elementId: string; slot: string; type: "text" | "photo"; role?: SmartTextRole; sample?: string; maxCharacters?: number; fixedStyle: boolean };
 
 /** Slots as a copy of the template will have them: text slots fit their copy
  * in the template's own style, photo slots take a new image in a fixed frame.
@@ -260,7 +260,8 @@ export function agentTemplateSlots(template: DesignTemplate): AgentTemplateSlot[
     if (element.type === "text") {
       const rule = element.smartText, size = rule?.softMinFontSize ?? element.fontSize;
       const perLine = Math.max(1, (element.width - 2 * (element.padding ?? 0)) / (size * .52));
-      const lines = rule ? Math.max(1, Math.floor((rule.maxHeight - 2 * (element.padding ?? 0)) / (size * element.lineHeight))) : undefined;
+      // A list's length is its number of items, so it gets no character guide.
+      const lines = rule && rule.role !== "list" ? Math.max(1, Math.floor(((rule.guideHeight ?? rule.maxHeight) - 2 * (element.padding ?? 0)) / (size * element.lineHeight))) : undefined;
       return [{ ...base, type: "text", ...(rule ? { role: rule.role } : {}), sample: element.text.slice(0, 200), ...(lines ? { maxCharacters: Math.max(8, Math.round(perLine * lines * .9)) } : {}) }];
     }
     if (element.type === "image" || element.type === "shape" && (element.templateRole === "media" || element.imageFill)) return [{ ...base, type: "photo" }];

@@ -25,6 +25,9 @@
 .te-canvas-text-line + .te-canvas-text-line { margin-top:var(--te-paragraph-spacing,0); }
 .te-canvas-text-line,.te-canvas-edit-text > div { min-height:1lh; }
 .te-canvas-list-prefix { display:inline-block; min-width:1.35em; }
+/* TextElement.hangingIndent: a wrapped item hangs under its own text, not under the bullet (LIST_MARKER_EM in smart-text.ts), on balanced lines. */
+.te-canvas-text.is-hanging > .te-canvas-text-line:has(> .te-canvas-list-prefix) { padding-left:1.35em; text-indent:-1.35em; text-wrap:balance; }
+.te-canvas-text.is-hanging .te-canvas-list-prefix { text-indent:0; }
 .te-canvas-edit-text > div + div { margin-top:var(--te-paragraph-spacing,0); }
 .te-canvas-edit-text[data-list-style=bullet] > div::before { content:"• "; }
 .te-canvas-edit-text[data-list-style=number] { counter-reset:te-list; }
