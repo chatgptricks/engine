@@ -17,11 +17,26 @@
  * The token is never put in an error, a log or a result.
  */
 
+import { X_CARD } from "../template-editor/model";
+
+/** X's check mark: blue for paid accounts, gold for organizations, grey for governments. */
+export type XBadge = "blue" | "gold" | "grey";
+/** A photo attached to a post: a pbs.twimg.com/media image and its size in pixels. */
+export type XPhoto = { url: string; width: number; height: number };
+
 export type XReaction = {
   id: string;
   url: string;
-  author: { name: string; handle: string; avatarUrl: string | null; verified: boolean };
+  author: {
+    name: string; handle: string; avatarUrl: string | null; verified: boolean;
+    /** The check mark next to the name, null when there is none. Older saved posts have only `verified` (blue). */
+    badge?: XBadge | null;
+    /** Organizations' profile photos are rounded squares on X; everyone else's are round. */
+    square?: boolean;
+  };
   text: string;
+  /** The post's first photo, drawn whole under its text. Videos and GIFs aren't drawn. */
+  media?: XPhoto | null;
   /** ISO 8601, or null when the scraper's date can't be read. */
   createdAt: string | null;
   likes: number;
@@ -83,6 +98,28 @@ function avatar(value: unknown): string | null {
   }
 }
 
+/** The post's first photo: a pbs.twimg.com/media image (at X's "large" size, up to 2048 px)
+ * and its size, from the scraper's or X's embed fields. Null for videos, GIFs and no media. */
+function photo(item: Item): XPhoto | null {
+  const lists = [record(item.extendedEntities)?.media, record(item.extended_entities)?.media, item.mediaDetails, record(item.entities)?.media];
+  for (const list of lists) {
+    if (!Array.isArray(list)) continue;
+    for (const entry of list.map(record)) {
+      if (!entry || text(entry.type) !== "photo") continue;
+      const size = record(entry.original_info) ?? record(entry.originalInfo), large = record(record(entry.sizes)?.large);
+      const width = count(size?.width ?? large?.w), height = count(size?.height ?? large?.h);
+      try {
+        const url = new URL(text(entry.media_url_https) || text(entry.mediaUrlHttps));
+        if (url.protocol !== "https:" || url.hostname !== "pbs.twimg.com" || !url.pathname.startsWith("/media/") || url.username || url.password || url.port || !width || !height) continue;
+        url.search = ""; url.hash = ""; url.searchParams.set("name", "large");
+        return { url: url.toString(), width, height };
+      } catch { continue; }
+    }
+    return null;
+  }
+  return null;
+}
+
 function isoDate(value: unknown): string | null {
   const raw = text(value) || (typeof value === "number" ? value : "");
   if (raw === "") return null;
@@ -142,6 +179,9 @@ export function normalizeTweet(value: unknown): XReaction | null {
   const body = visibleText(item, raw);
   if (!body) return null;
   const name = (text(author.name) || handle).trim();
+  // The scraper says "Business" or "Government"; X's embeds say the same in snake case.
+  const kind = (text(author.verifiedType) || text(author.verified_type)).toLowerCase();
+  const verified = author.isBlueVerified === true || author.is_blue_verified === true || author.isVerified === true || author.verified === true || Boolean(kind);
   return {
     id,
     url: `https://x.com/${handle}/status/${id}`,
@@ -149,9 +189,12 @@ export function normalizeTweet(value: unknown): XReaction | null {
       name,
       handle,
       avatarUrl: avatar(author.profilePicture ?? author.profile_image_url_https ?? author.profileImageUrl),
-      verified: author.isBlueVerified === true || author.isVerified === true || author.verified === true || Boolean(text(author.verifiedType)),
+      verified,
+      badge: kind === "business" ? "gold" : kind === "government" ? "grey" : verified ? "blue" : null,
+      square: kind === "business" || /^square$/i.test(text(author.profileImageShape) || text(author.profile_image_shape)),
     },
     text: body,
+    media: photo(item),
     createdAt: isoDate(item.createdAt ?? item.created_at),
     likes: count(item.likeCount ?? item.favorite_count),
     reposts: count(item.retweetCount ?? item.retweet_count),
@@ -238,30 +281,87 @@ export function formatReactionMeta(reaction: Pick<XReaction, "likes" | "reposts"
   return parts.join(" · ");
 }
 
-/** Room for post text on the chatgptricks template's cards, so a post fits at
- * the card's full type size: "reaction" is the one-card page (template page 4,
- * 48 px text, 12 lines), "reactions" either card of the two-card page (page 5,
- * 43 px body text, 5 lines). */
-export const REACTION_CARDS = {
-  // Measured on real posts in SF Pro Display: about 36 lowercase characters per line at 48 px, 40 at 43 px.
-  reaction: { maxText: 280, lines: 12, perLine: 35 },
-  reactions: { maxText: 160, lines: 5, perLine: 38 },
-} as const satisfies Record<string, ReactionFit & { maxText: number }>;
+/** Lowercase characters per line of post text on a chatgptricks card. The card scales X's
+ * screenshot, so it wraps like X, at about 47; estimating a little under it errs toward more
+ * lines, never an overflow. */
+export const REACTION_PER_LINE = 44;
+/** A post's text is cut, with "…", past this many characters, about a full card (X's own limit
+ * is 280; the scraper sends long posts cut short). */
+const MAX_POST_TEXT = 700;
+/** A photo shares its card with at most this many lines of text; X itself folds long posts. */
+const MIN_PHOTO = 300;
+const PHOTO_WIDTH = X_CARD.width - 2 * X_CARD.inset;
+/** A photo's height in 1080-wide pixels when it spans the card. */
+export const fullPhotoHeight = (media: XPhoto) => PHOTO_WIDTH * media.height / media.width;
 
-/** Slot values for one post card on the chatgptricks template. `second` fills
- * the lower card of the Reactions page (slots ending in "-2"). The text is
- * trimmed to the card with trimReaction. The avatar slot is left out when the
- * post has no pbs.twimg.com avatar, so the placeholder stays. */
-export function reactionSlots(reaction: XReaction, { page = "reaction", second = false, language = "en" }: { page?: keyof typeof REACTION_CARDS; second?: boolean; language?: string } = {}): Record<string, string> {
-  const suffix = second ? "-2" : "", card = REACTION_CARDS[second ? "reactions" : page];
+/** A card's height in 1080-wide pixels around `lines` lines of text and, when given, a photo `photo` px tall. */
+export const reactionCardHeight = (lines: number, photo = 0) => X_CARD.textTop + lines * X_CARD.line + (photo > 0 ? X_CARD.mediaGap + photo : 0) + X_CARD.foot;
+
+/** Lines of text a post gets on a card: all of it up to X_CARD.maxLines, or fewer beside a
+ * photo, which keeps at least MIN_PHOTO px (or its full height, when smaller). */
+export function reactionTextLines(reaction: Pick<XReaction, "text" | "media">): number {
+  const photo = reaction.media ? Math.min(fullPhotoHeight(reaction.media), MIN_PHOTO) : 0;
+  const room = Math.floor((X_CARD.room - reactionCardHeight(0, photo)) / X_CARD.line);
+  return Math.max(1, Math.min(X_CARD.maxLines, room, reactionLines(reaction.text.trim(), REACTION_PER_LINE)));
+}
+
+/** True when these posts fit one Reaction page together at full size: every line of text and every photo whole. */
+export function reactionsFit(posts: Pick<XReaction, "text" | "media">[]): boolean {
+  const height = posts.reduce((sum, post) => sum + reactionCardHeight(reactionTextLines(post), post.media ? fullPhotoHeight(post.media) : 0), 0);
+  return height + (posts.length - 1) * X_CARD.between <= X_CARD.room + .5;
+}
+
+/** Posts, in order, grouped into Reaction pages: each group fits one page (reactionsFit) and
+ * holds at most `max` posts. A post too big to share a page gets one of its own. */
+export function packReactions<T extends Pick<XReaction, "text" | "media">>(posts: T[], max = 3): T[][] {
+  const pages: T[][] = [];
+  for (const post of posts) {
+    const page = pages.at(-1);
+    if (page && page.length < max && reactionsFit([...page, post])) page.push(post);
+    else pages.push([post]);
+  }
+  return pages;
+}
+
+/** Each photo's size on a page of these posts, in 1080-wide pixels: the card's full width when the
+ * page has room, otherwise smaller with its proportions kept, so a post with a tall photo fits. */
+export function reactionPhotoSizes(posts: Pick<XReaction, "text" | "media">[]): ({ width: number; height: number } | null)[] {
+  const text = posts.reduce((sum, post) => sum + reactionCardHeight(reactionTextLines(post)) + (post.media ? X_CARD.mediaGap : 0), 0) + (posts.length - 1) * X_CARD.between;
+  const full = posts.reduce((sum, post) => sum + (post.media ? fullPhotoHeight(post.media) : 0), 0);
+  const scale = full > 0 ? Math.min(1, Math.max(0, X_CARD.room - text) / full) : 1;
+  return posts.map(post => post.media ? { width: PHOTO_WIDTH * scale, height: fullPhotoHeight(post.media) * scale } : null);
+}
+
+/** The author's name as X shows it: names too wide for the card end in "…" (capitals count 1.3, emoji 2). */
+export function reactionName(name: string, max = 30): string {
+  const value = name.trim().replace(/\s+/g, " ");
+  if (Array.from(value).reduce((sum, character) => sum + glyphWidth(character), 0) <= max) return value;
+  let used = 0, kept = "";
+  for (const character of Array.from(value)) {
+    if (used + glyphWidth(character) > max - 1) break;
+    used += glyphWidth(character); kept += character;
+  }
+  return `${kept.trimEnd()}…`;
+}
+
+/** Slot values for post card `card` (1 to 3) on a chatgptricks Reaction page: the name, @handle,
+ * the text trimmed to the card with trimReaction, and the profile photo and the post's photo when
+ * they're pbs.twimg.com images (the deck shows the photo and sizes it). Without an avatar the
+ * placeholder stays. */
+export function reactionSlots(reaction: XReaction, { card = 1 }: { card?: number } = {}): Record<string, string> {
+  const suffix = card > 1 ? `-${card}` : "";
   return {
-    [`reaction-name${suffix}`]: reaction.author.name,
+    [`reaction-name${suffix}`]: reactionName(reaction.author.name),
     [`reaction-handle${suffix}`]: `@${reaction.author.handle}`,
-    [`reaction-text${suffix}`]: trimReaction(reaction.text, card.maxText, card),
-    [`reaction-meta${suffix}`]: formatReactionMeta(reaction, language),
+    [`reaction-text${suffix}`]: trimReaction(reaction.text, MAX_POST_TEXT, { lines: reactionTextLines(reaction), perLine: REACTION_PER_LINE }),
     ...(reaction.author.avatarUrl ? { [`reaction-avatar${suffix}`]: reaction.author.avatarUrl } : {}),
+    ...(reaction.media ? { [`reaction-media${suffix}`]: reaction.media.url } : {}),
   };
 }
+
+/** The check mark a post's card shows. Posts saved before badges were read have only `verified`. */
+export const reactionBadge = (reaction: Pick<XReaction, "author">): XBadge | null =>
+  reaction.author.badge !== undefined ? reaction.author.badge : reaction.author.verified ? "blue" : null;
 
 /** Why X search came back empty when the Apify plan doesn't allow it. */
 export const X_PAID_PLAN = "X search needs a paid Apify plan. On the free plan the tweet scraper only runs in demo mode and returns no posts to Engine.";

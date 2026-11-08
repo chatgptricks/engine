@@ -115,11 +115,11 @@ test("buildRecreatedDeck makes a native deck with emphasis, a chart PNG and note
 });
 
 test("the writer never sees the Reaction pages, and a slide on one is skipped",async()=>{
-  const reaction=pages.findIndex(page=>page.label==="Reaction"),both=pages.findIndex(page=>page.label==="Reactions");
-  assert.ok(reaction>0&&both>0,"the template has both reaction pages");
+  const reactionPages=["Reaction","Two reactions","Three reactions"].map(label=>pages.findIndex(page=>page.label===label)),[reaction]=reactionPages;
+  assert.ok(reactionPages.every(index=>index>0),"the template has the one-, two- and three-post Reaction pages");
   const visible=recreate.writerPages(template);
-  assert.ok(visible.every(page=>page.index!==reaction&&page.index!==both));
-  assert.deepEqual(visible.map(page=>page.index),pages.map((_,index)=>index).filter(index=>index!==reaction&&index!==both),"other pages keep their template index");
+  assert.ok(visible.every(page=>!reactionPages.includes(page.index)));
+  assert.deepEqual(visible.map(page=>page.index),pages.map((_,index)=>index).filter(index=>!reactionPages.includes(index)),"other pages keep their template index");
   const {carousel}=carouselFor();
   const invented={templatePage:reaction,purpose:"reaction",texts:[{slot:"reaction-text",text:"A post nobody wrote"}],media:{kind:"none",photoBrief:"",chart:null}};
   const {document,notes}=await recreate.buildRecreatedDeck(profile,template,model.BUILT_IN_TEMPLATES,{...carousel,slides:[carousel.slides[0],invented]});

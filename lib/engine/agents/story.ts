@@ -8,7 +8,8 @@ import { z } from "zod";
 import { isHeadlineModelConfigured, requestHeadlines } from "../headline-model";
 import { ask, RecreateError } from "./claude";
 import { need, outputOf, rerunNote, type StageRunner } from "./context";
-import { cardsOn, describePages, templatePages, type PageCatalog } from "./pages";
+import { reactionTextLines } from "../x-reactions";
+import { describePages, reactionPageFor, templatePages, type PageCatalog } from "./pages";
 import { rolePrompt } from "./playbook";
 import { OutlineSchema, type Brief, type DataOutput, type Facts, type HookOption, type HooksOutput, type Outline, type OutlineSlide, type ReactionsOutput } from "./schemas";
 
@@ -18,19 +19,19 @@ export const HOOKS_TIMEOUT_MS = 6 * 60_000;
 
 /**
  * Keeps an outline to what the template and research can fill: real pages,
- * charts the data stage built, and reaction slides with enough real posts for
- * their cards (a two-post slide moves to the one-post page when only one is left).
+ * charts the data stage built, and reaction slides with real posts, each on the
+ * Reaction page with as many cards as it has posts (up to the most a page holds).
+ * The deck still moves posts that don't fit one page together onto the next.
  */
 export function normalizeOutline(outline: Outline, pages: PageCatalog[], known: { charts: string[]; reactions: string[] }): Outline {
-  const single = pages.find(page => page.reaction === "reaction"), double = pages.find(page => page.reaction === "reactions");
   const slides = outline.slides.flatMap((slide): OutlineSlide[] => {
     const page = pages.find(candidate => candidate.index === slide.templatePage);
     if (!page) return [];
-    if (page.reaction || slide.kind === "reaction") {
+    if (page.cards || slide.kind === "reaction") {
       const ids = [...new Set(slide.reactionIds.filter(id => known.reactions.includes(id)))];
-      const target = ids.length >= 2 && double ? double : ids.length >= 1 ? single ?? (ids.length >= 2 ? double : undefined) : undefined;
+      const target = ids.length ? reactionPageFor(pages, ids.length) : undefined;
       if (!target) return [];
-      return [{ ...slide, kind: "reaction" as const, templatePage: target.index, reactionIds: ids.slice(0, cardsOn(target)), chartId: null, photo: "" }];
+      return [{ ...slide, kind: "reaction" as const, templatePage: target.index, reactionIds: ids.slice(0, target.cards), chartId: null, photo: "" }];
     }
     return [{ ...slide, chartId: slide.chartId && known.charts.includes(slide.chartId) ? slide.chartId : null, reactionIds: [] }];
   }).slice(0, MAX_SLIDES);
@@ -41,7 +42,7 @@ export const outline: StageRunner = async context => {
   const { file, profile, template } = context;
   const b = need<Brief>(file, "brief"), f = outputOf<Facts>(file, "facts"), d = outputOf<DataOutput>(file, "data");
   const posts = outputOf<ReactionsOutput>(file, "reactions")?.reactions ?? [];
-  const all = templatePages(template), usable = all.filter(page => !page.reaction || posts.length >= cardsOn(page));
+  const all = templatePages(template), usable = all.filter(page => !page.cards || posts.length >= page.cards);
   const planned = await ask({
     role: "story", what: "plan the slides", signal: context.signal, usage: context.usage,
     system: rolePrompt("outline", profile), schema: OutlineSchema,
@@ -49,7 +50,7 @@ export const outline: StageRunner = async context => {
       `BRIEF\n${JSON.stringify(b)}`,
       `FACTS\n${f ? JSON.stringify(f) : "(not available)"}`,
       `CHARTS BUILT BY THE DATA STAGE\n${d?.charts.length ? d.charts.map(chart => `- ${chart.id}: ${chart.purpose} (recreates: ${chart.recreates}; ${chart.source})`).join("\n") : "(none: plan no chart slides)"}`,
-      `REAL REACTIONS FROM X\n${posts.length ? posts.map(post => `- ${post.id}: ${post.author.name} @${post.author.handle}, ${post.likes} likes: ${post.text.replace(/\s+/g, " ").slice(0, 280)} (why: ${post.why})`).join("\n") : "(none: plan no reaction slides)"}`,
+      `REAL REACTIONS FROM X (size: lines on a card, and whether a photo shows under the text)\n${posts.length ? posts.map(post => `- ${post.id}: ${post.author.name} @${post.author.handle}, ${post.likes} likes, ~${reactionTextLines(post)} line${reactionTextLines(post) === 1 ? "" : "s"}${post.media ? " + photo" : ""}: ${post.text.replace(/\s+/g, " ").slice(0, 280)} (why: ${post.why})`).join("\n") : "(none: plan no reaction slides)"}`,
       `TEMPLATE "${template.name}" PAGES (templatePage is the page number)\n${describePages(usable)}`,
       file.source.notes ? `TEAMMATE'S NOTES\n${file.source.notes}` : "",
       rerunNote(context),
@@ -58,7 +59,7 @@ export const outline: StageRunner = async context => {
   const normalized = normalizeOutline(planned, all, { charts: d?.charts.map(chart => chart.id) ?? [], reactions: posts.map(post => post.id) });
   if (!normalized.slides.length) throw new RecreateError("The story editor's plan used no pages this template has. Try again.", 502);
   // Page names travel with the outline so the checkpoint can label slides without the template.
-  return { output: { ...normalized, pages: all.map(page => ({ index: page.index, label: page.label, reaction: page.reaction })) } };
+  return { output: { ...normalized, pages: all.map(page => ({ index: page.index, label: page.label, cards: page.cards })) } };
 };
 
 // ── Hooks ───────────────────────────────────────────────────────────────────

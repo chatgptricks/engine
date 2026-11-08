@@ -52,12 +52,20 @@ export type CanvasElementBase = {
   templateRole?: "brand" | "media";
   /** Follow another slot. Down (default): sit `gap` below it (or below its top
    * with `edge: "top"`) and stop at `bottom`. Up: sit `gap` above it and reach
-   * no higher than `bottom`. `resize` keeps the far edge and changes height.
+   * no higher than `bottom`. Right: sit `gap` after the end of its last line of
+   * text, centred on that line, as a badge follows a name. `resize` keeps the
+   * far edge and changes height. `hug` moves the bottom edge to `gap` below
+   * another slot's bottom instead, so a card grows and shrinks with its copy; when
+   * that slot is hidden, it hugs the slot the hidden one follows.
    * `media` (an image following down): the layer takes its picture's shape
    * instead, as large as fits across `media.x` to `media.x + media.width` and
    * down to `bottom`, centred across that span. Without the picture's size it
    * fills the span and height like `resize`. */
-  smartFlow?: { after: string; gap: number; bottom: number; edge?: "top"; resize?: boolean; direction?: "up"; media?: { x: number; width: number } };
+  smartFlow?: { after: string; gap: number; bottom: number; edge?: "top"; resize?: boolean; direction?: "up" | "right"; hug?: { after: string; gap: number }; media?: { x: number; width: number } };
+  /** Starts a flow that is centred between `top` and `bottom`: this layer and
+   * everything that follows it move down together when they leave room, so a
+   * short page has no empty block at its foot. A full page starts at `top`. */
+  smartCenter?: { top: number; bottom: number };
   /** Author's choice of how this layer behaves in copies of a template; inferred when absent. */
   layoutRole?: "fixed" | "text" | "media" | "free";
   componentId?: string;
@@ -346,6 +354,47 @@ function page(key: string, artwork: string, style: SlideStyle): DesignPage {
 
 const ink = "#273f35";
 const paper = "#f4efe5";
+
+/** Colours of a post on X in dark mode, as phone screenshots show it. `border` is X's own
+ * divider grey, used for the thin line around each card. */
+export const X_POST_COLORS = { card: "#000000", text: "#E7E9EA", handle: "#71767B", border: "#2F3336" } as const;
+/** The chatgptricks post cards in 1080-wide pixels. A card is 936 px wide with `pad` px of black
+ * padding inside on every side (Ivan's call), so its content never touches the edge; Ivan's phone
+ * screenshots of X (1206 px wide) scale by `scale` into the rest, which keeps X's line breaks.
+ * `radius` and `border` round the corners a little and outline the card, so it stands out from
+ * the page. A card is `textTop + lines × line + foot` tall, plus `mediaGap` and the photo when the
+ * post has one. Reaction pages have no source line, so `room`, the cards' space, runs from 64 px
+ * under the one-line title (90 + 56 × 1.04, the Text + Media title's line) down to the bottom
+ * margin at `bottom`. */
+export const X_CARD = (() => {
+  const width = 936, pad = 24, scale = (width - 2 * pad) / 1206, shot = (value: number) => value * scale;
+  const size = shot(57.9), line = shot(73.3), bottom = 1352, room = bottom - 90 - 56 * 1.04 - 64;
+  // SF Pro Display's baseline sits 0.95 em plus half the leading under the top of its line box.
+  const textTop = pad + shot(310.5) - ((line / size - 1.19) / 2 + .95) * size, foot = pad + shot(33.5);
+  // `maxLines` is as much text as one card can show on a page of its own.
+  return { width, pad, scale, inset: pad + shot(27), size, line, textTop, foot, between: 40, mediaGap: shot(31), mediaRadius: shot(48), radius: 24, border: 3, maxLines: Math.floor((room - textTop - foot) / line), bottom, room };
+})();
+
+/** The badges X shows after a verified name, drawn for Engine in a 100 × 100 box with the check
+ * cut out (fill rule evenodd), so it shows the card's black: people and government accounts get
+ * a rosette of eight round lobes (blue, grey), organizations a gold twelve-point seal. */
+export const X_BADGES = (() => {
+  const round = (value: number) => Math.round(value * 100) / 100;
+  const outline = (points: [number, number][]) => `M${points.map(([x, y]) => `${round(x)} ${round(y)}`).join("L")}Z`;
+  const around = (count: number, radius: (index: number, angle: number) => number) => Array.from({ length: count }, (_, index): [number, number] => {
+    const angle = index / count * 2 * Math.PI - Math.PI / 2, r = radius(index, angle);
+    return [50 + r * Math.cos(angle), 50 + r * Math.sin(angle)];
+  });
+  // A thick check whose arms meet at a right angle, centred in the box.
+  const check = outline([[33.36, 46.64], [43, 56.28], [66.64, 32.64], [73.36, 39.36], [43, 69.72], [26.64, 53.36]]);
+  const rosette = outline(around(160, (_, angle) => 43 + 7 * Math.abs(Math.cos(4 * (angle + Math.PI / 2))) ** .55)) + check;
+  const seal = outline(around(24, index => index % 2 ? 41.5 : 50)) + check;
+  return {
+    blue: { path: rosette, fill: "#1D9BF0" },
+    grey: { path: rosette, fill: "#829AAB" },
+    gold: { path: seal, fill: "#E2B719", gradient: { type: "linear" as const, angle: 135, stops: [{ color: "#F8DF5C", position: 0 }, { color: "#D9A21B", position: 100 }] } },
+  };
+})();
 
 export const BUILT_IN_TEMPLATES: DesignTemplate[] = [
   {
@@ -1306,13 +1355,13 @@ function prepareSmartPage(page: DesignPage, pageIndex: number, context: LayoutCo
  * freely, and roles are worked out afresh for the next copy. Explicit role
  * choices (`layoutRole`) are kept. */
 export function releaseSmartLayout(scene: CanvasScene): CanvasScene {
-  if (!scene.elements.some(element => element.templateRole || element.smartFlow || element.type === "text" && element.smartText)) return scene;
+  if (!scene.elements.some(element => element.templateRole || element.smartFlow || element.smartCenter || element.type === "text" && element.smartText)) return scene;
   return { ...scene, elements: scene.elements.map(element => {
-    if (!element.templateRole && !element.smartFlow && !(element.type === "text" && element.smartText)) return element;
+    if (!element.templateRole && !element.smartFlow && !element.smartCenter && !(element.type === "text" && element.smartText)) return element;
     const released = { ...element } as CanvasElement & Record<string, unknown>;
     const role = element.type === "text" && element.smartText ? "text" : element.templateRole === "media" ? "media" : element.templateRole === "brand" ? "fixed" : undefined;
     const kept = element.protected?.filter(property => !role || !(ROLE_PROTECTION[role] as readonly ProtectedProperty[]).includes(property));
-    delete released.templateRole; delete released.smartFlow; delete released.protected;
+    delete released.templateRole; delete released.smartFlow; delete released.smartCenter; delete released.protected;
     if (kept?.length) released.protected = kept;
     if (released.slot?.startsWith("smart-")) delete released.slot;
     if (released.type === "text" && released.smartText) {
@@ -1801,10 +1850,16 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
   if (value.layoutRole !== undefined) result.layoutRole = value.layoutRole as CanvasElementBase["layoutRole"];
   if (value.smartFlow !== undefined) {
     const flow = value.smartFlow;
-    if (!object(flow) || !string(flow.after, 200) || !flow.after || !numberIn(flow.gap, 0, 1000) || !numberIn(flow.bottom, -10000, 10000) || !optional(flow, "edge", choice(["top"])) || !optional(flow, "resize", boolean) || !optional(flow, "direction", choice(["up"]))) return null;
-    const media = flow.media;
+    if (!object(flow) || !string(flow.after, 200) || !flow.after || !numberIn(flow.gap, 0, 1000) || !numberIn(flow.bottom, -10000, 10000) || !optional(flow, "edge", choice(["top"])) || !optional(flow, "resize", boolean) || !optional(flow, "direction", choice(["up", "right"]))) return null;
+    const hug = flow.hug, media = flow.media;
+    if (hug !== undefined && (!object(hug) || !string(hug.after, 200) || !hug.after || !numberIn(hug.gap, 0, 1000))) return null;
     if (media !== undefined && (!object(media) || !numberIn(media.x, -10000, 10000) || !numberIn(media.width, 1, 10000))) return null;
-    result.smartFlow = { after: flow.after, gap: flow.gap, bottom: flow.bottom, ...(flow.edge === "top" ? { edge: "top" } : {}), ...(typeof flow.resize === "boolean" ? { resize: flow.resize } : {}), ...(flow.direction === "up" ? { direction: "up" } : {}), ...(media ? { media: { x: media.x as number, width: media.width as number } } : {}) };
+    result.smartFlow = { after: flow.after, gap: flow.gap, bottom: flow.bottom, ...(flow.edge === "top" ? { edge: "top" } : {}), ...(typeof flow.resize === "boolean" ? { resize: flow.resize } : {}), ...(flow.direction === "up" || flow.direction === "right" ? { direction: flow.direction } : {}), ...(object(hug) ? { hug: { after: hug.after as string, gap: hug.gap as number } } : {}), ...(object(media) ? { media: { x: media.x as number, width: media.width as number } } : {}) };
+  }
+  if (value.smartCenter !== undefined) {
+    const center = value.smartCenter;
+    if (!object(center) || !numberIn(center.top, -10000, 10000) || !numberIn(center.bottom, center.top, 10000)) return null;
+    result.smartCenter = { top: center.top, bottom: center.bottom };
   }
   for (const key of ["groupId", "componentId", "componentInstanceId", "componentSourceId", "colorRoleId"] as const) {
     if (!optional(value, key, identity)) return null;
@@ -2717,9 +2772,15 @@ function chatgptricksTemplate(): DesignTemplate {
     smartFlow: { after: `list-${side}-heading`, gap: px(36), bottom: px(1252), resize: true },
     smartText: { role: "list", lines: 0, minFontSize: px(26), maxFontSize: px(43), maxHeight: px(1252 - contentTop - 55.2 - 36) + .01, baseHeight: px(1252 - contentTop - 55.2 - 36) + .01, softMinFontSize: px(34), group: "list-items", paragraphSpacing: px(28), maxParagraphSpacing: px(70) },
   });
-  // Reaction pages: real posts from X as native cards under a one-line title, so a card starts 64 px under it.
-  const shortTitle = (key: string, title: string): TextElement => ({ type: "text", ...at(`${key}-title`, "Title", [72, 90, 920, 62.72]), text: title, ...typeset("sfpro", 56, 700, green, 1.12, -.022), ...textSlot("title"), smartText: fit("heading", 0, 56, 42, 62.72, 62.72) });
-  const card = (id: string, name: string, box: Box, smartFlow: NonNullable<CanvasElementBase["smartFlow"]>): ShapeElement => ({ type: "shape", ...at(id, name, box), shape: "rectangle", fill: surface, stroke: "transparent", strokeWidth: 0, radius: px(28), ...fixed(), smartFlow });
+  // Reaction pages: real posts from X as they look in a phone screenshot of the X app in dark mode,
+  // measured on Ivan's examples (1206 px wide) and scaled into a 936 px card: a black box with
+  // slightly rounded corners, a thin grey border and black padding inside, so it stands out from
+  // the page (Ivan's call), the profile photo, the bold name and its badge, the grey @handle,
+  // the X.com mark and the post in SF Pro, and no stats. Each card hugs its post, so a page holds
+  // one long post, two medium ones or three short ones. There's no source line (the cards show
+  // whose posts they are), so the title and the cards are centred together between the margins.
+  // The Text + Media title's box and type, kept to one line.
+  const shortTitle = (key: string, title: string): TextElement => ({ type: "text", ...at(`${key}-title`, "Title", [72, 90, 936, titleLine]), text: title, ...typeset("sfpro", 56, 700, green, 1.04, -1.2 / 56), ...textSlot("title"), smartText: fit("heading", 0, 56, 42, titleLine, titleLine), smartCenter: { top: px(90), bottom: px(X_CARD.bottom) } });
   // A grey head-and-shoulders placeholder; the avatar layer's radius makes it round.
   const avatarPlaceholder = (size: number) => {
     const [c, s] = [size / 2, size / 104];
@@ -2727,37 +2788,60 @@ function chatgptricksTemplate(): DesignTemplate {
     return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
   };
   const xPath = "M714.163 519.284L1160.89 0H1055.03L667.137 450.887L357.328 0H0L468.492 681.821L0 1226.37H105.866L515.491 750.218L842.672 1226.37H1200L714.137 519.284H714.163ZM569.165 687.828L521.697 619.934L144.011 79.6944H306.615L611.412 515.685L658.88 583.579L1055.08 1150.3H892.476L569.165 687.854V687.828Z";
-  type PostStyle = { pad: number; avatar: number; name: number; handle: number; text: number; textLine: number; textMin: number; textLines: number; textGap: number; meta: number; metaGap: number; mark: number };
-  type PostCopy = { name: string; handle: string; text: string; meta: string };
-  /** One post card's content at `top` (the card's top edge). Everything in the
-   * card follows its avatar, so a card that moves keeps its inner layout. The
-   * meta line either follows the text (`metaBottom` is the lowest it may end) or
-   * is pinned `pad` above `pinnedBottom`, the card's bottom edge. */
-  const post = (key: string, suffix: "" | "-2", top: number, s: PostStyle, copy: PostCopy, place: { avatarFlow?: NonNullable<CanvasElementBase["smartFlow"]>; textBottom: number; metaBottom?: number; pinnedBottom?: number }): CanvasElement[] => {
-    const left = 72 + s.pad, right = 992 - s.pad, width = right - left, avatarY = top + s.pad;
-    const nameX = left + s.avatar + 28, markHeight = s.mark * 1227 / 1200;
-    const [nameHeight, handleHeight, metaHeight] = [s.name * 1.2, s.handle * 1.2, s.meta * 1.25];
-    const nameY = avatarY + (s.avatar - nameHeight - handleHeight) / 2, textY = avatarY + s.avatar + s.textGap, textHeight = s.textLines * s.textLine;
-    const avatarSlot = `reaction-avatar${suffix}`, follow = (gap: number, edge?: "top") => ({ after: avatarSlot, gap: px(gap), bottom: px(1252), ...(edge ? { edge } : {}) });
-    const metaY = place.pinnedBottom === undefined ? textY + textHeight + s.metaGap : place.pinnedBottom - s.pad - metaHeight;
+  // A size in the screenshot, scaled into the card, and a position in it, inside the card's padding.
+  const shot = (value: number) => value * X_CARD.scale, inCard = (value: number) => X_CARD.pad + shot(value);
+  // SF Pro Display's baseline sits 0.95 em plus half the leading under the top of its line box.
+  const baselineAt = (size: number, lineHeight: number) => ((lineHeight - 1.19) / 2 + .95) * size;
+  // Type sizes match the screenshot's text widths in SF Pro; positions match its baselines.
+  const X = { name: shot(49.7), handle: shot(51.2), text: X_CARD.size, textLine: X_CARD.line, com: shot(61.5), avatar: shot(142), avatarTop: inCard(37), inset: X_CARD.inset, nameX: inCard(194), markX: inCard(969), markTop: inCard(56), mark: shot(44), badge: shot(44), badgeGap: shot(11), markGap: shot(31), foot: X_CARD.foot, between: X_CARD.between };
+  const nameTop = inCard(95) - baselineAt(X.name, 1.2), handleTop = inCard(154.5) - baselineAt(X.handle, 1.2), comTop = inCard(99) - baselineAt(X.com, 1.2), textTop = X_CARD.textTop;
+  const markWidth = X.mark * 1200 / 1227, nameWidth = X.markX - X.markGap - X.badgeGap - X.badge - X.nameX, mediaWidth = 936 - 2 * X.inset;
+  /** A card's height around `lines` lines of post text. */
+  const cardHeight = (lines: number) => textTop + lines * X.textLine + X.foot;
+  type XPost = { name: string; handle: string; text: string; lines: number };
+  /** Post card `n` of a page. Its top follows `after` by `gap`, everything in it follows its
+   * top edge, and its bottom hugs the post's photo, or its text while the photo is hidden.
+   * The text may reach no lower than `textBottom`. */
+  const xPost = (key: string, n: 1 | 2 | 3, top: number, after: string, gap: number, post: XPost, textBottom: number, maxLines: number): CanvasElement[] => {
+    const suffix = n === 1 ? "" : `-${n}`, slot = (part: string) => `reaction-${part}${suffix}`, left = 72, nameY = top + nameTop;
+    const inside = (offset: number) => ({ after: slot("card"), edge: "top" as const, gap: px(offset), bottom: px(1440) });
     return [
-      { type: "image", ...at(`${key}-avatar${suffix}`, "Avatar", [left, avatarY, s.avatar, s.avatar]), src: avatarPlaceholder(s.avatar), fit: "cover", cropX: 50, cropY: 50, radius: px(s.avatar / 2), intrinsicWidth: s.avatar, intrinsicHeight: s.avatar,
-        directive: "The post author's profile photo from X (pbs.twimg.com)", slot: avatarSlot, templateRole: "media", layoutRole: "media", protected: ["position", "delete"], ...(place.avatarFlow ? { smartFlow: place.avatarFlow } : {}) },
-      { type: "text", ...at(`${key}-name${suffix}`, "Author name", [nameX, nameY, right - s.mark - 24 - nameX, nameHeight]), text: copy.name, ...typeset("sfpro", s.name, 700, white, 1.2, -.01), ...textSlot(`reaction-name${suffix}`), smartFlow: follow(nameY - avatarY, "top"), smartText: fit("heading", 0, s.name, s.name * .75, nameHeight, nameHeight) },
-      { type: "text", ...at(`${key}-handle${suffix}`, "Author handle", [nameX, nameY + nameHeight, right - s.mark - 24 - nameX, handleHeight]), text: copy.handle, ...typeset("sfpro", s.handle, 400, dim, 1.2, 0), ...textSlot(`reaction-handle${suffix}`), smartFlow: follow(nameY + nameHeight - avatarY, "top"), smartText: fit("body", 0, s.handle, s.handle * .75, handleHeight, handleHeight) },
-      { type: "shape", ...at(`${key}-x-mark${suffix}`, "X logo", [right - s.mark, avatarY + (s.avatar - markHeight) / 2, s.mark, markHeight]), shape: "path", path: xPath, viewBox: "0 0 1200 1227", fill: white, stroke: "transparent", strokeWidth: 0, radius: 0, ...fixed(), smartFlow: follow((s.avatar - markHeight) / 2, "top") },
-      // Post text, word for word: it wraps first, then shrinks to its minimum before it would leave the card.
-      { type: "text", ...at(`${key}-text${suffix}`, "Post text", [left, textY, width, textHeight]), text: copy.text, ...typeset("sfpro", s.text, 400, white, s.textLine / s.text, -.012), ...textSlot(`reaction-text${suffix}`), smartFlow: { after: avatarSlot, gap: px(s.textGap), bottom: px(place.textBottom) }, smartText: fit("body", 0, s.text, s.textMin, textHeight, textHeight) },
-      { type: "text", ...at(`${key}-meta${suffix}`, "Post stats", [left, metaY, width, metaHeight]), text: copy.meta, ...typeset("sfpro", s.meta, 400, dim, 1.25, 0), ...textSlot(`reaction-meta${suffix}`),
-        ...(place.pinnedBottom === undefined ? { smartFlow: { after: `reaction-text${suffix}`, gap: px(s.metaGap), bottom: px(place.metaBottom ?? 1252) }, smartText: fit("body", 0, s.meta, s.meta * .75, metaHeight, metaHeight) } : { verticalAlign: "bottom" as const, smartText: fit("body", 0, s.meta, s.meta * .75, metaHeight, metaHeight, s.meta, place.pinnedBottom - s.pad) }) },
+      { type: "shape", ...at(`${key}-card${suffix}`, "Post card", [left, top, 936, cardHeight(post.lines)]), shape: "rectangle", fill: X_POST_COLORS.card, stroke: X_POST_COLORS.border, strokeWidth: px(X_CARD.border), strokeAlign: "inside", radius: px(X_CARD.radius), ...fixed(), slot: slot("card"),
+        smartFlow: { after, gap: px(gap), bottom: px(X_CARD.bottom), hug: { after: slot("media"), gap: px(X.foot) } } },
+      { type: "image", ...at(`${key}-avatar${suffix}`, "Avatar", [left + X.inset, top + X.avatarTop, X.avatar, X.avatar]), src: avatarPlaceholder(Math.round(X.avatar)), fit: "cover", cropX: 50, cropY: 50, radius: px(X.avatar / 2), intrinsicWidth: Math.round(X.avatar), intrinsicHeight: Math.round(X.avatar),
+        directive: "The post author's profile photo from X (pbs.twimg.com)", slot: slot("avatar"), templateRole: "media", layoutRole: "media", protected: ["position", "delete"], smartFlow: inside(X.avatarTop) },
+      { type: "text", ...at(`${key}-name${suffix}`, "Author name", [left + X.nameX, nameY, nameWidth, X.name * 1.2]), text: post.name, ...typeset("sfpro", X.name, 700, X_POST_COLORS.text, 1.2, 0), ...textSlot(slot("name")), smartFlow: inside(nameTop), smartText: fit("heading", 0, X.name, X.name * .75, X.name * 1.2, X.name * 1.2) },
+      // Sits after the name's last letter. Recreate recolours it per account (blue, gold for organizations, grey) or hides it.
+      { type: "shape", ...at(`${key}-badge${suffix}`, "Verified badge", [left + X.nameX + X.name * .55 * post.name.length + X.badgeGap, nameY + (X.name * 1.2 - X.badge) / 2, X.badge, X.badge]), shape: "path", path: X_BADGES.blue.path, viewBox: "0 0 100 100", fillRule: "evenodd", fill: X_BADGES.blue.fill, stroke: "transparent", strokeWidth: 0, radius: 0,
+        slot: slot("badge"), templateRole: "brand", layoutRole: "fixed", protected: ["content", "position"], smartFlow: { after: slot("name"), gap: px(X.badgeGap), bottom: px(1440), direction: "right" } },
+      { type: "text", ...at(`${key}-handle${suffix}`, "Author handle", [left + X.nameX, top + handleTop, X.markX - X.markGap - X.nameX, X.handle * 1.2]), text: post.handle, ...typeset("sfpro", X.handle, 400, X_POST_COLORS.handle, 1.2, 0), ...textSlot(slot("handle")), smartFlow: inside(handleTop), smartText: fit("body", 0, X.handle, X.handle * .75, X.handle * 1.2, X.handle * 1.2) },
+      { type: "shape", ...at(`${key}-x-mark${suffix}`, "X logo", [left + X.markX, top + X.markTop, markWidth, X.mark]), shape: "path", path: xPath, viewBox: "0 0 1200 1227", fill: X_POST_COLORS.text, stroke: "transparent", strokeWidth: 0, radius: 0, ...fixed(), smartFlow: inside(X.markTop) },
+      { type: "text", ...at(`${key}-x-com${suffix}`, "X.com", [left + X.markX + markWidth, top + comTop, 120, X.com * 1.2]), text: ".com", ...typeset("sfpro", X.com, 700, X_POST_COLORS.text, 1.2, 0), textMode: "fixed", verticalAlign: "top", ...fixed(), smartFlow: inside(comTop) },
+      // The post word for word at the screenshot's size, wrapping like X; only a post too long for its page shrinks.
+      { type: "text", ...at(`${key}-text${suffix}`, "Post text", [left + X.inset, top + textTop, 936 - 2 * X.inset, post.lines * X.textLine]), text: post.text, ...typeset("sfpro", X.text, 400, X_POST_COLORS.text, X.textLine / X.text, 0), ...textSlot(slot("text")),
+        smartFlow: { after: slot("card"), edge: "top", gap: px(textTop), bottom: px(textBottom) }, smartText: fit("body", 0, X.text, X.text * .8, maxLines * X.textLine, post.lines * X.textLine) },
+      // The post's own photo under its text, whole and with X's rounded corners. Hidden until Recreate
+      // fills it and sizes it to the photo's proportions; while hidden, the card ends under the text.
+      { type: "image", ...at(`${key}-media${suffix}`, "Post photo", [left + X.inset, top + textTop + post.lines * X.textLine + X_CARD.mediaGap, mediaWidth, mediaWidth * 9 / 16]),
+        src: placeholder(Math.round(mediaWidth), Math.round(mediaWidth * 9 / 16), mediaWidth / 2, mediaWidth * 9 / 32), fit: "cover", cropX: 50, cropY: 50, radius: px(X_CARD.mediaRadius), hidden: true,
+        intrinsicWidth: Math.round(mediaWidth), intrinsicHeight: Math.round(mediaWidth * 9 / 16), directive: "The post's own photo from X (pbs.twimg.com/media), whole", slot: slot("media"), templateRole: "media", layoutRole: "media",
+        protected: ["position", "delete"], smartFlow: { after: slot("text"), gap: px(X_CARD.mediaGap), bottom: px(1440) } },
     ];
   };
-  const sampleCopy = (text: string, suffix = ""): PostCopy => ({ name: `Author name${suffix}`, handle: "@handle", text, meta: "48K likes · 3.1K reposts · Nov 3, 2026" });
-  // One post: 48 px padding, a 104 px avatar and 48 px text, 12 lines: a ~280-character post with its paragraph breaks fills the card.
-  const single: PostStyle = { pad: 48, avatar: 104, name: 40, handle: 34, text: 48, textLine: 60, textMin: 36, textLines: 12, textGap: 32, meta: 30, metaGap: 32, mark: 44 };
-  // Two posts: the same padding, an 80 px avatar and body-size text (43 / 47.7 px), five lines (~160 characters) each.
-  const pair: PostStyle = { pad: 48, avatar: 80, name: 34, handle: 28, text: 43, textLine: 47.7, textMin: 32, textLines: 5, textGap: 24, meta: 28, metaGap: 24, mark: 40 };
-  const pairHeight = pair.pad * 2 + pair.avatar + pair.textGap + pair.textLines * pair.textLine + pair.metaGap + pair.meta * 1.25;
+  /** The cards of a page with `posts.length` posts: the first 64 px under the title, the rest
+   * 40 px apart. Each post may grow while the posts after it still fit one line each: 16 lines
+   * on its own, 9 beside one more, 3 beside two more (the page holds 16, 10 or 5 in all). */
+  const xPosts = (key: string, posts: XPost[]): CanvasElement[] => {
+    let top = 216.72;
+    const pageLines = Math.floor((X_CARD.room - posts.length * cardHeight(0) - (posts.length - 1) * X.between) / X.textLine);
+    return posts.flatMap((post, index) => {
+      const n = (index + 1) as 1 | 2 | 3, after = index ? `reaction-card${index === 1 ? "" : `-${index}`}` : "title";
+      const elements = xPost(key, n, top, after, index ? X.between : 64, post, X_CARD.bottom - X.foot - (posts.length - n) * (cardHeight(1) + X.between), Math.min(X_CARD.maxLines, pageLines - posts.length + 1));
+      top += cardHeight(post.lines) + X.between;
+      return elements;
+    });
+  };
+  const samplePost = (name: string, text: string, lines: number): XPost => ({ name, handle: "@handle", text, lines });
   const layout = (sides: number): CanvasLayout => ({ showGuides: true, margins: { enabled: true, top: px(90), right: px(sides || 88), bottom: px(88), left: px(sides || 72) }, snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } });
   const sheet = (key: string, label: string, elements: CanvasElement[], sides = 0): DesignPage => {
     const base = page(`chatgptricks-3x4-${key}`, "folds", { template: "text", heading: "", body: "", bgMode: "color", bgColor: night, textColor: white, font: "sfpro", align: "top", textAlign: "left" });
@@ -2770,7 +2854,7 @@ function chatgptricksTemplate(): DesignTemplate {
     category: "Carousels",
     format: "portrait",
     customSize: { width: 1080, height: 1440 },
-    description: "The @chatgptricks 3:4 carousel: photo cover, text with a photo or chart, a two-column list, a Follow page, and one or two real posts from X.",
+    description: "The @chatgptricks 3:4 carousel: photo cover, text with a photo or chart, a two-column list, a Follow page, and one to three real posts from X drawn like phone screenshots.",
     colorRoles: [
       { id: "cgt-background", name: "Background", color: night }, { id: "cgt-surface", name: "Photo placeholder", color: surface },
       { id: "cgt-text", name: "Text", color: white }, { id: "cgt-accent", name: "Accent green", color: green },
@@ -2808,24 +2892,20 @@ function chatgptricksTemplate(): DesignTemplate {
         { type: "text", ...at("follow-line", "Follow this page", [68, 1100.016, 944, 101.992]), text: "FOLLOW THIS PAGE", ...typeset("bebas", 122, 400, white, .836, -.02, "center"), textMode: "fixed", verticalAlign: "bottom", shadow: glow(), ...fixed(), smartFlow: { after: "cta", gap: 0, bottom: px(90), direction: "up" } },
         { type: "text", ...at("follow-cta", "Call to action", [68, 1202.008, 944, 101.992]), text: "TO STAY ON THE SAFE SIDE", ...typeset("bebas", 122, 400, green, .836, -.02, "center"), ...textSlot("cta"), verticalAlign: "bottom", shadow: glow(), smartText: fit("cover", 0, 122, 72, 2 * 122 * .836, 122 * .836, 122 * .85, 1304) },
       ], 68),
-      // One post card from 64 px under the title to the media bottom (1252), as on Text + Media; its stats sit at the card's foot.
+      // Posts from X: one long post, two medium ones or three short ones. Each card hugs its post
+      // (a single post takes up to 16 lines). No source line: the cards show whose posts they are
+      // (Ivan's call), so the title and cards are centred between the top and bottom margins.
       sheet("reaction", "Reaction", [
-        card("reaction-card", "Post card", [72, 216.72, 920, 1035.28], { after: "title", gap: px(64), bottom: px(1252), resize: true }),
+        ...xPosts("reaction", [samplePost("Author name", "Paste a real post from X here, word for word, with the author's spelling, emoji and line breaks\n\nThe card grows with the post, like a screenshot. A post too long for the page is cut at a word boundary with …", 5)]),
         shortTitle("reaction", "How X reacted"),
-        ...post("reaction", "", 216.72, single, sampleCopy("Paste a real post from X here, word for word. Keep the author's spelling, emoji and line breaks\n\nAbout 280 characters fill this card. A longer post is cut at a word boundary and ends with …, and the deck keeps the link to the original"),
-          { avatarFlow: { after: "title", gap: px(64 + single.pad), bottom: px(1252) }, textBottom: 1252 - single.pad - single.meta * 1.25 - single.metaGap, pinnedBottom: 1252 }),
-        source("reaction", "Source: X, Nov 2026", 1),
       ]),
-      // Two stacked posts: the first card fits its post, 40 px under it the second fills the rest down to 1252.
-      sheet("reactions", "Reactions", [
-        card("reactions-card", "Post card", [72, 216.72, 920, pairHeight], { after: "reaction-avatar-2", gap: px(pair.pad + 40), bottom: px(216.72), direction: "up", resize: true }),
-        card("reactions-card-2", "Second post card", [72, 216.72 + pairHeight + 40, 920, 1252 - 216.72 - pairHeight - 40], { after: "reaction-meta", gap: px(pair.pad + 40), bottom: px(1252), resize: true }),
+      sheet("reactions", "Two reactions", [
+        ...xPosts("reactions", [samplePost("Author name", "A real post from X, word for word. Each card grows with its post", 2), samplePost("Author name 2", "Two medium posts share this page, about ten lines in all", 2)]),
         shortTitle("reactions", "What people are saying"),
-        ...post("reactions", "", 216.72, pair, sampleCopy("A real post from X, word for word. About 160 characters fill this card, and a longer post is cut at a word boundary with …"),
-          { textBottom: 216.72 + pairHeight - pair.pad - pair.meta * 1.25 - pair.metaGap, metaBottom: 216.72 + pairHeight - pair.pad }),
-        ...post("reactions", "-2", 216.72 + pairHeight + 40, pair, sampleCopy("A second real post. This card starts 40 px under the first one and fills the page down to the source line", " 2"),
-          { avatarFlow: { after: "reaction-meta", gap: px(pair.pad + 40 + pair.pad), bottom: px(1252) }, textBottom: 1252 - pair.pad - pair.meta * 1.25 - pair.metaGap, pinnedBottom: 1252 }),
-        source("reactions", "Source: X, Nov 2026", 1),
+      ]),
+      sheet("reactions3", "Three reactions", [
+        ...xPosts("reactions3", [samplePost("Author name", "Short posts share a page", 1), samplePost("Author name 2", "Up to three of them, about five lines in all", 1), samplePost("Author name 3", "Each card hugs its own text", 1)]),
+        shortTitle("reactions3", "What people are saying"),
       ]),
     ],
   };

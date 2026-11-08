@@ -32,8 +32,16 @@ const near = (actual, expected, message, tolerance = 1e-6) => assert.ok(Math.abs
 const close = (actual, expected, message) => near(actual, expected, message, .02);
 const layer = (pageIndex, id) => template.pages[pageIndex].canvas.elements.find(element => element.id === `cgt-${id}`);
 const bySlot = (canvas, slot) => canvas.elements.find(element => element.slot === slot);
-const FIXED = ["cover-top-fade", "cover-bottom-fade", "cover-hairline-left", "cover-logo", "cover-hairline-right", "cover-swipe", "follow-top-fade", "follow-bottom-fade", "follow-line", "reaction-card", "reaction-x-mark", "reactions-card", "reactions-card-2", "reactions-x-mark", "reactions-x-mark-2"];
-const LABELS = ["Cover", "Text + Media", "List", "Follow", "Reaction", "Reactions"];
+// The post cards' X marks and ".com" are fixed too; each Reaction page has one, two or three cards.
+const CARDS = [[4, "reaction", 1], [5, "reactions", 2], [6, "reactions3", 3]];
+const suffixOf = n => n === 1 ? "" : `-${n}`;
+const FIXED = ["cover-top-fade", "cover-bottom-fade", "cover-hairline-left", "cover-logo", "cover-hairline-right", "cover-swipe", "follow-top-fade", "follow-bottom-fade", "follow-line",
+  ...CARDS.flatMap(([, key, cards]) => Array.from({ length: cards }, (_, index) => ["card", "x-mark", "x-com"].map(part => `${key}-${part}${suffixOf(index + 1)}`)).flat())];
+const LABELS = ["Cover", "Text + Media", "List", "Follow", "Reaction", "Two reactions", "Three reactions"];
+// Ivan's phone screenshots of X are 1206 px wide; a card is 936 px wide with 24 px of black padding
+// inside (Ivan's call), and the screenshot scales into the 888 px left. `inCard` is a screenshot
+// position measured from the card's edge.
+const shot = value => scene(value * (936 - 2 * 24) / 1206), inCard = value => scene(24) + shot(value);
 
 test("the template is a built-in 3:4 carousel without changing Engine's formats", () => {
   assert.equal(CHATGPTRICKS_TEMPLATE_ID, "chatgptricks-3x4");
@@ -45,7 +53,7 @@ test("the template is a built-in 3:4 carousel without changing Engine's formats"
   // Reaction pages come after Follow, so the first four page indexes never move.
   assert.deepEqual(template.pages.map(page => page.label), LABELS);
   assert.deepEqual(CHATGPTRICKS_SLOTS.map(page => page.label), LABELS);
-  assert.deepEqual(CHATGPTRICKS_SLOTS.map(page => page.page), [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(CHATGPTRICKS_SLOTS.map(page => page.page), [0, 1, 2, 3, 4, 5, 6]);
   // The exact "@chatgptricks" name would switch on inference rules that rename these slots.
   assert.equal(model.isChatGPTricksTemplate(template), false);
   assert.ok(agent.agentCapabilities().templates.some(item => item.id === "chatgptricks-3x4" && item.size.height === 1440));
@@ -81,11 +89,14 @@ test("photo placeholders and the logo are safe, servable images", () => {
     assert.ok(model.isSafeBrandSvgUrl(photo.src), id);
     assert.ok(decodeURIComponent(photo.src).includes('fill="#1A242B"'));
   }
-  for (const [pageIndex, id, size] of [[4, "reaction-avatar", 104], [5, "reactions-avatar", 80], [5, "reactions-avatar-2", 80]]) {
-    const avatar = layer(pageIndex, id);
+  for (const [pageIndex, key, cards] of CARDS) for (let n = 1; n <= cards; n++) {
+    const avatar = layer(pageIndex, `${key}-avatar${suffixOf(n)}`), photo = layer(pageIndex, `${key}-media${suffixOf(n)}`);
     assert.equal(avatar.type, "image"); assert.equal(avatar.templateRole, "media"); assert.equal(avatar.layoutRole, "media");
-    assert.ok(model.isSafeBrandSvgUrl(avatar.src), id);
-    near(avatar.width, scene(size)); near(avatar.height, scene(size)); near(avatar.radius, scene(size / 2), `${id} is round`);
+    assert.ok(model.isSafeBrandSvgUrl(avatar.src), avatar.id);
+    near(avatar.width, shot(142)); near(avatar.height, shot(142)); near(avatar.radius, shot(71), `${avatar.id} is round`);
+    // The post's photo waits hidden behind a placeholder until a post brings one.
+    assert.equal(photo.type, "image"); assert.equal(photo.hidden, true); assert.ok(model.isSafeBrandSvgUrl(photo.src), photo.id);
+    assert.ok(decodeURIComponent(photo.src).includes('fill="#1A242B"'));
   }
 });
 
@@ -96,9 +107,12 @@ test("agents see the copy and photo slots; brand furniture stays fixed", () => {
   assert.deepEqual(summary(1), [["title", "text", "heading"], ["body", "text", "body"], ["media", "photo", null], ["source", "text", "body"]]);
   assert.deepEqual(summary(2), [["title", "text", "heading"], ["body", "text", "body"], ["list-left-heading", "text", "heading"], ["list-right-heading", "text", "heading"], ["list-left-items", "text", "list"], ["list-right-items", "text", "list"], ["source", "text", "body"]]);
   assert.deepEqual(summary(3), [["photo", "photo", null], ["cta", "text", "cover"]]);
-  const card = suffix => [[`reaction-avatar${suffix}`, "photo", null], [`reaction-name${suffix}`, "text", "heading"], [`reaction-handle${suffix}`, "text", "body"], [`reaction-text${suffix}`, "text", "body"], [`reaction-meta${suffix}`, "text", "body"]];
-  assert.deepEqual(summary(4), [["title", "text", "heading"], ...card(""), ["source", "text", "body"]]);
-  assert.deepEqual(summary(5), [["title", "text", "heading"], ...card(""), ...card("-2"), ["source", "text", "body"]]);
+  // The hidden photo layers aren't slots to write; Recreate fills and shows them.
+  const card = suffix => [[`reaction-avatar${suffix}`, "photo", null], [`reaction-name${suffix}`, "text", "heading"], [`reaction-handle${suffix}`, "text", "body"], [`reaction-text${suffix}`, "text", "body"]];
+  // Reaction pages have no source line: the cards show whose posts they are.
+  assert.deepEqual(summary(4), [["title", "text", "heading"], ...card("")]);
+  assert.deepEqual(summary(5), [["title", "text", "heading"], ...card(""), ...card("-2")]);
+  assert.deepEqual(summary(6), [["title", "text", "heading"], ...card(""), ...card("-2"), ...card("-3")]);
   for (const page of CHATGPTRICKS_SLOTS) {
     assert.deepEqual(new Set(summary(page.page).filter(slot => slot[1] === "text").map(slot => slot[0])), new Set(page.text));
     assert.deepEqual(summary(page.page).filter(slot => slot[1] === "photo").map(slot => slot[0]), [...page.photo]);
@@ -113,8 +127,9 @@ test("agents see the copy and photo slots; brand furniture stays fixed", () => {
   const body = slots.find(slot => slot.pageIndex === 1 && slot.slot === "body");
   assert.ok(body.maxCharacters >= 70 && body.maxCharacters <= 80, `two body lines hold about 75 characters, got ${body.maxCharacters}`);
   const guide = (pageIndex, slot) => slots.find(item => item.pageIndex === pageIndex && item.slot === slot).maxCharacters;
-  assert.ok(guide(4, "reaction-text") >= 280 && guide(4, "reaction-text") <= 380, `one card holds about 280 characters of prose, got ${guide(4, "reaction-text")}`);
-  for (const slot of ["reaction-text", "reaction-text-2"]) assert.ok(guide(5, slot) >= 150 && guide(5, slot) <= 175, `each of two cards holds about 160 characters, got ${guide(5, slot)}`);
+  assert.ok(guide(4, "reaction-text") >= 520 && guide(4, "reaction-text") <= 600, `one card holds a long post, got ${guide(4, "reaction-text")}`);
+  for (const slot of ["reaction-text", "reaction-text-2"]) assert.ok(guide(5, slot) >= 280 && guide(5, slot) <= 340, `each of two cards holds a medium post, got ${guide(5, slot)}`);
+  for (const slot of ["reaction-text", "reaction-text-2", "reaction-text-3"]) assert.ok(guide(6, slot) >= 90 && guide(6, slot) <= 115, `each of three cards holds a short post, got ${guide(6, slot)}`);
   assert.ok(slots.filter(slot => slot.type === "text" && slot.role).every(slot => slot.fixedStyle));
 });
 
@@ -125,13 +140,14 @@ test("createAgentDeck fills every slot and keeps the template's look", () => {
     { title: "Memory for all", body: "ChatGPT now remembers what you tell it, if you let it", slots: { media: photo, source: "Source: OpenAI, Nov 2026" } },
     { slots: { title: "Who gets it", body: "Free and paid users, in every country", "list-left-heading": "Free Plan", "list-left-items": "Saved memories\nChat history", "list-right-heading": "Paid Plan", "list-right-items": "Projects\nLonger memory", source: "Source: OpenAI help center" } },
     { slots: { cta: "TO REMEMBER MORE" } },
-    { slots: { title: "How X reacted", "reaction-name": "Ada Lovelace", "reaction-handle": "@ada", "reaction-text": "Memory is the feature\n\nI have wanted since day one 🎉", "reaction-meta": "48K likes · 3.1K reposts · Nov 3, 2026", "reaction-avatar": avatar, source: "Source: X, @ada" } },
-    { slots: { title: "What people are saying", "reaction-name": "Ada", "reaction-text": "First", "reaction-name-2": "Grace", "reaction-handle-2": "@grace", "reaction-text-2": "Second", "reaction-avatar-2": avatar, "reaction-meta-2": "12 likes" } },
+    { slots: { title: "How X reacted", "reaction-name": "Ada Lovelace", "reaction-handle": "@ada", "reaction-text": "Memory is the feature\n\nI have wanted since day one 🎉", "reaction-avatar": avatar } },
+    { slots: { title: "What people are saying", "reaction-name": "Ada", "reaction-text": "First", "reaction-name-2": "Grace", "reaction-handle-2": "@grace", "reaction-text-2": "Second", "reaction-avatar-2": avatar } },
+    { slots: { title: "Short takes", "reaction-name-3": "Alan", "reaction-text-3": "Third" } },
   ] });
   assert.equal(deck.templateId, "chatgptricks-3x4");
   assert.deepEqual(model.formatDimensions(deck), { width: 1080, height: 1440 });
   assert.ok(model.parseLibrary(agent.editableDeckPackage(deck)));
-  const [cover, media, list, follow, reaction, reactions] = deck.pages.map(page => page.canvas);
+  const [cover, media, list, follow, reaction, reactions, three] = deck.pages.map(page => page.canvas);
   const headline = bySlot(cover, "cover-headline");
   assert.equal(headline.text, "OPENAI JUST GAVE CHATGPT A MEMORY FOR EVERY USER"); assert.equal(headline.richText, undefined);
   assert.equal(headline.font, "bebas"); assert.equal(headline.color, "#F9FFFE");
@@ -145,20 +161,23 @@ test("createAgentDeck fills every slot and keeps the template's look", () => {
   // Post text is kept exactly, line breaks and emoji included; the card keeps the template's style.
   const post = bySlot(reaction, "reaction-text");
   assert.equal(post.text, "Memory is the feature\n\nI have wanted since day one 🎉"); assert.equal(post.richText, undefined);
-  assert.equal(post.font, "sfpro"); assert.equal(post.color, "#F9FFFE"); near(post.fontSize, scene(48));
+  // X's dark-mode colours at the screenshot's size, on every Reaction page.
+  assert.equal(post.font, "sfpro"); assert.equal(post.color, "#E7E9EA"); near(post.fontSize, shot(57.9));
   assert.equal(bySlot(reaction, "reaction-avatar").src, avatar); assert.equal(bySlot(reaction, "reaction-handle").text, "@ada");
-  assert.equal(bySlot(reaction, "reaction-handle").color, "#7D858A"); assert.equal(bySlot(reaction, "reaction-meta").color, "#7D858A"); assert.equal(bySlot(reaction, "reaction-name").fontWeight, 700);
+  assert.equal(bySlot(reaction, "reaction-handle").color, "#71767B"); assert.equal(bySlot(reaction, "reaction-name").fontWeight, 700); assert.equal(bySlot(reaction, "reaction-name").color, "#E7E9EA");
   assert.equal(bySlot(reactions, "reaction-text-2").text, "Second"); assert.equal(bySlot(reactions, "reaction-avatar-2").src, avatar);
-  near(bySlot(reactions, "reaction-text").fontSize, scene(43), "the two-card page uses body size");
+  assert.equal(bySlot(three, "reaction-text-3").text, "Third"); assert.equal(bySlot(three, "reaction-name-3").text, "Alan");
+  for (const canvas of [reaction, reactions, three]) assert.equal(bySlot(canvas, "source"), undefined, "no source line under posts from X");
+  for (const canvas of [reactions, three]) near(bySlot(canvas, "reaction-text").fontSize, post.fontSize, "every card uses X's own size");
   // Unfilled slots keep the template's sample copy.
   assert.equal(bySlot(reactions, "reaction-handle").text, "@handle");
   // The template itself is untouched by the copy.
   assert.equal(bySlot(template.pages[3].canvas, "cta").text, "TO STAY ON THE SAFE SIDE");
   // Fixed layers refuse copy; the cover photo also takes the slide-level image.
-  assert.throws(() => agent.createAgentDeck({ name: "Bad", templateId: "chatgptricks-3x4", slides: [{ slots: { "Swipe for more": "TAP" } }, {}, {}, {}, {}, {}] }), error => error instanceof agent.AgentDeckValidationError);
-  // The post cards and X marks are brand layers, not slots.
-  for (const name of ["Post card", "X logo"]) assert.throws(() => agent.createAgentDeck({ name: "Bad", templateId: "chatgptricks-3x4", slides: [{ templatePage: 4, slots: { [name]: "x" } }] }), error => error instanceof agent.AgentDeckValidationError, name);
-  const imaged = agent.createAgentDeck({ name: "Image", templateId: "chatgptricks-3x4", slides: [{ title: "A NEW COVER", image: { src: photo, alt: "A phone" } }, {}, {}, {}, {}, {}] });
+  assert.throws(() => agent.createAgentDeck({ name: "Bad", templateId: "chatgptricks-3x4", slides: [{ slots: { "Swipe for more": "TAP" } }, {}, {}, {}, {}, {}, {}] }), error => error instanceof agent.AgentDeckValidationError);
+  // The post cards, check marks and X marks are brand layers, not slots.
+  for (const name of ["Post card", "X logo", "X.com", "Verified badge"]) assert.throws(() => agent.createAgentDeck({ name: "Bad", templateId: "chatgptricks-3x4", slides: [{ templatePage: 4, slots: { [name]: "x" } }] }), error => error instanceof agent.AgentDeckValidationError, name);
+  const imaged = agent.createAgentDeck({ name: "Image", templateId: "chatgptricks-3x4", slides: [{ title: "A NEW COVER", image: { src: photo, alt: "A phone" } }, {}, {}, {}, {}, {}, {}] });
   assert.equal(bySlot(imaged.pages[0].canvas, "photo").src, photo); assert.equal(bySlot(imaged.pages[0].canvas, "cover-headline").text, "A NEW COVER");
 });
 
@@ -224,76 +243,84 @@ test("smart layout keeps the logo row on the headline and the media under the co
   close(cta.y + cta.height, scene(1304)); close(line.y + line.height, cta.y);
 });
 
-// Reaction pages keep their own header and cards: their X-app look is being redesigned on its own.
-test("reaction pages keep their header, card box and source line", () => {
-  const media = layer(1, "media-media");
-  for (const [pageIndex, key] of [[4, "reaction"], [5, "reactions"]]) {
-    const title = layer(pageIndex, `${key}-title`), card = layer(pageIndex, `${key}-card`), source = layer(pageIndex, `${key}-source`);
-    near(title.x, scene(72)); near(title.y, scene(90)); near(title.width, scene(920)); near(title.fontSize, scene(56)); near(title.lineHeight, 1.12); near(title.letterSpacing, scene(56 * -.022));
-    assert.equal(title.fontWeight, 700); assert.equal(title.color, "#00D98A"); assert.equal(title.font, "sfpro");
-    assert.equal(title.smartText.maxHeight, title.smartText.baseHeight, "a one-line title, so the cards start at a fixed height");
-    near(card.y - (title.y + title.height), scene(64), `${key}: 64 px under the header`);
-    near(card.x, scene(72)); near(card.width, scene(920)); assert.equal(card.fill, "#1A242B"); near(card.radius, scene(28));
-    near(source.smartText.anchorBottom, scene(1352)); near(source.fontSize, scene(24)); assert.equal(source.color, "#7D858A"); near(source.x, scene(72));
-    assert.equal(model.isSafeVectorPath(layer(pageIndex, `${key}-x-mark`).path), true);
+test("reaction pages share the Text + Media title, have no source line, and draw cards like X", () => {
+  const mediaTitle = layer(1, "media-title");
+  for (const [pageIndex, key, cards] of CARDS) {
+    const title = layer(pageIndex, `${key}-title`);
+    for (const property of ["x", "y", "width", "fontSize", "fontWeight", "color", "lineHeight", "letterSpacing", "font"]) assert.equal(title[property], mediaTitle[property], `${key} title ${property}`);
+    assert.equal(title.smartText.maxHeight, title.smartText.baseHeight, "a one-line title");
+    // The cards show whose posts they are, so there's no source line (Ivan's call) and the cards may reach the bottom margin.
+    assert.equal(layer(pageIndex, `${key}-source`), undefined, `${key} has no source line`);
+    assert.deepEqual(title.smartCenter, { top: scene(90), bottom: scene(1352) }, "title and cards are centred together between the margins");
+    for (let n = 1; n <= cards; n++) {
+      const suffix = suffixOf(n), card = layer(pageIndex, `${key}-card${suffix}`);
+      near(card.x, scene(72)); near(card.width, scene(936)); assert.equal(card.fill, "#000000");
+      // Slightly rounded, with a thin grey line inside the edge, so the card stands out from the page and keeps the 72 px margins.
+      near(card.radius, scene(24)); assert.equal(card.stroke, "#2F3336"); near(card.strokeWidth, scene(3)); assert.equal(card.strokeAlign, "inside");
+      // The first card sits 64 px under the title, the others 40 px apart; each ends its padding plus X's own foot under its photo, or its text.
+      assert.deepEqual(card.smartFlow, { after: n === 1 ? "title" : `reaction-card${suffixOf(n - 1)}`, gap: scene(n === 1 ? 64 : 40), bottom: scene(1352), hug: { after: `reaction-media${suffix}`, gap: scene(model.X_CARD.foot) } });
+      assert.equal(model.isSafeVectorPath(layer(pageIndex, `${key}-x-mark${suffix}`).path), true);
+    }
   }
-  // One card runs from 72 to 992 across and down to 1252, where Text + Media's media ends.
-  const one = layer(4, "reaction-card");
-  near(one.y + one.height, scene(1252)); near(one.y + one.height, media.y + media.height);
-  assert.deepEqual(one.smartFlow, { after: "title", gap: scene(64), bottom: scene(1252), resize: true });
-  // Inside a card: 48 px padding, text on the card's inner edge, stats pinned 48 px above its foot.
-  const avatar = layer(4, "reaction-avatar"), text = layer(4, "reaction-text"), meta = layer(4, "reaction-meta"), mark = layer(4, "reaction-x-mark"), name = layer(4, "reaction-name");
-  near(avatar.x - one.x, scene(48)); near(avatar.y - one.y, scene(48)); near(text.x, avatar.x); near(meta.x, avatar.x);
-  near(text.x + text.width, one.x + one.width - scene(48)); near(mark.x + mark.width, one.x + one.width - scene(48));
-  near(mark.y + mark.height / 2, avatar.y + avatar.height / 2, "the X mark is centred on the avatar");
-  near(name.x - (avatar.x + avatar.width), scene(28));
-  near(meta.smartText.anchorBottom, scene(1252 - 48)); near(text.y - (avatar.y + avatar.height), scene(32));
-  near(text.fontSize * text.lineHeight, scene(60)); assert.equal(Math.floor(text.smartText.maxHeight / (text.fontSize * text.lineHeight)), 12, "twelve lines of post text");
-  assert.ok(text.y + text.smartText.maxHeight <= meta.y - scene(32) + 1e-6, "the longest post still clears the stats line");
-  // Two cards: the first is sized for five body lines, the second fills to 1252 40 px below it.
-  const first = layer(5, "reactions-card"), second = layer(5, "reactions-card-2"), body = layer(5, "reactions-text");
-  near(second.y - (first.y + first.height), scene(40)); near(second.y + second.height, scene(1252));
-  near(body.fontSize, scene(43), "body size"); near(body.fontSize * body.lineHeight, scene(47.7));
-  assert.equal(Math.floor(body.smartText.maxHeight / (body.fontSize * body.lineHeight)), 5);
-  assert.deepEqual(first.smartFlow, { after: "reaction-avatar-2", gap: scene(88), bottom: scene(216.72), direction: "up", resize: true });
-  assert.deepEqual(second.smartFlow, { after: "reaction-meta", gap: scene(88), bottom: scene(1252), resize: true });
+  // Inside a card, everything sits where Ivan's screenshots put it, inside 24 px of padding, following the card's top edge.
+  const card = layer(4, "reaction-card"), avatar = layer(4, "reaction-avatar"), name = layer(4, "reaction-name"), badge = layer(4, "reaction-badge"), handle = layer(4, "reaction-handle");
+  const mark = layer(4, "reaction-x-mark"), com = layer(4, "reaction-x-com"), text = layer(4, "reaction-text"), photo = layer(4, "reaction-media");
+  near(model.X_CARD.pad, 24); near(model.X_CARD.foot, 24 + 33.5 * 888 / 1206, "the foot is padding too");
+  near(avatar.x - card.x, inCard(27)); near(avatar.y - card.y, inCard(37)); near(name.x - card.x, inCard(194)); near(handle.x, name.x); near(mark.x - card.x, inCard(969));
+  near(text.x, avatar.x); near(text.x + text.width, card.x + card.width - inCard(27)); near(text.y - card.y, scene(model.X_CARD.textTop));
+  near(text.fontSize, shot(57.9)); near(text.fontSize * text.lineHeight, shot(73.3)); assert.equal(text.color, "#E7E9EA"); assert.equal(handle.color, "#71767B"); assert.equal(name.fontWeight, 700);
+  for (const part of [avatar, name, handle, mark, com, text]) { assert.equal(part.smartFlow.after, "reaction-card", part.id); assert.equal(part.smartFlow.edge, "top", part.id); near(part.smartFlow.gap, part.y - card.y, part.id); }
+  // The check mark follows the name's last letter; Recreate colours it per account or hides it.
+  assert.deepEqual({ ...badge.smartFlow, gap: 0 }, { after: "reaction-name", gap: 0, bottom: scene(1440), direction: "right" }); near(badge.smartFlow.gap, shot(11));
+  assert.equal(badge.templateRole, "brand"); assert.equal(badge.fillRule, "evenodd"); assert.equal(model.isSafeVectorPath(badge.path), true);
+  for (const look of Object.values(model.X_BADGES)) assert.equal(model.isSafeVectorPath(look.path), true);
+  // The post's photo sits under the text, as wide as the text, with X's rounded corners.
+  near(photo.x, text.x); near(photo.width, text.width); near(photo.radius, shot(48));
+  assert.deepEqual({ ...photo.smartFlow, gap: 0 }, { after: "reaction-text", gap: 0, bottom: scene(1440) }); near(photo.smartFlow.gap, shot(31));
+  // Text room per card: 16 lines alone, 9 beside one more card, 3 beside two more.
+  const lines = (pageIndex, slot) => { const element = bySlot(template.pages[pageIndex].canvas, slot); return Math.floor(element.smartText.maxHeight / (element.fontSize * element.lineHeight)); };
+  assert.equal(lines(4, "reaction-text"), 16);
+  assert.deepEqual(["", "-2"].map(suffix => lines(5, `reaction-text${suffix}`)), [9, 9]);
+  assert.deepEqual(["", "-2", "-3"].map(suffix => lines(6, `reaction-text${suffix}`)), [3, 3, 3]);
 });
 
-test("smart layout fits the first post card to its post and lets the second fill the page", () => {
+test("smart layout: each card hugs its post, photo and check mark, and the page centres them", () => {
   const measure = (element, words = smart.smartWords(element)) => ({ size: element.fontSize, widths: words.map(word => word.text.length * element.fontSize * .45), space: element.fontSize * .25 });
-  const fill = (pageIndex, slots) => {
+  const fill = (pageIndex, slots, change) => {
     const canvas = structuredClone(template.pages[pageIndex].canvas);
     for (const [slot, text] of Object.entries(slots)) { const element = bySlot(canvas, slot); element.text = text; delete element.richText; }
+    change?.(canvas);
     return smart.layoutSmartScene(canvas, measure);
   };
-  const id = suffix => element => element.id === `cgt-reactions-${suffix}`;
-  // A one-line first post: its card ends 48 px under the stats line; the second card starts 40 px lower and reaches 1252.
-  const short = fill(5, { "reaction-text": "Short post" });
-  const [card1, card2] = [short.scene.elements.find(id("card")), short.scene.elements.find(id("card-2"))];
-  const meta1 = bySlot(short.scene, "reaction-meta"), text1 = bySlot(short.scene, "reaction-text");
-  close(text1.height, scene(47.7)); close(meta1.y - (text1.y + text1.height), scene(24));
-  close(card1.y + card1.height, meta1.y + meta1.height + scene(48)); close(card1.y, scene(216.72), "the first card stays under the header");
-  close(card2.y - (card1.y + card1.height), scene(40)); close(card2.y + card2.height, scene(1252));
-  const avatar2 = bySlot(short.scene, "reaction-avatar-2"), name2 = bySlot(short.scene, "reaction-name-2"), handle2 = bySlot(short.scene, "reaction-handle-2"), mark2 = short.scene.elements.find(id("x-mark-2"));
-  close(avatar2.y - card2.y, scene(48)); close(name2.y - avatar2.y, scene(2.8)); close(handle2.y, name2.y + scene(40.8)); close(mark2.y + mark2.height / 2, avatar2.y + avatar2.height / 2);
-  close(bySlot(short.scene, "reaction-text-2").y - (avatar2.y + avatar2.height), scene(24));
-  const meta2 = bySlot(short.scene, "reaction-meta-2");
-  close(meta2.y + meta2.height, scene(1252 - 48), "the second card's stats sit at its foot");
-  // Long posts on both cards shrink rather than leave their cards.
-  const long = "word ".repeat(120).trim();
-  const full = fill(5, { "reaction-text": long, "reaction-text-2": long });
-  for (const suffix of ["", "-2"]) {
-    const text = bySlot(full.scene, `reaction-text${suffix}`), meta = bySlot(full.scene, `reaction-meta${suffix}`), layout = full.texts.get(text.id);
-    assert.ok(text.y + text.height <= meta.y - scene(24) + .02, `post ${suffix || "1"} stays above its stats`);
-    assert.ok(layout.fontSize < text.fontSize, "a long post shrinks");
-  }
-  const fullCard1 = full.scene.elements.find(id("card")), fullCard2 = full.scene.elements.find(id("card-2"));
-  close(fullCard1.height, scene(497.5)); close(fullCard2.y + fullCard2.height, scene(1252)); assert.ok(fullCard2.height >= fullCard1.height - .02);
-  // One card: the post wraps under the avatar, the stats stay pinned, and the card always reaches 1252.
-  const single = fill(4, { "reaction-text": "Line one\n\nLine three" });
-  const card = single.scene.elements.find(element => element.id === "cgt-reaction-card"), text = bySlot(single.scene, "reaction-text");
-  close(card.y + card.height, scene(1252)); close(text.height, scene(3 * 60)); assert.equal(single.texts.get(text.id).lines.length, 3, "a blank line between paragraphs is kept");
-  close(bySlot(single.scene, "reaction-meta").y + bySlot(single.scene, "reaction-meta").height, scene(1204));
+  const line = shot(73.3), textTop = scene(model.X_CARD.textTop), foot = scene(model.X_CARD.foot);
+  // One short post: the card ends its foot under its text, and title and card sit in the middle of 90 to 1352.
+  const one = fill(4, { "reaction-text": "Short post" });
+  const title = bySlot(one.scene, "title"), card = bySlot(one.scene, "reaction-card"), text = bySlot(one.scene, "reaction-text");
+  close(text.height, line); close(text.y - card.y, textTop); close(card.y + card.height, text.y + text.height + foot);
+  close(card.y - (title.y + title.height), scene(64));
+  close(title.y - scene(90), scene(1352) - (card.y + card.height), "centred between the margins");
+  assert.ok(title.y > scene(90) + 1, "a short page moves down");
+  // The check mark sits just after the name's last letter, centred on its line.
+  const name = bySlot(one.scene, "reaction-name"), badge = bySlot(one.scene, "reaction-badge"), named = one.texts.get(name.id);
+  close(badge.x, name.x + named.lines.at(-1).width + shot(11)); close(badge.y + badge.height / 2, name.y + name.height / 2);
+  // With its photo shown, the photo sits under the text and the card ends its foot under the photo.
+  const pictured = fill(4, { "reaction-text": "Look at this" }, canvas => { const photo = bySlot(canvas, "reaction-media"); photo.hidden = false; photo.height = scene(400); });
+  const photo = bySlot(pictured.scene, "reaction-media"), captioned = bySlot(pictured.scene, "reaction-text"), framed = bySlot(pictured.scene, "reaction-card");
+  close(photo.y, captioned.y + captioned.height + shot(31)); close(framed.y + framed.height, photo.y + photo.height + foot);
+  // Three short posts: three cards 40 px apart, each as tall as its post.
+  const three = fill(6, { "reaction-text": "One", "reaction-text-2": "Two", "reaction-text-3": "Three" });
+  const cards = ["", "-2", "-3"].map(suffix => bySlot(three.scene, `reaction-card${suffix}`)), texts = ["", "-2", "-3"].map(suffix => bySlot(three.scene, `reaction-text${suffix}`));
+  for (const index of [0, 1, 2]) { close(texts[index].y - cards[index].y, textTop); close(cards[index].y + cards[index].height, texts[index].y + texts[index].height + foot); }
+  close(cards[1].y - (cards[0].y + cards[0].height), scene(40)); close(cards[2].y - (cards[1].y + cards[1].height), scene(40));
+  close(bySlot(three.scene, "title").y - scene(90), scene(1352) - (cards[2].y + cards[2].height), "the three cards are centred too");
+  // A post too long for its page shrinks rather than leave the page.
+  const full = fill(4, { "reaction-text": "word ".repeat(200).trim() });
+  const long = bySlot(full.scene, "reaction-text"), longCard = bySlot(full.scene, "reaction-card");
+  assert.ok(full.texts.get(long.id).fontSize < long.fontSize, "a long post shrinks");
+  assert.ok(longCard.y + longCard.height <= scene(1352) + .02, "and its card stays above the bottom margin");
+  // A blank line between paragraphs is kept.
+  const paragraphs = fill(4, { "reaction-text": "Line one\n\nLine three" });
+  assert.equal(paragraphs.texts.get(bySlot(paragraphs.scene, "reaction-text").id).lines.length, 3);
 });
 
 // Deterministic stand-in for browser text metrics, shared by the flexible-layout tests below.

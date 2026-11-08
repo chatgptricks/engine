@@ -8,17 +8,17 @@
 import { randomUUID } from "node:crypto";
 import { AgentDeckValidationError, createAgentDeck } from "../../template-editor/agent-decks";
 import { checkLibrarySaveBudget } from "../../template-editor/library-budget";
-import { formatDimensions, parseLibrary, type DesignComment, type DesignDocument, type DesignTemplate } from "../../template-editor/model";
+import { formatDimensions, parseLibrary, X_BADGES, type CanvasElement, type DesignComment, type DesignDocument, type DesignTemplate } from "../../template-editor/model";
 import { getEditorLibrary, LibraryConflictError, saveEditorLibrary } from "../../template-editor/persistence";
 import { imageSize } from "../image-size";
 import type { PageProfile } from "../page-profiles";
 import { chartAltText, chartPngDataUrl } from "../recreate-chart";
 import type { ChartData } from "../recreate-data";
-import { reactionSlots, type XReaction } from "../x-reactions";
+import { formatReactionMeta, packReactions, reactionBadge, reactionPhotoSizes, reactionSlots, type XReaction } from "../x-reactions";
 import { RecreateError } from "./claude";
 import { chartSources, resolveChart } from "./charts";
 import { need, outputOf, type StageRunner } from "./context";
-import { cardsOn, templatePages } from "./pages";
+import { templatePages } from "./pages";
 import type { Approval, ChartsOutput, CopyOutput, DataOutput, DeckOutput, FactCheck, Facts, ImagesOutput, ReactionsOutput, WrittenChart } from "./schemas";
 
 const ACCENT = "#00D98A";
@@ -57,7 +57,8 @@ export type AssembledSlide = {
   photo?: { url: string; alt: string; credit?: string; sourceUrl?: string } | null;
   /** The photo a person should add when none was placed. */
   photoBrief?: string;
-  /** Real posts for a Reaction (one card) or Reactions (two) page. */
+  /** Real posts for a Reaction page. They go on as many Reaction pages as they need: one long
+   * post, two medium ones or three short ones a page, each card as tall as its post. */
   reactions?: XReaction[];
   /** Index in the approved outline, so critics can map deck pages back to it. */
   slide?: number;
@@ -79,27 +80,57 @@ export type AssembleInput = {
   credit?: string;
 };
 
+/** Draws each post card as X shows that account: its check mark (blue, gold for organizations,
+ * grey for governments, none when unverified), a round or, for organizations, rounded-square
+ * profile photo, and the post's photo under its text at the size the page leaves (whole). */
+export function styleCards(elements: CanvasElement[], posts: XReaction[], pixels: number, imagesPlaced = true) {
+  const sizes = reactionPhotoSizes(posts);
+  posts.forEach((post, n) => {
+    const suffix = n ? `-${n + 1}` : "", find = (part: string) => elements.find(element => element.slot === `reaction-${part}${suffix}`);
+    const badge = find("badge"), avatar = find("avatar"), media = find("media"), kind = reactionBadge(post), size = sizes[n];
+    if (badge?.type === "shape") {
+      badge.hidden = !kind;
+      if (kind) {
+        const look = X_BADGES[kind];
+        Object.assign(badge, { path: look.path, fill: look.fill });
+        if ("gradient" in look) badge.gradient = look.gradient; else delete badge.gradient;
+      }
+    }
+    if (avatar?.type === "image") avatar.radius = post.author.square ? avatar.width * .113 : avatar.width / 2;
+    if (media?.type === "image") {
+      const shown = Boolean(imagesPlaced && post.media && size && media.src === post.media.url);
+      media.hidden = !shown;
+      if (shown) Object.assign(media, { width: size!.width / pixels, height: size!.height / pixels, intrinsicWidth: post.media!.width, intrinsicHeight: post.media!.height, fit: "cover", cropX: 50, cropY: 50, publicAlt: `Photo in @${post.author.handle}'s post` });
+    }
+  });
+}
+
 export async function assembleDeck(input: AssembleInput): Promise<{ document: DesignDocument; notes: string[]; pages: AssembledPage[] }> {
   const { profile, template } = input;
-  const catalog = templatePages(template), single = catalog.find(page => page.reaction === "reaction");
+  const catalog = templatePages(template), counts = new Set(catalog.filter(page => page.cards).map(page => page.cards)), most = Math.max(0, ...counts);
   const noFinalPeriods = profile.format?.noFinalPeriods ?? true, notes = [...(input.notes ?? [])];
   const chosen = input.slides.flatMap((slide, index) => {
-    let page = catalog.find(candidate => candidate.index === slide.templatePage);
+    const page = catalog.find(candidate => candidate.index === slide.templatePage);
     if (!page) {
       notes.push(`Skipped a slide that used page ${slide.templatePage}, which this template doesn't have.`);
       return [];
     }
-    let posts = (slide.reactions ?? []).slice(0, cardsOn(page));
-    if (page.reaction && posts.length < cardsOn(page)) {
-      // One post for a two-post page: it moves to the one-post page.
-      if (posts.length && single && page.reaction === "reactions") { page = single; posts = posts.slice(0, 1); }
-      else {
-        notes.push(`Skipped a slide on the ${page.label} page: it shows real posts from X, which this run didn't fetch.`);
-        return [];
-      }
-    }
-    return [{ slide, page, posts, index: slide.slide ?? index }];
+    const at = slide.slide ?? index;
+    if (!page.cards) return [{ slide, page, posts: [] as XReaction[], index: at, continued: false }];
+    // Posts go on the Reaction page with as many cards as they fill; what doesn't fit continues on another.
+    const groups = packReactions(slide.reactions ?? [], most).flatMap(group => counts.has(group.length) ? [group] : group.map(post => [post]));
+    const pages = groups.flatMap(group => {
+      const target = catalog.find(candidate => candidate.cards === group.length);
+      return target ? [{ slide, page: target, posts: group, index: at, continued: false }] : [];
+    }).map((item, n) => ({ ...item, continued: n > 0 }));
+    if (!pages.length) notes.push(`Skipped a slide on the ${page.label} page: it shows real posts from X, which this run didn't fetch.`);
+    else if (pages.length > 1) notes.push(`The posts on slide ${at + 1} didn't fit one page at full size, so they continue on ${pages.length - 1 === 1 ? "the next page" : `the next ${pages.length - 1} pages`}.`);
+    return pages;
   });
+  // Pages added for posts that didn't fit go first, so the closing slides stay.
+  let dropped = 0;
+  for (let index = chosen.length - 1; index >= 0 && chosen.length > MAX_DECK_SLIDES; index--) if (chosen[index].continued) { dropped += chosen[index].posts.length; chosen.splice(index, 1); }
+  if (dropped) notes.push(`Left out ${dropped} post${dropped === 1 ? "" : "s"} from X: Engine decks hold at most ${MAX_DECK_SLIDES} slides.`);
   if (chosen.length > MAX_DECK_SLIDES) notes.push(`Kept the first ${MAX_DECK_SLIDES} slides; Engine decks hold at most ${MAX_DECK_SLIDES}.`);
   if (!chosen.length) throw new RecreateError("Claude didn't produce any slides for this template. Try again.", 502);
 
@@ -107,11 +138,12 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
     const names = new Set(item.page.text.map(slot => slot.slot));
     const texts = item.slide.texts.filter(entry => {
       if (names.has(entry.slot)) return true;
-      notes.push(`Ignored text for unknown slot "${entry.slot}" on a ${item.page.label} slide.`);
+      // An empty slot the page doesn't have, like a source on a Reaction page, needs no note.
+      if (entry.text.trim()) notes.push(`Ignored text for unknown slot "${entry.slot}" on a ${item.page.label} slide.`);
       return false;
     }).map(entry => ({ slot: entry.slot, ...emphasis(cleanSlideText(entry.text, noFinalPeriods)) }));
     for (const slot of item.page.text) if (!texts.some(entry => entry.slot === slot.slot)) texts.push({ slot: slot.slot, text: "" });
-    const cards: Record<string, string> = Object.assign({}, ...item.posts.map((post, n) => reactionSlots(post, { page: item.page.reaction ?? "reaction", second: n === 1, language: profile.language })));
+    const cards: Record<string, string> = Object.assign({}, ...item.posts.map((post, n) => reactionSlots(post, { card: n + 1 })));
     const photoSlot = item.page.photo[0]?.slot;
     const photo = !item.slide.chart && photoSlot && item.slide.photo && usableImage(item.slide.photo.url) ? item.slide.photo : null;
     return { ...item, texts, cards, photoSlot, photo };
@@ -123,12 +155,12 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
     caption: cleanSlideText(input.caption, false).slice(0, 20_000),
     slides: prepared.map(item => {
       const slots: Record<string, string> = Object.fromEntries(item.texts.map(entry => [entry.slot, entry.text]));
-      for (const [slot, value] of Object.entries(item.cards)) if (withImages || !slot.startsWith("reaction-avatar")) slots[slot] = value;
+      for (const [slot, value] of Object.entries(item.cards)) if (withImages || !/^reaction-(?:avatar|media)/.test(slot)) slots[slot] = value;
       if (withImages && item.photo && item.photoSlot) slots[item.photoSlot] = item.photo.url;
       return { templatePage: item.page.index, slots };
     }),
   }, input.templates);
-  let document: DesignDocument;
+  let document: DesignDocument, imagesPlaced = true;
   try {
     document = build(true);
   } catch (error) {
@@ -138,6 +170,7 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
       document = build(false);
       notes.push(`The photos couldn't be placed (${error.message}); add them by hand.`);
       for (const item of prepared) item.photo = null;
+      imagesPlaced = false;
     } catch (again) {
       if (again instanceof AgentDeckValidationError) throw new RecreateError(`The deck couldn't be built: ${again.message}`, 502);
       throw again;
@@ -198,7 +231,10 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
     if (hidden) frame!.hidden = true;
     const brief = item.slide.photoBrief?.trim();
     if (frame && !filled && (brief || hidden)) comment(`${brief ? `Photo to add: ${brief}` : "No photo or chart for this slide yet"}${hidden ? ". The empty photo frame is hidden; show it in Layers to add one" : ""}`, page.id);
-    if (item.posts.length) comment(`Real posts from X, word for word:\n${item.posts.map(post => `@${post.author.handle}: ${post.url}`).join("\n")}`, page.id);
+    if (item.posts.length) {
+      styleCards(elements, item.posts, pixels, imagesPlaced);
+      comment(`Real posts from X, word for word:\n${item.posts.map(post => `@${post.author.handle}${formatReactionMeta(post, profile.language) ? ` (${formatReactionMeta(post, profile.language)})` : ""}: ${post.url}`).join("\n")}`, page.id);
+    }
   }
   // The template's fixed lines are English; a page in another language has its own.
   const fixedLines: [string, string][] = [["SWIPE FOR MORE", profile.swipeText], ["FOLLOW THIS PAGE", profile.followCta.line1]];

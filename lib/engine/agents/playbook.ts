@@ -7,7 +7,8 @@
  * the original faithfully, the hook from the headline model, the reader's
  * first questions next, real X reactions as post cards, Follow last; no final
  * periods, two-line bodies in simple words, simple honest charts, small dim
- * source lines, a Follow line tied to the post.
+ * source lines, a Follow line tied to the post. The writing and media rules
+ * also follow the ChatGPTricks style guide Ivan shared on 2026-11-08.
  */
 import type { PostStage } from "../post-files";
 import type { PageProfile } from "../page-profiles";
@@ -29,7 +30,7 @@ export const CAROUSEL_SHAPE = [
   "Cover: the hook, chosen from the headline model's options",
   "The original's slides in its order, rebuilt with checked facts in our voice and template. Its chart is rebuilt with real data over the same span, with the same markers",
   "The 2-4 questions a reader asks right after the hook, each answered on its own slide",
-  "One or two slides of real viral reactions from X, shown as post cards, links kept",
+  "One or two slides of real viral reactions from X, drawn like phone screenshots of the posts, links kept",
   "Follow: the fixed first line, then a second line tied to this post's topic",
 ];
 
@@ -113,7 +114,7 @@ const CARDS: RoleCard[] = [
       ...CAROUSEL_SHAPE,
       "One idea per slide; every slide earns its place. Six to ten slides unless the original is longer",
       "Use only facts and numbers from the research. A chart only where the data stage built one",
-      "Reaction slides use the Reaction page (one post) or the Reactions page (two) and name the reaction ids",
+      "Reaction slides name the reaction ids and use the Reaction page with that many cards. Each card is as tall as its post, so a page holds one long post (or a post with a photo), two medium ones or three short ones: about 16 lines of text in all on one card, 10 across two, 5 across three. Posts that don't fit continue on another page",
     ],
     bar: "A reader who swipes through gets the original's point plus the answers they wanted.",
     output: "OutlineSchema: slides[] {kind, templatePage, purpose, points[], chartId, reactionIds[], photo}, why",
@@ -145,9 +146,12 @@ const CARDS: RoleCard[] = [
       "The cover headline is the approved hook in ALL CAPS, its key phrase wrapped in [[double brackets]] for the green accent. Use [[ ]] nowhere else",
       ...HOUSE_RULES.slice(1, 4),
       "Write fresh copy in our voice. Never copy the original creator's wording",
+      "Each content title is a direct statement its slide supports, in sentence case",
+      "Balance two-line titles and bodies: never leave one word alone on a line",
+      "No em dashes",
       "A chart's source line names the source and the date range the chart shows",
       "Follow page: the first line is fixed. Write only the second line, tied to this post's topic, at most the page's limit (about 21 characters), plain words, no fear-bait",
-      "Reaction pages: write only the short title and the source line. The cards are filled with the real posts",
+      "Reaction pages: write only the short title. The cards are filled with the real posts, and there is no source line: the cards show whose posts they are",
       "Spanish pages: adapt, don't translate word for word, and keep accents (á é í ó ú ñ ¿ ¡)",
     ],
     bar: "Every slide reads in two seconds.",
@@ -170,6 +174,7 @@ const CARDS: RoleCard[] = [
       "Only images from the candidates. Each must clearly show the story's subject",
       "No watermarks, memes or low-resolution images. One photo per slot",
       "Photos, not figures: never put a chart, table, diagram or screenshot of text in a photo slot. The slot crops it, and its words can't be translated or checked. Leave that slide out instead",
+      "Prefer the photo whose shape suits its slot, so the crop never cuts through what matters",
       "Credit each photo's source in the notes",
     ],
     bar: "The cover photo would make someone stop scrolling.",
@@ -193,6 +198,7 @@ const CARDS: RoleCard[] = [
       "Fact critic: every number, date, name and quote must match the facts or data stage. Flag claims stated more strongly than the source supports",
       "Design critic: text cut off or overflowing, empty slots, placeholder photos and unreadable charts are must_fix; so are bodies over two lines, final periods, a cover not in caps and a Follow line over its limit",
       "Design critic: dead pockets of space, crowding and misalignment are should_fix. Check that the post keeps the original's slides, chart and story",
+      "Design critic: a photo cropped through what matters, stretched, framed or padded with a blurred copy of itself is must_fix. A word alone on a line, em dashes, content titles not in sentence case and title sizes that change from slide to slide are should_fix",
       "Each issue names the slide, the problem, the exact fix and who fixes it: copy for words, data for charts, images for photos, none for notes",
       "Text the template fixes, like the Follow line and the page's name, is not the copywriter's: its issues go to none",
     ],

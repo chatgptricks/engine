@@ -306,3 +306,31 @@ test("template drafts join imported title fragments into one readable block", ()
   assert.equal(texts[0].textMode, "auto-height");
   assert.ok(texts[0].width > 120);
 });
+
+test("a check mark follows a name's last line, a card hugs its copy past a hidden photo, and a centred flow moves as one", () => {
+  const copy = {role: "body", lines: 0, minFontSize: 12, maxFontSize: 20, maxHeight: 110};
+  const title = text({slot: "title", text: "Title", y: 0, height: 24, smartText: {...copy, maxHeight: 24}, smartCenter: {top: 50, bottom: 450}});
+  const card = model.createCanvasElement("shape", {y: 40, width: 320, height: 50, slot: "card", smartFlow: {after: "title", gap: 10, bottom: 450, hug: {after: "photo", gap: 6}}});
+  const body = text({slot: "body", text: "Two short words", x: 10, y: 48, align: "left", padding: 0, smartText: copy, smartFlow: {after: "card", edge: "top", gap: 8, bottom: 450}});
+  const badge = model.createCanvasElement("shape", {width: 12, height: 12, smartFlow: {after: "body", gap: 4, bottom: 450, direction: "right"}});
+  const photo = model.createCanvasElement("shape", {slot: "photo", height: 80, hidden: true, smartFlow: {after: "body", gap: 5, bottom: 450}});
+  const scene = {background: "#111111", elements: [title, card, body, badge, photo]};
+  const laid = smart.layoutSmartScene(scene, metrics), [heading, frame, words, mark] = laid.scene.elements;
+  // A hidden photo takes no room: the card ends 6 under the copy it holds.
+  assert.equal(frame.y + frame.height, words.y + words.height + 6);
+  assert.equal(words.y, frame.y + 8, "the copy follows the card's top edge");
+  // The check mark sits 4 after the end of the copy's last line, centred on that line.
+  const layout = laid.texts.get(words.id), pitch = layout.fontSize * words.lineHeight;
+  assert.equal(mark.x, words.x + layout.lines.at(-1).width + 4);
+  assert.ok(Math.abs(mark.y + mark.height / 2 - (words.y + (layout.lines.length - 1) * pitch + pitch / 2)) < 1e-9);
+  // The title and everything that follows it sit in the middle of 50 to 450, moved together.
+  assert.ok(Math.abs((heading.y - 50) - (450 - (frame.y + frame.height))) < 1e-9);
+  assert.equal(frame.y, heading.y + heading.height + 10);
+  // Shown, the photo sits 5 under the copy and the card ends 6 under the photo.
+  const shown = smart.layoutSmartScene({...scene, elements: scene.elements.map(element => element === photo ? {...element, hidden: false} : element)}, metrics).scene.elements;
+  assert.equal(shown[4].y, shown[2].y + shown[2].height + 5);
+  assert.equal(shown[1].y + shown[1].height, shown[4].y + shown[4].height + 6);
+  // A flow too tall for its space starts at the top instead.
+  const tall = smart.layoutSmartScene({...scene, elements: scene.elements.map(element => element === photo ? {...element, hidden: false, height: 600} : element)}, metrics).scene.elements;
+  assert.equal(tall[0].y, 50);
+});

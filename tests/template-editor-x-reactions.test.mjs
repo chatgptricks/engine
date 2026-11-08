@@ -55,14 +55,41 @@ test("a scraper item becomes a reaction with its link, author and counts",()=>{
   const reaction=x.normalizeTweet(item());
   assert.deepEqual(plain(reaction),{
     id:"2110374957310251142",url:"https://x.com/axiatechie/status/2110374957310251142",
-    author:{name:"Axia",handle:"axiatechie",avatarUrl:"https://pbs.twimg.com/profile_images/2095921218834628618/7lbFLI00_400x400.jpg",verified:true},
-    text:"Bill Gates says AI will replace people.",createdAt:"2026-10-14T14:19:33.000Z",likes:212,reposts:34,replies:63,views:80070,
+    author:{name:"Axia",handle:"axiatechie",avatarUrl:"https://pbs.twimg.com/profile_images/2095921218834628618/7lbFLI00_400x400.jpg",verified:true,badge:"blue",square:false},
+    text:"Bill Gates says AI will replace people.",media:null,createdAt:"2026-10-14T14:19:33.000Z",likes:212,reposts:34,replies:63,views:80070,
   });
   // Numeric ids, a leading @, string counts and missing optional fields still normalize.
   const sparse=x.normalizeTweet({id:"42",text:"hi",author:{userName:"@sam",name:" Sam "},likeCount:"1,204",viewCount:undefined});
   assert.equal(sparse.url,"https://x.com/sam/status/42"); assert.equal(sparse.author.name,"Sam"); assert.equal(sparse.likes,1204);
   assert.equal(sparse.views,0); assert.equal(sparse.createdAt,null); assert.equal(sparse.author.avatarUrl,null); assert.equal(sparse.author.verified,false);
   assert.equal(x.normalizeTweet(item({author:{isBlueVerified:false,isVerified:false}})).author.verified,false);
+  assert.equal(x.normalizeTweet(item({author:{isBlueVerified:false,isVerified:false}})).author.badge,null,"no check mark");
+});
+
+test("check marks, square photos and the post's photo come through as X shows them",()=>{
+  // Organizations get a gold check and a rounded-square photo; governments a grey check.
+  const business=x.normalizeTweet(item({author:{verifiedType:"Business"}})).author;
+  assert.equal(business.badge,"gold"); assert.equal(business.square,true); assert.equal(business.verified,true);
+  assert.equal(x.normalizeTweet(item({author:{isBlueVerified:false,verifiedType:"Government"}})).author.badge,"grey");
+  assert.equal(x.normalizeTweet(item({author:{profileImageShape:"Square"}})).author.square,true);
+  // X's own embed data (cdn.syndication.twimg.com) reads the same: snake case, a user, mediaDetails.
+  const embed={__typename:"Tweet",id_str:"2118420271333777856",text:"Yesterday while I was at lunch, Claude deleted a year of con law lecture notes and my current syllabus. https://t.co/o3XB8Uiugk",
+    created_at:"2026-11-05T19:08:45.000Z",favorite_count:7291,conversation_count:439,
+    user:{name:"William Baude",screen_name:"WilliamBaude",profile_image_url_https:"https://pbs.twimg.com/profile_images/2110968185717428224/sYEkjNW0_normal.jpg",is_blue_verified:false,profile_image_shape:"Circle"},
+    entities:{media:[{url:"https://t.co/o3XB8Uiugk"}]},
+    mediaDetails:[{type:"photo",media_url_https:"https://pbs.twimg.com/media/HWYj89XW8AABX1T.png",original_info:{width:758,height:372}}]};
+  const post=x.normalizeTweet(embed);
+  assert.equal(post.text,"Yesterday while I was at lunch, Claude deleted a year of con law lecture notes and my current syllabus.","the photo's link is hidden as on X");
+  assert.deepEqual(plain(post.author),{name:"William Baude",handle:"WilliamBaude",avatarUrl:"https://pbs.twimg.com/profile_images/2110968185717428224/sYEkjNW0_400x400.jpg",verified:false,badge:null,square:false});
+  assert.deepEqual(plain(post.media),{url:"https://pbs.twimg.com/media/HWYj89XW8AABX1T.png?name=large",width:758,height:372});
+  assert.equal(post.likes,7291); assert.equal(post.url,"https://x.com/WilliamBaude/status/2118420271333777856");
+  // The scraper's photo: sizes when original_info is missing. Videos, GIFs and other hosts show none.
+  const photo=entry=>x.normalizeTweet(item({fullText:"See https://t.co/p",extendedEntities:{media:[{url:"https://t.co/p",...entry}]}})).media;
+  assert.deepEqual(plain(photo({type:"photo",media_url_https:"https://pbs.twimg.com/media/A.jpg",sizes:{large:{w:2048,h:1536}}})),{url:"https://pbs.twimg.com/media/A.jpg?name=large",width:2048,height:1536});
+  for (const entry of [{type:"video",media_url_https:"https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/a.jpg",original_info:{width:9,height:16}},
+    {type:"animated_gif",media_url_https:"https://pbs.twimg.com/tweet_video_thumb/a.jpg",original_info:{width:4,height:3}},
+    {type:"photo",media_url_https:"https://example.com/media/A.jpg",original_info:{width:4,height:3}},
+    {type:"photo",media_url_https:"https://pbs.twimg.com/media/A.jpg"}]) assert.equal(photo(entry),null,JSON.stringify(entry));
 });
 
 test("drop rules: no id, handle or text, retweets, promoted posts, bad avatars and repeats",()=>{
@@ -139,7 +166,7 @@ test("trimReaction shortens at a word boundary with … and never splits an emoj
   assert.ok(x.reactionLines(x.trimReaction("word ".repeat(200),280,{lines:5,perLine:38}),38)<=5);
 });
 
-test("reactionSlots fills a card's slots and formatReactionMeta writes the stats line",()=>{
+test("reactionSlots fills a card's slots and formatReactionMeta writes the stats for the deck's notes",()=>{
   const reaction=x.normalizeTweet(item({likeCount:48213,retweetCount:3120,createdAt:"Tue Nov 03 09:00:00 +0000 2026"}));
   assert.equal(x.formatReactionMeta(reaction),"48.2K likes · 3.1K reposts · Nov 3, 2026");
   // Spanish keeps "48,2 mil" together with a no-break space.
@@ -147,16 +174,53 @@ test("reactionSlots fills a card's slots and formatReactionMeta writes the stats
   assert.equal(x.formatReactionMeta({likes:1,reposts:0,createdAt:null}),"1 like");
   assert.deepEqual(plain(x.reactionSlots(reaction)),{
     "reaction-name":"Axia","reaction-handle":"@axiatechie","reaction-text":"Bill Gates says AI will replace people.",
-    "reaction-meta":"48.2K likes · 3.1K reposts · Nov 3, 2026","reaction-avatar":"https://pbs.twimg.com/profile_images/2095921218834628618/7lbFLI00_400x400.jpg",
+    "reaction-avatar":"https://pbs.twimg.com/profile_images/2095921218834628618/7lbFLI00_400x400.jpg",
   });
-  assert.deepEqual(Object.keys(x.reactionSlots(reaction,{second:true})),["reaction-name-2","reaction-handle-2","reaction-text-2","reaction-meta-2","reaction-avatar-2"]);
+  assert.deepEqual(Object.keys(x.reactionSlots(reaction,{card:2})),["reaction-name-2","reaction-handle-2","reaction-text-2","reaction-avatar-2"]);
+  assert.deepEqual(Object.keys(x.reactionSlots(reaction,{card:3})),["reaction-name-3","reaction-handle-3","reaction-text-3","reaction-avatar-3"]);
   const noAvatar=x.normalizeTweet(item({author:{profilePicture:"https://example.com/a.jpg"}}));
   assert.equal("reaction-avatar" in x.reactionSlots(noAvatar),false,"the placeholder stays");
-  // Each card's budget: 280 characters on Reaction, 160 on either Reactions card.
-  const long=x.normalizeTweet(item({fullText:"word ".repeat(100).trim()}));
-  assert.ok(Array.from(x.reactionSlots(long)["reaction-text"]).length<=280);
-  assert.ok(Array.from(x.reactionSlots(long,{page:"reactions"})["reaction-text"]).length<=160);
-  assert.ok(Array.from(x.reactionSlots(long,{second:true})["reaction-text-2"]).length<=160);
+  // A post's photo fills the card's photo slot.
+  const pictured={...reaction,media:{url:"https://pbs.twimg.com/media/A.jpg?name=large",width:1200,height:675}};
+  assert.equal(x.reactionSlots(pictured,{card:2})["reaction-media-2"],"https://pbs.twimg.com/media/A.jpg?name=large");
+  // A post longer than a card (16 lines, fewer beside a photo) is cut at a word with "…".
+  const long=x.normalizeTweet(item({fullText:"word ".repeat(200).trim()}));
+  const alone=x.reactionSlots(long)["reaction-text"], beside=x.reactionSlots({...long,media:pictured.media})["reaction-text"];
+  assert.ok(alone.endsWith("…")); assert.ok(x.reactionLines(alone,x.REACTION_PER_LINE)<=16);
+  assert.ok(x.reactionLines(beside,x.REACTION_PER_LINE)<x.reactionLines(alone,x.REACTION_PER_LINE),"a photo leaves less room for text");
+  // Names too wide for the card end in "…", as on X.
+  assert.equal(x.reactionName("  William   Baude "),"William Baude");
+  const longName=x.reactionName("The Extraordinarily Long Display Name Of Someone");
+  assert.ok(longName.endsWith("…")); assert.ok(longName.length<=30);
+});
+
+test("posts are packed onto Reaction pages by size: one long, two medium or three short",()=>{
+  const post=(text,media=null)=>({text,media});
+  const short=post("A short post"), medium=post("word ".repeat(35).trim()), long=post("word ".repeat(450).trim());
+  const banner={url:"https://pbs.twimg.com/media/C.jpg?name=large",width:1500,height:500};
+  const wide={url:"https://pbs.twimg.com/media/A.jpg?name=large",width:1600,height:900}, tall={url:"https://pbs.twimg.com/media/B.jpg?name=large",width:900,height:1600};
+  assert.deepEqual(x.packReactions([short,short,short]).map(page=>page.length),[3],"three short posts share a page");
+  assert.deepEqual(x.packReactions([short,short,short,short]).map(page=>page.length),[3,1],"a fourth starts the next page");
+  assert.deepEqual(x.packReactions([medium,medium,medium]).map(page=>page.length),[2,1],"two medium posts share a page");
+  assert.deepEqual(x.packReactions([long,short]).map(page=>page.length),[1,1],"a long post has a page of its own");
+  assert.deepEqual(x.packReactions([short,short,short],2).map(page=>page.length),[2,1],"never more cards than the template has");
+  // Photos share a page only at full width: a banner leaves room for a short post, a 16:9 photo doesn't.
+  assert.deepEqual(x.packReactions([post("Look",banner),short]).map(page=>page.length),[2],"a short post fits beside a banner");
+  assert.deepEqual(x.packReactions([post("Look",wide),short]).map(page=>page.length),[1,1],"a 16:9 photo takes its own page");
+  assert.deepEqual(x.packReactions([post("Look",tall),short]).map(page=>page.length),[1,1],"so does a tall one");
+  assert.equal(x.reactionsFit([short,short,short]),true); assert.equal(x.reactionsFit([medium,medium,medium]),false);
+  // Text estimates: about 44 lowercase characters a line, 16 lines at most, fewer beside a photo.
+  assert.equal(x.reactionTextLines(short),1); assert.equal(x.reactionTextLines(long),16); assert.ok(x.reactionTextLines(post(long.text,wide))<16);
+  // A photo keeps its proportions: full width when the page has room, smaller (still whole) when not.
+  const [fullSize]=x.reactionPhotoSizes([post("Look",wide)]);
+  // The card's text column: 936 px less its 24 px padding and the screenshot's own inset, each side.
+  const column=936-2*(24+(936-48)*27/1206);
+  assert.ok(Math.abs(fullSize.width-column)<1e-6); assert.ok(Math.abs(fullSize.height/fullSize.width-900/1600)<1e-9);
+  const [shrunk]=x.reactionPhotoSizes([post("word ".repeat(120).trim(),tall)]);
+  assert.ok(shrunk.width<column,"a tall photo beside a long post shrinks"); assert.ok(Math.abs(shrunk.height/shrunk.width-1600/900)<1e-9,"keeping its proportions");
+  const used=x.reactionCardHeight(x.reactionTextLines(post("word ".repeat(120).trim(),tall)),shrunk.height);
+  assert.ok(used<=1352-90-56*1.04-64+1e-6,"and the card fits above the bottom margin");
+  assert.deepEqual(x.reactionPhotoSizes([short]),[null]);
 });
 
 test("fetchXReactions asks Apify for Top posts with a like floor, a language and a start date",async()=>{
