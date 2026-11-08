@@ -340,6 +340,9 @@ const paper = "#f4efe5";
 /** Colours of a post on X in dark mode, as phone screenshots show it. `border` is X's own
  * divider grey, used for the thin line around each card. */
 export const X_POST_COLORS = { card: "#000000", text: "#E7E9EA", handle: "#71767B", border: "#2F3336" } as const;
+/** X's play button, drawn on a video post's poster frame: a blue disc in a white ring with a white
+ * triangle, as an SVG in a 100 × 100 box in the Brand SVG grammar (paths only). */
+export const X_PLAY_BUTTON = `data:image/svg+xml;charset=utf-8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><path d="M3 50A47 47 0 1 0 97 50A47 47 0 1 0 3 50Z" fill="#1D9BF0" stroke="#FFFFFF" stroke-width="6"/><path d="M39 29.5V70.5L73 50Z" fill="#FFFFFF"/></svg>')}`;
 /** The chatgptricks post cards in 1080-wide pixels. A card is 936 px wide with `pad` px of black
  * padding inside on every side (Ivan's call), so its content never touches the edge; Ivan's phone
  * screenshots of X (1206 px wide) scale by `scale` into the rest, which keeps X's line breaks.
@@ -352,8 +355,10 @@ export const X_CARD = (() => {
   const size = shot(57.9), line = shot(73.3), bottom = 1352, room = bottom - 90 - 62.72 - 64;
   // SF Pro Display's baseline sits 0.95 em plus half the leading under the top of its line box.
   const textTop = pad + shot(310.5) - ((line / size - 1.19) / 2 + .95) * size, foot = pad + shot(33.5);
-  // `maxLines` is as much text as one card can show on a page of its own.
-  return { width, pad, scale, inset: pad + shot(27), size, line, textTop, foot, between: 40, mediaGap: shot(31), mediaRadius: shot(48), radius: 24, border: 3, maxLines: Math.floor((room - textTop - foot) / line), bottom, room };
+  // `maxLines` is as much text as one card can show on a page of its own. A video's poster frame
+  // carries X's `play` button in the middle and its `length` badge in the lower left corner.
+  const length = { size: shot(40), height: shot(60), pad: shot(14), inset: shot(30), radius: shot(12), fill: "#000000C4", color: "#FFFFFF" };
+  return { width, pad, scale, inset: pad + shot(27), size, line, textTop, foot, between: 40, mediaGap: shot(31), mediaRadius: shot(48), radius: 24, border: 3, maxLines: Math.floor((room - textTop - foot) / line), bottom, room, play: shot(150), length };
 })();
 
 /** The badges X shows after a verified name, drawn for Engine in a 100 × 100 box with the check
@@ -2770,6 +2775,9 @@ function chatgptricksTemplate(): DesignTemplate {
   const xPost = (key: string, n: 1 | 2 | 3, top: number, after: string, gap: number, post: XPost, textBottom: number, maxLines: number): CanvasElement[] => {
     const suffix = n === 1 ? "" : `-${n}`, slot = (part: string) => `reaction-${part}${suffix}`, left = 72, nameY = top + nameTop;
     const inside = (offset: number) => ({ after: slot("card"), edge: "top" as const, gap: px(offset), bottom: px(1440) });
+    const onMedia = (offset: number) => ({ after: slot("media"), edge: "top" as const, gap: px(offset), bottom: px(1440) });
+    // The photo's place before Recreate sizes it, and the length badge sized for "0:45".
+    const mediaTop = top + textTop + post.lines * X.textLine + X_CARD.mediaGap, mediaHeight = mediaWidth * 9 / 16, badge = X_CARD.length, badgeWidth = 2.16 * badge.size + 2 * badge.pad;
     return [
       { type: "shape", ...at(`${key}-card${suffix}`, "Post card", [left, top, 936, cardHeight(post.lines)]), shape: "rectangle", fill: X_POST_COLORS.card, stroke: X_POST_COLORS.border, strokeWidth: px(X_CARD.border), strokeAlign: "inside", radius: px(X_CARD.radius), ...fixed(), slot: slot("card"),
         smartFlow: { after, gap: px(gap), bottom: px(X_CARD.bottom), hug: { after: slot("media"), gap: px(X.foot) } } },
@@ -2787,10 +2795,19 @@ function chatgptricksTemplate(): DesignTemplate {
         smartFlow: { after: slot("card"), edge: "top", gap: px(textTop), bottom: px(textBottom) }, smartText: fit("body", 0, X.text, X.text * .8, maxLines * X.textLine, post.lines * X.textLine) },
       // The post's own photo under its text, whole and with X's rounded corners. Hidden until Recreate
       // fills it and sizes it to the photo's proportions; while hidden, the card ends under the text.
-      { type: "image", ...at(`${key}-media${suffix}`, "Post photo", [left + X.inset, top + textTop + post.lines * X.textLine + X_CARD.mediaGap, mediaWidth, mediaWidth * 9 / 16]),
+      { type: "image", ...at(`${key}-media${suffix}`, "Post photo", [left + X.inset, mediaTop, mediaWidth, mediaHeight]),
         src: placeholder(Math.round(mediaWidth), Math.round(mediaWidth * 9 / 16), mediaWidth / 2, mediaWidth * 9 / 32), fit: "cover", cropX: 50, cropY: 50, radius: px(X_CARD.mediaRadius), hidden: true,
         intrinsicWidth: Math.round(mediaWidth), intrinsicHeight: Math.round(mediaWidth * 9 / 16), directive: "The post's own photo from X (pbs.twimg.com/media), whole", slot: slot("media"), templateRole: "media", layoutRole: "media",
         protected: ["position", "delete"], smartFlow: { after: slot("text"), gap: px(X_CARD.mediaGap), bottom: px(1440) } },
+      // A video shows its poster frame with X's play button in the middle and its length in the lower
+      // left corner; a GIF shows "GIF" there. Hidden until Recreate shows them on a video or a GIF,
+      // and it moves them to the frame's size; they follow its top like the copy follows the card's.
+      { type: "image", ...at(`${key}-play${suffix}`, "Play button", [left + X.inset + (mediaWidth - X_CARD.play) / 2, mediaTop + (mediaHeight - X_CARD.play) / 2, X_CARD.play, X_CARD.play]),
+        src: X_PLAY_BUTTON, fit: "contain", cropX: 50, cropY: 50, radius: 0, hidden: true, intrinsicWidth: 100, intrinsicHeight: 100, ...fixed(), slot: slot("play"), smartFlow: onMedia((mediaHeight - X_CARD.play) / 2) },
+      { type: "shape", ...at(`${key}-length${suffix}`, "Video length", [left + X.inset + badge.inset, mediaTop + mediaHeight - badge.inset - badge.height, badgeWidth, badge.height]), shape: "rectangle", fill: badge.fill, stroke: "transparent", strokeWidth: 0, radius: px(badge.radius), hidden: true,
+        ...fixed(), slot: slot("length"), smartFlow: onMedia(mediaHeight - badge.inset - badge.height) },
+      { type: "text", ...at(`${key}-length-text${suffix}`, "Video length text", [left + X.inset + badge.inset, mediaTop + mediaHeight - badge.inset - badge.height, badgeWidth, badge.height]), text: "0:45", ...typeset("sfpro", badge.size, 600, badge.color, 1.2, 0, "center"),
+        textMode: "fixed", verticalAlign: "middle", hidden: true, ...fixed(), slot: slot("length-text"), smartFlow: onMedia(mediaHeight - badge.inset - badge.height) },
     ];
   };
   /** The cards of a page with `posts.length` posts: the first 64 px under the title, the rest

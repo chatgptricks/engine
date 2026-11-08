@@ -433,11 +433,40 @@ test("the designer puts one to three posts on a page by size and draws each acco
   assert.equal(shown.hidden,false); assert.equal(shown.src,photo.url); assert.ok(Math.abs(shown.width-text.width)<1e-6);
   assert.ok(Math.abs(shown.height/shown.width-372/758)<1e-9); assert.equal(shown.intrinsicWidth,758); assert.equal(shown.publicAlt,"Photo in @baude's post");
   assert.equal(slot(0,"reaction-media").hidden,true); assert.equal(slot(2,"reaction-media").hidden,true);
+  assert.deepEqual(["reaction-play","reaction-length","reaction-length-text"].map(name=>slot(1,name).hidden),[true,true,true],"a photo has no play button or badge");
   // A post longer than its card is cut at a word with "…", like X's "Show more".
   assert.ok(slot(3,"reaction-text").text.endsWith("…")); assert.equal(slot(2,"reaction-text").text,medium.text);
   // The deck's notes keep every post's link and stats.
   assert.ok(document.comments.some(comment=>comment.text.includes("@baude (7.3K likes · 10 reposts · Nov 3, 2026): https://x.com/baude/status/204")));
   assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}));
+});
+
+test("a video post shows its poster frame with X's play button and its length, and a GIF says GIF",async()=>{
+  const smart=load("lib/template-editor/smart-text.ts"),xPosts=load("lib/engine/x-reactions.ts");
+  const measure=(element,words=smart.smartWords(element))=>({size:element.fontSize,widths:words.map(word=>word.text.length*element.fontSize*.45),space:element.fontSize*.25});
+  const video={url:"https://pbs.twimg.com/amplify_video_thumb/3/img/c.jpg",width:1280,height:720,kind:"video",durationMs:45000};
+  const gif={url:"https://pbs.twimg.com/tweet_video_thumb/a.jpg",width:480,height:270,kind:"gif"};
+  const clip={...post("301","clips","Watch this",900),media:video},loop={...post("302","loops","This one loops",500),media:gif};
+  const {document,pages}=await deckLib.assembleDeck({profile:english,template,templates:model.BUILT_IN_TEMPLATES,name:"Videos",caption:"",
+    slides:[{templatePage:REACTION,texts:[{slot:"title",text:"How X reacted"}],reactions:[clip],slide:0},{templatePage:REACTION,texts:[{slot:"title",text:"And a GIF"}],reactions:[loop],slide:1}]});
+  assert.deepEqual(pages.map(page=>page.templatePage),[REACTION,REACTION]);
+  const laid=index=>smart.layoutSmartScene(document.pages[index].canvas,measure).scene,slot=(scene,name)=>scene.elements.find(element=>element.slot===name);
+  const near=(a,b,message)=>assert.ok(Math.abs(a-b)<1e-6,`${message}: ${a} vs ${b}`);
+  const first=laid(0),frame=slot(first,"reaction-media"),play=slot(first,"reaction-play"),length=slot(first,"reaction-length"),label=slot(first,"reaction-length-text");
+  assert.equal(frame.hidden,false); assert.equal(frame.src,video.url); assert.equal(frame.publicAlt,"Video in @clips's post");
+  assert.deepEqual([play.hidden,length.hidden,label.hidden,label.text],[false,false,false,"0:45"]);
+  near(play.x+play.width/2,frame.x+frame.width/2,"the play button is centred across the frame");
+  near(play.y+play.height/2,frame.y+frame.height/2,"and down it");
+  const {inset,height}=model.X_CARD.length;
+  near(length.x,frame.x+inset/3,"the length sits inside the frame's left edge"); near(length.y+length.height,frame.y+frame.height-inset/3,"and above its bottom");
+  near(length.height,height/3,"at X's size"); near(length.width,xPosts.mediaBadge(video).width/3,"as wide as 0:45 needs");
+  near(label.x,length.x,"its words sit on the badge"); near(label.y,length.y,"its words sit on the badge"); near(label.width,length.width,"centred across it");
+  const card=slot(first,"reaction-card"); near(card.y+card.height,frame.y+frame.height+model.X_CARD.foot/3,"the card still ends under the frame");
+  // A GIF has no play button, just "GIF" in the corner.
+  const second=laid(1);
+  assert.deepEqual([slot(second,"reaction-play").hidden,slot(second,"reaction-length").hidden,slot(second,"reaction-length-text").text],[true,false,"GIF"]);
+  assert.equal(slot(second,"reaction-media").publicAlt,"GIF in @loops's post");
+  assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}),"the deck stays a valid document");
 });
 
 test("the critics' instructions and report name each slide and fix",()=>{
@@ -490,7 +519,8 @@ test("the X reactions agent searches X itself, a few times at most, and may only
   assert.equal(research.reactionsSince("soon",now),"2026-10-08","30 days back without a date");
 
   const tweet=(id,likes,text)=>({type:"tweet",id,url:`https://x.com/person${id}/status/${id}`,text,fullText:text,retweetCount:5,replyCount:2,likeCount:likes,quoteCount:0,viewCount:1000,createdAt:"Wed Oct 14 14:19:33 +0000 2026",lang:"en",isReply:false,isRetweet:false,isQuote:false,author:{type:"user",userName:`person${id}`,name:`Person ${id}`,isVerified:false,isBlueVerified:false,profilePicture:""},entities:{hashtags:[],symbols:[],urls:[],user_mentions:[]}});
-  const bodies=[],replies=[[tweet("201",900,"This chart is the whole job market"),tweet("202",300,"Openings fell before ChatGPT")],[],"credit"];
+  const clip={...tweet("202",300,"Openings fell before ChatGPT"),extendedEntities:{media:[{type:"video",media_url_https:"https://pbs.twimg.com/amplify_video_thumb/9/img/v.jpg",original_info:{width:1280,height:720},video_info:{duration_millis:83000}}]}};
+  const bodies=[],replies=[[tweet("201",900,"This chart is the whole job market"),clip],[],"credit"];
   const fetch=async(url,init)=>{
     bodies.push(JSON.parse(init.body));
     const reply=replies.shift();
@@ -504,6 +534,8 @@ test("the X reactions agent searches X itself, a few times at most, and may only
     const first=await tool.run({terms:["chatgpt job openings"],since:"2024-01-01",minLikes:50,language:"en"});
     assert.match(first,/^2 posts since 2024-01-01 \(3 searches left\.\)/);
     assert.match(first,/id 201 · Person 201 @person201 · 900 likes/);
+    assert.match(first,/id 202 .* · with a video \(1:23\)\n/,"the agent knows which posts have a video, a GIF or a photo");
+    assert.doesNotMatch(first,/id 201 [^\n]*with a/);
     assert.deepEqual([...seen.keys()],["201","202"],"every post shown is remembered");
     assert.deepEqual(bodies[0],{searchTerms:["chatgpt job openings"],maxItems:30,sort:"Top",tweetLanguage:"en",minimumFavorites:50,start:"2024-01-01"});
     assert.match(await tool.run({terms:["jolts stocks"],since:"2025-01-01",minLikes:30,language:"es"}),/^No posts in es since 2025-01-01 with at least 30 likes\./);

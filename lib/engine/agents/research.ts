@@ -12,7 +12,7 @@ import { curateImages } from "../image-curator";
 import { publicHttpUrl } from "../public-url";
 import { imagesFromPage } from "../research-engine";
 import type { StoryImage } from "../types";
-import { fetchXPosts, fetchXReactions, X_PAID_PLAN, XReactionsError, xSearchNeedsPaidPlan, type XReaction } from "../x-reactions";
+import { fetchXPosts, fetchXReactions, videoLength, X_PAID_PLAN, XReactionsError, xSearchNeedsPaidPlan, type XReaction } from "../x-reactions";
 import { ask, imageBlock, ToolError, work, type ClientTool, type SourceImage } from "./claude";
 import { CHART_FIELDS, dataTools, resolveChart } from "./charts";
 import { need, outputOf, rerunNote, today, type StageContext, type StageRunner } from "./context";
@@ -109,8 +109,10 @@ export function reactionsSince(value: string, now = Date.now()): string {
   return new Date(time).toISOString().slice(0, 10);
 }
 
+/** What a post's card shows under its text: its photo, or its video or GIF. */
+const mediaNote = ({ media }: XReaction) => !media ? "" : ` · with a ${media.kind === "video" ? `video${media.durationMs ? ` (${videoLength(media.durationMs)})` : ""}` : media.kind === "gif" ? "GIF" : "photo"}`;
 const describePost = (post: XReaction) =>
-  `- id ${post.id} · ${post.author.name} @${post.author.handle}${post.author.verified ? " (verified)" : ""} · ${post.likes} likes, ${post.reposts} reposts · ${post.createdAt?.slice(0, 10) ?? "date unknown"}\n  ${post.text.replace(/\s+/g, " ").slice(0, 400)}`;
+  `- id ${post.id} · ${post.author.name} @${post.author.handle}${post.author.verified ? " (verified)" : ""} · ${post.likes} likes, ${post.reposts} reposts · ${post.createdAt?.slice(0, 10) ?? "date unknown"}${mediaNote(post)}\n  ${post.text.replace(/\s+/g, " ").slice(0, 400)}`;
 
 const SearchSchema = z.object({
   terms: z.array(z.string().min(1).max(120)).min(1).max(3).describe("1-3 short searches, worded the way people post about it on X. Quotes match an exact phrase"),

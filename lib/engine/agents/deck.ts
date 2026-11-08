@@ -8,12 +8,12 @@
 import { randomUUID } from "node:crypto";
 import { AgentDeckValidationError, createAgentDeck } from "../../template-editor/agent-decks";
 import { checkLibrarySaveBudget } from "../../template-editor/library-budget";
-import { formatDimensions, parseLibrary, X_BADGES, type CanvasElement, type DesignComment, type DesignDocument, type DesignTemplate } from "../../template-editor/model";
+import { formatDimensions, parseLibrary, X_BADGES, X_CARD, type CanvasElement, type DesignComment, type DesignDocument, type DesignTemplate, type ImageElement } from "../../template-editor/model";
 import { getEditorLibrary, LibraryConflictError, saveEditorLibrary } from "../../template-editor/persistence";
 import type { PageProfile } from "../page-profiles";
 import { chartAltText, chartPngDataUrl } from "../recreate-chart";
 import type { ChartData } from "../recreate-data";
-import { formatReactionMeta, packReactions, reactionBadge, reactionPhotoSizes, reactionSlots, type XReaction } from "../x-reactions";
+import { formatReactionMeta, mediaBadge, packReactions, reactionBadge, reactionPhotoSizes, reactionSlots, type XReaction } from "../x-reactions";
 import { RecreateError } from "./claude";
 import { chartSources, resolveChart } from "./charts";
 import { need, outputOf, type StageRunner } from "./context";
@@ -99,9 +99,28 @@ export function styleCards(elements: CanvasElement[], posts: XReaction[], pixels
     if (media?.type === "image") {
       const shown = Boolean(imagesPlaced && post.media && size && media.src === post.media.url);
       media.hidden = !shown;
-      if (shown) Object.assign(media, { width: size!.width / pixels, height: size!.height / pixels, intrinsicWidth: post.media!.width, intrinsicHeight: post.media!.height, fit: "cover", cropX: 50, cropY: 50, publicAlt: `Photo in @${post.author.handle}'s post` });
+      if (shown) Object.assign(media, { width: size!.width / pixels, height: size!.height / pixels, intrinsicWidth: post.media!.width, intrinsicHeight: post.media!.height, fit: "cover", cropX: 50, cropY: 50, publicAlt: `${post.media!.kind === "video" ? "Video" : post.media!.kind === "gif" ? "GIF" : "Photo"} in @${post.author.handle}'s post` });
+      styleMediaBadges(find, shown ? media : null, post, pixels);
     }
   });
+}
+
+/** A video's poster frame gets X's play button in its middle and its length in the lower left
+ * corner, a GIF gets "GIF" there; both follow the frame's top, so they move with the card. */
+function styleMediaBadges(find: (part: string) => CanvasElement | undefined, media: ImageElement | null, post: XReaction, pixels: number) {
+  const play = find("play"), length = find("length"), label = find("length-text"), badge = media && mediaBadge(post.media);
+  if (play) {
+    play.hidden = !media || post.media?.kind !== "video";
+    if (media && !play.hidden) Object.assign(play, { x: media.x + (media.width - play.width) / 2, smartFlow: { after: media.slot!, edge: "top", gap: (media.height - play.height) / 2, bottom: play.smartFlow?.bottom ?? 480 } });
+  }
+  for (const layer of [length, label]) {
+    if (!layer) continue;
+    layer.hidden = !badge;
+    if (!badge || !media) continue;
+    const { inset, height } = X_CARD.length;
+    Object.assign(layer, { x: media.x + inset / pixels, width: badge.width / pixels, height: height / pixels, smartFlow: { after: media.slot!, edge: "top", gap: media.height - (inset + height) / pixels, bottom: layer.smartFlow?.bottom ?? 480 } });
+    if (layer.type === "text") { layer.text = badge.label; delete layer.richText; }
+  }
 }
 
 export async function assembleDeck(input: AssembleInput): Promise<{ document: DesignDocument; notes: string[]; pages: AssembledPage[] }> {

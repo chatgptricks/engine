@@ -27,8 +27,12 @@ export { MAX_ADDED_POSTS, xPostId };
 
 /** X's check mark: blue for paid accounts, gold for organizations, grey for governments. */
 export type XBadge = "blue" | "gold" | "grey";
-/** A photo attached to a post: a pbs.twimg.com/media image and its size in pixels. */
-export type XPhoto = { url: string; width: number; height: number };
+/** A post's media as its card shows it: a photo, or a video or GIF shown by its poster frame. */
+export type XMediaKind = "photo" | "video" | "gif";
+/** A post's first photo, or the poster frame of its first video or GIF: a pbs.twimg.com image and
+ * its size in pixels. Photos leave `kind` out (posts saved before videos were read have none); a
+ * video keeps its length, which its card shows as X does. */
+export type XPhoto = { url: string; width: number; height: number; kind?: Exclude<XMediaKind, "photo">; durationMs?: number | null };
 
 export type XReaction = {
   id: string;
@@ -41,7 +45,7 @@ export type XReaction = {
     square?: boolean;
   };
   text: string;
-  /** The post's first photo, drawn whole under its text. Videos and GIFs aren't drawn. */
+  /** The post's first photo, or its video's or GIF's poster frame, drawn whole under its text. */
   media?: XPhoto | null;
   /** ISO 8601, or null when the scraper's date can't be read. */
   createdAt: string | null;
@@ -104,26 +108,55 @@ function avatar(value: unknown): string | null {
   }
 }
 
-/** The post's first photo: a pbs.twimg.com/media image (at X's "large" size, up to 2048 px)
- * and its size, from the scraper's or X's embed fields. Null for videos, GIFs and no media. */
-function photo(item: Item): XPhoto | null {
+/** Where X keeps the poster frames of videos and GIFs. */
+const POSTER_PATH = /^\/(?:ext_tw_video_thumb|amplify_video_thumb|tweet_video_thumb)\//;
+const MEDIA_KINDS = new Map<string, XMediaKind>([["photo", "photo"], ["video", "video"], ["animated_gif", "gif"]]);
+
+/** The post's first media, from the scraper's or X's embed fields: a pbs.twimg.com/media photo (at
+ * X's "large" size, up to 2048 px), or a video's or GIF's poster frame, with its size and, for a
+ * video, its length. Null when there's none, or it's on another host or has no size. */
+function media(item: Item): XPhoto | null {
   const lists = [record(item.extendedEntities)?.media, record(item.extended_entities)?.media, item.mediaDetails, record(item.entities)?.media];
   for (const list of lists) {
     if (!Array.isArray(list)) continue;
     for (const entry of list.map(record)) {
-      if (!entry || text(entry.type) !== "photo") continue;
+      const kind = entry && MEDIA_KINDS.get(text(entry.type));
+      if (!entry || !kind) continue;
       const size = record(entry.original_info) ?? record(entry.originalInfo), large = record(record(entry.sizes)?.large);
       const width = count(size?.width ?? large?.w), height = count(size?.height ?? large?.h);
       try {
         const url = new URL(text(entry.media_url_https) || text(entry.mediaUrlHttps));
-        if (url.protocol !== "https:" || url.hostname !== "pbs.twimg.com" || !url.pathname.startsWith("/media/") || url.username || url.password || url.port || !width || !height) continue;
-        url.search = ""; url.hash = ""; url.searchParams.set("name", "large");
-        return { url: url.toString(), width, height };
+        const photo = url.pathname.startsWith("/media/");
+        if (url.protocol !== "https:" || url.hostname !== "pbs.twimg.com" || url.username || url.password || url.port || !width || !height) continue;
+        if (kind === "photo" ? !photo : !photo && !POSTER_PATH.test(url.pathname)) continue;
+        url.search = ""; url.hash = "";
+        if (photo) url.searchParams.set("name", "large");
+        if (kind === "photo") return { url: url.toString(), width, height };
+        if (kind === "gif") return { url: url.toString(), width, height, kind };
+        const video = record(entry.video_info) ?? record(entry.videoInfo), length = Number(video?.duration_millis ?? video?.durationMillis);
+        return { url: url.toString(), width, height, kind, durationMs: Number.isFinite(length) && length > 0 ? Math.round(length) : null };
       } catch { continue; }
     }
     return null;
   }
   return null;
+}
+
+/** Rough SF Pro semibold widths in em for the media badge; digits are the default. */
+const BADGE_GLYPHS = new Map([[":", .3], ["G", .74], ["I", .3], ["F", .58]]);
+/** What X writes on a post's media, and the badge's width in 1080-wide pixels: a video's length
+ * or "GIF". Null for a photo, or a video whose length isn't known. */
+export function mediaBadge(media: XPhoto | null | undefined): { label: string; width: number } | null {
+  const label = media?.kind === "gif" ? "GIF" : media?.kind === "video" && media.durationMs ? videoLength(media.durationMs) : "";
+  if (!label) return null;
+  const em = [...label].reduce((sum, character) => sum + (BADGE_GLYPHS.get(character) ?? .62), 0);
+  return { label, width: em * X_CARD.length.size + 2 * X_CARD.length.pad };
+}
+
+/** A video's length as X shows it on the video: "0:07", "12:34" or "1:02:03". */
+export function videoLength(milliseconds: number): string {
+  const total = Math.max(0, Math.round(milliseconds / 1000)), hours = Math.floor(total / 3600), minutes = Math.floor(total % 3600 / 60), seconds = String(total % 60).padStart(2, "0");
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
 }
 
 function isoDate(value: unknown): string | null {
@@ -200,7 +233,7 @@ export function normalizeTweet(value: unknown): XReaction | null {
       square: kind === "business" || /^square$/i.test(text(author.profileImageShape) || text(author.profile_image_shape)),
     },
     text: body,
-    media: photo(item),
+    media: media(item),
     createdAt: isoDate(item.createdAt ?? item.created_at),
     likes: count(item.likeCount ?? item.favorite_count),
     reposts: count(item.retweetCount ?? item.retweet_count),

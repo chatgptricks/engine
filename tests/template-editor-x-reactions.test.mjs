@@ -35,6 +35,7 @@ function load(relative,env={NODE_ENV:"test"}) {
 const TOKEN="apify_api_TEST_TOKEN_never_shown";
 const x=load("lib/engine/x-reactions.ts",{NODE_ENV:"test",APIFY_TOKEN:TOKEN});
 const noToken=load("lib/engine/x-reactions.ts",{NODE_ENV:"test"});
+const model=load("lib/template-editor/model.ts",{NODE_ENV:"test"});
 
 /** One item in the shape apidojo~tweet-scraper returns (checked live, Nov 2026). */
 function item(overrides={}) {
@@ -83,13 +84,36 @@ test("check marks, square photos and the post's photo come through as X shows th
   assert.deepEqual(plain(post.author),{name:"William Baude",handle:"WilliamBaude",avatarUrl:"https://pbs.twimg.com/profile_images/2110968185717428224/sYEkjNW0_400x400.jpg",verified:false,badge:null,square:false});
   assert.deepEqual(plain(post.media),{url:"https://pbs.twimg.com/media/HWYj89XW8AABX1T.png?name=large",width:758,height:372});
   assert.equal(post.likes,7291); assert.equal(post.url,"https://x.com/WilliamBaude/status/2118420271333777856");
-  // The scraper's photo: sizes when original_info is missing. Videos, GIFs and other hosts show none.
+  // The scraper's photo: sizes when original_info is missing. Other hosts and unknown sizes show none.
   const photo=entry=>x.normalizeTweet(item({fullText:"See https://t.co/p",extendedEntities:{media:[{url:"https://t.co/p",...entry}]}})).media;
   assert.deepEqual(plain(photo({type:"photo",media_url_https:"https://pbs.twimg.com/media/A.jpg",sizes:{large:{w:2048,h:1536}}})),{url:"https://pbs.twimg.com/media/A.jpg?name=large",width:2048,height:1536});
-  for (const entry of [{type:"video",media_url_https:"https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/a.jpg",original_info:{width:9,height:16}},
-    {type:"animated_gif",media_url_https:"https://pbs.twimg.com/tweet_video_thumb/a.jpg",original_info:{width:4,height:3}},
+  // Videos and GIFs show their poster frame, as X does before they play; a video keeps its length.
+  assert.deepEqual(plain(photo({type:"video",media_url_https:"https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/a.jpg?x=1",original_info:{width:720,height:1280},video_info:{duration_millis:45600}})),
+    {url:"https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/a.jpg",width:720,height:1280,kind:"video",durationMs:45600});
+  assert.deepEqual(plain(photo({type:"video",media_url_https:"https://pbs.twimg.com/amplify_video_thumb/2/img/b.jpg",sizes:{large:{w:1280,h:720}}})),
+    {url:"https://pbs.twimg.com/amplify_video_thumb/2/img/b.jpg",width:1280,height:720,kind:"video",durationMs:null},"a video of unknown length still shows");
+  assert.deepEqual(plain(photo({type:"animated_gif",media_url_https:"https://pbs.twimg.com/tweet_video_thumb/a.jpg",original_info:{width:4,height:3}})),
+    {url:"https://pbs.twimg.com/tweet_video_thumb/a.jpg",width:4,height:3,kind:"gif"});
+  for (const entry of [{type:"video",media_url_https:"https://pbs.twimg.com/profile_images/1/a.jpg",original_info:{width:9,height:16}},
+    {type:"video",media_url_https:"https://video.twimg.com/ext_tw_video/1/pu/vid/a.mp4",original_info:{width:9,height:16}},
+    {type:"photo",media_url_https:"https://pbs.twimg.com/ext_tw_video_thumb/1/pu/img/a.jpg",original_info:{width:4,height:3}},
+    {type:"toString",media_url_https:"https://pbs.twimg.com/media/A.jpg",original_info:{width:4,height:3}},
     {type:"photo",media_url_https:"https://example.com/media/A.jpg",original_info:{width:4,height:3}},
     {type:"photo",media_url_https:"https://pbs.twimg.com/media/A.jpg"}]) assert.equal(photo(entry),null,JSON.stringify(entry));
+  // X's embed data reads the same.
+  const clip=x.normalizeTweet({...embed,mediaDetails:[{type:"video",media_url_https:"https://pbs.twimg.com/amplify_video_thumb/3/img/c.jpg",original_info:{width:1920,height:1080},video_info:{duration_millis:7000}}]});
+  assert.deepEqual(plain(clip.media),{url:"https://pbs.twimg.com/amplify_video_thumb/3/img/c.jpg",width:1920,height:1080,kind:"video",durationMs:7000});
+});
+
+test("videos show their length and GIFs say GIF, in a badge sized to the words",()=>{
+  for (const [ms,label] of [[7000,"0:07"],[45600,"0:46"],[754000,"12:34"],[3723000,"1:02:03"],[0,"0:00"]]) assert.equal(x.videoLength(ms),label,String(ms));
+  assert.equal(x.mediaBadge(null),null); assert.equal(x.mediaBadge({url:"u",width:1,height:1}),null,"photos have no badge");
+  assert.equal(x.mediaBadge({url:"u",width:1,height:1,kind:"video",durationMs:null}),null,"a video of unknown length shows only its play button");
+  const short=x.mediaBadge({url:"u",width:1,height:1,kind:"video",durationMs:45000}),long=x.mediaBadge({url:"u",width:1,height:1,kind:"video",durationMs:3723000}),gif=x.mediaBadge({url:"u",width:1,height:1,kind:"gif"});
+  assert.deepEqual([short.label,long.label,gif.label],["0:45","1:02:03","GIF"]);
+  assert.ok(long.width>short.width&&short.width>gif.width,"the badge grows with its words");
+  assert.ok(Math.abs(short.width-(2.16*model.X_CARD.length.size+2*model.X_CARD.length.pad))<.01,"the template's sample badge fits 0:45");
+  assert.ok(model.isSafeBrandSvgUrl(model.X_PLAY_BUTTON),"the play button is a vector the editor accepts");
 });
 
 test("drop rules: no id, handle or text, retweets, promoted posts, bad avatars and repeats",()=>{

@@ -273,6 +273,26 @@ test("reaction pages share the Text + Media title, have no source line, and draw
   assert.deepEqual(["", "-2", "-3"].map(suffix => lines(6, `reaction-text${suffix}`)), [3, 3, 3]);
 });
 
+test("every post card has a hidden play button and length badge that ride on its photo", () => {
+  for (const [index, cards] of [[4, [""]], [5, ["", "-2"]], [6, ["", "-2", "-3"]]]) {
+    const canvas = template.pages[index].canvas, order = canvas.elements.map(element => element.slot);
+    for (const suffix of cards) {
+      const media = bySlot(canvas, `reaction-media${suffix}`), play = bySlot(canvas, `reaction-play${suffix}`), length = bySlot(canvas, `reaction-length${suffix}`), label = bySlot(canvas, `reaction-length-text${suffix}`);
+      for (const layer of [play, length, label]) {
+        assert.equal(layer.hidden, true, `${layer.slot} waits for a video`); assert.equal(layer.templateRole, "brand");
+        assert.deepEqual([layer.smartFlow.after, layer.smartFlow.edge], [`reaction-media${suffix}`, "top"], `${layer.slot} follows the photo's top`);
+        assert.ok(order.indexOf(layer.slot) > order.indexOf(`reaction-media${suffix}`), `${layer.slot} is drawn over the photo`);
+      }
+      close(play.x + play.width / 2, media.x + media.width / 2); close(play.y + play.height / 2, media.y + media.height / 2);
+      close(play.y - media.y, play.smartFlow.gap); close(length.y - media.y, length.smartFlow.gap);
+      close(length.x, media.x + scene(model.X_CARD.length.inset)); close(length.y + length.height, media.y + media.height - scene(model.X_CARD.length.inset));
+      assert.deepEqual([label.x, label.y, label.width, label.height], [length.x, length.y, length.width, length.height]);
+      assert.equal(play.src, model.X_PLAY_BUTTON); assert.deepEqual([label.align, label.verticalAlign, label.text], ["center", "middle", "0:45"]);
+    }
+  }
+  assert.ok(model.isSafeBrandSvgUrl(model.X_PLAY_BUTTON));
+});
+
 test("smart layout: each card hugs its post, photo and check mark, and the page centres them", () => {
   const measure = (element, words = smart.smartWords(element)) => ({ size: element.fontSize, widths: words.map(word => word.text.length * element.fontSize * .45), space: element.fontSize * .25 });
   const fill = (pageIndex, slots, change) => {
