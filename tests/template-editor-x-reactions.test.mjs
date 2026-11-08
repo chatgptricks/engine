@@ -208,3 +208,34 @@ test("fetchXReactions fails in plain English and never shows the token",async()=
   controller.abort(reason);
   await assert.rejects(pending,error=>error===reason);
 });
+
+test("fetchXReactions says plainly when the Apify plan can't search X",async()=>{
+  // On the free plan the actor runs in demo mode: placeholders only, and the run asks for a paid plan (seen live, Nov 2026).
+  const placeholders=JSON.stringify(Array.from({length:10},()=>({noResults:true})));
+  const route=(statusMessage,lastStatus=200)=>{
+    const calls=[];
+    const fetch=async(url,init)=>{
+      calls.push({url,init});
+      if(url.includes("/runs/last"))return new Response(JSON.stringify({data:{status:"SUCCEEDED",statusMessage}}),{status:lastStatus});
+      return new Response(placeholders,{status:200});
+    };
+    return {calls,fetch};
+  };
+  const free=route("Your run has finished. Please subscribe to a paid plan on Apify for the best experience.");
+  await assert.rejects(x.fetchXReactions({terms:["ChatGPT"],fetch:free.fetch}),error=>{
+    assert.ok(error instanceof x.XReactionsError); assert.equal(error.message,x.X_PAID_PLAN); assert.ok(!error.message.includes(TOKEN));
+    return true;
+  });
+  assert.equal(free.calls.length,2);
+  assert.equal(free.calls[1].url,"https://api.apify.com/v2/acts/apidojo~tweet-scraper/runs/last?status=SUCCEEDED");
+  assert.equal(free.calls[1].init.headers.Authorization,`Bearer ${TOKEN}`);
+  assert.match(x.X_PAID_PLAN,/paid Apify plan/);
+  // On a paid plan an empty search is just empty, and so is one whose last run can't be read.
+  assert.deepEqual(await x.fetchXReactions({terms:["ChatGPT"],fetch:route("Finished! Total 0 tweets scraped.").fetch}),[]);
+  assert.deepEqual(await x.fetchXReactions({terms:["ChatGPT"],fetch:route("",500).fetch}),[]);
+  // The same check on its own, for the photo search: false without a token or when Apify can't be reached.
+  assert.equal(await x.xSearchNeedsPaidPlan({fetch:free.fetch}),true);
+  assert.equal(await x.xSearchNeedsPaidPlan({fetch:route("Finished!").fetch}),false);
+  assert.equal(await x.xSearchNeedsPaidPlan({fetch:async()=>{throw new TypeError("fetch failed");}}),false);
+  assert.equal(await noToken.xSearchNeedsPaidPlan({fetch:async()=>{throw new Error("no call");}}),false);
+});

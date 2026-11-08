@@ -11,7 +11,10 @@
  * Every reaction keeps its link (`https://x.com/<handle>/status/<id>`).
  *
  * Cost: the actor bills $0.40 per 1,000 posts, so the 60-post cap is about $0.02.
- * Needs APIFY_TOKEN. The token is never put in an error, a log or a result.
+ * Needs APIFY_TOKEN on a paid Apify plan: on the free plan the actor runs only in
+ * demo mode (a few runs a month, not through the API) and sends `{noResults: true}`
+ * placeholders instead of posts, which fetchXReactions reports as X_PAID_PLAN.
+ * The token is never put in an error, a log or a result.
  */
 
 export type XReaction = {
@@ -260,6 +263,35 @@ export function reactionSlots(reaction: XReaction, { page = "reaction", second =
   };
 }
 
+/** Why X search came back empty when the Apify plan doesn't allow it. */
+export const X_PAID_PLAN = "X search needs a paid Apify plan. On the free plan the tweet scraper only runs in demo mode and returns no posts to Engine.";
+
+/** The scraper's stand-in for a post. It sends these when nothing matched, and
+ * on the free plan, where the run then asks for a paid plan instead. */
+const isPlaceholder = (value: unknown) => record(value)?.noResults === true;
+
+async function paidPlanAsked(token: string, fetcher: typeof fetch, signal?: AbortSignal): Promise<boolean> {
+  const timeout = AbortSignal.timeout(15_000);
+  try {
+    const response = await fetcher(`https://api.apify.com/v2/acts/${ACTOR}/runs/last?status=SUCCEEDED`, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
+    });
+    if (!response.ok) return false;
+    return /paid plan/i.test(text(record(record(await response.json())?.data)?.statusMessage));
+  } catch (error) {
+    if (signal?.aborted) throw signal.reason ?? error;
+    return false;
+  }
+}
+
+/** True when the scraper's last finished run asked for a paid Apify plan, so
+ * this token can't search X. False when that can't be read. */
+export async function xSearchNeedsPaidPlan({ signal, fetch: fetcher = fetch }: { signal?: AbortSignal; fetch?: typeof fetch } = {}): Promise<boolean> {
+  const token = process.env.APIFY_TOKEN?.trim();
+  return token ? paidPlanAsked(token, fetcher, signal) : false;
+}
+
 function startDate(since: Date | string | undefined): string {
   const date = since === undefined ? new Date(Date.now() - 30 * DAY_MS) : new Date(since);
   if (Number.isNaN(date.getTime())) throw new XReactionsError("The start date for X reactions isn't a valid date.", 400);
@@ -310,6 +342,8 @@ export async function fetchXReactions({ terms, since, max = 30, language = "en",
     throw new XReactionsError("Apify's X search returned something that isn't a list of posts.", 502);
   }
   if (!Array.isArray(items)) throw new XReactionsError("Apify's X search returned something that isn't a list of posts.", 502);
+  // Only placeholders: nothing matched, or the plan doesn't allow X search at all.
+  if (items.length && items.every(isPlaceholder) && await paidPlanAsked(token, fetcher, signal)) throw new XReactionsError(X_PAID_PLAN, 402);
   // The actor's like floor is loose, so it is applied again here.
   return normalizeTweets(items, floor).slice(0, limit);
 }
