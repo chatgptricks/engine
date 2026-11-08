@@ -455,10 +455,10 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onClose}: {tra
   const firstHookRef = useRef<HTMLInputElement>(null);
   useInitialFocus(firstHookRef);
 
-  const textPages = checkpoint.pages.filter(page => !page.reaction);
-  const single = checkpoint.pages.find(page => page.reaction === "reaction"), double = checkpoint.pages.find(page => page.reaction === "reactions");
-  const maxPosts = double ? 2 : single ? 1 : 0;
-  const reactionPage = (posts: number) => (posts >= 2 && double ? double : single ?? double)?.index;
+  const textPages = checkpoint.pages.filter(page => !page.cards), reactionPages = checkpoint.pages.filter(page => page.cards > 0);
+  const maxPosts = Math.max(0, ...reactionPages.map(page => page.cards));
+  // The Reaction page with as many cards as posts (the deck still moves posts that don't fit to the next page).
+  const reactionPage = (posts: number) => reactionPages.filter(page => page.cards <= Math.max(1, posts)).sort((a, b) => b.cards - a.cards)[0]?.index;
   const pageLabel = (index: number) => checkpoint.pages.find(page => page.index === index)?.label ?? `Page ${index + 1}`;
   const slideOf = (postId: string, except: string) => slides.findIndex(slide => slide.key !== except && slide.reactionIds.includes(postId)) + 1;
   const ownLength = [...ownHook.trim()].length;

@@ -46,7 +46,8 @@ export type RecreateResult = {
 export type OutlineKind = "cover" | "original" | "question" | "reaction" | "takeaway" | "follow";
 export type OutlineSlide = {kind: OutlineKind; templatePage: number; purpose: string; points: string[]; chartId: string | null; reactionIds: string[]; photo: string};
 export type HookOption = {text: string; framework: string; by: "headline-model" | "copywriter" | "agent"; english: string | null};
-export type CheckpointPage = {index: number; label: string; reaction: "reaction" | "reactions" | null};
+/** A template page; `cards` counts its post cards (0 unless it's a Reaction page). */
+export type CheckpointPage = {index: number; label: string; cards: number};
 export type CheckpointReaction = {id: string; url: string; name: string; handle: string; verified: boolean; text: string; likes: number; reposts: number; why: string};
 export type CheckpointChart = {id: string; purpose: string; recreates: string; source: string};
 /** The plan a person checks before the slides are written. */
@@ -259,7 +260,8 @@ function parseCheckpoint(value: unknown): Checkpoint | undefined {
   const slides = list(outline.slides).map(parseSlide).filter((slide): slide is OutlineSlide => slide !== null);
   if (!slides.length) return undefined;
   const pages = list(value.pages).flatMap((page): CheckpointPage[] => isRecord(page) && typeof page.index === "number"
-    ? [{index: Math.round(page.index), label: text(page.label, 120) || `Page ${Math.round(page.index) + 1}`, reaction: page.reaction === "reaction" || page.reaction === "reactions" ? page.reaction : null}]
+    // Plans saved before pages counted cards name them "reaction" (one) and "reactions" (two).
+    ? [{index: Math.round(page.index), label: text(page.label, 120) || `Page ${Math.round(page.index) + 1}`, cards: typeof page.cards === "number" && Number.isFinite(page.cards) ? Math.max(0, Math.min(3, Math.round(page.cards))) : page.reaction === "reactions" ? 2 : page.reaction === "reaction" ? 1 : 0}]
     : []);
   const options = list(hooks.options).flatMap((option): HookOption[] => {
     if (!isRecord(option) || !text(option.text, 400)) return [];

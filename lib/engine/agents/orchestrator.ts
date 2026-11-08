@@ -412,7 +412,7 @@ export async function submitRecreateStage(ownerKey: string, postId: string, stag
       reactions: outputOf<ReactionsOutput>(current, "reactions")?.reactions.map(post => post.id) ?? [],
     });
     if (!plan.slides.length) throw new RecreateError("That outline has no slides this template can show.");
-    value = { ...plan, pages: all.map(page => ({ index: page.index, label: page.label, reaction: page.reaction })) };
+    value = { ...plan, pages: all.map(page => ({ index: page.index, label: page.label, cards: page.cards })) };
   }
   if (stage === "hooks" && !(value as HooksOutput).options.length) throw new RecreateError("Hand in at least one hook option.");
   const file = await updatePostFile(ownerKey, postId, next => {

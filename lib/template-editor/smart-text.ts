@@ -140,21 +140,60 @@ export function measureSmartText(element: TextElement, words = smartWords(elemen
   } finally { node.remove(); }
 }
 
+type SceneElement = CanvasScene["elements"][number];
+
+/** Where a layer of `height` sits `gap` after the end of a text's last line, centred on that line. */
+function afterLastLine(text: SceneElement, layout: SmartTextLayout | undefined, height: number, gap: number): { x: number; y: number } {
+  if (text.type !== "text" || !layout?.lines.length) return { x: text.x + text.width + gap, y: text.y + (text.height - height) / 2 };
+  const pad = text.padding ?? 0, line = layout.lines[layout.lines.length - 1], pitch = layout.fontSize * text.lineHeight;
+  const room = text.width - 2 * pad, start = text.align === "center" ? (room - line.width) / 2 : text.align === "right" ? room - line.width : 0;
+  const top = text.y + pad + (layout.lines.length - 1) * (pitch + (text.paragraphSpacing ?? 0));
+  return { x: text.x + pad + start + line.width + gap, y: top + (pitch - height) / 2 };
+}
+
+/** Moves each centred flow (a layer with `smartCenter` and every layer that
+ * follows it, directly or through others) as one block, so the block sits in
+ * the middle of its space when it leaves room and starts at its top when not. */
+function centreFlows(elements: SceneElement[]): SceneElement[] {
+  const roots = elements.filter(element => element.smartCenter && !element.smartFlow && !element.hidden);
+  if (!roots.length) return elements;
+  const keys = new Map(elements.flatMap(element => [[element.id, element.id] as const, ...(element.slot ? [[element.slot, element.id] as const] : [])]));
+  const shifts = new Map<string, number>();
+  for (const root of roots) {
+    const block = new Set([root.id]);
+    for (let grew = true; grew;) {
+      grew = false;
+      for (const element of elements) {
+        const anchor = element.smartFlow && keys.get(element.smartFlow.after);
+        if (anchor && block.has(anchor) && !block.has(element.id)) { block.add(element.id); grew = true; }
+      }
+    }
+    const shown = elements.filter(element => block.has(element.id) && !element.hidden);
+    const top = Math.min(...shown.map(element => element.y)), bottom = Math.max(...shown.map(element => element.y + element.height));
+    const space = root.smartCenter!, shift = space.top + Math.max(0, (space.bottom - space.top - (bottom - top)) / 2) - top;
+    if (Math.abs(shift) > .005) for (const id of block) shifts.set(id, shift);
+  }
+  return shifts.size ? elements.map(element => shifts.has(element.id) ? { ...element, y: element.y + shifts.get(element.id)! } : element) : elements;
+}
+
 export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText): SmartSceneLayout {
-  const texts = new Map<string, SmartTextLayout>(), resolved = new Map<string, CanvasScene["elements"][number]>(), visiting = new Set<string>();
-  const slots = new Map(scene.elements.flatMap(element => [[element.id, element] as const, ...(element.slot ? [[element.slot, element] as const] : [])]));
-  function resolve(original: CanvasScene["elements"][number]): CanvasScene["elements"][number] {
+  const texts = new Map<string, SmartTextLayout>(), resolved = new Map<string, SceneElement>(), visiting = new Set<string>();
+  // A centred flow is laid out from the top of its space, then moved as a block (centreFlows).
+  const start = scene.elements.map(element => element.smartCenter && !element.smartFlow && element.y !== element.smartCenter.top ? { ...element, y: element.smartCenter.top } : element);
+  const slots = new Map(start.flatMap(element => [[element.id, element] as const, ...(element.slot ? [[element.slot, element] as const] : [])]));
+  function resolve(original: SceneElement): SceneElement {
     if (resolved.has(original.id)) return resolved.get(original.id)!;
     if (visiting.has(original.id)) return original; // Malformed/cyclic imported flows stay bounded.
     visiting.add(original.id);
     let element = original;
     const flow = original.smartFlow, anchor = flow && slots.get(flow.after);
-    const upward = flow?.direction === "up";
+    const upward = flow?.direction === "up", inline = flow?.direction === "right";
     // Upward flows: the bottom edge sits `gap` above the anchor's resolved top.
     let edge: number | undefined;
     if (anchor && !anchor.hidden) {
       const other = resolve(anchor);
-      if (upward) {
+      if (inline) element = { ...element, ...afterLastLine(other, texts.get(other.id), element.height, flow!.gap) };
+      else if (upward) {
         edge = other.y - flow!.gap;
         element = flow!.resize ? { ...element, height: Math.max(1, edge - element.y) } : { ...element, y: edge - element.height };
       } else {
@@ -165,7 +204,7 @@ export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText)
     if (element.type === "text" && element.smartText && !element.hidden) {
       const rule = element.smartText, bottomEdge = edge ?? rule.anchorBottom;
       let maximum = rule.maxHeight;
-      if (flow && !upward) maximum = Math.min(maximum, Math.max(1, flow.bottom - element.y));
+      if (flow && !upward && !inline) maximum = Math.min(maximum, Math.max(1, flow.bottom - element.y));
       if (flow && upward && edge !== undefined) maximum = Math.min(maximum, Math.max(1, edge - flow.bottom));
       const candidate = { ...element, smartText: { ...rule, maxHeight: maximum } };
       const words = smartWords(element), layout = fitSmartText(candidate, measure(candidate, words), words);
@@ -173,10 +212,21 @@ export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText)
       const height = Math.min(maximum, layout.height);
       element = { ...element, autoFitFontSize: layout.fontSize, height, textMode: "auto-fit", ...(bottomEdge !== undefined ? { y: bottomEdge - height } : {}) };
     }
+    const hug = flow?.hug;
+    let hugged = hug && slots.get(hug.after);
+    // A hidden layer takes no room: the edge hugs what that layer follows instead, as a
+    // post card ends under its text when the post has no photo.
+    for (let step = 0; hugged?.hidden && hugged.smartFlow && step < 8; step++) hugged = slots.get(hugged.smartFlow.after);
+    if (hug && hugged && !hugged.hidden) {
+      // The copy inside may follow this layer's top, so it sees this position first.
+      resolved.set(original.id, element);
+      const inner = resolve(hugged);
+      element = { ...element, height: Math.max(1, inner.y + inner.height + hug.gap - element.y) };
+    }
     visiting.delete(original.id); resolved.set(original.id, element); return element;
   }
-  const elements = scene.elements.map(resolve);
-  const changed = elements.some((element, index) => element.y !== scene.elements[index].y || element.height !== scene.elements[index].height || element.type === "text" && scene.elements[index].type === "text" && element.autoFitFontSize !== (scene.elements[index] as TextElement).autoFitFontSize);
+  const elements = centreFlows(start.map(resolve));
+  const changed = elements.some((element, index) => { const before = scene.elements[index]; return element.x !== before.x || element.y !== before.y || element.height !== before.height || element.type === "text" && before.type === "text" && element.autoFitFontSize !== before.autoFitFontSize; });
   return { scene: changed ? { ...scene, elements } : scene, texts };
 }
 
@@ -198,7 +248,7 @@ export async function prepareSmartTextExport(design: DesignDocument, signal?: Ab
       const layout = fitted.texts.get(element.id);
       if (element.type !== "text" || !layout) return element;
       if (layout.overflow) throw new Error(`Shorten “${element.name}” before exporting: the text does not fit legibly.`);
-      return { ...element, smartText: undefined, smartFlow: undefined, fontSize: layout.fontSize, autoFitFontSize: undefined, textMode: "fixed" as const, text: layout.lines.map(line => line.text).join("\n"), richText: sanitizeRichText(layout.lines.map(line => line.text ? scaleRichTextFonts(line.html, layout.fontSize / element.fontSize) : "").join("<br>")) }; // A blank line is the join's own <br>; its "<br>" html would double it.
+      return { ...element, smartText: undefined, smartFlow: undefined, smartCenter: undefined, fontSize: layout.fontSize, autoFitFontSize: undefined, textMode: "fixed" as const, text: layout.lines.map(line => line.text).join("\n"), richText: sanitizeRichText(layout.lines.map(line => line.text ? scaleRichTextFonts(line.html, layout.fontSize / element.fontSize) : "").join("<br>")) }; // A blank line is the join's own <br>; its "<br>" html would double it.
     }) };
   };
   return { ...design, pages: design.pages.map(page => page.canvas && pageIds.includes(page.id) ? { ...page, canvas: materialize(page.canvas) } : page), ...(design.masterScene ? { masterScene: materialize(design.masterScene) } : {}), ...(design.continuousCanvas ? { continuousCanvas: materialize(design.continuousCanvas) } : {}) };
