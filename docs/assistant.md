@@ -1,6 +1,6 @@
 # Engine chat
 
-Engine has a chat panel where people talk to Claude about posts. Paste an Instagram link or drop screenshots, name the page, and Claude runs the Recreate team. Then ask for changes in plain words ("shorter title on slide 2", "make FREE green on the cover", "swap the photo on slide 3 for Sam Altman on stage", "is the 40% right?") and Claude makes them in the open post.
+Engine has a chat panel where people talk to Claude about posts. Paste an Instagram link or drop screenshots, name the page, say whether you want an exact copy or a full recreation, and Claude runs Recreate. Then ask for changes in plain words ("shorter title on slide 2", "make FREE green on the cover", "swap the photo on slide 3 for Sam Altman on stage", "is the 40% right?") and Claude makes them in the open post.
 
 The chat is for people signed in to Engine. Agents and automation keep using the MCP bridge and the HTTP API in [agent-slides.md](agent-slides.md).
 
@@ -11,10 +11,10 @@ The chat is for people signed in to Engine. Agents and automation keep using the
   - With a post open, the panel shows **that post's chat**, shared with everyone in the workspace, like comments. Each message shows who wrote it.
   - With no post open, it's **your own chat**, which only you see.
   - In the editor, **This post** and **Your chat** switch between them.
-- **Recreating a post.** Claude starts the run and a card follows it stage by stage.
-  - In checkpoint mode, the card shows the plan and the hook options. **Tap a hook** (or write your own) to approve the plan.
+- **Recreating a post.** Say whether you want an exact copy or a full recreation (if you don't, Claude asks). Claude starts the run and a card follows it stage by stage.
+  - An **exact copy** rebuilds the post as it is in the page's template: the same slides in the same order with the same words, translated when the page's language differs, and nothing added. It takes a minute or three and never pauses.
+  - A **full recreation** has the Recreate team research the story and make a new post. In checkpoint mode, the card shows the plan and the hook options. **Tap a hook** (or write your own) to approve the plan. Checkpoint is the default. Ask for autopilot to skip the review.
   - When the post is ready, **Open post** opens it with the chat beside it.
-  - Checkpoint is the default. Ask for autopilot to skip the review.
 - **Watching Claude work.** While Claude works, the panel shows what it's doing as it happens:
   - a short line on what it's about to do ("Checking the 94% against Anthropic's report."),
   - each step once it's done, with what came of it ("Searched X for "NYSE trading floor" · 7 photos", "Read the post · 9 slides"),
@@ -38,7 +38,7 @@ The chat is for people signed in to Engine. Agents and automation keep using the
 | Tool | What it does |
 | --- | --- |
 | `list_pages` | The page profiles a post can be made for |
-| `recreate_post` | Starts a Recreate run from a link or attached screenshots, in checkpoint or autopilot mode, with notes and posts from X |
+| `recreate_post` | Starts a Recreate run from a link or attached screenshots: an exact copy, or a full recreation in checkpoint or autopilot mode with notes and posts from X |
 | `recreate_status`, `rerun_stage`, `add_x_posts` | Follows a run, redoes one stage with instructions, adds posts from X to the reactions |
 | `approve_plan` | Approves a checkpoint, only when the person tells Claude to choose |
 | `open_post` | Opens a post in the editor |
@@ -72,6 +72,7 @@ Left out on purpose: deleting posts, emptying Trash, publishing, changing brand 
   - A conversation over 400,000 characters starts again from a summary. The messages people see stay whole.
 - **Tools.** `lib/engine/assistant/tools.ts` wraps the Recreate team (`lib/engine/agents/orchestrator.ts`) and the deck functions in `lib/template-editor/agent-decks.ts`.
   - `edit_post` checks the edits against the live post first, and Claude gets the exact error back if they don't fit.
+  - The Recreate team's own refusals reach Claude word for word, for example when it tries to approve an exact copy, which has no plan.
   - On top of the deck operations, `style_words` colors or bolds words inside a text box (`lib/engine/assistant/chat-edits.ts`).
 - **Edits.**
   - While the asker's editor is connected, the route sends `deck_ops` and waits up to 15 seconds for the editor's answer. The editor applies them with `commit()`, the same path as a person's edit.
@@ -115,5 +116,4 @@ They run with `npm run test:template-editor` too. Claude is stubbed with scripte
 
 - A hands-free spoken conversation, which needs a speech service.
 - A Stop button for a reply.
-- Exact-copy mode in `recreate_post`, once Recreate's exact mode lands.
 - The trend scout posting trending posts into a team chat, and a Slack hand-off.

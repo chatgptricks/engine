@@ -4,7 +4,7 @@ import {Fragment, useEffect, useRef, useState, useSyncExternalStore, type Clipbo
 import {CheckIcon, CloseIcon, CommentIcon, CopyIcon, ImageIcon, PaperclipIcon, SparkleIcon, SpeakerIcon} from "@/components/engine/icons";
 import type {ChatCard, ChatMessage, ChatPerson, ChatPhoto} from "@/lib/engine/assistant/threads";
 import {activityOf, answerItems, duration, foldAnswer, readChatEvents, settleMessage, upsertMessage, withChatEvent, type AnswerItem, type ChatStepPart, type ChatStreamEvent} from "@/lib/engine/assistant/chat-stream";
-import {actOnRecreate, fetchRecreateJob, MAX_HOOK_CHARACTERS, prepareRecreateUpload, RECREATE_LANES, RECREATE_STATUS_LABELS, RecreateRequestError, type HookOption, type RecreateJob} from "./recreate-job";
+import {actOnRecreate, fetchRecreateJob, lanesFor, MAX_HOOK_CHARACTERS, prepareRecreateUpload, RECREATE_STATUS_LABELS, RecreateRequestError, type HookOption, type RecreateJob} from "./recreate-job";
 import "./assistant-panel.css";
 
 /**
@@ -240,7 +240,7 @@ function RunCard({card, openDeckId, onOpenDesign}: {card: Extract<ChatCard, {typ
         {!settled(job) && job.status !== "paused" && <span className="te-chat-spinner" aria-hidden/>}
         {statusLine(job)}
       </p>
-      <div className="te-chat-lanes" aria-hidden>{RECREATE_LANES.map(lane => <div key={lane.title} className="te-chat-lane">
+      <div className="te-chat-lanes" aria-hidden>{lanesFor(job.mode).map(lane => <div key={lane.title} className="te-chat-lane">
         <span>{lane.title}</span>
         <div>{lane.stages.map(stage => {
           const view = job.stages.find(item => item.stage === stage);

@@ -115,7 +115,8 @@
 .te-chat-run-status[data-status="done"] { color: #c5f0cd; }
 .te-chat-run-status[data-status="error"] { color: #ffb3a7; }
 .te-chat-run-status[data-status="paused"] { color: #e6dcff; }
-.te-chat-lanes { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+/* Four lanes for a full recreation, two for an exact copy. */
+.te-chat-lanes { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 8px; }
 .te-chat-lane { display: grid; gap: 4px; min-width: 0; }
 .te-chat-lane > span { font-size: 10px; color: #8d8d95; text-transform: uppercase; letter-spacing: 0.5px; }
 .te-chat-lane > div { display: flex; gap: 2px; }

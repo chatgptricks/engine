@@ -32,6 +32,7 @@ function fixture(t,stubs={}) {
       startRecreate:async(ownerKey,input)=>{calls.started.push(input);return {file:{id:"post-11111111-2222-3333-4444-555555555555",mode:input.mode,profileId:input.profileId,status:"running"},done:Promise.resolve()};},
       approveRecreate:async(...args)=>{calls.approved.push(args);return {file:{status:"running"},done:Promise.resolve()};},
       rerunRecreateStage:async()=>({done:Promise.resolve()}),addRecreatePosts:async()=>({added:1,problems:[],done:Promise.resolve()}),isRunning:()=>true,
+      ...stubs.orchestrator,
     },
     "@/lib/engine/agents/research":{photoSize:async()=>({width:1200,height:800})},
     "@/lib/engine/apify":stubs.apify??{searchXImages:async()=>[]},
@@ -312,11 +313,11 @@ test("recreate_post passes attached screenshots to the run and shows a run card"
   const f=fixture(t);
   const uploads=new Map([["upload-a",{name:"slide1.png",dataUrl:"data:image/png;base64,AAAA"}]]);
   const {client}=scripted([
-    {content:[use("t1","recreate_post",{uploads:["upload-a"],page:"chatgptricks",mode:"checkpoint",notes:"exact copy"})],stop:"tool_use"},
+    {content:[use("t1","recreate_post",{uploads:["upload-a"],page:"chatgptricks",mode:"checkpoint",notes:"keep the chart"})],stop:"tool_use"},
     {content:[text("Started.")]},
   ]);
   const saved=await ask(f,{client,uploads,attached:[{id:"upload-a",name:"slide1.png"}]});
-  assert.deepEqual(f.calls.started,[{uploads:[{name:"slide1.png",dataUrl:"data:image/png;base64,AAAA"}],profileId:"chatgptricks",mode:"checkpoint",notes:"exact copy"}]);
+  assert.deepEqual(f.calls.started,[{uploads:[{name:"slide1.png",dataUrl:"data:image/png;base64,AAAA"}],profileId:"chatgptricks",mode:"checkpoint",notes:"keep the chart"}]);
   const card=saved.parts.find(part=>part.type==="card").card;
   assert.equal(card.type,"run");
   assert.equal(card.postId,"post-11111111-2222-3333-4444-555555555555");
@@ -366,4 +367,28 @@ test("photos the vision check looked at say what they show; the rest only carry 
   assert.equal(detail,"3 photos");
   // The card keeps one description field for its labels.
   assert.deepEqual(cards[0].photos.map(photo=>photo.description),["Traders on the NYSE floor watching screens","lol look at this",undefined]);
+});
+
+test("an exact copy starts in exact mode without posts from X, and what it doesn't have is refused in plain words",async t=>{
+  let RecreateError;
+  const f=fixture(t,{orchestrator:{approveRecreate:async()=>{throw new RecreateError("An exact copy doesn't pause for approval: it copies the original as it is.",409);}}});
+  RecreateError=f.load("lib/engine/agents/claude.ts").RecreateError;
+  const definition=f.tools.chatToolDefinitions().find(tool=>tool.name==="recreate_post");
+  assert.deepEqual(definition.input_schema.properties.mode.enum,["exact","checkpoint","autopilot"]);
+  const {client,requests}=scripted([
+    {content:[use("t1","recreate_post",{link:"https://www.instagram.com/p/DfUR7MxoA62/",page:"chatgptricks",mode:"exact",xPosts:["https://x.com/sama/status/1850000000000000000"]})],stop:"tool_use"},
+    {content:[use("t2","approve_plan",{hook:1})],stop:"tool_use"},
+    {content:[text("It's an exact copy, so there's no plan to approve.")]},
+  ]);
+  const saved=await ask(f,{client,text:"exact copy of this for chatgptricks"});
+  assert.deepEqual(f.calls.started,[{url:"https://www.instagram.com/p/DfUR7MxoA62/",profileId:"chatgptricks",mode:"exact"}],"an exact copy has no reaction slides, so posts from X aren't passed on");
+  const started=requests[1].messages.at(-1).content[0];
+  assert.match(started.content,/^Started an exact copy for chatgptricks/);
+  assert.match(started.content,/posts from X weren't used/);
+  // The Recreate team's own refusal reaches Claude as it is, not as "That didn't work".
+  const refused=requests[2].messages.at(-1).content[0];
+  assert.equal(refused.is_error,true);
+  assert.match(refused.content,/An exact copy doesn't pause for approval/);
+  assert.equal(saved.parts.find(part=>part.type==="card").card.mode,"exact");
+  assert.equal(saved.parts.find(part=>part.type==="tool"&&part.name==="recreate_post").done,"Started an exact copy for chatgptricks");
 });

@@ -1,5 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import {z} from "zod";
+import {RecreateError} from "@/lib/engine/agents/claude";
 import {addRecreatePosts, approveRecreate, isRunning, rerunRecreateStage, startRecreate} from "@/lib/engine/agents/orchestrator";
 import {photoSize} from "@/lib/engine/agents/research";
 import {searchXImages} from "@/lib/engine/apify";
@@ -79,7 +80,11 @@ function pageName(url: string): string {
   }
 }
 const POST_ID = /^post-[0-9a-f-]{36}$/;
-const RUN_MODES = ["checkpoint", "autopilot"] as const;
+const RUN_MODES = ["exact", "checkpoint", "autopilot"] as const;
+/** The Recreate team's refusals are written for people ("An exact copy doesn't pause for approval"), so Claude gets them as they are. */
+async function recreating<T>(work: () => Promise<T>): Promise<T> {
+  try { return await work(); } catch (error) { throw error instanceof RecreateError ? new ChatToolError(error.message) : error; }
+}
 
 function requireDeck(context: ChatToolContext): string {
   if (!context.deckId) throw new ChatToolError("No post is open in this chat. Open the post first (open_post), or ask which post they mean.");
@@ -144,19 +149,23 @@ const listPages: ChatTool = {
 const recreatePost: ChatTool = {
   name: "recreate_post",
   description: [
-    "Start recreating an Instagram post for one of the workspace's pages, from its link or from screenshots they attached.",
-    "mode checkpoint: the team researches and plans, then pauses so the person reviews the plan and taps a hook in the card. autopilot: the team decides everything and builds the post.",
-    "Use checkpoint unless they ask for autopilot. A live card shows the run; it takes a few minutes, so tell them that and don't wait for it.",
+    "Start recreating an Instagram post for one of the workspace's pages, from its link or from screenshots they attached. It makes one of two things.",
+    "mode exact, an exact copy: the post rebuilt as it is in the page's template, with the same slides in the same order and the same words (translated faithfully when the page's language differs), its photos and charts cut from the original, and nothing added. It takes a minute or three and never pauses.",
+    "mode checkpoint or autopilot, a full recreation: the team researches the story and plans and writes a new post. checkpoint pauses so the person reviews the plan and taps a hook in the card; autopilot decides everything. It takes several minutes.",
+    "Use exact when they ask for an exact copy or to copy the post as it is. For a full recreation, use checkpoint unless they ask for autopilot. If they don't say which of the two they want, ask.",
+    "A live card shows the run, so tell them it's started and don't wait for it.",
   ].join(" "),
   input: z.object({
     link: z.string().max(2048).optional().describe("The Instagram post link"),
     uploads: z.array(z.string().max(80)).max(20).optional().describe("Ids of attached screenshots of the post's slides, in order"),
     page: z.string().min(1).max(120).describe("The page id from list_pages"),
-    mode: z.enum(RUN_MODES).describe("checkpoint or autopilot"),
-    notes: z.string().max(2000).optional().describe("What they asked for, in their words: angle, language, what to keep or change"),
-    xPosts: z.array(z.string().max(300)).max(MAX_ADDED_POSTS).optional().describe("Links to posts on X they want on the reaction slides"),
+    mode: z.enum(RUN_MODES).describe("exact, checkpoint or autopilot"),
+    notes: z.string().max(2000).optional().describe("What they asked for, in their words: angle, language, what to keep or change. For an exact copy, only what the copy should keep in mind"),
+    xPosts: z.array(z.string().max(300)).max(MAX_ADDED_POSTS).optional().describe("Links to posts on X they want on the reaction slides. Not used in an exact copy"),
   }),
-  label: input => step(`Starting a recreation for ${String(input.page)}`, `Started a recreation for ${String(input.page)}`),
+  label: input => input.mode === "exact"
+    ? step(`Starting an exact copy for ${String(input.page)}`, `Started an exact copy for ${String(input.page)}`)
+    : step(`Starting a recreation for ${String(input.page)}`, `Started a recreation for ${String(input.page)}`),
   async run(input, context) {
     const link = typeof input.link === "string" && input.link.trim() ? input.link.trim() : undefined;
     const uploadIds = (input.uploads as string[] | undefined) ?? [];
@@ -172,16 +181,20 @@ const recreatePost: ChatTool = {
     const xPosts = input.xPosts as string[] | undefined;
     const parsed = xPosts?.length ? parseXPostLinks(xPosts) : null;
     if (parsed?.invalid.length) throw new ChatToolError(`These aren't links to posts on X: ${parsed.invalid.slice(0, 3).join(", ")}.`);
-    const {file, done} = await startRecreate(context.ownerKey, {
+    const mode = input.mode as typeof RUN_MODES[number];
+    const {file, done} = await recreating(() => startRecreate(context.ownerKey, {
       ...(link ? {url: link} : {}), ...(uploads.length ? {uploads} : {}),
-      profileId: String(input.page), mode: input.mode as typeof RUN_MODES[number],
+      profileId: String(input.page), mode,
       ...(typeof input.notes === "string" && input.notes.trim() ? {notes: input.notes.trim()} : {}),
-      ...(parsed?.links.length ? {xPosts: parsed.links} : {}),
-    });
+      ...(mode !== "exact" && parsed?.links.length ? {xPosts: parsed.links} : {}),
+    }));
     context.keepAlive(done);
     const view = postView(file, true);
     context.card({type: "run", jobId: view.jobId, postId: file.id, mode: file.mode, profileId: file.profileId, label: link ?? plural(uploads.length, "screenshot")});
-    return `Started run ${file.id} in ${file.mode} mode for ${file.profileId}. The card in the chat shows its progress${file.mode === "checkpoint" ? "; when the plan is ready they review it and tap a hook there" : ""}. Check on it with recreate_status.`;
+    const what = file.mode === "exact" ? "an exact copy" : `a full recreation in ${file.mode} mode`;
+    const after = file.mode === "checkpoint" ? "; when the plan is ready they review it and tap a hook there" : "";
+    const skipped = mode === "exact" && parsed?.links.length ? " The posts from X weren't used: an exact copy has no reaction slides." : "";
+    return `Started ${what} for ${file.profileId} (run ${file.id}). The card in the chat shows its progress${after}. Check on it with recreate_status.${skipped}`;
   },
 };
 
@@ -199,7 +212,7 @@ const recreateStatus: ChatTool = {
 const approvePlan: ChatTool = {
   name: "approve_plan",
   description: [
-    "Approve a run's plan with one of its hook options, so the team writes and builds the post.",
+    "Approve a full recreation's plan with one of its hook options, so the team writes and builds the post. An exact copy has no plan to approve.",
     "Only when the person tells you to choose the hook yourself. When they name a hook, ask them to tap it in the card instead: only their own taps teach the headline model.",
   ].join(" "),
   input: z.object({
@@ -210,7 +223,7 @@ const approvePlan: ChatTool = {
   label: input => step(`Approving the plan with hook ${String(input.hook)}`, `Approved the plan with hook ${String(input.hook)}`),
   async run(input, context) {
     const postId = await runFor(context, input.postId);
-    const {file, done} = await approveRecreate(context.ownerKey, postId, {option: Number(input.hook) - 1, ...(typeof input.notes === "string" && input.notes.trim() ? {notes: input.notes.trim()} : {})}, "agent");
+    const {file, done} = await recreating(() => approveRecreate(context.ownerKey, postId, {option: Number(input.hook) - 1, ...(typeof input.notes === "string" && input.notes.trim() ? {notes: input.notes.trim()} : {})}, "agent"));
     context.keepAlive(done);
     return `Approved with hook ${input.hook}. The team is writing the post now (${file.status}); the card shows when it's ready.`;
   },
@@ -218,7 +231,10 @@ const approvePlan: ChatTool = {
 
 const rerunStage: ChatTool = {
   name: "rerun_stage",
-  description: "Run one stage of a Recreate run again with instructions, for example the copy with \"shorter, punchier slides\". The stages after it run again too.",
+  description: [
+    "Run one stage of a Recreate run again with instructions, for example the copy with \"shorter, punchier slides\". The stages after it run again too.",
+    "A full recreation's stages: brief, facts, data, reactions, visuals, outline, hooks, approval, copy, charts, images, deck, review. An exact copy's: transcript, deck, review.",
+  ].join(" "),
   input: z.object({
     postId: z.string().max(60).optional(),
     stage: z.enum(POST_STAGES).describe("The stage to rerun"),
@@ -227,7 +243,7 @@ const rerunStage: ChatTool = {
   label: input => step(`Rerunning the ${String(input.stage)} stage`, `Reran the ${String(input.stage)} stage`),
   async run(input, context) {
     const postId = await runFor(context, input.postId);
-    const {done} = await rerunRecreateStage(context.ownerKey, postId, input.stage as PostStage, String(input.instructions), "agent");
+    const {done} = await recreating(() => rerunRecreateStage(context.ownerKey, postId, input.stage as PostStage, String(input.instructions), "agent"));
     context.keepAlive(done);
     return `Rerunning ${String(input.stage)} with those instructions; the card shows the progress.`;
   },
@@ -235,14 +251,14 @@ const rerunStage: ChatTool = {
 
 const addXPosts: ChatTool = {
   name: "add_x_posts",
-  description: "Add posts from X, by link, to a run's reaction slides while it waits at the checkpoint.",
+  description: "Add posts from X, by link, to a full recreation's reaction slides while it waits at the checkpoint. An exact copy has no reaction slides.",
   input: z.object({postId: z.string().max(60).optional(), links: z.array(z.string().max(300)).min(1).max(MAX_ADDED_POSTS)}),
   label: input => step(`Adding ${plural((input.links as string[]).length, "post")} from X`, `Added ${plural((input.links as string[]).length, "post")} from X`),
   async run(input, context) {
     const postId = await runFor(context, input.postId);
     const parsed = parseXPostLinks(input.links as string[]);
     if (parsed.invalid.length) throw new ChatToolError(`These aren't links to posts on X: ${parsed.invalid.slice(0, 3).join(", ")}.`);
-    const added = await addRecreatePosts(context.ownerKey, postId, parsed.links, "agent");
+    const added = await recreating(() => addRecreatePosts(context.ownerKey, postId, parsed.links, "agent"));
     context.keepAlive(added.done);
     return {
       content: `Added ${plural(added.added, "post")}.${added.problems.length ? ` Problems: ${added.problems.join("; ")}` : ""}`,
