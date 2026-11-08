@@ -333,6 +333,19 @@ test("distinctHooks drops near-duplicates, even behind a JUST IN: label",()=>{
   assert.deepEqual(kept.map(item=>item.text),["STOCKS NEARLY DOUBLED WHILE JOB OPENINGS FELL 30%","THE JOB MARKET AI CAN'T EXPLAIN"]);
 });
 
+test("hook options drop the credit, source and link lines the headline model sometimes sends",()=>{
+  const kept=story.distinctHooks([
+    {text:'CREDIT: A STUDY BY ANTHROPIC RELEASED IN MARCH 2026, TITLED "LABOR MARKET IMPACTS OF AI: A NEW MEASURE AND EARLY EVIDENCE.'},
+    {text:"Source: BLS JOLTS, September 2026"},
+    {text:"Photo credit — Reuters"},
+    {text:"READ THE STUDY AT https://www.anthropic.com/research"},
+    {text:"JUST IN: STOCKS NEARLY DOUBLED WHILE JOB OPENINGS FELL 30%"},
+    {text:"SOURCES SAY: OPENAI IS HIRING AGAIN"},
+    {text:"THE SOURCE OF THE JOB SLUMP ISN'T AI"},
+  ]);
+  assert.deepEqual(kept.map(item=>item.text),["JUST IN: STOCKS NEARLY DOUBLED WHILE JOB OPENINGS FELL 30%","SOURCES SAY: OPENAI IS HIRING AGAIN","THE SOURCE OF THE JOB SLUMP ISN'T AI"]);
+});
+
 test("a Spanish page's pick sends only the headline model's own English lines",()=>{
   const file=(hook,by="human")=>({stages:{
     brief:{status:"done",output:OUTPUTS.brief},
