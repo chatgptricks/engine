@@ -139,6 +139,11 @@
 .te-tool-dialog.te-recreate details.te-recreate-slide-more[open] > summary { margin-bottom:8px; border-bottom:0; }
 .te-recreate-slide-details { display:grid; gap:10px; }
 .te-recreate-add { display:flex; flex-wrap:wrap; gap:8px; }
+.te-recreate-add-post { display:grid; gap:7px; color:#ffffffe6; font-size:13px; }
+.te-recreate-add-post > label { display:flex; align-items:baseline; gap:8px; font-weight:500; }
+.te-recreate-add-post-row { display:flex; gap:8px; }
+.te-recreate-add-post-row input { flex:1; min-width:0; }
+.te-recreate-add-post-row .te-button { flex-shrink:0; }
 
 /* Real posts from X on a reaction slide. */
 .te-recreate-posts { display:grid; gap:6px; margin:0; padding:0; list-style:none; }

@@ -72,15 +72,16 @@ const CARDS: RoleCard[] = [
   },
   {
     stage: "data", title: "Data research", by: "data",
-    job: "Rebuild the original's chart with real data: the same series, scaling, start date and marked events.",
+    job: "Rebuild the original's chart with real data: the same series, scaling, start date and marked events. Then add a supporting chart for a reader question that real data answers at a glance.",
     rules: [
       "Official US economic and market series come from fred_series (look up the id when unsure). The S&P 500 before 2016 comes from sp500_history, since FRED only keeps 10 years",
       "Other data: real points from one primary source, with its URL. Never estimate or invent a point; if real data can't be found, say so",
-      "Keep the original's time span. Don't shorten it",
+      "The original's chart keeps its time span. Don't shorten it",
       "Series in different units are indexed to the marker (100 at the event) so they share one honest scale",
       "A chart needs at least 12 points. A handful of numbers belongs in the text instead",
+      "A supporting chart answers one question from the brief, such as when a number peaked or where it stands now: the series that answers it, from the year that question is about, with the dates it names marked. Its purpose names the question and recreates says new. At most two",
     ],
-    bar: "At a glance the chart reads like the original, with correct numbers.",
+    bar: "At a glance the chart reads like the original, with correct numbers, and each supporting chart answers its question.",
     output: "DataSchema: charts[] {id, purpose, recreates, chart, source}, notes[]",
   },
   {
@@ -113,8 +114,9 @@ const CARDS: RoleCard[] = [
     rules: [
       ...CAROUSEL_SHAPE,
       "One idea per slide; every slide earns its place. Six to ten slides unless the original is longer",
-      "Use only facts and numbers from the research. A chart only where the data stage built one",
+      "Use only facts and numbers from the research. A chart only where the data stage built one: the original's chart on its own slide, a supporting chart on the slide that answers its question",
       "Reaction slides name the reaction ids and use the Reaction page with that many cards. Each card is as tall as its post, so a page holds one long post (or a post with a photo), two medium ones or three short ones: about 16 lines of text in all on one card, 10 across two, 5 across three. Posts that don't fit continue on another page",
+      "Posts marked \"Added by you\" were chosen by the person: put them on the reaction slides before any others",
       "Two pages that share one photo are two slides in a row, the first page then the second, for a landscape photo worth seeing big. Never a chart there",
     ],
     bar: "A reader who swipes through gets the original's point plus the answers they wanted.",

@@ -78,12 +78,12 @@ export type RecreateJob = {
   resumable: boolean;
 };
 export type RecreateUpload = {name: string; dataUrl: string};
-export type RecreateRequest = {url?: string; uploads?: RecreateUpload[]; caption?: string; profileId: string; notes?: string; mode: RecreateMode};
+export type RecreateRequest = {url?: string; uploads?: RecreateUpload[]; caption?: string; profileId: string; notes?: string; mode: RecreateMode; xPosts?: string[]};
 /** A person's go-ahead at the checkpoint. The outline is sent only when they changed it. */
 export type ApproveRequest = {outline?: {slides: OutlineSlide[]; why: string}; hook: {option: number} | {text: string}; notes?: string};
-export type RecreateAction = ({action: "approve"} & ApproveRequest) | {action: "resume"} | {action: "stop"};
+export type RecreateAction = ({action: "approve"} & ApproveRequest) | {action: "add_posts"; xPosts: string[]} | {action: "resume"} | {action: "stop"};
 /** Text fields of the form, kept with a running job so a failed run can be edited and retried after a reload. */
-export type RecreateDraftText = {mode: "link" | "screenshots"; url: string; caption: string; notes: string; profileId: string};
+export type RecreateDraftText = {mode: "link" | "screenshots"; url: string; caption: string; notes: string; profileId: string; xPosts?: string};
 export type TrackedRecreate = {
   jobId: string;
   startedAt: number;
@@ -107,6 +107,25 @@ export const RECREATE_STATUS_LABELS: Record<RecreateStatus, string> = {
 };
 export const MAX_RECREATE_UPLOADS = 20;
 export const MAX_RECREATE_SLIDES = 20;
+
+/** Where a post added by link goes at the checkpoint: on the last reaction slide with room for it,
+ * or on a new reaction slide before the closing Follow slide. Null when there's no room for another
+ * slide. `changed` is false when the post is already on a slide (`at`). */
+export function placePost<T extends OutlineSlide>(slides: T[], postId: string, options: {maxPosts: number; page: (posts: number) => number | undefined; slide: (templatePage: number) => T}): {slides: T[]; at: number; created: boolean; changed: boolean} | null {
+  const already = slides.findIndex(slide => slide.reactionIds.includes(postId));
+  if (already >= 0) return {slides, at: already, created: false, changed: false};
+  for (let at = slides.length - 1; at >= 0; at--) {
+    const slide = slides[at];
+    if (slide.kind !== "reaction" || slide.reactionIds.length >= options.maxPosts) continue;
+    const ids = [...slide.reactionIds, postId];
+    return {slides: slides.map((item, index) => index === at ? {...item, reactionIds: ids, templatePage: options.page(ids.length) ?? item.templatePage} : item), at, created: false, changed: true};
+  }
+  const page = options.page(1);
+  if (slides.length >= MAX_RECREATE_SLIDES || page === undefined) return null;
+  const slide: T = {...options.slide(page), reactionIds: [postId]};
+  const at = slides.at(-1)?.kind === "follow" ? slides.length - 1 : slides.length;
+  return {slides: [...slides.slice(0, at), slide, ...slides.slice(at)], at, created: true, changed: true};
+}
 export const MAX_HOOK_CHARACTERS = 200;
 export const RECREATE_IMAGE_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_IMAGE_SIDE = 1600;
@@ -408,7 +427,7 @@ function readTracked(key: string): TrackedRecreate | null {
       source: text(value.source, 300),
       profileName: text(value.profileName, 200),
       opened: value.opened === true,
-      draft: {mode: draft.mode === "screenshots" ? "screenshots" : "link", url: text(draft.url, 2000), caption: text(draft.caption, 5000), notes: text(draft.notes, 2000), profileId: text(draft.profileId, 200)},
+      draft: {mode: draft.mode === "screenshots" ? "screenshots" : "link", url: text(draft.url, 2000), caption: text(draft.caption, 5000), notes: text(draft.notes, 2000), profileId: text(draft.profileId, 200), xPosts: text(draft.xPosts, 4000)},
     };
   } catch { return null; }
 }

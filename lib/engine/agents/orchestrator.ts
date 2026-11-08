@@ -16,6 +16,8 @@ import { libraryTemplates } from "../../template-editor/template-catalog";
 import { isHeadlineModelConfigured, savePick, type HeadlineOption, type SavePickInput } from "../headline-model";
 import { getPageProfile, PageProfileError, type PageProfile } from "../page-profiles";
 import { createPostFile, downstreamOf, getPostFile, POST_STAGES, PostFileError, setStage, STAGE_INPUTS, updatePostFile, type PostFile, type PostMode, type PostStage, type StageActor } from "../post-files";
+import { MAX_ADDED_POSTS, xPostId, xPostLink } from "../x-links";
+import { fetchXPosts } from "../x-reactions";
 import { RecreateError, UsageMeter } from "./claude";
 import { outputOf, type RunCache, type StageContext, type StageResult, type StageRunner } from "./context";
 import { deck } from "./deck";
@@ -266,7 +268,11 @@ async function requireFile(ownerKey: string, postId: string): Promise<PostFile> 
 }
 
 // ── Actions ─────────────────────────────────────────────────────────────────
-export type StartInput = { url?: string; uploads?: { name: string; dataUrl: string }[]; caption?: string; profileId: string; notes?: string; mode: PostMode };
+export type StartInput = {
+  url?: string; uploads?: { name: string; dataUrl: string }[]; caption?: string; profileId: string; notes?: string; mode: PostMode;
+  /** Links to posts on X to show on the reaction slides, read without Apify. */
+  xPosts?: string[];
+};
 
 /** Creates the post file and starts its run. */
 export async function startRecreate(ownerKey: string, input: StartInput, options: RunOptions = {}): Promise<Started> {
@@ -275,7 +281,7 @@ export async function startRecreate(ownerKey: string, input: StartInput, options
   const environment = await (options.environment ?? loadEnvironment)(ownerKey, input.profileId);
   const file = await createPostFile(ownerKey, {
     profileId: input.profileId, mode: input.mode,
-    source: { ...(input.url ? { url: input.url } : {}), caption: input.caption ?? "", notes: input.notes ?? "", slideCount: input.uploads?.length ?? 0, imageIds: [] },
+    source: { ...(input.url ? { url: input.url } : {}), caption: input.caption ?? "", notes: input.notes ?? "", slideCount: input.uploads?.length ?? 0, imageIds: [], ...(input.xPosts?.length ? { xPosts: input.xPosts } : {}) },
   });
   return { file, done: drive(ownerKey, file.id, options, { uploads: input.uploads, environment }) };
 }
@@ -422,6 +428,45 @@ export async function submitRecreateStage(ownerKey: string, postId: string, stag
     next.status = "running";
   });
   return { file, done: drive(ownerKey, postId, options) };
+}
+
+export type AddedPosts = Started & { added: number; problems: string[] };
+const ADDED_TOO_LATE = "This post is already approved. Add posts from X before you approve the plan.";
+/**
+ * At the checkpoint, posts from X added by link join the reactions the slides can
+ * use. They're read from X's public embed data, so they need no Apify plan. Nothing
+ * reruns: the plan and the hooks stay as they are, and the person puts the new
+ * posts on reaction slides before approving. Posts already on the list are skipped.
+ */
+export async function addRecreatePosts(ownerKey: string, postId: string, links: string[], by: StageActor): Promise<AddedPosts> {
+  const current = await requireFile(ownerKey, postId);
+  if (current.stages.approval?.status === "done") throw new RecreateError(ADDED_TOO_LATE, 409);
+  if (isRunning(postId) || current.status !== "paused" || !outputOf(current, "outline") || !outputOf(current, "hooks")) throw new RecreateError("Add posts from X once the plan is ready for you to check.", 409);
+  const known = new Set((outputOf<ReactionsOutput>(current, "reactions")?.reactions ?? []).map(post => post.id)), ids: string[] = [];
+  for (const link of links) {
+    const id = xPostId(link);
+    if (!id) throw new RecreateError(`"${String(link).slice(0, 60)}" isn't a link to a post on X.`);
+    if (!known.has(id) && !ids.includes(id)) ids.push(id);
+  }
+  if (!ids.length) return { file: current, done: Promise.resolve(), added: 0, problems: [] };
+  if (new Set([...(current.source.xPosts ?? []), ...ids.map(xPostLink)]).size > MAX_ADDED_POSTS) throw new RecreateError(`Add at most ${MAX_ADDED_POSTS} posts from X to one post.`);
+  const { posts, problems } = await fetchXPosts(ids.map(xPostLink));
+  if (!posts.length) throw new RecreateError(problems.join(" ") || "X didn't send those posts. Try again in a minute.", 422);
+  let added = 0;
+  const file = await updatePostFile(ownerKey, postId, next => {
+    if (next.stages.approval?.status === "done") throw new RecreateError(ADDED_TOO_LATE, 409);
+    const record = next.stages.reactions;
+    const saved = record?.output as Partial<ReactionsOutput> | undefined;
+    const before: ReactionsOutput = { reactions: record?.status === "done" ? saved?.reactions ?? [] : [], note: saved?.note ?? record?.error ?? "" };
+    const mine = posts.filter(post => !before.reactions.some(item => item.id === post.id)).map(post => ({ ...post, why: "Added by you" }));
+    added = mine.length;
+    if (!mine.length) return;
+    // A search that found nothing (or couldn't run) keeps its note; the stage is done now that it has posts.
+    setStage(next, "reactions", { status: "done", output: { reactions: [...before.reactions, ...mine], note: before.note } satisfies ReactionsOutput, error: undefined }, by, `added ${mine.length === 1 ? "a post" : `${mine.length} posts`} from X by link`);
+    next.source = { ...next.source, xPosts: [...new Set([...(next.source.xPosts ?? []), ...mine.map(post => xPostLink(post.id))])] };
+    if (problems.length) next.history.push({ at: new Date().toISOString(), stage: "reactions", event: `couldn't add: ${problems.join(" ")}`.slice(0, 400), by });
+  });
+  return { file, done: Promise.resolve(), added, problems };
 }
 
 /** Picks a stopped run up where its post file left off: failed and interrupted stages run again. */

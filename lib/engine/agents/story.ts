@@ -78,12 +78,14 @@ function hookWords(text: string): Set<string> {
   return new Set(text.replace(LABEL, "").toLowerCase().normalize("NFKD").replace(/[̀-ͯ]/g, "")
     .replace(/[^\p{L}\p{N}%$]+/gu, " ").trim().split(" ").filter(word => word.length > 1));
 }
-/** Drops near-duplicates (same words once a "JUST IN:" style label is set aside), keeping the first of each. */
+/** A credit, source or link line the headline model sometimes sends back with its hooks; never a cover. */
+const NOT_A_HOOK = /^\s*(?:(?:photo|image)\s+)?(?:credits?|sources?|via|h\/t|caption|link)\s*[:\-–—|]|https?:\/\/|www\./i;
+/** Drops lines that aren't hooks and near-duplicates (same words once a "JUST IN:" style label is set aside), keeping the first of each. */
 export function distinctHooks<T extends { text: string }>(options: T[], max = 7): T[] {
   const kept: { option: T; words: Set<string> }[] = [];
   for (const option of options) {
     const words = hookWords(option.text);
-    if (!option.text.trim() || !words.size) continue;
+    if (!option.text.trim() || !words.size || NOT_A_HOOK.test(option.text)) continue;
     const similar = kept.some(item => {
       const shared = [...words].filter(word => item.words.has(word)).length;
       return shared / (words.size + item.words.size - shared) >= 0.6;

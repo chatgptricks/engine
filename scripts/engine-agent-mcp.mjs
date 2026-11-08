@@ -49,7 +49,7 @@ function configuration() {
 
 const STAGES = ["brief", "facts", "data", "reactions", "visuals", "outline", "hooks", "approval", "copy", "charts", "images", "deck", "review"];
 const SUBMITTABLE_STAGES = STAGES.filter((stage) => stage !== "charts" && stage !== "deck");
-const POST_TOOLS = new Set(["engine_recreate_status", "engine_recreate_approve", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume"]);
+const POST_TOOLS = new Set(["engine_recreate_status", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume"]);
 
 function schema(properties = {}, required = []) {
   return { type: "object", properties, required, additionalProperties: false };
@@ -95,6 +95,7 @@ function toolDefinitions(capabilities) {
       caption: { type: "string", maxLength: 10000, description: "The original caption, when it isn't in the link." },
       notes: { type: "string", maxLength: 2000, description: "Direction for this post, for example an angle to take or data to use." },
       mode: { type: "string", enum: ["checkpoint", "autopilot"], description: "checkpoint pauses for approval after the outline and hooks; autopilot (default) runs to the end." },
+      xPosts: { type: "array", maxItems: 8, items: { type: "string", minLength: 1, maxLength: 300 }, description: "Links to posts on X to show on the reaction slides, word for word with their photos. They're read from X's public embed data, so they work without an Apify plan." },
     }, ["profileId"]), annotations: { ...write, openWorldHint: true } },
     { name: "engine_recreate_status", description: "Read a recreation's progress: status (queued, importing, researching, planning, paused, writing, building, reviewing, done or error), message, and each stage with its status and a one-line summary. When paused, checkpoint has the outline, the hook options, the real X reactions and the charts to approve. When done, result has deckId, editorUrl, slideCount, factChecks, notes and the critics' review; then use engine_get_deck to review or edit the deck. When error, resumable says engine_recreate_resume can continue it.", inputSchema: schema(post), annotations: read },
     { name: "engine_recreate_approve", description: "Approve a paused recreation: optionally pass an edited outline (same shape as checkpoint.outline: reorder, cut or add slides), and pick a hook by its index in checkpoint.hooks.options or write your own in hookText. Engine then writes the copy, draws the charts, chooses photos, builds the deck and reviews it. An agent's approval is never sent to the headline model as a pick; only a person's choice in Engine is.", inputSchema: schema({
@@ -104,6 +105,10 @@ function toolDefinitions(capabilities) {
       outline: { type: "object", description: "An edited outline: {slides: [{kind, templatePage, purpose, points, chartId, reactionIds, photo}], why}. Omit to keep the planned one." },
       notes: { type: "string", maxLength: 2000, description: "Direction for the copywriter." },
     }), annotations: write },
+    { name: "engine_recreate_add_posts", description: "Add posts from X by link to a paused recreation, so its reaction slides can show them word for word with their photos. They're read from X's public embed data, so they work without an Apify plan. Nothing reruns: the new posts join checkpoint.reactions, and you put their ids in a reaction slide's reactionIds in the outline you pass to engine_recreate_approve. At most 8 added posts per recreation.", inputSchema: schema({
+      ...post,
+      xPosts: { type: "array", minItems: 1, maxItems: 8, items: { type: "string", minLength: 1, maxLength: 300 }, description: "Links to posts on X, like https://x.com/<handle>/status/<id>." },
+    }, ["xPosts"]), annotations: { ...write, openWorldHint: true } },
     { name: "engine_recreate_rerun_stage", description: "Rerun one stage of a recreation, optionally with instructions (for example stage copy with \"make the cover shorter\"), and every stage that read it. Stages: brief, facts, data, reactions, visuals, outline, hooks, approval, copy, charts, images, deck, review. Rerunning approval reopens the checkpoint.", inputSchema: schema({
       ...post,
       stage: { type: "string", enum: STAGES },
@@ -144,6 +149,7 @@ const ROUTES = {
     return { url, method: "GET" };
   },
   engine_recreate_approve: recreateAction("approve"),
+  engine_recreate_add_posts: recreateAction("add_posts"),
   engine_recreate_rerun_stage: recreateAction("rerun_stage"),
   engine_recreate_submit_stage: recreateAction("submit_stage"),
   engine_recreate_resume: recreateAction("resume"),
@@ -195,6 +201,10 @@ function validatedArguments(name, args) {
       args.uploads.some((item) => !object(item) || typeof item.dataUrl !== "string" || !item.dataUrl.startsWith("data:image/") ||
         Object.keys(item).some((key) => key !== "name" && key !== "dataUrl") || (item.name !== undefined && (typeof item.name !== "string" || item.name.length > 200))))) {
     throw new RpcError(-32602, "uploads must be 1–20 objects with a data:image dataUrl and an optional name.");
+  }
+  if (Object.hasOwn(args, "xPosts") && (!Array.isArray(args.xPosts) || !args.xPosts.length || args.xPosts.length > 8 ||
+      args.xPosts.some((item) => typeof item !== "string" || !item.trim() || item.length > 300))) {
+    throw new RpcError(-32602, "xPosts must be 1–8 links to posts on X.");
   }
   if (name === "engine_recreate_post" && !Object.hasOwn(args, "url") && !Object.hasOwn(args, "uploads")) {
     throw new RpcError(-32602, "Pass an Instagram url or slide uploads.");
@@ -296,7 +306,7 @@ function bridge(config) {
         protocolVersion: PROTOCOL_VERSIONS.includes(params.protocolVersion) ? params.protocolVersion : PROTOCOL_VERSIONS[0],
         capabilities: { tools: {} },
         serverInfo: { name: "engine-slides", title: "Engine editable slides", version: "1.0.0" },
-        instructions: "Start with engine_capabilities for the live deck and update schemas, coordinates, fonts, and limits. Create independent native layers; use the returned editorUrl to let a person continue editing. Get the current hash before updating. Preserve operationId for any identical mutation retry. To recreate an Instagram post for one of the team's pages, call engine_list_page_profiles, then engine_recreate_post, then poll engine_recreate_status. With mode checkpoint the run pauses for engine_recreate_approve; engine_recreate_rerun_stage redoes one stage with instructions, and engine_recreate_submit_stage hands in a stage you did yourself (read engine_playbook first).",
+        instructions: "Start with engine_capabilities for the live deck and update schemas, coordinates, fonts, and limits. Create independent native layers; use the returned editorUrl to let a person continue editing. Get the current hash before updating. Preserve operationId for any identical mutation retry. To recreate an Instagram post for one of the team's pages, call engine_list_page_profiles, then engine_recreate_post, then poll engine_recreate_status. With mode checkpoint the run pauses for engine_recreate_approve (engine_recreate_add_posts adds posts from X by link first); engine_recreate_rerun_stage redoes one stage with instructions, and engine_recreate_submit_stage hands in a stage you did yourself (read engine_playbook first).",
       };
     }
     if (!initialized) throw new RpcError(-32000, "Initialize the MCP connection before requesting tools.");

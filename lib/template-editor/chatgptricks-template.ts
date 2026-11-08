@@ -17,8 +17,10 @@
  * pages have no source line: the cards show whose posts they are. The second and third
  * cards' slots end in "-2" and "-3". A card takes the author's name, @handle,
  * profile photo (`reaction-avatar`, a pbs.twimg.com URL) and the post's text;
- * its hidden `reaction-media` layer shows the post's photo when it's filled and
- * unhidden at the photo's proportions. `reactionSlots`, `packReactions` and
+ * its hidden `reaction-media` layer shows the post's photo (or a video's or GIF's
+ * poster frame) when it's filled and unhidden at the photo's proportions. On a video
+ * Recreate also shows X's play button (`reaction-play`) and the video's length in a
+ * badge (`reaction-length`, `reaction-length-text`); on a GIF the badge says "GIF". `reactionSlots`, `packReactions` and
  * `reactionPhotoSizes` in lib/engine/x-reactions.ts build these values, trim the
  * text to the card and group posts onto pages; Recreate's deck stage
  * (`styleCards`) also sets each account's check mark (blue, gold for

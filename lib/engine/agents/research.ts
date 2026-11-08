@@ -12,7 +12,7 @@ import { curateImages } from "../image-curator";
 import { publicHttpUrl } from "../public-url";
 import { imagesFromPage } from "../research-engine";
 import type { StoryImage } from "../types";
-import { fetchXReactions, X_PAID_PLAN, XReactionsError, xSearchNeedsPaidPlan, type XReaction } from "../x-reactions";
+import { fetchXPosts, fetchXReactions, videoLength, X_PAID_PLAN, XReactionsError, xSearchNeedsPaidPlan, type XReaction } from "../x-reactions";
 import { ask, imageBlock, ToolError, work, type ClientTool, type SourceImage } from "./claude";
 import { CHART_FIELDS, dataTools, resolveChart } from "./charts";
 import { need, outputOf, rerunNote, today, type StageContext, type StageRunner } from "./context";
@@ -109,8 +109,10 @@ export function reactionsSince(value: string, now = Date.now()): string {
   return new Date(time).toISOString().slice(0, 10);
 }
 
+/** What a post's card shows under its text: its photo, or its video or GIF. */
+const mediaNote = ({ media }: XReaction) => !media ? "" : ` · with a ${media.kind === "video" ? `video${media.durationMs ? ` (${videoLength(media.durationMs)})` : ""}` : media.kind === "gif" ? "GIF" : "photo"}`;
 const describePost = (post: XReaction) =>
-  `- id ${post.id} · ${post.author.name} @${post.author.handle}${post.author.verified ? " (verified)" : ""} · ${post.likes} likes, ${post.reposts} reposts · ${post.createdAt?.slice(0, 10) ?? "date unknown"}\n  ${post.text.replace(/\s+/g, " ").slice(0, 400)}`;
+  `- id ${post.id} · ${post.author.name} @${post.author.handle}${post.author.verified ? " (verified)" : ""} · ${post.likes} likes, ${post.reposts} reposts · ${post.createdAt?.slice(0, 10) ?? "date unknown"}${mediaNote(post)}\n  ${post.text.replace(/\s+/g, " ").slice(0, 400)}`;
 
 const SearchSchema = z.object({
   terms: z.array(z.string().min(1).max(120)).min(1).max(3).describe("1-3 short searches, worded the way people post about it on X. Quotes match an exact phrase"),
@@ -159,8 +161,26 @@ export function unknownPicks(picks: { id: string }[], seen: Map<string, XReactio
 }
 
 const skipped = (note: string): { status: "skipped"; output: ReactionsOutput } => ({ status: "skipped", output: { reactions: [], note } });
+/** Reactions a run keeps: the posts a person added by link, then the search agent's picks. */
+export const MAX_REACTIONS = 10;
 
+/**
+ * The X reactions stage. Posts the person added by link come first and are always
+ * kept: they're read from X's public embed data, so they need no Apify plan. Then
+ * the search agent adds what it finds when X can be searched.
+ */
 export const reactions: StageRunner = async context => {
+  const links = context.file.source.xPosts ?? [];
+  const added = links.length ? await fetchXPosts(links, { signal: context.signal }) : { posts: [], problems: [] };
+  const found = await searchReactions(context);
+  if (!links.length) return found;
+  const mine = added.posts.map(post => ({ ...post, why: "Added by you" }));
+  const kept = [...mine, ...found.output.reactions.filter(post => !mine.some(item => item.id === post.id))].slice(0, MAX_REACTIONS);
+  const note = [added.problems.length ? `Some posts you added can't be shown: ${added.problems.join(" ")}` : "", found.output.note].filter(Boolean).join(" ");
+  return mine.length ? { output: { reactions: kept, note } satisfies ReactionsOutput } : { ...found, output: { ...found.output, note } };
+};
+
+const searchReactions = async (context: StageContext): Promise<{ status?: "skipped"; output: ReactionsOutput }> => {
   const { profile, signal, usage } = context, b = need<Brief>(context.file, "brief");
   if (!process.env.APIFY_TOKEN?.trim()) return skipped("X reactions need APIFY_TOKEN on the server.");
   const seen = new Map<string, XReaction>(), failures: string[] = [], search = xSearchTool(seen, { signal, failures });

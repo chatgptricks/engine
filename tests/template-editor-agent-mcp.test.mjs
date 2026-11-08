@@ -113,7 +113,7 @@ test("MCP process negotiates, discovers live schemas, and calls all authenticate
   assert.deepEqual(init.result.capabilities, { tools: {} });
   mcp.notify("notifications/initialized");
   const listed = await mcp.request("tools/list");
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_approve", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume"]);
   assert.deepEqual(listed.result.tools[4].inputSchema.properties.spec, schemas.deckSchema);
   assert.deepEqual(listed.result.tools[5].inputSchema.properties.changes, schemas.updateSchema);
   await mcp.call("engine_capabilities");
@@ -203,7 +203,7 @@ test("discovery falls back while unavailable and refreshes live schemas after re
   const mcp = client(t, api.url);
   assert.equal((await mcp.init("future-version")).result.protocolVersion, "2025-11-25");
   const tools = await mcp.request("tools/list");
-  assert.equal(tools.result.tools.length, 15);
+  assert.equal(tools.result.tools.length, 16);
   assert.match(tools.result.tools[4].inputSchema.properties.spec.description, /engine_capabilities/);
   const failure = await mcp.call("engine_capabilities");
   assert.equal(failure.result.isError, true);
@@ -302,7 +302,7 @@ test("Recreate tools reach their own endpoints with the agent token and validate
   assert.equal(api.calls.filter((call) => call.path !== "/api/agent/slides").length, 3, "invalid calls never reach Engine");
 });
 
-test("the Recreate team's tools approve, rerun, hand in and resume through one endpoint", async (t) => {
+test("the Recreate team's tools approve, add posts, rerun, hand in and resume through one endpoint", async (t) => {
   const postId = "post-0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f";
   const api = await server(t, (entry, response) => {
     if (entry.path === "/api/agent/slides") return json(response, {});
@@ -316,6 +316,7 @@ test("the Recreate team's tools approve, rerun, hand in and resume through one e
   assert.equal((await mcp.call("engine_playbook")).result.structuredContent.stages[0].stage, "copy");
   assert.equal((await mcp.call("engine_recreate_status", { postId })).result.structuredContent.status, "paused");
   await mcp.call("engine_recreate_post", { profileId: "pagina-es", url: "https://www.instagram.com/p/x/", mode: "checkpoint" });
+  await mcp.call("engine_recreate_add_posts", { postId, xPosts: ["https://x.com/WilliamBaude/status/1985426345048617094"] });
   await mcp.call("engine_recreate_approve", { postId, option: 0, notes: "Keep it short" });
   await mcp.call("engine_recreate_rerun_stage", { postId, stage: "copy", instructions: "Make the cover shorter" });
   await mcp.call("engine_recreate_submit_stage", { postId, stage: "facts", output: { claims: [] } });
@@ -323,6 +324,7 @@ test("the Recreate team's tools approve, rerun, hand in and resume through one e
   const posted = api.calls.filter((call) => call.path === "/api/engine/recreate").map((call) => call.body);
   assert.deepEqual(posted, [
     { profileId: "pagina-es", url: "https://www.instagram.com/p/x/", mode: "checkpoint" },
+    { action: "add_posts", postId, xPosts: ["https://x.com/WilliamBaude/status/1985426345048617094"] },
     { action: "approve", postId, option: 0, notes: "Keep it short" },
     { action: "rerun_stage", postId, stage: "copy", instructions: "Make the cover shorter" },
     { action: "submit_stage", postId, stage: "facts", output: { claims: [] } },
@@ -335,6 +337,10 @@ test("the Recreate team's tools approve, rerun, hand in and resume through one e
     ["engine_recreate_submit_stage", { postId, stage: "deck", output: {} }],
     ["engine_recreate_submit_stage", { postId, stage: "copy", output: "text" }],
     ["engine_recreate_rerun_stage", { postId, stage: "everything" }],
+    ["engine_recreate_add_posts", { postId }],
+    ["engine_recreate_add_posts", { postId, xPosts: [] }],
+    ["engine_recreate_add_posts", { postId, xPosts: [42] }],
+    ["engine_recreate_add_posts", { xPosts: ["https://x.com/a/status/1"] }],
     ["engine_recreate_status", { postId: "post-../../x" }],
     ["engine_recreate_post", { profileId: "chatgptricks", url: "https://www.instagram.com/p/x/", mode: "fast" }],
   ]) assert.equal((await mcp.call(tool, args)).error?.code, -32602, `${tool} ${JSON.stringify(args)} is refused`);

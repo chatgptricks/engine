@@ -253,10 +253,13 @@ test("continuous carousel joins the halves into one layer and splits them into l
   const hanging = carousel.splitContinuousCarousel(carousel.enableContinuousCarousel(deck([image("edge", { x: -40, width: 500 })], [])));
   assert.equal(spanPairs(hanging).length, 0);
   near(page(hanging, 0)[0].x, -40);
-  // A template slot stays with the start half after the round trip.
+  // A template slot stays with the start half after the round trip. Only the
+  // Wide pages are joined: the whole template has more layers than a
+  // continuous carousel takes.
   const template = model.createDesign(model.BUILT_IN_TEMPLATES.find(item => item.id === "chatgptricks-3x4"));
+  template.pages = template.pages.slice(WIDE, WIDE_END + 1);
   const round = carousel.splitContinuousCarousel(carousel.enableContinuousCarousel(template));
-  const wide = checkPair(round, WIDE);
+  const wide = checkPair(round, 0);
   assert.equal(wide.start.slot, "wide-photo"); assert.equal(wide.end.slot, undefined); assert.equal(wide.end.templateRole, undefined);
 });
 

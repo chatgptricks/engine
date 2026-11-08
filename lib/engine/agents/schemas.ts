@@ -87,7 +87,11 @@ export const ReactionSchema = z.object({
     square: z.boolean().optional().describe("True for organizations, whose profile photos are rounded squares"),
   }),
   text: z.string(),
-  media: z.object({ url: z.string(), width: z.number(), height: z.number() }).nullable().optional().describe("The post's first photo (pbs.twimg.com/media) and its size"),
+  media: z.object({
+    url: z.string(), width: z.number(), height: z.number(),
+    kind: z.enum(["video", "gif"]).optional().describe("Set for a video or GIF, whose poster frame url is; left out for a photo"),
+    durationMs: z.number().nullable().optional().describe("A video's length in milliseconds"),
+  }).nullable().optional().describe("The post's first photo (pbs.twimg.com/media), or its video's or GIF's poster frame, and its size"),
   createdAt: z.string().nullable(),
   likes: z.number(), reposts: z.number(), replies: z.number(), views: z.number(),
   why: z.string(),

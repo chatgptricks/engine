@@ -356,6 +356,19 @@ test("distinctHooks drops near-duplicates, even behind a JUST IN: label",()=>{
   assert.deepEqual(kept.map(item=>item.text),["STOCKS NEARLY DOUBLED WHILE JOB OPENINGS FELL 30%","THE JOB MARKET AI CAN'T EXPLAIN"]);
 });
 
+test("hook options drop the credit, source and link lines the headline model sometimes sends",()=>{
+  const kept=story.distinctHooks([
+    {text:'CREDIT: A STUDY BY ANTHROPIC RELEASED IN MARCH 2026, TITLED "LABOR MARKET IMPACTS OF AI: A NEW MEASURE AND EARLY EVIDENCE.'},
+    {text:"Source: BLS JOLTS, September 2026"},
+    {text:"Photo credit — Reuters"},
+    {text:"READ THE STUDY AT https://www.anthropic.com/research"},
+    {text:"JUST IN: STOCKS NEARLY DOUBLED WHILE JOB OPENINGS FELL 30%"},
+    {text:"SOURCES SAY: OPENAI IS HIRING AGAIN"},
+    {text:"THE SOURCE OF THE JOB SLUMP ISN'T AI"},
+  ]);
+  assert.deepEqual(kept.map(item=>item.text),["JUST IN: STOCKS NEARLY DOUBLED WHILE JOB OPENINGS FELL 30%","SOURCES SAY: OPENAI IS HIRING AGAIN","THE SOURCE OF THE JOB SLUMP ISN'T AI"]);
+});
+
 test("a Spanish page's pick sends only the headline model's own English lines",()=>{
   const file=(hook,by="human")=>({stages:{
     brief:{status:"done",output:OUTPUTS.brief},
@@ -507,11 +520,40 @@ test("the designer puts one to three posts on a page by size and draws each acco
   assert.equal(shown.hidden,false); assert.equal(shown.src,photo.url); assert.ok(Math.abs(shown.width-text.width)<1e-6);
   assert.ok(Math.abs(shown.height/shown.width-372/758)<1e-9); assert.equal(shown.intrinsicWidth,758); assert.equal(shown.publicAlt,"Photo in @baude's post");
   assert.equal(slot(0,"reaction-media").hidden,true); assert.equal(slot(2,"reaction-media").hidden,true);
+  assert.deepEqual(["reaction-play","reaction-length","reaction-length-text"].map(name=>slot(1,name).hidden),[true,true,true],"a photo has no play button or badge");
   // A post longer than its card is cut at a word with "…", like X's "Show more".
   assert.ok(slot(3,"reaction-text").text.endsWith("…")); assert.equal(slot(2,"reaction-text").text,medium.text);
   // The deck's notes keep every post's link and stats.
   assert.ok(document.comments.some(comment=>comment.text.includes("@baude (7.3K likes · 10 reposts · Nov 3, 2026): https://x.com/baude/status/204")));
   assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}));
+});
+
+test("a video post shows its poster frame with X's play button and its length, and a GIF says GIF",async()=>{
+  const smart=load("lib/template-editor/smart-text.ts"),xPosts=load("lib/engine/x-reactions.ts");
+  const measure=(element,words=smart.smartWords(element))=>({size:element.fontSize,widths:words.map(word=>word.text.length*element.fontSize*.45),space:element.fontSize*.25});
+  const video={url:"https://pbs.twimg.com/amplify_video_thumb/3/img/c.jpg",width:1280,height:720,kind:"video",durationMs:45000};
+  const gif={url:"https://pbs.twimg.com/tweet_video_thumb/a.jpg",width:480,height:270,kind:"gif"};
+  const clip={...post("301","clips","Watch this",900),media:video},loop={...post("302","loops","This one loops",500),media:gif};
+  const {document,pages}=await deckLib.assembleDeck({profile:english,template,templates:model.BUILT_IN_TEMPLATES,name:"Videos",caption:"",
+    slides:[{templatePage:REACTION,texts:[{slot:"title",text:"How X reacted"}],reactions:[clip],slide:0},{templatePage:REACTION,texts:[{slot:"title",text:"And a GIF"}],reactions:[loop],slide:1}]});
+  assert.deepEqual(pages.map(page=>page.templatePage),[REACTION,REACTION]);
+  const laid=index=>smart.layoutSmartScene(document.pages[index].canvas,measure).scene,slot=(scene,name)=>scene.elements.find(element=>element.slot===name);
+  const near=(a,b,message)=>assert.ok(Math.abs(a-b)<1e-6,`${message}: ${a} vs ${b}`);
+  const first=laid(0),frame=slot(first,"reaction-media"),play=slot(first,"reaction-play"),length=slot(first,"reaction-length"),label=slot(first,"reaction-length-text");
+  assert.equal(frame.hidden,false); assert.equal(frame.src,video.url); assert.equal(frame.publicAlt,"Video in @clips's post");
+  assert.deepEqual([play.hidden,length.hidden,label.hidden,label.text],[false,false,false,"0:45"]);
+  near(play.x+play.width/2,frame.x+frame.width/2,"the play button is centred across the frame");
+  near(play.y+play.height/2,frame.y+frame.height/2,"and down it");
+  const {inset,height}=model.X_CARD.length;
+  near(length.x,frame.x+inset/3,"the length sits inside the frame's left edge"); near(length.y+length.height,frame.y+frame.height-inset/3,"and above its bottom");
+  near(length.height,height/3,"at X's size"); near(length.width,xPosts.mediaBadge(video).width/3,"as wide as 0:45 needs");
+  near(label.x,length.x,"its words sit on the badge"); near(label.y,length.y,"its words sit on the badge"); near(label.width,length.width,"centred across it");
+  const card=slot(first,"reaction-card"); near(card.y+card.height,frame.y+frame.height+model.X_CARD.foot/3,"the card still ends under the frame");
+  // A GIF has no play button, just "GIF" in the corner.
+  const second=laid(1);
+  assert.deepEqual([slot(second,"reaction-play").hidden,slot(second,"reaction-length").hidden,slot(second,"reaction-length-text").text],[true,false,"GIF"]);
+  assert.equal(slot(second,"reaction-media").publicAlt,"GIF in @loops's post");
+  assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}),"the deck stays a valid document");
 });
 
 test("the critics' instructions and report name each slide and fix",()=>{
@@ -564,7 +606,8 @@ test("the X reactions agent searches X itself, a few times at most, and may only
   assert.equal(research.reactionsSince("soon",now),"2026-10-08","30 days back without a date");
 
   const tweet=(id,likes,text)=>({type:"tweet",id,url:`https://x.com/person${id}/status/${id}`,text,fullText:text,retweetCount:5,replyCount:2,likeCount:likes,quoteCount:0,viewCount:1000,createdAt:"Wed Oct 14 14:19:33 +0000 2026",lang:"en",isReply:false,isRetweet:false,isQuote:false,author:{type:"user",userName:`person${id}`,name:`Person ${id}`,isVerified:false,isBlueVerified:false,profilePicture:""},entities:{hashtags:[],symbols:[],urls:[],user_mentions:[]}});
-  const bodies=[],replies=[[tweet("201",900,"This chart is the whole job market"),tweet("202",300,"Openings fell before ChatGPT")],[],"credit"];
+  const clip={...tweet("202",300,"Openings fell before ChatGPT"),extendedEntities:{media:[{type:"video",media_url_https:"https://pbs.twimg.com/amplify_video_thumb/9/img/v.jpg",original_info:{width:1280,height:720},video_info:{duration_millis:83000}}]}};
+  const bodies=[],replies=[[tweet("201",900,"This chart is the whole job market"),clip],[],"credit"];
   const fetch=async(url,init)=>{
     bodies.push(JSON.parse(init.body));
     const reply=replies.shift();
@@ -578,6 +621,8 @@ test("the X reactions agent searches X itself, a few times at most, and may only
     const first=await tool.run({terms:["chatgpt job openings"],since:"2024-01-01",minLikes:50,language:"en"});
     assert.match(first,/^2 posts since 2024-01-01 \(3 searches left\.\)/);
     assert.match(first,/id 201 · Person 201 @person201 · 900 likes/);
+    assert.match(first,/id 202 .* · with a video \(1:23\)\n/,"the agent knows which posts have a video, a GIF or a photo");
+    assert.doesNotMatch(first,/id 201 [^\n]*with a/);
     assert.deepEqual([...seen.keys()],["201","202"],"every post shown is remembered");
     assert.deepEqual(bodies[0],{searchTerms:["chatgpt job openings"],maxItems:30,sort:"Top",tweetLanguage:"en",minimumFavorites:50,start:"2024-01-01"});
     assert.match(await tool.run({terms:["jolts stocks"],since:"2025-01-01",minLikes:30,language:"es"}),/^No posts in es since 2025-01-01 with at least 30 likes\./);
@@ -592,6 +637,99 @@ test("the X reactions agent searches X itself, a few times at most, and may only
     delete environment.env.APIFY_TOKEN;
   }
   assert.ok(playbookLib.roleCardFor("reactions").rules.some(rule=>/search again/.test(rule)));
+});
+
+test("posts added by link lead the reactions and need no Apify plan",async()=>{
+  const research=load("lib/engine/agents/research.ts");
+  const embed=id=>({__typename:"Tweet",id_str:id,text:`Post ${id} about the job market`,created_at:"2026-11-05T19:08:45.000Z",favorite_count:7291,user:{name:`Person ${id}`,screen_name:`person${id}`,is_blue_verified:true}});
+  const original=globalThis.fetch,hosts=[];
+  globalThis.fetch=async url=>{
+    const address=new URL(url),id=address.searchParams.get("id");hosts.push(address.hostname);
+    return id==="404"?new Response("",{status:404}):new Response(JSON.stringify(embed(id)),{status:200,headers:{"Content-Type":"application/json"}});
+  };
+  try {
+    const file={source:{caption:"",notes:"",slideCount:0,imageIds:[],xPosts:["https://x.com/i/status/301","https://x.com/i/status/404","https://x.com/i/status/302"]},stages:{brief:{status:"done",output:OUTPUTS.brief}}};
+    const result=await research.reactions({file,profile:english,signal:undefined,usage:[]});
+    assert.equal(result.status,undefined,"the stage succeeds with the added posts although X can't be searched");
+    assert.deepEqual(result.output.reactions.map(post=>[post.id,post.url,post.why]),[["301","https://x.com/person301/status/301","Added by you"],["302","https://x.com/person302/status/302","Added by you"]]);
+    assert.match(result.output.note,/won't show post 404/); assert.match(result.output.note,/APIFY_TOKEN/);
+    assert.deepEqual([...new Set(hosts)],["cdn.syndication.twimg.com"],"only X's embed data is asked, never Apify");
+    // Without added posts the stage is skipped as before.
+    const none=await research.reactions({file:{...file,source:{...file.source,xPosts:[]}},profile:english,signal:undefined,usage:[]});
+    assert.equal(none.status,"skipped");
+  } finally {
+    globalThis.fetch=original;
+  }
+  assert.ok(playbookLib.roleCardFor("outline").rules.some(rule=>/Added by you/.test(rule)),"the story editor puts them first");
+});
+
+test("at the checkpoint a person adds posts from X by link: nothing reruns, and the approval can use them",async()=>{
+  const embed=id=>({__typename:"Tweet",id_str:id,text:`Post ${id} about the job market`,created_at:"2026-11-05T19:08:45.000Z",favorite_count:7291,user:{name:`Person ${id}`,screen_name:`person${id}`,is_blue_verified:true}});
+  const original=globalThis.fetch,asked=[];
+  globalThis.fetch=async url=>{
+    const id=new URL(url).searchParams.get("id");asked.push(id);
+    return id==="404"?new Response("",{status:404}):new Response(JSON.stringify(embed(id)),{status:200,headers:{"Content-Type":"application/json"}});
+  };
+  try {
+    // X couldn't be searched, so the plan has no reaction slide yet.
+    const crew=team({
+      reactions:async()=>({status:"skipped",output:{reactions:[],note:"X reactions need APIFY_TOKEN on the server."}}),
+      outline:async()=>({output:{...OUTPUTS.outline,slides:OUTPUTS.outline.slides.filter(slide=>slide.kind!=="reaction")}}),
+    });
+    const ownerKey=owner(),{file,done}=await start(ownerKey,crew,"checkpoint");
+    await done;
+    const calls=crew.calls.length;
+    const added=await orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/301","https://x.com/i/status/404"],"human");
+    await added.done;
+    assert.equal(added.added,1);
+    assert.match(added.problems.join(" "),/won't show post 404/);
+    assert.equal(crew.calls.length,calls,"nothing reruns: the plan and the hooks stay");
+    const paused=await read(ownerKey,file.id);
+    assert.equal(paused.status,"paused");
+    assert.equal(paused.stages.reactions.status,"done");
+    assert.deepEqual(paused.stages.reactions.output.reactions.map(item=>[item.id,item.url,item.why]),[["301","https://x.com/person301/status/301","Added by you"]]);
+    assert.equal(paused.stages.reactions.output.note,"X reactions need APIFY_TOKEN on the server.","the search's note stays");
+    assert.deepEqual(paused.source.xPosts,["https://x.com/i/status/301"],"only posts X showed are kept as added");
+    assert.ok(paused.history.some(entry=>entry.stage==="reactions"&&entry.by==="human"&&/added a post from X by link/.test(entry.event)));
+    assert.deepEqual(jobs.postView(paused,false).checkpoint.reactions.map(item=>item.id),["301"]);
+    // The same post again, by another kind of link, changes nothing and asks X nothing.
+    const fetched=asked.length;
+    const again=await orchestrator.addRecreatePosts(ownerKey,file.id,["https://twitter.com/person301/status/301?s=20"],"human");
+    assert.equal(again.added,0); assert.equal(asked.length,fetched);
+    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/404"],"human"),/won't show post 404/);
+    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,Array.from({length:8},(_,index)=>`https://x.com/i/status/${500+index}`),"human"),/at most 8 posts/);
+    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://example.com/a/status/1"],"human"),/isn't a link to a post on X/);
+    assert.equal(asked.length,fetched+1,"refused links never reach X");
+    // The approval puts the added post on a reaction slide.
+    const slides=jobs.postView(paused,false).checkpoint.outline.slides;
+    const planned=[...slides.slice(0,-1),{kind:"reaction",templatePage:REACTION,purpose:"How X reacted",points:[],chartId:null,reactionIds:["301"],photo:""},slides.at(-1)];
+    const approved=await orchestrator.approveRecreate(ownerKey,file.id,{outline:{slides:planned,why:"With the post I added"},option:0},"agent",{runners:crew.runners,environment:env(english)});
+    await approved.done;
+    const finished=await read(ownerKey,file.id);
+    assert.deepEqual(finished.stages.approval.output.outline.slides.find(slide=>slide.kind==="reaction").reactionIds,["301"]);
+    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/302"],"human"),/already approved/);
+  } finally {
+    globalThis.fetch=original;
+  }
+});
+
+test("a post added at the checkpoint goes on the last reaction slide with room, or on a new one before Follow",()=>{
+  const job=load("components/template-editor/recreate-job.ts");
+  const page=count=>count>=3?THREE:count===2?REACTIONS:REACTION;
+  const slide=templatePage=>({kind:"reaction",templatePage,purpose:"New",points:[],chartId:null,reactionIds:[],photo:"",key:"new"});
+  const base=OUTPUTS.outline.slides.map((item,index)=>({...item,key:`s${index}`}));
+  let placed=job.placePost(base,"301",{maxPosts:3,page,slide});
+  assert.deepEqual([placed.at,placed.created,placed.changed],[2,false,true],"the plan's two-post slide has room for a third");
+  assert.deepEqual([placed.slides[2].reactionIds,placed.slides[2].templatePage],[["101","102","301"],THREE]);
+  assert.equal(base[2].reactionIds.length,2,"the slides passed in are left as they were");
+  const same=job.placePost(placed.slides,"102",{maxPosts:3,page,slide});
+  assert.deepEqual([same.at,same.changed,same.slides],[2,false,placed.slides],"a post already on a slide stays where it is");
+  placed=job.placePost(placed.slides,"302",{maxPosts:3,page,slide});
+  assert.deepEqual([placed.at,placed.created],[3,true]);
+  assert.deepEqual(placed.slides.map(item=>item.kind),["cover","original","reaction","reaction","follow"],"a new reaction slide goes before Follow");
+  assert.deepEqual([placed.slides[3].reactionIds,placed.slides[3].templatePage,placed.slides[3].key],[["302"],REACTION,"new"]);
+  const full=Array.from({length:job.MAX_RECREATE_SLIDES},(_,index)=>({...base[0],key:`f${index}`}));
+  assert.equal(job.placePost(full,"303",{maxPosts:3,page,slide}),null,"no room for another slide");
 });
 
 test("photos also come from the pages the facts cite: public, full-size images only",async()=>{

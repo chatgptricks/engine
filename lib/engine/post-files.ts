@@ -38,7 +38,11 @@ export type StageRecord = {
 };
 export type PostMode = "checkpoint" | "autopilot";
 export type PostStatus = "running" | "paused" | "done" | "error";
-export type PostSource = {url?: string; caption: string; owner?: string; notes: string; slideCount: number; imageIds: string[]};
+export type PostSource = {
+  url?: string; caption: string; owner?: string; notes: string; slideCount: number; imageIds: string[];
+  /** Links to posts on X the person added for the reaction slides (https://x.com/i/status/<id>). */
+  xPosts?: string[];
+};
 export type PostFile = {
   id: string;
   version: 1;
