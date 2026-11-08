@@ -89,6 +89,26 @@ test("outside production a token reaches a dev server in another process; produc
   assert.equal(bridgeFiles(),before,"revoking removes the copy");
 });
 
+test("the renderer uses an installed Chrome when Playwright's own Chromium isn't installed",async()=>{
+  const calls=[],browser={};
+  const missing=new Error("browserType.launch: Executable doesn't exist at /cache/ms-playwright/chrome-headless-shell\nmore details");
+  const chromium=outcomes=>({launch:async options=>{calls.push(options);const next=outcomes.shift();if(next instanceof Error)throw next;return next;}});
+  assert.equal(await render.launchChromium(chromium([missing,browser]),""),browser);
+  assert.deepEqual(calls.map(options=>options.channel),[undefined,"chrome"]);
+  assert.ok(calls.every(options=>options.headless===true));
+  // A configured path is used as it is.
+  calls.length=0;
+  await assert.rejects(render.launchChromium(chromium([missing]),"/opt/chromium"),/Executable doesn't exist/);
+  assert.deepEqual(calls.map(options=>options.executablePath),["/opt/chromium"]);
+  // Other failures aren't retried, and with no Chrome either the first problem is reported.
+  calls.length=0;
+  await assert.rejects(render.launchChromium(chromium([new Error("Target page, context or browser has been closed")]),""),/has been closed/);
+  assert.equal(calls.length,1);
+  calls.length=0;
+  await assert.rejects(render.launchChromium(chromium([missing,new Error("Chromium distribution 'chrome' is not found")]),""),/Executable doesn't exist/);
+  assert.equal(calls.length,2);
+});
+
 test("renderSlides resolves null when Chromium can't launch and logs the reason once",async t=>{
   await render.closeSlideRenderer();
   const warn=t.mock.method(console,"warn",()=>{});

@@ -1,4 +1,4 @@
-import type {Browser, BrowserContext, Route} from "playwright";
+import type {Browser, BrowserContext, LaunchOptions, Route} from "playwright";
 import {formatDimensions, type DesignDocument} from "@/lib/template-editor/model";
 import {createRenderToken, revokeRenderToken} from "./render-tokens";
 
@@ -67,10 +67,21 @@ export function renderOrigin(): string {
   return (process.env.ENGINE_RENDER_ORIGIN || `http://${host}:${process.env.PORT ?? 3000}`).replace(/\/+$/, "");
 }
 
-const defaultLaunch: SlideBrowserLauncher = async () => {
-  const {chromium} = await import("playwright");
-  return chromium.launch({headless: true, timeout: 30_000, executablePath: process.env.ENGINE_CHROMIUM_PATH || undefined, args: ["--disable-dev-shm-usage"]});
-};
+/** ENGINE_CHROMIUM_PATH when set; otherwise Playwright's own Chromium, and when
+ * that build isn't installed (no `npx playwright install`), an installed Google
+ * Chrome. Any other launch failure, or no Chrome either, reports the first problem. */
+export async function launchChromium(chromium: {launch(options: LaunchOptions): Promise<Browser>}, executablePath = process.env.ENGINE_CHROMIUM_PATH?.trim()): Promise<Browser> {
+  const options: LaunchOptions = {headless: true, timeout: 30_000, args: ["--disable-dev-shm-usage"]};
+  if (executablePath) return chromium.launch({...options, executablePath});
+  try {
+    return await chromium.launch(options);
+  } catch (error) {
+    if (!/Executable doesn't exist/i.test(error instanceof Error ? error.message : String(error))) throw error;
+    return chromium.launch({...options, channel: "chrome"}).catch(() => { throw error; });
+  }
+}
+
+const defaultLaunch: SlideBrowserLauncher = async () => launchChromium((await import("playwright")).chromium);
 
 async function sharedBrowser(launch: SlideBrowserLauncher): Promise<Browser | null> {
   const current = state(), held = current.browser;
