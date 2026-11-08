@@ -185,7 +185,7 @@ function insertCopies(
     ...element,
     name: `${element.name.slice(0, 195)} copy`,
     locked: false,
-    ...(element.templateRole || element.type === "text" && element.smartText ? { templateRole: undefined, smartText: undefined, smartFlow: undefined, slot: undefined, protected: undefined } : {}),
+    ...(element.templateRole || element.type === "text" && element.smartText ? { templateRole: undefined, smartText: undefined, smartFlow: undefined, smartCenter: undefined, slot: undefined, protected: undefined } : {}),
     x: element.x + delta.x,
     y: element.y + delta.y,
     ...(element.clipBounds ? { clipBounds: { ...element.clipBounds, x: element.clipBounds.x + originDelta.x, y: element.clipBounds.y + originDelta.y } } : {}),

@@ -81,8 +81,14 @@ export type DataOutput = z.infer<typeof DataSchema>;
 
 export const ReactionSchema = z.object({
   id: z.string(), url: z.string(),
-  author: z.object({ name: z.string(), handle: z.string(), avatarUrl: z.string().nullable(), verified: z.boolean() }),
-  text: z.string(), createdAt: z.string().nullable(),
+  author: z.object({
+    name: z.string(), handle: z.string(), avatarUrl: z.string().nullable(), verified: z.boolean(),
+    badge: z.enum(["blue", "gold", "grey"]).nullable().optional().describe("X's check mark: blue (paid), gold (organization), grey (government), or null"),
+    square: z.boolean().optional().describe("True for organizations, whose profile photos are rounded squares"),
+  }),
+  text: z.string(),
+  media: z.object({ url: z.string(), width: z.number(), height: z.number() }).nullable().optional().describe("The post's first photo (pbs.twimg.com/media) and its size"),
+  createdAt: z.string().nullable(),
   likes: z.number(), reposts: z.number(), replies: z.number(), views: z.number(),
   why: z.string(),
 });
@@ -103,7 +109,7 @@ export const OutlineSlideSchema = z.object({
   purpose: z.string().describe("What this slide tells the reader, in one line"),
   points: z.array(z.string()).describe("The facts and numbers it uses, each from the research"),
   chartId: z.string().nullable().describe("A chart id from the data stage, or null"),
-  reactionIds: z.array(z.string()).describe("Reaction ids for a Reaction (1) or Reactions (2) page, else empty"),
+  reactionIds: z.array(z.string()).describe("Reaction ids for a Reaction page, as many as its cards: one long post, two medium ones or three short ones; else empty"),
   photo: z.string().describe("The photo this slide needs, or empty"),
 });
 export type OutlineSlide = z.infer<typeof OutlineSlideSchema>;

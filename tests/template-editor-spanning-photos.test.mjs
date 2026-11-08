@@ -38,6 +38,8 @@ function deck(...scenes) {
 }
 const page = (design, index) => design.pages[index].canvas.elements;
 const half = (design, index, part) => page(design, index).find(element => element.span?.part === part);
+// The @chatgptricks Wide photo pair's pages, read from the template so pages added before it don't break these tests.
+const [{ startPage: WIDE, endPage: WIDE_END }] = spanPairs(model.BUILT_IN_TEMPLATES.find(item => item.id === "chatgptricks-3x4"));
 const checkPair = (design, startPage) => {
   const start = half(design, startPage, "start"), end = half(design, startPage + 1, "end");
   assert.ok(start && end, "both halves exist");
@@ -160,11 +162,11 @@ test("dragging the photo fully onto one slide stops it spanning", () => {
 
 test("template photos stay in their frames, except a spanning photo, whose seam moves", () => {
   const design = model.createDesign(model.BUILT_IN_TEMPLATES.find(item => item.id === "chatgptricks-3x4"));
-  const { start, end } = checkPair(design, 6);
-  const scene = design.pages[6].canvas;
+  const { start, end } = checkPair(design, WIDE);
+  const scene = design.pages[WIDE].canvas;
   assert.equal(commands.canEditElement(scene, start, "position"), true, "the Wide photo can move its seam");
   assert.equal(commands.canEditElement(scene, start, "delete"), false, "but stays in the template");
-  assert.equal(commands.canEditElement(design.pages[7].canvas, end, "delete"), false);
+  assert.equal(commands.canEditElement(design.pages[WIDE_END].canvas, end, "delete"), false);
   const media = design.pages[3].canvas.elements.find(element => element.templateRole === "media");
   assert.equal(commands.canEditElement(design.pages[3].canvas, media, "position"), false, "other template photos stay put");
   // The template constraint keeps a dragged half where it was dropped, and still restores other media.
@@ -174,11 +176,11 @@ test("template photos stay in their frames, except a spanning photo, whose seam 
   const nudged = { ...frame, elements: frame.elements.map(element => element.id === media.id ? { ...element, x: element.x + 10 } : element) };
   near(smartTemplate.constrainSmartTemplate(frame, nudged).elements.find(element => element.id === media.id).x, media.x);
   // Dragging the Wide photo moves the seam, refits it and keeps the titles level.
-  const moved = syncSpans(design, { ...design, pages: design.pages.map((item, index) => index === 6 ? { ...item, canvas: smartTemplate.constrainSmartTemplate(scene, dragged) } : item) }).design;
-  const pair = checkPair(moved, 6);
+  const moved = syncSpans(design, { ...design, pages: design.pages.map((item, index) => index === WIDE ? { ...item, canvas: smartTemplate.constrainSmartTemplate(scene, dragged) } : item) }).design;
+  const pair = checkPair(moved, WIDE);
   assert.ok(seamOf(pair.start) > .5, "more of the photo on the first slide");
   const title = index => moved.pages[index].canvas.elements.find(element => element.slot === "title");
-  near(title(6).y, title(7).y);
+  near(title(WIDE).y, title(WIDE_END).y);
 });
 
 test("duplicates, pastes and reused ids never make a third half", () => {
@@ -254,50 +256,50 @@ test("continuous carousel joins the halves into one layer and splits them into l
   // A template slot stays with the start half after the round trip.
   const template = model.createDesign(model.BUILT_IN_TEMPLATES.find(item => item.id === "chatgptricks-3x4"));
   const round = carousel.splitContinuousCarousel(carousel.enableContinuousCarousel(template));
-  const wide = checkPair(round, 6);
+  const wide = checkPair(round, WIDE);
   assert.equal(wide.start.slot, "wide-photo"); assert.equal(wide.end.slot, undefined); assert.equal(wide.end.templateRole, undefined);
 });
 
 test("Wide photo pages: one photo slot fills both, balanced and level", () => {
   const template = model.BUILT_IN_TEMPLATES.find(item => item.id === "chatgptricks-3x4");
   const labels = template.pages.map(item => item.label);
-  assert.deepEqual(labels.slice(6), ["Wide photo · start", "Wide photo · end"]);
-  for (const item of template.pages.slice(6)) assert.deepEqual(model.parseCanvasScene(item.canvas), item.canvas, item.label);
+  assert.deepEqual(labels.slice(WIDE), ["Wide photo · start", "Wide photo · end"]);
+  for (const item of template.pages.slice(WIDE)) assert.deepEqual(model.parseCanvasScene(item.canvas), item.canvas, item.label);
   const design = model.createDesign(template);
   // A fresh copy is already settled: nothing moves on the first edit.
   assert.equal(reconcileSpans(design).design, design);
-  const { start, end } = checkPair(design, 6);
+  const { start, end } = checkPair(design, WIDE);
   near(start.height * 3, 916.88); near(start.width * 3, 916.88 * 16 / 9); near(seamOf(start), .5);
   near(start.y * 3, 335.12);
-  const titles = [6, 7].map(index => page(design, index).find(element => element.slot === "title"));
+  const titles = [WIDE, WIDE_END].map(index => page(design, index).find(element => element.slot === "title"));
   near(titles[0].y * 3, 90); near(titles[1].y * 3, 90);
-  assert.equal(end.slot, undefined, "the photo is filled once, on page 6");
+  assert.equal(end.slot, undefined, "the photo is filled once, on the first page");
   // A 3:1 panorama runs edge to edge at 2160 x 720 and the block moves down to stay balanced.
-  const panorama = commit(design, draft => { Object.assign(half(draft, 6, "start"), { src: photoUrl, intrinsicWidth: 3000, intrinsicHeight: 1000 }); return draft; }).design;
-  const wide = checkPair(panorama, 6).start;
+  const panorama = commit(design, draft => { Object.assign(half(draft, WIDE, "start"), { src: photoUrl, intrinsicWidth: 3000, intrinsicHeight: 1000 }); return draft; }).design;
+  const wide = checkPair(panorama, WIDE).start;
   near(wide.width * 3, 2160); near(wide.height * 3, 720); near(wide.x, 0);
   const top = 90 + (1162 - (181.12 + 64 + 720)) / 2;
-  for (const index of [6, 7]) {
+  for (const index of [WIDE, WIDE_END]) {
     near(page(panorama, index).find(element => element.slot === "title").y * 3, top, "titles level", 1e-6);
     near(page(panorama, index).find(element => element.slot === "body").y * 3, top + 85.72, "bodies level", 1e-6);
   }
   near(wide.y * 3, top + 245.12);
   // Moving the seam on an edge-to-edge photo shrinks it just enough, and the block rebalances.
-  const moved = setSeam(panorama, panorama.pages[7].id, half(panorama, 7, "end").id, .42);
-  const shifted = checkPair(moved, 6).start;
+  const moved = setSeam(panorama, panorama.pages[WIDE_END].id, half(panorama, WIDE_END, "end").id, .42);
+  const shifted = checkPair(moved, WIDE).start;
   near(seamOf(shifted), .42); near(shifted.width, 360 / .58); near(shifted.x + shifted.width, 720);
   const geometry = widePhotoGeometry(shifted, .42, false);
-  near(page(moved, 7).find(element => element.slot === "title").y, geometry.titleY);
+  near(page(moved, WIDE_END).find(element => element.slot === "title").y, geometry.titleY);
   // Dragging the photo moves the seam (never past 10%-90%) and the photo stays as large as fits there.
-  const dragged = commit(moved, draft => { const element = half(draft, 6, "start"); element.x = 340; element.y = 10; return draft; }).design;
-  const after = checkPair(dragged, 6).start;
+  const dragged = commit(moved, draft => { const element = half(draft, WIDE, "start"); element.x = 340; element.y = 10; return draft; }).design;
+  const after = checkPair(dragged, WIDE).start;
   near(seamOf(after), .1); near(after.width, 400); near(after.y, widePhotoGeometry(after, .1, false).y);
-  const back = checkPair(commit(dragged, draft => { const element = half(draft, 6, "start"); element.x = 360 - element.width / 2; return draft; }).design, 6).start;
+  const back = checkPair(commit(dragged, draft => { const element = half(draft, WIDE, "start"); element.x = 360 - element.width / 2; return draft; }).design, WIDE).start;
   near(seamOf(back), .5); near(back.width * 3, 2160, "dragging back to the middle restores the full width");
   // A resize keeps its smaller size, in the photo's own shape.
-  const resized = checkPair(commit(panorama, draft => { const element = half(draft, 6, "start"); element.width = 480; element.height = 160; element.x = 120; return draft; }).design, 6).start;
+  const resized = checkPair(commit(panorama, draft => { const element = half(draft, WIDE, "start"); element.width = 480; element.height = 160; element.x = 120; return draft; }).design, WIDE).start;
   near(resized.width, 480); near(resized.height, 160); near(seamOf(resized), .5);
-  near(page(commit(panorama, draft => { const element = half(draft, 6, "start"); element.width = 480; element.height = 160; element.x = 120; return draft; }).design, 7).find(element => element.slot === "title").y, widePhotoGeometry(resized, .5, false).titleY);
+  near(page(commit(panorama, draft => { const element = half(draft, WIDE, "start"); element.width = 480; element.height = 160; element.x = 120; return draft; }).design, WIDE_END).find(element => element.slot === "title").y, widePhotoGeometry(resized, .5, false).titleY);
 });
 
 test("on @chatgptricks Text + Media pages, Span makes the Wide photo pair and keeps the copy", () => {
@@ -335,8 +337,8 @@ const invalid = (fn, pathPart, pattern) => assert.throws(fn, error => error inst
 test("agents fill the Wide photo pair once, with the photo's size and a seam", () => {
   const deck = agent.createAgentDeck({ name: "Where AI gets built", templateId: "chatgptricks-3x4", slides: [
     { templatePage: 0, slots: { "cover-headline": "THE BIGGEST DATA CENTER YET" } },
-    { templatePage: 6, slots: { title: "Where AI gets built", body: "A campus the size of a town", "wide-photo": photoUrl }, photoSize: { width: 3000, height: 2000 }, seam: .42 },
-    { templatePage: 7, slots: { title: "And what it costs", body: "Power for a million homes", source: "Source: the company" } },
+    { templatePage: WIDE, slots: { title: "Where AI gets built", body: "A campus the size of a town", "wide-photo": photoUrl }, photoSize: { width: 3000, height: 2000 }, seam: .42 },
+    { templatePage: WIDE_END, slots: { title: "And what it costs", body: "Power for a million homes", source: "Source: the company" } },
     { templatePage: 3 },
   ] });
   const { start, end } = checkPair(deck, 1);
@@ -350,19 +352,19 @@ test("agents fill the Wide photo pair once, with the photo's size and a seam", (
   assert.equal(view.slides[2].elements.find(element => element.id === end.id).span.partnerPageId, deck.pages[1].id);
   // engine_list_templates marks the pair.
   const types = agent.agentCapabilities().templates.find(item => item.id === "chatgptricks-3x4").pageTypes;
-  assert.deepEqual([types[6].pair.part, types[6].pair.with, types[7].pair.part, types[7].pair.with], ["start", 7, "end", 6]);
-  assert.match(types[6].pair.note, /page 6 then page 7/);
+  assert.deepEqual([types[WIDE].pair.part, types[WIDE].pair.with, types[WIDE_END].pair.part, types[WIDE_END].pair.with], ["start", WIDE_END, "end", WIDE]);
+  assert.match(types[WIDE].pair.note, new RegExp(`page ${WIDE} then page ${WIDE_END}`));
 });
 
 test("agents get clear errors for a lone half, a second-half photo or a misplaced seam", () => {
   const base = { name: "Pair", templateId: "chatgptricks-3x4" };
-  invalid(() => agent.createAgentDeck({ ...base, slides: [{ templatePage: 6 }, { templatePage: 1 }] }), "$.slides[0].templatePage", /page 6 then page 7/);
-  invalid(() => agent.createAgentDeck({ ...base, slides: [{ templatePage: 7 }, { templatePage: 6 }] }), "$.slides[0].templatePage", /second half/);
-  invalid(() => agent.createAgentDeck({ ...base, slides: [{ templatePage: 6 }, { templatePage: 7, image: { src: photoUrl } }] }), "$.slides[1].image", /second half/);
+  invalid(() => agent.createAgentDeck({ ...base, slides: [{ templatePage: WIDE }, { templatePage: 1 }] }), "$.slides[0].templatePage", new RegExp(`page ${WIDE} then page ${WIDE_END}`));
+  invalid(() => agent.createAgentDeck({ ...base, slides: [{ templatePage: WIDE_END }, { templatePage: WIDE }] }), "$.slides[0].templatePage", /second half/);
+  invalid(() => agent.createAgentDeck({ ...base, slides: [{ templatePage: WIDE }, { templatePage: WIDE_END, image: { src: photoUrl } }] }), "$.slides[1].image", /second half/);
   invalid(() => agent.createAgentDeck({ ...base, slides: [{ templatePage: 1, seam: .4 }] }), "$.slides[0].seam", /continues on the next page/);
   invalid(() => agent.createAgentDeck({ name: "Free", format: "square", slides: [{ layout: "blank", seam: .4 }] }), "$.slides[0].seam", /span/);
   // A pair used twice gets two independent photos.
-  const twice = agent.createAgentDeck({ ...base, slides: [{ templatePage: 6, slots: { "wide-photo": photoUrl } }, { templatePage: 7 }, { templatePage: 6, slots: { "wide-photo": "https://example.com/other.jpg" } }, { templatePage: 7 }] });
+  const twice = agent.createAgentDeck({ ...base, slides: [{ templatePage: WIDE, slots: { "wide-photo": photoUrl } }, { templatePage: WIDE_END }, { templatePage: WIDE, slots: { "wide-photo": "https://example.com/other.jpg" } }, { templatePage: WIDE_END }] });
   assert.equal(spanPairs(twice).length, 2);
   assert.notEqual(half(twice, 0, "start").span.id, half(twice, 2, "start").span.id);
   assert.equal(half(twice, 3, "end").src, "https://example.com/other.jpg");

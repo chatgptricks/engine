@@ -108,7 +108,7 @@ export const images: StageRunner = async context => {
   const pages = templatePages(template);
   const needs = approval.outline.slides.flatMap((slide, index) => {
     const page = pages.find(candidate => candidate.index === slide.templatePage);
-    return page?.photo.length && !slide.chartId && !page.reaction ? [{ slide: index + 1, page: page.label, purpose: slide.purpose, photo: slide.photo, across: page.pair?.part === "start" }] : [];
+    return page?.photo.length && !slide.chartId && !page.cards ? [{ slide: index + 1, page: page.label, purpose: slide.purpose, photo: slide.photo, across: page.pair?.part === "start" }] : [];
   });
   if (!needs.length) return { status: "skipped", output: { photos: [], notes: [] } satisfies ImagesOutput };
   const missing = (list: typeof needs) => list.map(item => `Slide ${item.slide} (${item.page}): add a photo${item.photo ? ` of ${item.photo}` : ""}`);

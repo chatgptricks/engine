@@ -212,15 +212,19 @@ function applySpanRequests(document: DesignDocument, requests: SpanRequest[]): D
   }
   return document;
 }
-/** Every half of a spanning photo needs its partner right next to it. */
-function requireSpanPartners(document: DesignDocument, paths: string[]) {
+/** Every half of a spanning photo needs its partner right next to it. `sources`
+ * holds each slide's template page, so the message names the template's own pair. */
+function requireSpanPartners(document: DesignDocument, paths: string[], template?: DesignTemplate, sources: number[] = []) {
   const linked = new Set(spanPairs(document).flatMap(pair => [pair.start, pair.end]));
+  const pairs = template ? spanPairs(template) : [];
   document.pages.forEach((page, index) => {
     const lonely = (page.canvas?.elements ?? []).find(element => isSpanHalf(element) && !linked.has(element));
     if (!lonely || !isSpanHalf(lonely)) return;
+    const pair = pairs.find(item => item.startPage === sources[index] || item.endPage === sources[index]);
+    const order = pair ? ` (page ${pair.startPage} then page ${pair.endPage})` : "";
     fail(`${paths[index] ?? `$.slides[${index}]`}.templatePage`, lonely.span.part === "start"
-      ? "starts a photo that continues on the next slide: put the template page that shows its second half right after it (for @chatgptricks, page 6 then page 7)"
-      : "shows the second half of the previous slide's photo: put the template page that starts it right before it (for @chatgptricks, page 6 then page 7)");
+      ? `starts a photo that continues on the next slide: put the template page that shows its second half right after it${order}`
+      : `shows the second half of the previous slide's photo: put the template page that starts it right before it${order}`);
   });
 }
 function makeSlide(spec: RecordValue, size: { width: number; height: number }, theme: Theme, used: Set<string>, path: string, requests: SpanRequest[] = []): DesignPage {
@@ -413,7 +417,7 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
 export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BUILT_IN_TEMPLATES): DesignDocument {
   const spec = checked(input, AGENT_DECK_SPEC_SCHEMA);
   const used = new Set<string>(), requests = { spans: [] as SpanRequest[], seams: [] as SeamRequest[] };
-  let document: DesignDocument, paths: string[] = [];
+  let document: DesignDocument, paths: string[] = [], pairTemplate: DesignTemplate | undefined, sourcePages: number[] = [];
   if (spec.templateId !== undefined) {
     const template = templates.find(candidate => candidate.id === spec.templateId);
     if (!template) fail("$.templateId", "template was not found");
@@ -438,6 +442,7 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
         return templateSlide(duplicatePage(sources[source]), slide, document, used, path, listed[source], requests);
       });
       paths = requested.map((_, index) => `$.slides[${index}]`);
+      pairTemplate = template; sourcePages = requested.map(slide => slide.templatePage as number);
     } else {
       const slides = requested ?? template.pages.map(() => ({}));
       if (slides.length !== document.pages.length) fail("$.slides", `template requires exactly ${document.pages.length} slides; omit slides to copy the full template, or set templatePage on every slide to choose pages`);
@@ -457,7 +462,7 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
     document.pages = (spec.slides as RecordValue[]).map((slide, index) => makeSlide(slide, size, theme, used, `$.slides[${index}]`, requests.spans));
   }
   // Spanning photos: both halves next to each other, the seam and photo shape applied, then any span requests.
-  requireSpanPartners(document, paths);
+  requireSpanPartners(document, paths, pairTemplate, sourcePages);
   for (const request of requests.seams) document = setSeam(document, request.pageId, request.elementId, request.seam ?? .5);
   document = applySpanRequests(reconcileSpans(document).design, requests.spans);
   document.id = String(spec.id ?? document.id);

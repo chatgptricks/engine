@@ -55,7 +55,7 @@ const english=profiles.builtInPageProfiles().find(item=>item.id==="chatgptricks"
 const spanish=profiles.builtInPageProfiles().find(item=>item.id==="pagina-es");
 const catalog=pagesLib.templatePages(template);
 const pageIndex=label=>catalog.find(page=>page.label===label).index;
-const COVER=pageIndex("Cover"),MEDIA=pageIndex("Text + Media"),FOLLOW=pageIndex("Follow"),REACTION=pageIndex("Reaction"),REACTIONS=pageIndex("Reactions");
+const COVER=pageIndex("Cover"),MEDIA=pageIndex("Text + Media"),FOLLOW=pageIndex("Follow"),REACTION=pageIndex("Reaction"),REACTIONS=pageIndex("Two reactions"),THREE=pageIndex("Three reactions");
 const WIDE=catalog.find(page=>page.pair?.part==="start").index,WIDE_END=catalog.find(page=>page.pair?.part==="end").index;
 const env=profile=>async()=>({profile,template,templates:model.BUILT_IN_TEMPLATES});
 let owners=0;
@@ -312,12 +312,16 @@ test("normalizeOutline keeps the plan to real pages, built charts and real posts
     slide({kind:"reaction",templatePage:REACTIONS,reactionIds:["101","999"]}),
     slide({kind:"reaction",templatePage:REACTION,reactionIds:["101","102"]}),
     slide({kind:"reaction",templatePage:REACTION,reactionIds:[]}),
-  ]},catalog,{charts:["main"],reactions:["101","102"]});
-  assert.equal(result.slides.length,4,"the unknown page and the empty reaction slide are dropped");
+    slide({kind:"reaction",templatePage:REACTION,reactionIds:["101","102","103","104"]}),
+  ]},catalog,{charts:["main"],reactions:["101","102","103","104"]});
+  assert.equal(result.slides.length,5,"the unknown page and the empty reaction slide are dropped");
   assert.equal(result.slides[0].chartId,null,"a chart the data stage didn't build is dropped");
   assert.equal(result.slides[1].chartId,"main");
   assert.deepEqual([result.slides[2].templatePage,result.slides[2].reactionIds],[REACTION,["101"]],"one real post left moves to the one-post page");
   assert.deepEqual([result.slides[3].templatePage,result.slides[3].reactionIds],[REACTIONS,["101","102"]],"two posts use the two-post page");
+  assert.deepEqual([result.slides[4].templatePage,result.slides[4].reactionIds],[THREE,["101","102","103"]],"three is the most a page holds");
+  assert.deepEqual(catalog.filter(page=>page.cards).map(page=>[page.label,page.cards]),[["Reaction",1],["Two reactions",2],["Three reactions",3]]);
+  assert.equal(pagesLib.reactionPageFor(catalog,5).index,THREE); assert.equal(pagesLib.reactionPageFor(catalog,0).index,REACTION);
 });
 
 test("a photo pair stays two slides in a row, and a lone half becomes a Text + Media slide",()=>{
@@ -405,6 +409,8 @@ test("the designer fills post cards word for word, keeps links, places photos an
   assert.ok(comments.some(text=>text==="Photo: @openai on X, https://x.com/openai/status/1"));
   assert.ok(comments.some(text=>text==="Photo to add: Captura del perfil"));
   assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}),"the deck passes Engine's library validation");
+  // Unverified accounts show no check mark and a round photo.
+  assert.equal(slot(1,"reaction-badge").hidden,true); assert.equal(slot(1,"reaction-avatar").radius,slot(1,"reaction-avatar").width/2);
 
   const checks=review.houseChecks(document,pages,catalog,spanish,[{pageId:document.pages[1].id,exportError:"Shorten “Post text” before exporting"}]);
   assert.ok(checks.some(issue=>issue.slide===2&&issue.severity==="must_fix"&&/Shorten/.test(issue.problem)),"a slide Export refuses is a must-fix");
@@ -467,6 +473,45 @@ test("the art director gives the photo pair a seam, kept to the editor's range, 
   } finally {
     claude.ask=real;
   }
+});
+
+test("the designer puts one to three posts on a page by size and draws each account as X does",async()=>{
+  const short=(id,handle,author={})=>({...post(id,handle,`Short take ${id}`,100),author:{...post(id,handle,"",0).author,...author}});
+  const photo={url:"https://pbs.twimg.com/media/HWYj89XW8AABX1T.png?name=large",width:758,height:372};
+  const org=short("201","kobeissi",{verified:true,badge:"gold",square:true}),paid=short("202","bark",{verified:true,badge:"blue"}),old=short("203","legacy",{verified:true});
+  const pictured={...post("204","baude","Yesterday while I was at lunch, Claude deleted a year of con law lecture notes and my current syllabus.",7291),media:photo};
+  const medium=post("205","essay","word ".repeat(70).trim(),900),long=post("207","novel","word ".repeat(300).trim(),800);
+  const {document,notes,pages}=await deckLib.assembleDeck({
+    profile:english,template,templates:model.BUILT_IN_TEMPLATES,name:"Reactions",caption:"",
+    slides:[
+      {templatePage:REACTION,texts:[{slot:"title",text:"How X reacted"}],reactions:[org,paid,old],slide:0},
+      {templatePage:THREE,texts:[{slot:"title",text:"More reactions"}],reactions:[pictured,medium,short("206","sam")],slide:1},
+      {templatePage:REACTION,texts:[{slot:"title",text:"The long one"}],reactions:[long],slide:2},
+    ],
+  });
+  // Three short posts share the three-card page. A photo post takes a page; an 8-line post and a short one share the next.
+  assert.deepEqual(pages.map(page=>[page.templatePage,page.slide]),[[THREE,0],[REACTION,1],[REACTIONS,1],[REACTION,2]]);
+  assert.ok(notes.some(note=>/slide 2 didn't fit one page at full size, so they continue on the next page/.test(note)),notes.join(" | "));
+  const elements=index=>document.pages[index].canvas.elements, slot=(index,name)=>elements(index).find(element=>element.slot===name);
+  // The continued page keeps the slide's title.
+  assert.equal(slot(2,"title").text,"More reactions");
+  // Check marks: gold with its gradient for organizations, blue for paid accounts, blue for posts saved with only "verified".
+  const gold=slot(0,"reaction-badge"),blue=slot(0,"reaction-badge-2"),legacy=slot(0,"reaction-badge-3");
+  assert.equal(gold.hidden,false); assert.equal(gold.path,model.X_BADGES.gold.path); assert.equal(gold.fill,model.X_BADGES.gold.fill); assert.deepEqual(gold.gradient,model.X_BADGES.gold.gradient);
+  assert.equal(blue.path,model.X_BADGES.blue.path); assert.equal(blue.fill,"#1D9BF0"); assert.equal(blue.gradient,undefined); assert.equal(legacy.fill,"#1D9BF0");
+  // Organizations' profile photos are rounded squares; everyone else's are round.
+  const square=slot(0,"reaction-avatar"),round=slot(0,"reaction-avatar-2");
+  assert.ok(Math.abs(square.radius-square.width*.113)<1e-9); assert.equal(round.radius,round.width/2);
+  // The post's photo shows under its text at full width, keeping its proportions; cards without one keep it hidden.
+  const shown=slot(1,"reaction-media"),text=slot(1,"reaction-text");
+  assert.equal(shown.hidden,false); assert.equal(shown.src,photo.url); assert.ok(Math.abs(shown.width-text.width)<1e-6);
+  assert.ok(Math.abs(shown.height/shown.width-372/758)<1e-9); assert.equal(shown.intrinsicWidth,758); assert.equal(shown.publicAlt,"Photo in @baude's post");
+  assert.equal(slot(0,"reaction-media").hidden,true); assert.equal(slot(2,"reaction-media").hidden,true);
+  // A post longer than its card is cut at a word with "…", like X's "Show more".
+  assert.ok(slot(3,"reaction-text").text.endsWith("…")); assert.equal(slot(2,"reaction-text").text,medium.text);
+  // The deck's notes keep every post's link and stats.
+  assert.ok(document.comments.some(comment=>comment.text.includes("@baude (7.3K likes · 10 reposts · Nov 3, 2026): https://x.com/baude/status/204")));
+  assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY,designs:[document]}));
 });
 
 test("the critics' instructions and report name each slide and fix",()=>{
