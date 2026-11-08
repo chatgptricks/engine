@@ -198,7 +198,7 @@ export async function prepareSmartTextExport(design: DesignDocument, signal?: Ab
       const layout = fitted.texts.get(element.id);
       if (element.type !== "text" || !layout) return element;
       if (layout.overflow) throw new Error(`Shorten “${element.name}” before exporting: the text does not fit legibly.`);
-      return { ...element, smartText: undefined, smartFlow: undefined, fontSize: layout.fontSize, autoFitFontSize: undefined, textMode: "fixed" as const, text: layout.lines.map(line => line.text).join("\n"), richText: sanitizeRichText(layout.lines.map(line => scaleRichTextFonts(line.html, layout.fontSize / element.fontSize)).join("<br>")) };
+      return { ...element, smartText: undefined, smartFlow: undefined, fontSize: layout.fontSize, autoFitFontSize: undefined, textMode: "fixed" as const, text: layout.lines.map(line => line.text).join("\n"), richText: sanitizeRichText(layout.lines.map(line => line.text ? scaleRichTextFonts(line.html, layout.fontSize / element.fontSize) : "").join("<br>")) }; // A blank line is the join's own <br>; its "<br>" html would double it.
     }) };
   };
   return { ...design, pages: design.pages.map(page => page.canvas && pageIds.includes(page.id) ? { ...page, canvas: materialize(page.canvas) } : page), ...(design.masterScene ? { masterScene: materialize(design.masterScene) } : {}), ...(design.continuousCanvas ? { continuousCanvas: materialize(design.continuousCanvas) } : {}) };

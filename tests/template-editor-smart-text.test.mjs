@@ -152,6 +152,23 @@ test("blank paragraph lines remain visible in automatic body layout", () => {
   assert.deepEqual(layout.lines.map(line=>line.text),["First paragraph","","Second paragraph"]);
 });
 
+test("Export bakes one blank line between paragraphs, not two", async () => {
+  const saved = {document: globalThis.document, getComputedStyle: globalThis.getComputedStyle};
+  const node = () => ({className: "", style: {}, textContent: "", innerHTML: "", append() {}, remove() {}, getBoundingClientRect() { return {width: (this.textContent || this.innerHTML.replace(/<[^>]+>/g, "")).length * 10}; }});
+  globalThis.document = {createElement: node, querySelector: () => null, body: node(), fonts: {load: async () => [], ready: Promise.resolve()}};
+  globalThis.getComputedStyle = () => ({fontFamily: "system-ui"});
+  try {
+    const design = model.createBlankDesign("Export", "portrait");
+    design.pages[0].canvas = {background: "#111111", elements: [text({text: "First paragraph\n\nSecond paragraph", smartText: {role: "body", lines: 0, minFontSize: 12, maxFontSize: 24, maxHeight: 150}})]};
+    const exported = (await smart.prepareSmartTextExport(design)).pages[0].canvas.elements[0];
+    assert.equal(exported.text, "First paragraph\n\nSecond paragraph");
+    assert.deepEqual(load("lib/template-editor/rich-text-editing.ts").splitRichLines(exported.richText, exported.text), ["First paragraph", "", "Second paragraph"]);
+  } finally {
+    smart.clearSmartTextMeasurements();
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+  }
+});
+
 const page = (elements, extra = {}) => {
   const source = model.designAsTemplate(model.createBlankDesign("Any template", "portrait"), "Any template");
   source.name = "Any template";
