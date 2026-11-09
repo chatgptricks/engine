@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { agentCapabilities } from "../../../template-editor/agent-decks";
 import { htmlTokensForGuide } from "../../../template-editor/html-layer";
-import { formatDimensions, type CanvasElement, type DesignComment, type DesignDocument, type TextElement } from "../../../template-editor/model";
+import { formatDimensions, type CanvasElement, type DesignComment, type DesignDocument, type ImageElement, type TextElement } from "../../../template-editor/model";
 import { platformCardClass, PLATFORMS } from "../../../template-editor/platform-cards";
 import { htmlTokensForTemplate } from "../../brand-actions";
 import { imageBlock, RecreateError, work } from "../claude";
@@ -41,9 +41,9 @@ const WORKFLOW = [
 const LAYOUT_RULES = [
   "Keep each template page's branding layers (logo, hairlines, handle, page number, swipe line) where they are: never cover or redraw them",
   "The cover is the template's Cover page, exactly: the photo fills its photo frame under the template's fades, and the headline sits in its headline slot at the template's size and casing, its key phrase in [[ ]] for the accent, as the template's own cover sets one apart: the words the original sets apart, or else the phrase that carries the story, without a leading article. An exact copy's too: the accent is our template's look, not a change to the words",
-  "A photo keeps every face whole and clear of the template's fades: no face is cut by the frame's edges (each is whole inside the frame, or out of it). Cut it at about its frame's proportions, then place it in the frame with cropX and cropY (0-100: the point of the photo the frame centers on) and cropScale (above 1 to come closer). When filling the frame would cut a face, fit: contain keeps them all; then cropScale brings it as close to filling the frame as the faces allow (often about 1.1), and an overlay at its top puts it low in the frame (cropY 100), its people clear of the card above",
+  "A photo keeps every face whole and clear of the template's fades: no face is cut by the frame's edges (each is whole inside the frame, or out of it). Cut it at about its frame's proportions, then place it in the frame with cropX and cropY (0-100: the point of the photo the frame centers on) and cropScale (above 1 to come closer). When filling the frame would cut a face, fit: contain keeps them all; then cropScale brings it as close to filling the frame as the faces allow (often about 1.1), and it sits low in the frame (cropY 100), whether or not it still holds an overlay, so the template's bottom fade takes its bottom edge and its people sit clear of the card above. A fade hides a photo's edge only at the frame's own edge: any other edge left inside the frame shows as a straight line unless a band covers it (below)",
   "A photo we reuse never shows the original's overlays (its cards, captions, stickers, logos, text). Engine can't paint them out: cut the photo's box clear of them, or cover them with the layer we rebuild in their place",
-  "Where an overlay reaches past the layer we rebuild over it (or there is none, as on the Follow page), our layer keeps its usual size and place, never stretched to cover it: the rest goes under a band of var(--color-background), an HTML layer right above the photo in the stack (add_html index), under the template's fades and our layers. It is solid to about 40 px past the overlay's lowest edge, its border and shadow too (a thin line left showing is easy to miss at look_at_slides' size), then fades out into the photo over 100 px or more (linear-gradient to transparent) the way the template's fades do, clear of the faces. A photo that doesn't fill its frame (fit: contain, to keep every face whole) gets the same band over its top edge, so no hard line shows in the margins",
+  "Where an overlay reaches past the layer we rebuild over it (or there is none, as on the Follow page), our layer keeps its usual size and place, never stretched to cover it: the rest goes under a band of var(--color-background), an HTML layer right above the photo in the stack (add_html index), under the template's fades and our layers. It is solid to about 40 px past the overlay's lowest edge, its border and shadow too (a thin line left showing is easy to miss at look_at_slides' size), then fades out into the photo over 100 px or more (linear-gradient to transparent) the way the template's fades do, clear of the faces. A photo that doesn't fill its frame (fit: contain, to keep every face whole) gets the same kind of band over each edge it leaves inside the frame (at cropY 100, its top edge): solid just past the edge, then fading into the photo clear of the faces, so no hard line shows",
   "Every part that isn't a photo is rebuilt, never pasted from a screenshot: words as text, a post or comment as our card (Cards), a chart from its data, a logo from find_logos",
   "Rebuilt text matches the original's size and stays readable: never below var(--min-text-size), with text-wrap: pretty so no word sits alone on a line",
   "A better layout than the template page's is allowed when the content fits it (two columns, a timeline, a quote card, a comparison): build it on the closest template page, in HTML layers inside the page's margins (var(--margin-left) and the rest), and hide or empty only the template layers it replaces",
@@ -162,6 +162,57 @@ function ownSlots(template: StageContext["template"], pick: (pages: PageCatalog[
 const builtOn = (page: DesignDocument["pages"][number] | undefined, own: { slots: Set<string> }) =>
   (page?.canvas?.elements ?? []).some(element => element.slot && own.slots.has(element.slot));
 
+/** Where a photo shows in its frame, in the frame's units: object-fit and object-position place it, a flip mirrors it, then the zoom scales it about the crop point (canvas.tsx). Null without the photo's own size. */
+export function shownPhoto(photo: ImageElement): { left: number; top: number; right: number; bottom: number } | null {
+  const { intrinsicWidth: sourceWidth, intrinsicHeight: sourceHeight, width: frameWidth, height: frameHeight } = photo;
+  if (!sourceWidth || !sourceHeight) return null;
+  const fit = (photo.fit === "contain" ? Math.min : Math.max)(frameWidth / sourceWidth, frameHeight / sourceHeight);
+  const width = sourceWidth * fit, height = sourceHeight * fit, zoom = photo.cropScale ?? 1;
+  const originX = frameWidth * photo.cropX / 100, originY = frameHeight * photo.cropY / 100;
+  let left = (frameWidth - width) * photo.cropX / 100, top = (frameHeight - height) * photo.cropY / 100;
+  if (photo.flipX) left = frameWidth - left - width;
+  if (photo.flipY) top = frameHeight - top - height;
+  const zoomed = (origin: number, at: number) => origin + (at - origin) * zoom;
+  return { left: zoomed(originX, left), right: zoomed(originX, left + width), top: zoomed(originY, top), bottom: zoomed(originY, top + height) };
+}
+
+/**
+ * A photo that leaves an edge inside a frame the template fades, with no HTML
+ * layer (a band) over that edge, said for the designer; else null. A fade hides
+ * an edge only at the frame's own edge, so the photo's shows as a straight line
+ * (run 8 of the design proof: a strip contained at cropY 77 stopped at y 803).
+ */
+function looseEdge(document: DesignDocument): string | null {
+  const scale = formatDimensions(document).width / 360, at = (value: number) => Math.round(value * scale), slack = 2 / scale, margin = 4 / scale;
+  for (const [index, page] of document.pages.entries()) {
+    const elements = page.canvas?.elements ?? [];
+    for (const [order, photo] of elements.entries()) {
+      if (photo.type !== "image" || !photo.slot || photo.hidden) continue;
+      const shown = shownPhoto(photo), above = elements.slice(order + 1).filter(item => !item.hidden);
+      const across = (item: CanvasElement) => Math.min(item.x + item.width, photo.x + photo.width) - Math.max(item.x, photo.x) > photo.width / 2;
+      const within = (item: CanvasElement) => Math.min(item.y + item.height, photo.y + photo.height) - Math.max(item.y, photo.y) > item.height / 2;
+      if (!shown || !above.some(item => item.type === "shape" && item.gradient && across(item) && within(item))) continue;
+      const frame = { left: photo.x, top: photo.y, right: photo.x + photo.width, bottom: photo.y + photo.height };
+      const edge = { left: photo.x + shown.left, top: photo.y + shown.top, right: photo.x + shown.right, bottom: photo.y + shown.bottom };
+      const seen = { left: Math.max(frame.left, edge.left), top: Math.max(frame.top, edge.top), right: Math.min(frame.right, edge.right), bottom: Math.min(frame.bottom, edge.bottom) };
+      const covered = (left: number, top: number, right: number, bottom: number) =>
+        above.some(item => item.type === "html" && item.x <= left + slack && item.x + item.width >= right - slack && item.y <= top + slack && item.y + item.height >= bottom - slack);
+      const slide = index + 1;
+      if (frame.bottom - edge.bottom > slack && !covered(seen.left, edge.bottom - margin, seen.right, edge.bottom + margin)) {
+        return `Slide ${slide}'s photo stops at y ${at(edge.bottom)}, ${at(frame.bottom - edge.bottom)} px above the bottom of its frame (y ${at(frame.bottom)}). The template's fade hides a photo's edge only at the frame's own, so this one shows as a straight line. Set cropY 100 so the photo sits at the frame's bottom (cropScale brings it closer, as far as the faces allow), or cover that edge with a band, then look at it again.`;
+      }
+      if (edge.top - frame.top > slack && !covered(seen.left, edge.top - margin, seen.right, edge.top + margin)) {
+        return `Slide ${slide}'s photo starts at y ${at(edge.top)}, ${at(edge.top - frame.top)} px below the top of its frame, and nothing covers that edge, so it shows as a straight line. Cover it with a band of var(--color-background): an HTML layer right above the photo in the stack, solid just past the edge, then fading into the photo clear of the faces. Then look at it again.`;
+      }
+      const leftLoose = edge.left - frame.left > slack && !covered(edge.left - margin, seen.top, edge.left + margin, seen.bottom);
+      if (leftLoose || frame.right - edge.right > slack && !covered(edge.right - margin, seen.top, edge.right + margin, seen.bottom)) {
+        return `Slide ${slide}'s photo shows from x ${at(seen.left)} to x ${at(seen.right)}, inside its frame's x ${at(frame.left)} to x ${at(frame.right)}, so its sides show as straight lines. Bring it closer with cropScale until it fills the frame's width, as far as the faces allow, or cut a wider box, then look at it again.`;
+      }
+    }
+  }
+  return null;
+}
+
 /** Why the deck can't be handed in yet, or null. */
 async function problemWith(session: DesignSession, value: Submitted, slides: number): Promise<string | null> {
   const document = session.document;
@@ -185,6 +236,8 @@ async function problemWith(session: DesignSession, value: Submitted, slides: num
   if (sample && headline?.type === "text" && headline.text.trim() && !accented(headline)) {
     return `The cover's headline sets its key phrase apart in the accent, as the template's cover does: give the ${sample.slot} slot its words again with [[ ]] around that phrase (edit_deck update_element text), then look at it again.`;
   }
+  const edge = looseEdge(document);
+  if (edge) return edge;
   if (Object.keys(session.tokens).length) {
     const off = deckOffBrand(document, session.tokens);
     if (off.length) return `These HTML layers leave the brand: ${off.join(" ")}`;
