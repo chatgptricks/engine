@@ -240,6 +240,8 @@ const STYLE_ATTRIBUTE = /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const STYLE_BLOCK = /<style\b[^>]*>([\s\S]*?)(?:<\/style\s*>|$)/gi;
 const VARIABLE = /var\(\s*(--[\w-]+)/g;
 const CARD_MARK = new RegExp(`\\sclass\\s*=\\s*["']?[^"'>]*(?<![\\w-])${PLATFORM_CARD_CLASS}(?![\\w-])`, "i");
+/** A mask (mask-image: linear-gradient(90deg, transparent, black 40px…)) reads only its colors' opacity and paints nothing. */
+const MASK = /^(?:-webkit-)?mask(?:-|$)/;
 
 /** The colors a value writes out itself (#hex, rgb(), a named color) instead of a brand variable, in order. */
 function colorLiterals(value: string): string[] {
@@ -280,7 +282,7 @@ export function offBrand(html: string, css: string | undefined, tokens: Record<s
   const own = new Set(declarations.filter(item => item.property.startsWith("--")).map(item => item.property));
   let written = false;
   for (const { property, value } of declarations) {
-    const literal = colorLiterals(value).find(color => !platform || !isPlatformColor(platform, color));
+    const literal = MASK.test(property) ? undefined : colorLiterals(value).find(color => !platform || !isPlatformColor(platform, color));
     if (literal && platform) problems.add(`${property}: ${value.trim().slice(0, 60)} writes ${literal}, which isn't one of ${PLATFORM_NAME[platform]}'s own colors (${PLATFORM_COLORS[platform].join(", ")}). Write one of those as it is, or use the brand's variables.`);
     else if (literal) problems.add(`${property}: ${value.trim().slice(0, 60)} writes the color ${literal} itself. Use the brand's variables (var(--color-accent), var(--color-text)…); for a tint, color-mix(in srgb, var(--color-text) 20%, transparent) or opacity.`);
     written ||= Boolean(literal);
@@ -474,9 +476,32 @@ async function placeImages(session: DesignSession, operations: Record<string, un
   return await swap(operations) as Record<string, unknown>[];
 }
 
+/**
+ * Words given to a template text slot read as create_deck's do: in the page's
+ * text style, with [[ ]] around the words the accent sets apart. Returns the
+ * operations with plain words and the accented words to put back, by slot.
+ */
+function slotWords(session: DesignSession, operations: Record<string, unknown>[]): { operations: Record<string, unknown>[]; accented: Map<string, string> } {
+  const accented = new Map<string, string>(), noFinalPeriods = session.profile.format?.noFinalPeriods ?? true;
+  const accent = session.tokens["--color-accent"] ?? "#00D98A";
+  return {
+    accented,
+    operations: operations.map(operation => {
+      const properties = operation.properties as Record<string, unknown> | undefined;
+      if (operation.op !== "update_element" || typeof properties?.text !== "string") return operation;
+      const element = session.document?.pages.find(page => page.id === operation.pageId)?.canvas?.elements.find(item => item.id === operation.elementId);
+      if (!element || !slotText(element)) return operation;
+      const words = emphasis(cleanSlideText(properties.text, noFinalPeriods), accent);
+      if (words.richText) accented.set(slotKey(String(operation.pageId), element), words.richText);
+      return { ...operation, properties: { ...properties, text: words.text } };
+    }),
+  };
+}
+
 async function editDeck(session: DesignSession, input: { operations: Record<string, unknown>[] }): Promise<string> {
   if (!session.document) throw new ToolError("There is no deck yet: build it with create_deck first.");
-  let operations = await placeImages(session, input.operations);
+  const words = slotWords(session, input.operations);
+  let operations = await placeImages(session, words.operations);
   // HTML layers get the brand guide's colors, fonts and sizes as CSS variables.
   if (addsHtmlLayers(operations)) operations = withHtmlLayerTokens(operations, session.tokens);
   const before = new Map(session.document.pages.map(page => [page.id, JSON.stringify(page)]));
@@ -487,6 +512,10 @@ async function editDeck(session: DesignSession, input: { operations: Record<stri
   } catch (error) {
     if (error instanceof AgentDeckValidationError) throw new ToolError(`Nothing was changed. Fix these and try again: ${issues(error)}`);
     throw error;
+  }
+  for (const page of next.pages) for (const element of page.canvas?.elements ?? []) {
+    const richText = words.accented.get(slotKey(page.id, element));
+    if (richText && element.type === "text") element.richText = richText;
   }
   // Each HTML layer the edit adds or changes keeps to the brand, as it is after the edit (a platform's card by its mark).
   // Without a brand guide or template colors there are no variables to keep to.
@@ -657,6 +686,14 @@ const LOGO_CREDITS: Record<LogoSource, string> = { guide: "the brand guide's log
 /** The designer's tools for one run. */
 export function designTools(session: DesignSession): ClientTool[] {
   const exact = session.mode === "exact";
+  // work() runs a turn's tool calls together. The deck's run one at a time, in the order they were called,
+  // so a look sent with an edit sees the edit.
+  let deckTurn: Promise<unknown> = Promise.resolve();
+  const inOrder = <T>(run: () => Promise<T>): Promise<T> => {
+    const next = deckTurn.then(run, run);
+    deckTurn = next.catch(() => undefined);
+    return next;
+  };
   const slideImage = (slide: number) => {
     const image = session.slides[slide - 1];
     if (!image) throw new ToolError(session.slides.length ? `The original has ${session.slides.length} slides.` : "The original's slides aren't available in this run.");
@@ -675,7 +712,7 @@ export function designTools(session: DesignSession): ClientTool[] {
         caption: z.string().max(2200).describe(exact ? "The original's caption, word for word (translated faithfully when the page's language differs)" : "The post's caption, in the page's voice"),
         slides: z.array(CreateSlide).min(1).max(20),
       }),
-      run: input => createDeck(session, input as { name: string; caption: string; slides: z.infer<typeof CreateSlide>[] }),
+      run: input => inOrder(() => createDeck(session, input as { name: string; caption: string; slides: z.infer<typeof CreateSlide>[] })),
     },
     {
       name: "edit_deck",
@@ -683,16 +720,16 @@ export function designTools(session: DesignSession): ClientTool[] {
         "Change the deck: all the operations in one call land together, or none do. Ids come from the deck view create_deck and edit_deck return. Positions and sizes are output pixels.",
         "add_html draws part of a slide (or a whole slide) from HTML and CSS: a chart, a table, a timeline, a comparison, a logo grid. To put it where the template has a photo or chart frame, pass replaces with the frame's id: it takes the frame's box and its place in the template's layout.",
         "HTML layers use the brand's CSS variables for every color and type role (var(--color-accent), var(--title-font), var(--body-size)…); a color written out is refused. Images in them only by an asset path a tool gave you.",
-        "Headlines and photos people will change stay native text and image layers: change them with update_element, never inside HTML.",
+        "Headlines and photos people will change stay native text and image layers: change them with update_element, never inside HTML. A text slot's new words take [[ ]] for the accent, as in create_deck.",
       ].join(" "),
       schema: z.object({ operations: z.array(z.record(z.string(), z.unknown())).min(1).max(100).meta({ items: OPERATIONS }) }),
-      run: input => editDeck(session, input as { operations: Record<string, unknown>[] }),
+      run: input => inOrder(() => editDeck(session, input as { operations: Record<string, unknown>[] })),
     },
     {
       name: "look_at_slides",
       description: "See slides as they export, to check what you built: the words fit, nothing overlaps, the chart reads, the photos sit well. Look at every slide you changed before you hand the deck in. At most 4 at a time.",
       schema: z.object({ slides: z.array(z.number().int().min(1).max(20)).min(1).max(4).describe("Slide numbers, from 1") }),
-      run: input => lookAtSlides(session, input.slides as number[]),
+      run: input => inOrder(() => lookAtSlides(session, input.slides as number[])),
     },
     {
       name: "find_logos",

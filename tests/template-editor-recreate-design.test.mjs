@@ -175,6 +175,9 @@ test("HTML layers keep to the brand's variables: written colors and unknown vari
   assert.equal(tools.offBrand('<div style="color:#FF0000">x</div>',"",tokens).length,1);
   assert.match(tools.offBrand("<p>x</p>","p{color:white}",tokens)[0],/writes the color white/);
   assert.match(tools.offBrand('<svg><rect fill="rgb(0, 0, 0)"/></svg>',"",tokens)[0],/writes the color rgb\(0, 0, 0\)/);
+  // A mask reads only its colors' opacity and paints nothing, so its black is fine; what it paints still isn't.
+  assert.deepEqual(tools.offBrand('<div class="band"></div>',".band{background:var(--color-background);-webkit-mask-image:linear-gradient(90deg,transparent,black 40px);mask-image:linear-gradient(90deg,transparent,black 40px);mask:linear-gradient(#000,transparent)}",tokens),[]);
+  assert.match(tools.offBrand('<div class="band"></div>',".band{background:black;mask-image:linear-gradient(black,transparent)}",tokens)[0],/^background: black writes the color black/);
   assert.match(tools.offBrand("<p>x</p>","p{color:var(--color-made-up)}",tokens)[0],/isn't one of the brand's variables/);
   assert.match(tools.offBrand("<style>p{background:#0B1014}</style><p>x</p>","",tokens)[0],/#0B1014/,"style blocks are read too");
   assert.deepEqual(tools.offBrand("<p>x</p>","p{font-family:var(--title-font);white-space:nowrap;text-transform:var(--title-case)}",tokens),[],"words that only look like colors don't count");
@@ -378,19 +381,41 @@ test("slide 1 is built on the Cover page and the last on the Follow page, or the
   const handIn={pages:[{slide:1,layout:"Cover"},{slide:2,layout:"Text + Media"},{slide:3,layout:"Follow"}],notes:[]};
   await stand(async({call,invoke,json})=>{
     const build=async(first,last={templatePage:FOLLOW,slots:{cta:"FOR MORE"}})=>{
-      await json("create_deck",{name:"AI vs Jobs",caption:"Openings fell as rates rose.",slides:[first,{templatePage:MEDIA,slots:{title:"What the chart shows"}},last]});
+      const built=await json("create_deck",{name:"AI vs Jobs",caption:"Openings fell as rates rose.",slides:[first,{templatePage:MEDIA,slots:{title:"What the chart shows"}},last]});
       await invoke("look_at_slides",{slides:[1,2,3]});
+      return built.deck;
     };
     await build({templatePage:MEDIA,slots:{title:APPROVED}});
     assert.match(await call.submit.check(handIn),new RegExp(`Slide 1 is the post's cover: build it on the Cover page \\(templatePage ${COVER}\\)`));
     await build({templatePage:COVER,slots:{"cover-headline":APPROVED}},{templatePage:MEDIA,slots:{title:"Follow us"}});
     assert.match(await call.submit.check(handIn),new RegExp(`The last slide is the Follow page \\(templatePage ${FOLLOW}\\)`));
-    await build({templatePage:COVER,slots:{"cover-headline":APPROVED}});
+    const deck=await build({templatePage:COVER,slots:{"cover-headline":APPROVED}});
+    // The template's cover sets its key phrase apart in the accent, so a cover without one isn't handed in.
+    assert.match(await call.submit.check(handIn),/The cover's headline sets its key phrase apart in the accent, as the template's cover does: give the cover-headline slot its words again with \[\[ \]\]/);
+    // edit_deck takes [[ ]] in a text slot's words, in the page's text style, so the deck isn't built again.
+    // A look sent in the same turn waits for the edit, as work() runs a turn's calls together.
+    const headline=layer(deck,1,"cover-headline"),follow=deck.slides[2];
+    const [edited,looked]=await Promise.all([
+      invoke("edit_deck",{operations:[
+        {op:"update_element",pageId:deck.slides[0].pageId,elementId:headline.id,properties:{text:"AI didn’t take the jobs. [[Rates]] did."}},
+        {op:"add_slide",index:3,slide:{layout:"blank",background:"#0B1014",elements:[]}},
+      ]}),
+      invoke("look_at_slides",{slides:[1,4]}),
+    ]);
+    const added=JSON.parse(edited).deck.slides.find(item=>item.slide===4);
+    assert.ok(added,"the edit added slide 4");
+    assert.deepEqual(looked.filter(block=>block.type==="text").map(block=>block.text),["Slide 1","Slide 4"],"the look saw the edit's new slide");
+    await json("edit_deck",{operations:[{op:"remove_slide",pageId:added.pageId}]});
     assert.equal(await call.submit.check(handIn),null);
+    assert.ok(follow);
     return handIn;
   },async()=>{
     const {output}=await design(context);
     assert.deepEqual(output.pages.map(page=>page.layout),["Cover","Text + Media","Follow"]);
+    const saved=await deckLib.loadDeck(context.ownerKey,output.deckId);
+    const headline=saved.pages[0].canvas.elements.find(element=>element.slot==="cover-headline");
+    assert.equal(headline.text,"AI didn’t take the jobs. Rates did","in the page's text style: no final period");
+    assert.match(headline.richText,/<span style="color: #00D98A">Rates<\/span>/i,"and its accent");
   });
 });
 
@@ -411,12 +436,17 @@ test("another platform's comments become our cards in its own colors, and the de
   const context=await contextFor("exact",{source:done(redditNotes),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null})});
   await stand(async({call,invoke,refused,json})=>{
     assert.match(call.system,/the frame of our X card: 936 px wide at x 72, 24 px corners and a 3 px border/,"cards take the template's X card frame");
-    assert.match(call.system,/Inside the card, as on our X card, 44 px of padding; the avatar, 105 px and round; beside it the name in bold at 37 px/,"and its header's sizes");
+    assert.match(call.system,/A card alone on its slide: 44 px of padding \(48 at the sides, 52 at the bottom\); the avatar 92 px, 24 px from the name; the name and time at 40 px; the words 28 px below the avatar, at 50 px on 63 px lines/,"a lone card's sizes are the approved proof's");
+    assert.match(call.system,/A card on a photo, compact so the photo shows: 34 px of padding \(40 at the sides, 40 at the bottom\); the avatar 64 px, 18 px from the name; the name and time at 32 px; the words 18 px below the avatar, at 38 px on 49 px lines/,"and so are a cover card's");
     assert.match(call.system,/the outermost element of the layer's markup carries class="platform-card platform-reddit"/,"the mark the review reads too");
     assert.match(call.system,/the card #0E1113, its border #2F3336, the name #F2F4F5, the time #8BA2AD, the words #EEF1F3/);
     assert.match(call.system,/red #FF4500, orange #FF8717, blue #24A0ED, green #46D160/,"the avatars by the color names the notes use");
     assert.match(call.system,/a band of var\(--color-background\)/,"an overlay our card can't cover goes under a band of the brand's background");
     assert.match(call.system,/no period at the end of a paragraph/,"HTML words follow the page's no-final-periods style");
+    assert.match(call.system,/then the words, word for word, in the page's text style: no period at the end of the last sentence, and curly quotes/,"said in the card rule too, where the words are");
+    assert.match(call.system,/The page's text style \(Layout\) still applies to them, in slots and in HTML alike/,"and in the exact copy's words rule");
+    assert.match(call.system,/An exact copy's too: the accent is our template's look, not a change to the words/,"the cover's key phrase is set apart even when the original's headline is one color");
+    assert.match(call.system,/place it so the least of the overlay shows \(an overlay at the photo's top: cropY 100/,"the Follow photo shows as little of the original's overlay as it can");
     assert.match(call.system,/x 72, y 90, 936 px wide and 1262 px tall/,"a lone card is centred in the guide's content area");
     const photo=await json("cut_from_source",{slide:1,box:PICTURE,kind:"photo",what:"Friends at a dinner table"});
     const built=await json("create_deck",{name:"Small decisions",caption:sourceNotes.post.caption,slides:[

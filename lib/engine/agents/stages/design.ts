@@ -16,7 +16,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { agentCapabilities } from "../../../template-editor/agent-decks";
 import { htmlTokensForGuide } from "../../../template-editor/html-layer";
-import { formatDimensions, type DesignComment, type DesignDocument } from "../../../template-editor/model";
+import { formatDimensions, type CanvasElement, type DesignComment, type DesignDocument, type TextElement } from "../../../template-editor/model";
 import { platformCardClass, PLATFORMS } from "../../../template-editor/platform-cards";
 import { htmlTokensForTemplate } from "../../brand-actions";
 import { imageBlock, RecreateError, work } from "../claude";
@@ -40,10 +40,10 @@ const WORKFLOW = [
 
 const LAYOUT_RULES = [
   "Keep each template page's branding layers (logo, hairlines, handle, page number, swipe line) where they are: never cover or redraw them",
-  "The cover is the template's Cover page, exactly: the photo fills its photo frame under the template's fades, and the headline sits in its headline slot at the template's size and casing, its key words in [[ ]] for the accent",
+  "The cover is the template's Cover page, exactly: the photo fills its photo frame under the template's fades, and the headline sits in its headline slot at the template's size and casing, its key phrase in [[ ]] for the accent, as the template's own cover sets one apart: the words the original sets apart, or else the phrase that carries the story. An exact copy's too: the accent is our template's look, not a change to the words",
   "A photo keeps every face whole and clear of the template's fades: cut it at about its frame's proportions, then place it in the frame with cropX and cropY (0-100: the point of the photo the frame centers on) and cropScale (above 1 to come closer)",
   "A photo we reuse never shows the original's overlays (its cards, captions, stickers, logos, text). Engine can't paint them out: cut the photo's box clear of them, or cover them with the layer we rebuild in their place",
-  "Where an overlay reaches past the layer we rebuild over it (or there is none, as on the Follow page), our layer keeps its usual size and place, never stretched to cover it: the rest goes under a band of var(--color-background), an HTML layer right above the photo in the stack (add_html index), under the template's fades and our layers, solid over the overlay and fading out into the photo below it (linear-gradient to transparent) the way the template's fades do, clear of the faces",
+  "Where an overlay reaches past the layer we rebuild over it (or there is none, as on the Follow page), our layer keeps its usual size and place, never stretched to cover it: the rest goes under a band of var(--color-background), an HTML layer right above the photo in the stack (add_html index), under the template's fades and our layers, solid over the overlay and fading out into the photo below it (linear-gradient to transparent) the way the template's fades do, clear of the faces. A photo that doesn't fill its frame (fit: contain, to keep every face whole) gets the same band over its top edge, so no hard line shows in the margins",
   "Every part that isn't a photo is rebuilt, never pasted from a screenshot: words as text, a post or comment as our card (Cards), a chart from its data, a logo from find_logos",
   "Rebuilt text matches the original's size and stays readable: never below var(--min-text-size), with text-wrap: pretty so no word sits alone on a line",
   "A better layout than the template page's is allowed when the content fits it (two columns, a timeline, a quote card, a comparison): build it on the closest template page, in HTML layers inside the page's margins (var(--margin-left) and the rest), and hide or empty only the template layers it replaces",
@@ -52,7 +52,7 @@ const LAYOUT_RULES = [
   "Every color in HTML comes from the brand's variables (a platform's card is the one exception: Cards); a tint is color-mix(in srgb, var(--color-text) 20%, transparent) or opacity",
   "An HTML layer's CSS pixels are output pixels unless you set designWidth: a 1080-pixel slide is 1080 CSS pixels wide",
   "A chart reads at phone size: its labels are at least var(--min-text-size) and never touch or overlap (show every other year when they crowd), and each line is named in words, next to it or in a legend, never by its color alone",
-  "The Follow page is made for this post: its call to action (the cta slot, in the accent) names what the page gives more of, tied to the post's subject (for a post of life stories, FOR MORE LIFE STORIES), on one line under FOLLOW THIS PAGE: about 21 characters at most. Its photo frame shows a photo from the post again, closer (cropScale about 1.3 to 1.6): the people in it stay whole, and the photo's own pixels aren't blown up past about twice their size. With no photo in the post, it keeps the template's placeholder",
+  "The Follow page is made for this post: its call to action (the cta slot, in the accent) names what the page gives more of, tied to the post's subject (for a post of life stories, FOR MORE LIFE STORIES), on one line under FOLLOW THIS PAGE: about 21 characters at most. Its photo frame shows a photo from the post again, closer (cropScale about 1.3 to 1.6): the people in it stay whole, and the photo's own pixels aren't blown up past about twice their size. When the photo still holds the original's overlay, place it so the least of the overlay shows (an overlay at the photo's top: cropY 100, the photo as high as it goes), so the band over the rest stays short and the faces sit above the bottom fade. With no photo in the post, it keeps the template's placeholder",
   "A template text slot left without words is hidden for you (an empty list would still draw its bullet); give it words and it shows again",
 ];
 
@@ -62,7 +62,7 @@ const textStyle = (profile: StageContext["profile"]) =>
 
 const EXACT_RULES = [
   "One deck page per original slide, in the original's order (the source notes' slides). One slide stays one slide. A slide that repeats an earlier one (the same post, story or words again) is left out: say so in your notes",
-  "Each slide's words go in as the source notes give them, by role: the cover headline in the cover's headline slot, titles in title slots, body text in body slots. Nothing is added, cut, merged or reworded",
+  "Each slide's words go in as the source notes give them, by role: the cover headline in the cover's headline slot, titles in title slots, body text in body slots. Nothing is added, cut, merged or reworded. The page's text style (Layout) still applies to them, in slots and in HTML alike, as create_deck applies it to slots, and so does the accent on the cover headline's key phrase: that isn't rewording",
   "A post's or comment's words show twice in the source notes, in the slide's texts and in its part: they go in once, in its card, from the part",
   "Parts: a photo is cut with cut_from_source from its box in the source notes; a post from X becomes our X card (x_post with its handle, words, slide and boxes); another platform's post or comment (a screenshot of one) becomes our card in HTML (Cards); a chart is rebuilt from the real series it shows with chart_data and drawn in an HTML layer; a logo comes from find_logos, else is cut; a screenshot of anything else, or a graphic made of parts, is rebuilt in HTML from its words, logos and photos",
   "Photos come only from the original's slides, cut with cut_from_source. A photo frame the original has nothing for is hidden (update_element hidden: true), except the Follow page's",
@@ -81,21 +81,32 @@ export const REDDIT_AVATAR = '<svg viewBox="0 0 64 64" aria-hidden="true"><circl
 const PLATFORM_NAMES = { x: "X", reddit: "Reddit" } as const;
 
 /**
- * How the designer draws a post or comment: X's on the template's own X card;
- * another platform's in one HTML layer on that card's frame and with its
- * header's sizes, in the platform's own colors when it has them (a platform
- * card, platform-cards.ts), as the design proof Ivan approved does.
+ * A card's sizes on the design the page approved (the Reddit proof Ivan approved
+ * on 2026-11-08), in px on a page 1080 px wide: alone on its slide, and compact
+ * on a photo. At these sizes the brand's font fills the lines the way the
+ * original's screenshot does.
  */
-function cardRules(template: StageContext["template"], tokens: Record<string, string>): string[] {
+export const CARD_SIZES = {
+  lone: { top: 44, sides: 48, bottom: 52, avatar: 92, gap: 24, name: 40, below: 28, words: 50, lines: 63 },
+  compact: { top: 34, sides: 40, bottom: 40, avatar: 64, gap: 18, name: 32, below: 18, words: 38, lines: 49 },
+} as const;
+
+/**
+ * How the designer draws a post or comment: X's on the template's own X card;
+ * another platform's in one HTML layer on that card's frame, at the approved
+ * design's sizes (CARD_SIZES), in the platform's own colors when it has them (a
+ * platform card, platform-cards.ts), as the design proof Ivan approved does.
+ */
+function cardRules(template: StageContext["template"], tokens: Record<string, string>, noFinalPeriods: boolean): string[] {
   const { width } = formatDimensions(template), scale = width / 360, size = (value: number) => Math.round(value * scale);
-  const elements = template.pages.flatMap(page => page.canvas?.elements ?? []), slot = (name: string) => elements.find(element => element.slot === name);
-  const card = slot("reaction-card"), avatar = slot("reaction-avatar"), name = slot("reaction-name"), words = slot("reaction-text");
+  const card = template.pages.flatMap(page => page.canvas?.elements ?? []).find(element => element.slot === "reaction-card");
   const frame = card?.type === "shape"
     ? `the frame of our X card: ${size(card.width)} px wide at x ${size(card.x)}, ${size(card.radius ?? 0)} px corners and a ${size(card.strokeWidth ?? 0)} px border`
     : "as wide as the page between its margins, with rounded corners and a thin border";
-  const header = card && avatar && name?.type === "text" && words
-    ? `as on our X card, ${size(avatar.x - card.x)} px of padding; the avatar, ${size(avatar.width)} px and round; beside it the name in bold at ${size(name.fontSize)} px, then · and the time in grey at the same size, on one line; the words ${size(words.y - avatar.y - avatar.height)} px below`
-    : "the avatar; beside it the name in bold, then · and the time in grey, on one line; then the words";
+  const sized = ({ top, sides, bottom, avatar, gap, name, below, words, lines }: (typeof CARD_SIZES)[keyof typeof CARD_SIZES]) => {
+    const at = (value: number) => Math.round(value * width / 1080);
+    return `${at(top)} px of padding (${at(sides)} at the sides, ${at(bottom)} at the bottom); the avatar ${at(avatar)} px, ${at(gap)} px from the name; the name and time at ${at(name)} px; the words ${at(below)} px below the avatar, at ${at(words)} px on ${at(lines)} px lines`;
+  };
   const [left, right, top, bottom, pageWidth, pageHeight] = ["--margin-left", "--margin-right", "--margin-top", "--margin-bottom", "--page-width", "--page-height"].map(name => px(tokens[name]));
   const area = left !== null && right !== null && top !== null && bottom !== null && pageWidth !== null && pageHeight !== null
     ? `x ${left}, y ${top}, ${pageWidth - left - right} px wide and ${pageHeight - top - bottom} px tall` : "the page between its margins";
@@ -106,10 +117,10 @@ function cardRules(template: StageContext["template"], tokens: Record<string, st
     `${named} cards keep their platform's own colors, outside the brand on purpose, the way our X card copies X's dark mode. Mark the card: the outermost element of the layer's markup carries class="${platformCardClass("reddit")}" (an X post drawn in HTML: "${platformCardClass("x")}"). In a marked card a color may be written out, as hex, when it's one of the platform's own; every other color still comes from the brand's variables. A card from a platform without colors of its own (Threads, TikTok, YouTube…) is drawn on the same frame in the brand's colors, unmarked`,
     `Reddit's colors: the card ${REDDIT_CARD.card}, its border ${REDDIT_CARD.border}, the name ${REDDIT_CARD.name}, the time ${REDDIT_CARD.time}, the words ${REDDIT_CARD.text}. Its default avatar is this SVG, with COLOR the avatar's color in the original: ${Object.entries(REDDIT_CARD.avatars).map(([name, color]) => `${name} ${color}`).join(", ")}: ${REDDIT_AVATAR}`,
     "These cards are how the page draws other platforms' posts, approved by the page: they stand where the source notes say to avoid a platform's avatars or look",
-    `Inside the card, ${header}. The words word for word. No vote row, buttons, counts or menus, as on our X card: their words in the source notes (Reply, ••• and the vote count) stay out`,
-    "Its words are in the brand's body font (var(--body-font)), sized so its lines hold about as many words as the original's (the brand's font is narrower than most apps', so they often run larger than the original's), on lines about 1.25 times their size, with text-wrap: pretty. Never below var(--min-text-size); a card alone on its slide never below var(--body-size)",
+    `Inside the card, the avatar, round; beside it the name in bold, then · and the time in grey at the same size, on one line; then the words, word for word, in the page's text style: ${noFinalPeriods ? "no period at the end of the last sentence, and " : ""}curly quotes and apostrophes (“ ” ’). No vote row, buttons, counts or menus, as on our X card: their words in the source notes (Reply, ••• and the vote count) stay out`,
+    `Its sizes are the page's approved design, not a guess. A card alone on its slide: ${sized(CARD_SIZES.lone)}. A card on a photo, compact so the photo shows: ${sized(CARD_SIZES.compact)}. The words are in the brand's body font (var(--body-font)), with text-wrap: pretty. Only a comment too long to fit the content area at those sizes takes smaller words: never below var(--body-size) alone on its slide, nor below var(--min-text-size) on a photo`,
     `A card alone on its slide is a blank slide: edit_deck add_slide with layout "blank", background ${tokens["--color-background"] ?? "the brand's background color"}, and the card's layer as its one element. The layer takes the content area (${area}); the card is the outermost element of its markup, hugging its words, and the layer's CSS centers it between the top and bottom margins with :root { display: flex; flex-direction: column; justify-content: center }`,
-    "A card on a photo (a cover's) sits where the original's card was, inside the page's margins (a card at the top starts at the top margin), on the same frame and width as any card. It is compact, so the photo shows: about three quarters of a lone card's sizes (padding, avatar, name and words; its words never below var(--min-text-size)). Its layer is a little taller than the card, the card at the layer's top",
+    "A card on a photo (a cover's) sits where the original's card was, inside the page's margins (a card at the top starts at the top margin), on the same frame and width as any card, at the compact sizes. Its layer is a little taller than the card, the card at the layer's top",
   ];
 }
 
@@ -167,6 +178,13 @@ async function problemWith(session: DesignSession, value: Submitted, slides: num
   if (follow && (document.pages.length < 2 || !builtOn(document.pages.at(-1), follow))) {
     return `The last slide is the ${follow.label} page (templatePage ${follow.index}), with a call to action made for this post${session.mode === "exact" ? " (when the original has no follow slide, add it after the last one: its pages entry is slide 0)" : ""}. Add it, then look at it.`;
   }
+  // The template's own cover headline sets its key phrase apart in the accent, so ours does too.
+  const accented = (element: CanvasElement): element is TextElement => element.type === "text" && /<span\b/i.test(element.richText ?? "");
+  const sample = cover && session.template.pages[cover.index]?.canvas?.elements.find(element => element.slot && cover.slots.has(element.slot) && accented(element));
+  const headline = sample && document.pages[0].canvas?.elements.find(element => element.slot === sample.slot);
+  if (sample && headline?.type === "text" && headline.text.trim() && !accented(headline)) {
+    return `The cover's headline sets its key phrase apart in the accent, as the template's cover does: give the ${sample.slot} slot its words again with [[ ]] around that phrase (edit_deck update_element text), then look at it again.`;
+  }
   if (Object.keys(session.tokens).length) {
     const off = deckOffBrand(document, session.tokens);
     if (off.length) return `These HTML layers leave the brand: ${off.join(" ")}`;
@@ -203,7 +221,7 @@ export const design: StageRunner = async context => {
     `The template: ${template.name}, ${width}×${height} output pixels a slide. Its pages (0-based, for create_deck's templatePage):\n${describePages(templatePages(template))}`,
     `How to work:\n${WORKFLOW}`,
     `Layout:\n${[...LAYOUT_RULES, textStyle(profile)].map(rule => `- ${rule}`).join("\n")}`,
-    `Cards:\n${cardRules(template, tokens).map(rule => `- ${rule}`).join("\n")}`,
+    `Cards:\n${cardRules(template, tokens, profile.format?.noFinalPeriods ?? true).map(rule => `- ${rule}`).join("\n")}`,
     `${exact ? "This exact copy" : "This full recreation"}:\n${(exact ? EXACT_RULES : FULL_RULES).map(rule => `- ${rule}`).join("\n")}`,
     `HTML layers:\n${JSON.stringify(agentCapabilities().htmlLayers)}`,
     Object.keys(tokens).length ? `The brand's CSS variables, set on every HTML layer:\n${Object.entries(tokens).map(([name, value]) => `${name}: ${value}`).join("\n")}` : "This page has no brand guide: keep to the template's own colors and fonts.",
