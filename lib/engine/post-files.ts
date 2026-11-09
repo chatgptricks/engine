@@ -16,7 +16,7 @@ import {developmentDirectory} from "@/lib/template-editor/development-storage";
  * in development, with a revision check on every write.
  */
 
-/** Every stage either mode can run. A full recreation runs all but `transcript`; an exact copy runs `transcript`, `deck` and `review`. */
+/** Every stage either mode can run. A full recreation runs all but `transcript`; an exact copy runs `transcript`, `data`, `deck` and `review`. */
 export const POST_STAGES = ["transcript", "brief", "facts", "data", "reactions", "visuals", "outline", "hooks", "approval", "copy", "charts", "images", "deck", "review"] as const;
 export type PostStage = typeof POST_STAGES[number];
 export type StageStatus = "pending" | "running" | "done" | "error" | "skipped";
@@ -217,9 +217,9 @@ export const STAGE_INPUTS: Record<PostStage, PostStage[]> = {
   copy: ["approval", "facts", "data", "reactions"], charts: ["approval", "data"], images: ["approval", "visuals"],
   deck: ["copy", "charts", "images"], review: ["deck"],
 };
-/** An exact copy: the original read word for word, then the deck, then the check. */
-export const EXACT_STAGES: PostStage[] = ["transcript", "deck", "review"];
-const EXACT_INPUTS: Partial<Record<PostStage, PostStage[]>> = { transcript: [], deck: ["transcript"], review: ["deck"] };
+/** An exact copy: the original read word for word, its charts redrawn from real data (skipped when it has none), then the deck, then the check. */
+export const EXACT_STAGES: PostStage[] = ["transcript", "data", "deck", "review"];
+const EXACT_INPUTS: Partial<Record<PostStage, PostStage[]>> = { transcript: [], data: ["transcript"], deck: ["transcript", "data"], review: ["deck"] };
 
 /** The stages a run in this mode goes through, in order. */
 export function stagesFor(mode: PostMode): PostStage[] {

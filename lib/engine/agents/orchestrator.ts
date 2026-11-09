@@ -5,8 +5,9 @@
  * checkpoint run pauses after the outline and hooks until a person approves.
  * A run picks up where its post file left off after a restart, reruns one
  * stage on request, and sends the critics' must-fix issues back at most twice.
- * An exact copy (mode exact) runs only its own three stages: the transcript,
- * the deck and the review, which sends fixes back to the transcript once.
+ * An exact copy (mode exact) runs only its own four stages: the transcript,
+ * the chart data (skipped when the original has no chart), the deck and the
+ * review, which sends fixes back to the transcript or the chart data once.
  *
  * Runs live in this server process (Engine runs as one instance); the post
  * file is the record, so nothing is lost when the process stops.
@@ -26,26 +27,28 @@ import { RecreateError, UsageMeter } from "./claude";
 import { outputOf, type RunCache, type StageContext, type StageResult, type StageRunner } from "./context";
 import { deck } from "./deck";
 import { exactDeck, exactPages, normalizeTranscript, transcript } from "./exact";
+import { exactData } from "./exact-data";
 import { autoApprove, charts, copy, images } from "./makers";
 import { templatePages } from "./pages";
-import { roleCardFor } from "./playbook";
+import { roleCardIn } from "./playbook";
 import { brief, data, facts, reactions, visuals } from "./research";
 import { fixInstructions, review } from "./review";
-import { ApprovalSchema, OutlineSchema, SUBMITTABLE, type Approval, type Brief, type DataOutput, type DeckOutput, type HooksOutput, type Issue, type Outline, type ReactionsOutput, type ReviewOutput, type TranscriptOutput } from "./schemas";
+import { ApprovalSchema, OutlineSchema, SUBMITTABLE, submittableFor, type Approval, type Brief, type DataOutput, type DeckOutput, type HooksOutput, type Issue, type Outline, type ReactionsOutput, type ReviewOutput, type TranscriptOutput } from "./schemas";
 import { hooks, normalizeOutline, outline } from "./story";
 
 export const RUNNERS: Record<PostStage, StageRunner> = {
   transcript, brief, facts, data, reactions, visuals, outline, hooks, approval: autoApprove, copy, charts, images, deck, review,
 };
-/** An exact copy builds its deck from the transcript; its review checks fidelity itself. */
-const EXACT_RUNNERS: Partial<Record<PostStage, StageRunner>> = { deck: exactDeck };
-/** Stages the post can do without: when one fails, the run goes on and the deck notes what's missing. */
+/** An exact copy redraws its charts and builds its deck from the transcript; its review checks fidelity itself. */
+const EXACT_RUNNERS: Partial<Record<PostStage, StageRunner>> = { data: exactData, deck: exactDeck };
+/** Stages the post can do without: when one fails, the run goes on and the deck notes what's missing. An exact copy keeps a chart it can't redraw cut from the original. */
 const OPTIONAL = new Set<PostStage>(["reactions", "visuals", "images", "review"]);
+const optional = (stage: PostStage, mode: PostMode) => OPTIONAL.has(stage) || (mode === "exact" && stage === "data");
 type Route = Exclude<Issue["route"], "none">;
-/** What each critic route reruns, before the deck is rebuilt and reviewed again. In an exact copy the transcript holds both the words and the picture boxes. */
+/** What each critic route reruns, before the deck is rebuilt and reviewed again. In an exact copy the transcript holds both the words and the picture boxes, and the chart data its redrawn charts. */
 const FIX_STAGES: Record<"full" | "exact", Record<Route, PostStage[]>> = {
   full: { copy: ["copy"], data: ["data", "charts"], images: ["images"] },
-  exact: { copy: ["transcript"], data: [], images: ["transcript"] },
+  exact: { copy: ["transcript"], data: ["data"], images: ["transcript"] },
 };
 const MAX_ACTIVE_PER_OWNER = 4;
 const RUN_DEADLINE_MS = 45 * 60_000;
@@ -131,11 +134,11 @@ export function readyStages(file: PostFile, inFlight: ReadonlySet<PostStage> = n
   });
 }
 
-function describeError(stage: PostStage, error: unknown): string {
+function describeError(stage: PostStage, error: unknown, mode: PostMode): string {
   if (error instanceof RecreateError || error instanceof PostFileError) return error.message;
-  const status = (error as { status?: unknown } | null)?.status;
-  if (typeof status === "number") return `${roleCardFor(stage).title} failed: Claude's API answered HTTP ${status}. Rerun this stage.`;
-  return `${roleCardFor(stage).title} failed unexpectedly. Rerun this stage.`;
+  const status = (error as { status?: unknown } | null)?.status, title = roleCardIn(stage, mode).title;
+  if (typeof status === "number") return `${title} failed: Claude's API answered HTTP ${status}. Rerun this stage.`;
+  return `${title} failed unexpectedly. Rerun this stage.`;
 }
 
 /** Sends the critics' must-fix issues back: the routed stages rerun with them, then the deck and the review. */
@@ -147,8 +150,10 @@ function scheduleFixes(file: PostFile, output: ReviewOutput) {
   for (const route of output.sentBack) for (const stage of routes[route]) wanted.set(stage, [...(wanted.get(stage) ?? []), route]);
   if (!wanted.size) return;
   for (const [stage, from] of wanted) {
-    setStage(file, stage, { status: "pending", round, instructions: stage === "charts" ? undefined : fixInstructions(output, from) }, "engine", `sent back by the critics (round ${round})`);
+    setStage(file, stage, { status: "pending", round, instructions: stage === "charts" ? undefined : fixInstructions(output, from, file.mode === "exact") }, "engine", `sent back by the critics (round ${round})`);
   }
+  // An exact copy's chart data reads the transcript: it checks again which slides show a chart, keeping the ones it already redrew.
+  if (file.mode === "exact" && wanted.has("transcript") && !wanted.has("data")) setStage(file, "data", { status: "pending", round, instructions: undefined }, "engine", `recheck the charts for round ${round}`);
   setStage(file, "deck", { status: "pending", round, instructions: undefined }, "engine", `rebuild for round ${round}`);
   setStage(file, "review", { status: "pending", round, instructions: undefined }, "engine", `review round ${round}`);
 }
@@ -175,8 +180,8 @@ async function runStage(run: Run, file: PostFile, stage: PostStage, attempt: str
       if (stage === "deck" && status === "done") current.deckId = (result.output as DeckOutput).deckId;
       if (stage === "review" && status === "done") scheduleFixes(current, result.output as ReviewOutput);
     } else {
-      const text = describeError(stage, failure);
-      if (OPTIONAL.has(stage)) setStage(current, stage, { status: "skipped", output: undefined, error: text, instructions: undefined, ...meta }, "engine", `skipped: ${text}`);
+      const text = describeError(stage, failure, current.mode);
+      if (optional(stage, current.mode)) setStage(current, stage, { status: "skipped", output: undefined, error: text, instructions: undefined, ...meta }, "engine", `skipped: ${text}`);
       else setStage(current, stage, { status: "error", error: text, ...meta }, "engine", `failed: ${text}`);
     }
     current.message = progressMessage(current);
@@ -194,7 +199,7 @@ async function settle(run: Run): Promise<boolean> {
     const waiting = file.mode === "checkpoint" && file.stages.approval?.status !== "done" && inputsOf("approval", file.mode).every(stage => settled(file, stage));
     if (failed) {
       file.status = "error";
-      file.message = file.stages[failed]?.error ?? `${roleCardFor(failed).title} failed.`;
+      file.message = file.stages[failed]?.error ?? `${roleCardIn(failed, file.mode).title} failed.`;
     } else if (waiting) {
       file.status = "paused";
       file.message = "Ready for you: check the outline and pick the hook";
@@ -299,7 +304,7 @@ export async function startRecreate(ownerKey: string, input: StartInput, options
   if (runningFor(ownerKey) >= MAX_ACTIVE_PER_OWNER) throw new RecreateError("Four recreations are already running for this workspace. Wait for one to finish.", 429);
   // A missing profile or template fails now, not minutes into the run.
   const environment = await (options.environment ?? loadEnvironment)(ownerKey, input.profileId);
-  // An exact copy has no reaction slides, so posts from X have nowhere to go.
+  // An exact copy shows only the posts from X its original shows, so added ones have nowhere to go.
   const xPosts = input.mode !== "exact" && input.xPosts?.length ? { xPosts: input.xPosts } : {};
   const file = await createPostFile(ownerKey, {
     profileId: input.profileId, mode: input.mode,
@@ -438,7 +443,8 @@ export async function submitRecreateStage(ownerKey: string, postId: string, stag
   requireModeStage(current, stage);
   const missing = inputsOf(stage, current.mode).filter(input => !settled(current, input));
   if (missing.length) throw new RecreateError(`The ${stage} stage needs ${missing.join(", ")} first.`, 409);
-  const parsed = schema.safeParse(output);
+  // An exact copy's chart data has its own shape: a chart for each boxed slide, or why it stays cut.
+  const parsed = (submittableFor(stage, current.mode) ?? schema).safeParse(output);
   if (!parsed.success) throw new RecreateError(`That ${stage} doesn't match its schema: ${issuesOf(parsed.error)}`);
   let value: unknown = parsed.data;
   if (stage === "transcript") {
@@ -476,7 +482,7 @@ const ADDED_TOO_LATE = "This post is already approved. Add posts from X before y
  */
 export async function addRecreatePosts(ownerKey: string, postId: string, links: string[], by: StageActor): Promise<AddedPosts> {
   const current = await requireFile(ownerKey, postId);
-  if (current.mode === "exact") throw new RecreateError("An exact copy has no reaction slides, so posts from X can't be added to it.", 409);
+  if (current.mode === "exact") throw new RecreateError("An exact copy shows only the posts from X its original shows, so others can't be added to it.", 409);
   if (current.stages.approval?.status === "done") throw new RecreateError(ADDED_TOO_LATE, 409);
   if (isRunning(postId) || current.status !== "paused" || !outputOf(current, "outline") || !outputOf(current, "hooks")) throw new RecreateError("Add posts from X once the plan is ready for you to check.", 409);
   const known = new Set((outputOf<ReactionsOutput>(current, "reactions")?.reactions ?? []).map(post => post.id)), ids: string[] = [];

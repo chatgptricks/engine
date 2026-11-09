@@ -1,6 +1,6 @@
 /* Run: node --test tests/template-editor-x-reactions.test.mjs
- * X reactions for Recreate: scraper items become real, verbatim posts with
- * their links (no retweets, promoted posts or duplicates), trimmed to a card,
+ * X reactions for Recreate: scraper items become real posts, worded as X shows
+ * them, with their links (no retweets, promoted posts or duplicates), trimmed to a card,
  * and the Apify call is shaped, capped and fails in plain English without ever
  * showing the token. No network: fetch is always injected here. */
 import test from "node:test";
@@ -136,7 +136,7 @@ test("drop rules: no id, handle or text, retweets, promoted posts, bad avatars a
   assert.deepEqual(x.normalizeTweets("not a list"),[]);
 });
 
-test("post text stays verbatim: only whitespace, X's hidden links and a scraper cut are touched",()=>{
+test("post text stays verbatim: only whitespace, X's hidden links, a reply's opening handles and a scraper cut are touched",()=>{
   const words="If you’ve been looking for Remote Jobs.\n\nHow to Get ChatGPT to Send You  Remote Job Postings 👇\n→ step one";
   assert.equal(x.normalizeTweet(item({fullText:`\n  ${words}  \n`})).text,words,"case, spacing, curly quotes, emoji and line breaks are kept");
   assert.equal(x.normalizeTweet(item({fullText:"Q&amp;A: 3 &lt; 4 &amp;&amp; 5 &gt; 2"})).text,"Q&A: 3 < 4 && 5 > 2","X's escaping is undone, nothing else");
@@ -160,6 +160,26 @@ test("post text stays verbatim: only whitespace, X's hidden links and a scraper 
   assert.equal(x.normalizeTweet(item({fullText:`${long}. https://t.co/HvO3NlTgQZ`,extendedEntities:{media:[{url:"https://t.co/HvO3NlTgQZ"}]}})).text,`${long}.`);
   // A post that is only a hidden link has no text left.
   assert.equal(x.normalizeTweet(item({fullText:"https://t.co/e2r1EICfpp",...media})),null);
+});
+
+test("a reply loses the @handles it opens with, as X shows it, and nothing else",()=>{
+  // The scraper (seen live, Nov 2026): isReply and inReplyToUsername, with the handles still in the text.
+  const media={extendedEntities:{media:[{url:"https://t.co/IQH3GHEeK6"}]}};
+  assert.equal(x.normalizeTweet(item({fullText:"@mclIark It’s actually true https://t.co/IQH3GHEeK6",isReply:true,inReplyToUsername:"mclIark",...media})).text,"It’s actually true");
+  // Several people answered at once, known by a reply-to field alone; a handle later in the post stays.
+  assert.equal(x.normalizeTweet(item({fullText:"@a_1 @Bob  thanks @carol!",isReply:undefined,inReplyToId:"2116600000000000000"})).text,"thanks @carol!");
+  // A reply of handles alone keeps them, so the post isn't lost.
+  assert.equal(x.normalizeTweet(item({fullText:"@mclIark https://t.co/IQH3GHEeK6",isReply:true,...media})).text,"@mclIark");
+  // A post that isn't a reply keeps an opening handle: its author typed it.
+  assert.equal(x.normalizeTweet(item({fullText:"@sama shipped it",isReply:false})).text,"@sama shipped it");
+  // X's embed: in_reply_to_* fields, and display_text_range, X's own visible part, decides.
+  const embed={__typename:"Tweet",id_str:"2116662657206096012",text:"@mclIark @other It’s actually true https://t.co/IQH3GHEeK6",display_text_range:[16,34],
+    in_reply_to_screen_name:"mclIark",in_reply_to_status_id_str:"2116600000000000000",user:{name:"Shiro",screen_name:"shirokonek0chan"},entities:{media:[{url:"https://t.co/IQH3GHEeK6"}]}};
+  assert.equal(x.normalizeTweet(embed).text,"It’s actually true");
+  assert.equal(x.normalizeTweet({...embed,display_text_range:[9,34]}).text,"@other It’s actually true","a handle X shows stays");
+  assert.equal(x.normalizeTweet({...embed,display_text_range:[20,34]}).text,"It’s actually true","a range that doesn't start after handles is ignored");
+  const own={...embed,text:"@mclIark is right https://t.co/IQH3GHEeK6",display_text_range:[0,17],in_reply_to_screen_name:undefined,in_reply_to_status_id_str:undefined};
+  assert.equal(x.normalizeTweet(own).text,"@mclIark is right","an embed post that isn't a reply keeps it");
 });
 
 test("trimReaction shortens at a word boundary with … and never splits an emoji",()=>{
@@ -281,7 +301,7 @@ test("posts are packed onto Reaction pages by size: one long, two medium or thre
   assert.deepEqual(x.reactionPhotoSizes([short]),[null]);
 });
 
-test("fetchXReactions asks Apify for Top posts with a like floor, a language and a start date",async()=>{
+test("fetchXReactions asks Apify for Top posts (or Latest, replies included) with a like floor, a language and a start date",async()=>{
   const calls=[];
   const raw=[item(),item({id:"7",likeCount:40,fullText:"under the floor"}),item({id:"8",likeCount:900,fullText:"most liked"}),item({id:"9",isRetweet:true,likeCount:5000})];
   const fetch=async(url,init)=>{calls.push({url,init});return new Response(JSON.stringify(raw),{status:200,headers:{"Content-Type":"application/json"}});};
@@ -295,7 +315,9 @@ test("fetchXReactions asks Apify for Top posts with a like floor, a language and
   // Defaults: 30 posts, English, 100 likes, the last 30 days.
   await x.fetchXReactions({terms:["AI"],fetch});
   const body=JSON.parse(calls[1].init.body);
-  assert.equal(body.maxItems,30); assert.equal(body.tweetLanguage,"en"); assert.equal(body.minimumFavorites,100);
+  assert.equal(body.maxItems,30); assert.equal(body.tweetLanguage,"en"); assert.equal(body.minimumFavorites,100); assert.equal(body.sort,"Top");
+  await x.fetchXReactions({terms:["AI"],sort:"Latest",fetch});
+  assert.equal(JSON.parse(calls[2].init.body).sort,"Latest","every match, as X's Latest tab lists them");
   const days=(Date.now()-Date.parse(`${body.start}T00:00:00Z`))/86_400_000;
   assert.ok(days>=29&&days<=31,`start is 30 days back, got ${days}`);
   assert.equal(x.X_REACTIONS_MAX,60);

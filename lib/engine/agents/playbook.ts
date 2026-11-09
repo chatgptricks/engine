@@ -10,7 +10,7 @@
  * source lines, a Follow line tied to the post. The writing and media rules
  * also follow the ChatGPTricks style guide Ivan shared on 2026-11-08.
  */
-import type { PostStage } from "../post-files";
+import type { PostMode, PostStage } from "../post-files";
 import type { PageProfile } from "../page-profiles";
 import type { AgentRole } from "./claude";
 
@@ -49,23 +49,31 @@ export const EXACT_RULES = [
   "When the page's language differs from the original's, translate faithfully, sentence by sentence, with no rewording beyond what the language needs. Otherwise copy every word as it is, with its spelling, numbers and emoji",
   "Only the look changes: the template's fonts, colors and layout. The cover headline is set in capitals and no text box ends with a period. [[Double brackets]] mark only words the original itself sets apart with color or weight",
   "The original page's own branding stays out: its name, handle, logo, watermark, swipe prompts and slide numbers. Our template adds ours",
+  "Every part is rebuilt in our style; only photos are cut. A graphic made of parts (a meme of words and photos, a row or grid of logos, a comparison, a diagram with words, a screenshot of an article, a headline or a chat) comes back in our template, with its words as text in our styles, its logos as clean files found by name, its photos cut one by one and its panels as our cards, in the original's arrangement. A chart is redrawn in our chart style from its real numbers. A post from X becomes our post card, in its own words. Only a photo is cut whole from the original: a person, a place or a product, a product's own screen (an app, a website, a demo) or a video frame",
+  "Rebuilding never invents: a part that can't be rebuilt from what the original shows and real sources (a chart whose real numbers can't be found, a kind of chart our drawer doesn't draw, a graphic too big for one slide) is cut whole from the original, and the deck's notes say why",
 ];
 
 const CARDS: RoleCard[] = [
   {
     stage: "transcript", title: "Exact copy", by: "transcript",
-    job: "Read the original post slide by slide and lay each slide out on the closest page of our template, word for word, with a box around the photo, chart or screenshot to cut from it.",
+    job: "Read the original post slide by slide and lay each slide out on the closest page of our template, word for word, so Engine rebuilds every part in our style: each graphic made of parts described part by part, each post from X transcribed, a box around each chart for the chart rebuilder to redraw, and a box around each photo to cut.",
     rules: [
-      "One entry per original slide, in the original's order. Choose the page whose layout matches the slide: a photo filling the slide with a headline on it is the cover; a title or text with a picture, or a picture alone, is the text and media page; a list is the list page; a slide asking readers to follow the original creator is our Follow page. A chart, screenshot or meme never goes on the cover, whose dark fade would hide its labels, even on the first slide",
+      "One entry per original slide, in the original's order. Choose the page whose layout matches the slide: a photo filling the slide with a headline on it is the cover; a title or text with a picture, or a picture alone, is the text and media page; a list is the list page; a slide asking readers to follow the original creator is our Follow page. A chart, screenshot or graphic never goes on the cover, whose dark fade would hide its labels. A first slide that is a picture with its headline over it stays on the cover even when the picture is two photos side by side or carries a logo, an inset or a label: box the whole picture as its photo, without the headline, the original page's branding or a category tag, and put the headline in the cover's headline slot",
       "Put each piece of text in the slot that plays the same part: headline, title, body, list items, source line. When the page has fewer slots, join pieces in the closest one with a line break. Leave a slot empty when the original has nothing for it",
+      "The original page's category tag (a word such as AI or TECH in a pill over the headline) and its branding (name, handle, logo) aren't the post's words: never put them in the headline or another slot. A tag goes in the page's tag slot when it has one, else it is left out",
       "Write each sentence or phrase on one line, wherever the original's lines happen to wrap. Start a new line only where the original starts a new sentence, list item or paragraph",
       "Our Follow page's first line is fixed: write only its second line, within the page's limit, from the original's words when they fit",
-      "The media box holds the whole picture and nothing of the slide around it: a photo without the text over or around it; a chart, screenshot or meme whole, with its own labels, borders and margins. When text sits on a photo, box the largest part of the photo without text. Pictures shown together get one box around them all",
+      "Rebuild a graphic made of parts instead of cutting it: a meme of words and photos, a row or grid of logos, a comparison, a diagram with words, and a screenshot of an article, a headline or a chat (the outlet's or app's logo, the headline as a heading, each paragraph or message as text, its photo). Give it as graphic, with media kind none, on the text and media page; words outside the graphic, such as a title above it, still go in the page's slots. Text written over a photo is a photo plus text: box the photo and put the words in a slot",
+      "Cut whole, as media, only a photo (kind photo: a person, a place, a product, a video frame) or a product's own screen (kind screenshot: an app, a website, a demo). Box a chart whole as kind chart: a line or bar chart is redrawn from its real numbers, and any other kind (a pie, a map, a dashboard) stays cut",
+      "Posts from X: give each post a slide shows under posts, in reading order: its name and @handle as shown, its check mark (none, blue, gold for an organization, grey for a government), whether its profile photo is a rounded square, its words word for word in their own language (never translated), the date it shows, any link to it, and boxes around the whole post, its profile photo and its own photo or video frame (one box around all its photos when it shows several). Leave out X's buttons, counts and menus",
+      "A graphic's panels come in reading order: each card, window or box the original draws, or else one area its parts share. Each panel lists its parts in reading order, each with a tight box inside the panel: heading (a title line), text (other words), photo, logos (one logo, or a row or grid of them) and picture (any other small image to keep as it is). Leave out decoration: window dots, borders, shadows, cursors and the original page's branding. A photo's box holds the photo inside any frame drawn around it",
+      "Logos: one block per row or grid, with the number of logos its rows hold and every logo in reading order, row by row. Name the brand whose mark is drawn, by its usual full name (Visual Studio Code, Amazon Web Services, Microsoft Azure, Google Cloud): the mark decides, so a Codex label under the OpenAI knot is OpenAI. A plain icon that is no brand's logo, such as a database can or a terminal, gets an empty brand. The label is the words shown with the logo, word for word",
+      "The media box holds the whole picture and nothing of the slide around it: a photo without the text over or around it; a chart or a product's screen whole, with its own labels, borders and margins. When text sits on a photo, box the largest part of the photo without text. Pictures shown together get one box around them all",
       "Caption: the original's own words, without lines that promote the original creator (follow, subscribe, link in bio, their handle). Keep its hashtags",
       "Follow the teammate's notes where they ask for a change, such as leaving a slide out",
     ],
     bar: "Side by side with the original, a reader sees the same post in our template.",
-    output: "TranscriptSchema: name, originalLanguage, translated, slides[] {original, templatePage, texts[] {slot, text}, media {kind, box, alt}}, caption, notes[]",
+    output: "TranscriptSchema: name, originalLanguage, translated, slides[] {original, templatePage, texts[] {slot, text}, media {kind, box, alt}, graphic {panels[] {box, card, blocks[] {kind, box, text, align, columns, logos[] {brand, label}, alt}}} or null, posts[] {box, name, handle, badge, square, text, language, date, link, avatar, photo}}, caption, notes[]",
   },
   {
     stage: "brief", title: "Editor-in-chief", by: "editor",
@@ -227,6 +235,7 @@ const CARDS: RoleCard[] = [
       "Design critic: dead pockets of space, crowding and misalignment are should_fix. Check that the post keeps the original's slides, chart and story",
       "Design critic: a photo cropped through what matters, stretched, framed or padded with a blurred copy of itself is must_fix. A word alone on a line, em dashes, content titles not in sentence case and title sizes that change from slide to slide are should_fix",
       "Design critic: on two slides that share one photo, a split through a face or text is must_fix for images, with the seam to use",
+      "Design critic: a photo slot showing a chart, table, diagram, logo grid or screenshot of text is must_fix for images: charts are drawn from real data and posts from X are our cards, so a picture of either never stands in for them",
       "Each issue names the slide, the problem, the exact fix and who fixes it: copy for words, data for charts, images for photos, none for notes",
       "Text the template fixes, like the Follow line and the page's name, is not the copywriter's: its issues go to none",
     ],
@@ -240,6 +249,28 @@ export function roleCardFor(stage: PostStage): RoleCard {
   if (!card) throw new Error(`No role card for ${stage}.`);
   return card;
 }
+/** The card for a stage in a run of this mode: an exact copy's data stage is the chart rebuilder. */
+export const roleCardIn = (stage: PostStage, mode: PostMode): RoleCard => mode === "exact" && stage === "data" ? EXACT_DATA_CARD : roleCardFor(stage);
+
+/** An exact copy's data stage: the charts the copier boxed, redrawn from real data (exact-data.ts). */
+export const EXACT_DATA_CARD: RoleCard = {
+  stage: "data", title: "Chart rebuilder", by: "data",
+  job: "Rebuild each chart the copier boxed on the original post from real data, so Engine draws it in our chart style: the same chart, with the same numbers.",
+  rules: [
+    "One chart for each boxed slide, the same chart as the original: a line chart for series over time, a bar chart for one value per bar. Never add a chart or change what one shows",
+    "The same series and scaling (absolute values, indexed to an event, percent change), the same start and end dates (from and to), the same marked events and shaded period",
+    "The chart's words (series names, bar labels, marker and band labels) word for word from the original, translated faithfully when the page's language differs. Brand and product names stay as they are",
+    "Values the original prints (on its bars, at its points, in its labels) are copied exactly as printed, as a typed series",
+    "A series over time comes from its real source: FRED or the S&P 500 history through your tools, or a table on a page the original or its caption cites, typed exactly. Search for the source the chart names",
+    "Never read values off the picture, estimate them or fill gaps. When you can't find the real numbers, put the slide under missing with the reason: it stays cut from the original",
+    "A chart we can't draw goes under missing too: a pie, a map, a scatter plot, a table, a dashboard, or bars in two or more series",
+    "Bar charts: the bars in the original's order; highlight the ones it sets apart in another color. unit: the suffix or prefix the original prints (%, $, K, M, B, pts)",
+    "Each chart's source says where the numbers come from and the dates shown",
+  ],
+  bar: "Side by side with the original, each chart shows the same thing with the same numbers, in our style.",
+  output: "ExactDataSchema: charts[] {slide, chart, source}, missing[] {slide, why}, notes[]",
+};
+
 
 /**
  * A system prompt for an exact copy: the page's name and language and what an
@@ -286,8 +317,9 @@ export function playbook() {
     houseRules: HOUSE_RULES,
     stages: CARDS.map(card => ({ ...card, by: card.by === "code" || card.by === "human" ? card.by : "agent" })),
     exactRules: EXACT_RULES,
+    exactStages: [{ ...EXACT_DATA_CARD, by: "agent" as const }],
     notes: [
-      "An exact copy (mode exact) rebuilds the post as it is: only transcript, deck and review run. The same slides and words go on the page's template, pictures are cut from the original slides, and nothing is researched or added. The other stages belong to a full recreation (checkpoint or autopilot).",
+      "An exact copy (mode exact) rebuilds the post as it is, every part in the page's style: only transcript, data (its chart rebuilder, when the copier boxed a chart), deck and review run. The same slides and words go on the page's template; a graphic made of parts (a meme, a grid of logos, an article, a chat) is rebuilt from its parts, with its logos found online; a line or bar chart is redrawn in our chart style from its real numbers; a post from X becomes our post card, the real post when Engine finds it on X; only photos are cut from the original slides; and nothing is researched or added. A part that can't be rebuilt is cut whole, and the deck's notes say why. The other stages belong to a full recreation (checkpoint or autopilot).",
       "Stages run in this order; research and the makers run in parallel. A checkpoint run pauses after the outline and hooks until a person approves.",
       "An outside agent can do a stage itself with engine_recreate_submit_stage; Engine checks the result against the stage's schema and reruns what depends on it.",
       "Charts and the deck are always built by Engine from the other stages.",

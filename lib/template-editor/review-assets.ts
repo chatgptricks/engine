@@ -41,7 +41,10 @@ export async function embedReviewImages<T>(value:T,owner?:string):Promise<T>{
     if ((field==="src"||field==="url")&&typeof input==="string"){
       let target=input;
       const privateAsset=target.match(/^\/api\/template-editor\/assets\/([a-f0-9]{64})$/);
-      if(privateAsset){if(!owner)throw Error('Sign in to share original media.');let task=cache.get(target);if(!task){task=(async()=>{const {readOriginalAsset}=await import('./media-storage');const asset=await readOriginalAsset(owner,privateAsset[1]);if(!asset)throw Error('An original image is missing.');const buffer=await sharp(asset.data,{limitInputPixels:100_000_000,sequentialRead:true}).rotate().resize({width:2400,height:2400,fit:'inside',withoutEnlargement:true}).webp({quality:90}).toBuffer();bytes+=buffer.length;if(bytes>9*1024*1024)throw Error('Review artwork is larger than 9 MB.');return `data:image/webp;base64,${buffer.toString('base64')}`;})();cache.set(target,task);}return task;}
+      if(privateAsset){if(!owner)throw Error('Sign in to share original media.');let task=cache.get(target);if(!task){task=(async()=>{const {readOriginalAsset}=await import('./media-storage');const asset=await readOriginalAsset(owner,privateAsset[1]);if(!asset)throw Error('An original image is missing.');
+          // A stored vector goes back in as the inline SVG it was (it passed the same grammar), so the review shows it sharp.
+          if(asset.mimeType==='image/svg+xml'){const {BRAND_SVG_PREFIX}=await import('./safe-brand-svg');const svg=`${BRAND_SVG_PREFIX}${encodeURIComponent(asset.data.toString('utf8'))}`;bytes+=svg.length;if(bytes>9*1024*1024)throw Error('Review artwork is larger than 9 MB.');return svg;}
+          const buffer=await sharp(asset.data,{limitInputPixels:100_000_000,sequentialRead:true}).rotate().resize({width:2400,height:2400,fit:'inside',withoutEnlargement:true}).webp({quality:90}).toBuffer();bytes+=buffer.length;if(bytes>9*1024*1024)throw Error('Review artwork is larger than 9 MB.');return `data:image/webp;base64,${buffer.toString('base64')}`;})();cache.set(target,task);}return task;}
 
       if (target.startsWith("/api/engine/img?")) {
         target=new URL(target,"http://engine.local").searchParams.get("u")??"";

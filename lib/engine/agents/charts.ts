@@ -5,17 +5,19 @@ import { ChartDataError, describeSeries, fetchFredSeries, fetchSp500History, res
 import { ToolError, type ClientTool } from "./claude";
 import type { WrittenChart } from "./schemas";
 
-/** The written chart → the data layer's spec. Tolerates older or partial charts (missing source, markers, band). */
+/** The written chart → the data layer's spec. Tolerates older or partial charts (missing kind, end date, source, markers, band, scales). */
 export function chartSpecFrom(chart: WrittenChart): FredChartSpec {
   const sourceOf = (item: WrittenChart["series"][number]) => item.source ?? (item.fred ? "fred" : "typed");
   const downloaded = chart.series.some(item => sourceOf(item) !== "typed");
   return {
+    kind: chart.kind ?? "line", highlight: chart.highlight ?? [], to: chart.to ?? null,
     unit: chart.unit, labels: chart.labels ?? [], from: chart.from ?? null, markerDate: chart.markerDate ?? null, indexToMarker: Boolean(chart.indexToMarker),
     markerIndex: chart.markerIndex, markerLabel: chart.markerLabel ?? "", markerIcon: chart.markerIcon ?? "none", endLabel: chart.endLabel ?? "value",
+    ...(chart.range ? { range: chart.range } : {}), ...(chart.right ? { right: chart.right } : {}),
     series: chart.series.map(item => {
       const source = sourceOf(item);
       return {
-        name: item.name, values: item.values ?? [], emphasis: item.emphasis,
+        name: item.name, values: item.values ?? [], emphasis: item.emphasis, ...(item.axis === "right" ? { axis: item.axis } : {}),
         fred: source === "fred" ? item.fred : null,
         source: source === "sp500_history" ? { kind: "sp500_history" as const, id: SP500_HISTORY_ID } : source === "fred" && item.fred ? { kind: "fred" as const, id: item.fred } : null,
       };
@@ -31,6 +33,18 @@ export async function resolveChart(chart: WrittenChart, data: ChartData, signal?
   return validateChart(await resolveChartData(chartSpecFrom(chart), data, { signal }));
 }
 
+/**
+ * A full recreation's chart, on one scale: a second scale (and a printed range) is only for an exact
+ * copy of an original that prints them, so the full recreation's data stage drops any it is handed,
+ * whatever its prompt or schema allow.
+ */
+export function oneScale<T extends WrittenChart>(chart: T): T {
+  const flat: T = { ...chart, series: chart.series.map(item => { const copy = { ...item }; delete copy.axis; return copy; }) };
+  delete flat.range;
+  delete flat.right;
+  return flat;
+}
+
 /** Where a chart's numbers come from, for its alt text. */
 export function chartSources(chart: WrittenChart): string[] {
   const spec = chartSpecFrom(chart);
@@ -40,10 +54,20 @@ export function chartSources(chart: WrittenChart): string[] {
 
 /** How a writer fills a chart's fields, for the agents that write one. */
 export const CHART_FIELDS = `How to write a chart:
+- kind "line" for series over time; "bar" only for one value per bar (2-12 bars, one typed series, labels naming the bars, highlight listing the indexes of bars the original sets apart in another color, else []). A line chart has highlight [].
+- to: the last date to show (YYYY-MM-DD), when the chart must end where an original ends; else null for the latest data.
 - Downloaded series: source "fred" with fred set to the FRED id, or source "sp500_history" (fred null) for the S&P 500 before 2016. Leave values and labels empty; Engine fills the real data. from: the first date to show (YYYY-MM-DD). markerDate: the main event (YYYY-MM-DD) or null. markers: up to 2 more events as {date, label, icon "none", index -1}. band: a shaded period as {fromDate, toDate, fromIndex -1, toIndex -1, label}, or null. One chart may combine fred and sp500_history series, but not typed values.
 - Typed series (other sources): source "typed", fred null; copy the values exactly (you may downsample evenly to at most 300 points); labels has one x-axis label per point ("" for unlabeled points); markerIndex marks the main event (or -1); markers use index (date null); band uses fromIndex and toIndex (dates null); from and markerDate null.
 - Series in different units (for example job openings and a stock index): set indexToMarker true so every series is 100 at the marker and they share one honest scale; otherwise false.
-- unit: a short suffix such as %, $, K, M or pts, or "" (or "index" when indexToMarker). endLabel "change_since_marker" shows each series' change since the marker. markerIcon "openai" only when the event is an OpenAI or ChatGPT release. Series names: short, 2-3 words. Emphasize the series the story is about.`;
+- unit: a short suffix such as %, $, K, M or pts, or "" (or "index" when indexToMarker). K, M and B say the data counts in thousands, millions or billions: FRED's job openings are in thousands, so unit K prints 7612 as 7.6M. endLabel "change_since_marker" shows each series' change since the marker. markerIcon "openai" only when the event is an OpenAI or ChatGPT release. Series names: short, 2-3 words. Emphasize the series the story is about.`;
+
+/** The scale fields only an exact copy's chart has, for its chart rebuilder. */
+export const EXACT_CHART_FIELDS = `Scales, as the original draws them:
+- One scale (the usual case): every series' axis is "left" and right is null.
+- Two scales, only when the original prints a second column of numbers for some lines (beside the first, or on the other edge): each series' axis names the scale it reads against, "left" for the first and "right" for the second; right gives the second scale's unit and range; indexToMarker is false. This overrides the rule to index series in different units: index them only when the original does. Never add a second scale the original doesn't print.
+- range and right.range: the lowest and highest numbers the scale prints, copied from the original in the series' own units (19M of job openings in thousands is 19000 with unit K; -800.00 to 7,200.00 is -800 and 7200), so the lines sit as they do there. null when the original prints none, or when a value falls outside it.
+- Each scale's unit makes its numbers print as the original's do: K, M or B when its series count in thousands, millions or billions (fred_series gives their Units: JTSJOL is in thousands, so unit K prints 19000 as 19M); $ or % when the numbers carry them; else "". A scale of FRED series counted in thousands, millions or billions takes K, M or B from FRED's units whatever unit you give it.
+- endLabel "none" when the original names its lines only in a legend: each line's name is then shown at its end.`;
 
 const DATE = /^\d{4}-\d{2}-\d{2}$/;
 /** fred_series and sp500_history: real series kept in `data` for the chart maker. */

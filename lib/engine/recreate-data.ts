@@ -13,7 +13,11 @@ import { finiteAt, type ChartMarker, type RecreateChart } from "./recreate-chart
 export type Observation = { date: string; value: number };
 export type FredFrequency = "monthly" | "quarterly" | "annual" | "native";
 export type DataSourceKind = "fred" | "sp500_history";
-export type FredSeries = { id: string; frequency: FredFrequency; observations: Observation[]; source?: DataSourceKind };
+export type FredSeries = {
+  id: string; frequency: FredFrequency; observations: Observation[]; source?: DataSourceKind;
+  /** FRED's own words for the units ("Level in Thousands", "Percent", "Index"), when FRED gives them. */
+  units?: string;
+};
 export type ChartData = Map<string, FredSeries>;
 export const SP500_HISTORY_ID = "SP500_HISTORY";
 const SP500_HISTORY_URL = "https://raw.githubusercontent.com/datasets/s-and-p-500/main/data/data.csv";
@@ -98,12 +102,36 @@ export async function fetchFredSeries(
   url.searchParams.set("id", id);
   if (options.start) url.searchParams.set("cosd", options.start);
   if (frequency !== "native") { url.searchParams.set("fq", FREQUENCY_PARAM[frequency]); url.searchParams.set("fam", "avg"); }
-  const text = await download(url, `FRED series ${id}`, options).catch(error => {
-    throw new ChartDataError(error instanceof ChartDataError && /HTTP 404|HTTP 400/.test(error.message) ? `FRED has no series ${id} (${error.message.match(/HTTP \d+/)?.[0]}).` : error instanceof Error ? error.message : `FRED could not be reached for ${id}.`);
-  });
+  const [text, units] = await Promise.all([
+    download(url, `FRED series ${id}`, options).catch(error => {
+      throw new ChartDataError(error instanceof ChartDataError && /HTTP 404|HTTP 400/.test(error.message) ? `FRED has no series ${id} (${error.message.match(/HTTP \d+/)?.[0]}).` : error instanceof Error ? error.message : `FRED could not be reached for ${id}.`);
+    }),
+    fredUnits(id, options),
+  ]);
   const observations = parseFredCsv(text);
   if (real(observations).length < 2) throw new ChartDataError(`FRED series ${id} has no data in that range.`);
-  return { id, frequency, observations: observations.slice(-MAX_POINTS), source: "fred" };
+  return { id, frequency, observations: observations.slice(-MAX_POINTS), source: "fred", ...(units ? { units } : {}) };
+}
+
+/** A series' units from FRED's graph (its own series API, which the CSV leaves out); null when it doesn't say. */
+async function fredUnits(id: string, options: { signal?: AbortSignal; fetch?: typeof fetch }): Promise<string | null> {
+  const url = new URL("https://fred.stlouisfed.org/graph/api/series/");
+  url.searchParams.set("id", id);
+  try {
+    const answer = JSON.parse(await download(url, `FRED's units for ${id}`, options)) as { chart_series?: { series_objects?: Record<string, { units?: unknown }> }[] };
+    const units = Object.values(answer.chart_series?.[0]?.series_objects ?? {}).map(item => item?.units).find((value): value is string => typeof value === "string" && value.trim() !== "");
+    return units ? units.trim().replace(/\s+/g, " ").slice(0, 80) : null;
+  } catch (error) {
+    if (options.signal?.aborted) throw error;
+    // The units only help label a scale: a chart is drawn without them.
+    return null;
+  }
+}
+
+/** The short unit a scale of a FRED series takes from FRED's units: K for thousands (7,612 prints 7.6M), M, B; "" for other units and amounts of money, whose $ a scale must show. */
+export function unitFromFred(units: string | undefined): string {
+  if (!units || /dollar|percent|index|rate/i.test(units)) return "";
+  return /\bthousands?\b/i.test(units) ? "K" : /\bmillions?\b/i.test(units) ? "M" : /\bbillions?\b/i.test(units) ? "B" : "";
 }
 
 /** What research sees: the shape of the series, not 2,000 raw rows. */
@@ -117,7 +145,7 @@ export function describeSeries(series: FredSeries): string {
   return [
     history
       ? `S&P 500 monthly average of daily closes (Shiller data via datasets/s-and-p-500), ${rows.length} points from ${first.date} to ${last.date}.`
-      : `FRED ${series.id}, ${series.frequency}, ${rows.length} points from ${first.date} to ${last.date}.`,
+      : `FRED ${series.id}, ${series.frequency}, ${rows.length} points from ${first.date} to ${last.date}.${series.units ? ` Units: ${series.units}${unitFromFred(series.units) ? ` (a scale of it takes unit ${unitFromFred(series.units)})` : ""}.` : ""}`,
     `First ${first.value} (${first.date}); last ${last.value} (${last.date}); high ${max.value} (${max.date}); low ${min.value} (${min.date}).`,
     missing.length ? `Missing (charts show a gap): ${missing.slice(0, 12).join(", ")}${missing.length > 12 ? ` and ${missing.length - 12} more` : ""}.` : "No missing periods.",
     history
@@ -146,6 +174,8 @@ export type FredChartSpec = Omit<RecreateChart, "series" | "markers" | "band"> &
   /** `fred` names a FRED id; `source` names any downloadable series (and wins over `fred`). */
   series: (RecreateChart["series"][number] & { fred: string | null; source?: SeriesSource | null })[];
   from: string | null; markerDate: string | null; indexToMarker: boolean;
+  /** The last date to show, so a copy ends where its original ends; null or left out for the latest data. */
+  to?: string | null;
   /** More events to mark (by date for downloaded series, by index for typed ones). */
   markers?: (Omit<ChartMarker, "index"> & { date?: string | null; index?: number })[] | null;
   band?: { from: string | number; to: string | number; label: string } | null;
@@ -179,20 +209,31 @@ export async function resolveChartData(
   options: { signal?: AbortSignal; fetch?: typeof fetch } = {},
 ): Promise<RecreateChart> {
   const base: RecreateChart = {
-    unit: chart.unit, labels: chart.labels, series: chart.series.map(({ name, values, emphasis }) => ({ name, values, emphasis })),
+    ...(chart.kind ? { kind: chart.kind } : {}), ...(chart.highlight?.length ? { highlight: chart.highlight } : {}),
+    unit: chart.unit, labels: chart.labels, series: chart.series.map(({ name, values, emphasis, axis }) => ({ name, values, emphasis, ...(axis === "right" ? { axis } : {}) })),
     markerIndex: chart.markerIndex, markerLabel: chart.markerLabel, markerIcon: chart.markerIcon, endLabel: chart.endLabel,
     markers: (chart.markers ?? []).flatMap(marker => Number.isInteger(marker.index) ? [{ index: marker.index as number, label: marker.label, icon: marker.icon }] : []),
     band: chart.band && typeof chart.band.from === "number" && typeof chart.band.to === "number" ? { from: chart.band.from, to: chart.band.to, label: chart.band.label } : null,
+    // An exact copy's printed ranges and second scale; validateChart keeps them only where they hold the data.
+    ...(chart.range ? { range: chart.range } : {}), ...(chart.right ? { right: chart.right } : {}),
   };
   const sourced = chart.series.filter(item => sourceOf(item));
   if (!sourced.length) return chart.indexToMarker ? indexed(base) : base;
   if (sourced.length !== chart.series.length) throw new ChartDataError("A chart can't mix downloaded series with typed-in values.");
   const loaded = await Promise.all(sourced.map(async item => {
     const series = await loadSeries(sourceOf(item)!, data, options);
-    return { item, byDate: new Map(series.observations.map(row => [row.date, row.value])) };
+    return { item, byDate: new Map(series.observations.map(row => [row.date, row.value])), unit: unitFromFred(series.units) };
   }));
-  const from = chart.from && DATE.test(chart.from) ? chart.from : "";
-  const dates = [...loaded[0].byDate.keys()].filter(date => date >= from && loaded.every(entry => entry.byDate.has(date))).sort();
+  // A scale whose series FRED counts in thousands, millions or billions takes that unit, whatever unit
+  // it was given: FRED counts job openings in thousands, so 19,000 prints 19M, as an original that charts
+  // them prints it, where an M would print 19B. Other scales, and indexed ones, keep the unit given.
+  const unitOf = (unit: string, right: boolean) => {
+    const own = [...new Set(loaded.filter(entry => (entry.item.axis === "right") === right).map(entry => entry.unit))];
+    return chart.indexToMarker || own.length !== 1 || !own[0] ? unit : own[0];
+  };
+  const from = chart.from && DATE.test(chart.from) ? chart.from : "", to = chart.to && DATE.test(chart.to) ? chart.to : "9999-12-31";
+  // A date stands for the period that starts on it, so an end date in November keeps the November point.
+  const dates = [...loaded[0].byDate.keys()].filter(date => date >= from && date <= to && loaded.every(entry => entry.byDate.has(date))).sort();
   if (dates.length < 2 || loaded.some(entry => dates.filter(date => Number.isFinite(entry.byDate.get(date))).length < 2)) throw new ChartDataError("These series share no dates in that range.");
   // A date marks the period that contains it (Nov 30 → the November point).
   const indexOf = (value: unknown) => {
@@ -203,8 +244,9 @@ export async function resolveChartData(
   const band = chart.band ? { from: indexOf(chart.band.from), to: indexOf(chart.band.to), label: chart.band.label } : null;
   const resolved: RecreateChart = {
     ...base,
+    unit: unitOf(chart.unit, false), ...(chart.right ? { right: { ...chart.right, unit: unitOf(chart.right.unit ?? "", true) } } : {}),
     labels: axisLabels(dates),
-    series: loaded.map(({ item, byDate }) => ({ name: item.name, emphasis: item.emphasis, values: dates.map(date => byDate.get(date)!) })),
+    series: loaded.map(({ item, byDate }) => ({ name: item.name, emphasis: item.emphasis, values: dates.map(date => byDate.get(date)!), ...(item.axis === "right" ? { axis: item.axis } : {}) })),
     markerIndex: indexOf(chart.markerDate),
     markers,
     band: band && band.from >= 0 && band.to > band.from ? band : null,

@@ -7,7 +7,7 @@
  */
 import type Anthropic from "@anthropic-ai/sdk";
 import sharp from "sharp";
-import type { DesignDocument } from "../../template-editor/model";
+import { formatDimensions, type DesignDocument } from "../../template-editor/model";
 import { seamOf, spanPairs } from "../../template-editor/spanning-photos";
 import type { PageProfile } from "../page-profiles";
 import { renderSlides, type SlideRender } from "../slide-render";
@@ -72,17 +72,58 @@ export function houseChecks(document: DesignDocument, pages: DeckPage[], catalog
   return issues;
 }
 
-/** What one slide says, slot by slot, with its chart's alt text. */
-function slideText(document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[]): string {
+/** What one slide says, slot by slot, with its chart's alt text, then the parts of a graphic rebuilt on it (layers without a slot). */
+export function slideText(document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[]): string {
   return document.pages.map((page, index) => {
     const label = catalog.find(item => item.index === pages.find(entry => entry.pageId === page.id)?.templatePage)?.label;
-    const lines = (page.canvas?.elements ?? []).flatMap(element => {
-      if (element.hidden || !element.slot || element.templateRole === "brand") return [];
+    const shown = (page.canvas?.elements ?? []).filter(element => !element.hidden && element.templateRole !== "brand");
+    const lines = shown.flatMap(element => {
+      if (!element.slot) return [];
       if (element.type === "text") return element.text.trim() ? [`${element.slot}: ${element.text.trim().replace(/\n/g, " / ")}`] : [];
       return element.type === "image" && element.publicAlt ? [`${element.slot} (image): ${element.publicAlt}`] : [];
     });
+    const parts = shown.filter(element => !element.slot), alt = (element: (typeof parts)[number]) => element.type === "image" ? element.publicAlt?.trim() ?? "" : "";
+    const words = parts.flatMap(element => element.type === "text" && element.text.trim() ? [element.text.trim().replace(/\n/g, " / ")] : []);
+    const logos = parts.flatMap(element => / logo$/.test(alt(element)) ? [alt(element).replace(/ logo$/, "")] : []);
+    const pictures = parts.flatMap(element => alt(element) && !/ logo$/.test(alt(element)) ? [alt(element)] : []);
+    if (words.length) lines.push(`graphic words, in layer order: ${words.join(" | ")}`);
+    if (logos.length) lines.push(`graphic logos, in order: ${logos.join(", ")}`);
+    for (const picture of pictures) lines.push(`graphic (image): ${picture}`);
     return `Slide ${index + 1}${label ? ` · ${label}` : ""}\n${lines.map(line => `  ${line}`).join("\n") || "  (no text)"}`;
   }).join("\n\n");
+}
+
+const quoted = (items: string[]) => {
+  const shown = items.slice(0, 4).map(item => `"${item.replace(/\s+/g, " ").slice(0, 40)}"`);
+  return items.length > 4 ? `${shown.join(", ")} and ${items.length - 4} more` : shown.length > 1 ? `${shown.slice(0, -1).join(", ")} and ${shown[shown.length - 1]}` : shown.join("");
+};
+type Box = { x: number; y: number; width: number; height: number };
+const overlaps = (a: Box, b: Box) => Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) > .7 && Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y) > .7;
+/**
+ * Code checks on graphics rebuilt from their parts (shown layers without a
+ * slot): words that may be set under the page's smallest text size, layers off
+ * the page or on top of each other, and logos cut from the original or kept as
+ * one picture, so a person knows to swap them.
+ */
+export function rebuildChecks(document: DesignDocument, minText = 24): Issue[] {
+  const issues: Issue[] = [], { width, height } = formatDimensions(document), k = width / 360, foot = 360 * height / width;
+  document.pages.forEach((page, index) => {
+    const slide = index + 1, layers = (page.canvas?.elements ?? []).filter(element => !element.hidden && !element.slot && !element.templateRole);
+    const add = (problem: string, fix: string, severity: Issue["severity"]) => issues.push({ slide, problem, fix, severity, route: "none" });
+    const small = layers.flatMap(element => element.type === "text" && element.smartText && element.smartText.minFontSize * k < minText - .01 ? [element.text] : []);
+    if (small.length) add(`${quoted(small)} may be set under ${minText} px to fit ${small.length === 1 ? "its" : "their"} room`, "Check the size in the editor and give the words more room if it is under the minimum", "note");
+    const off = layers.filter(element => element.x < -.5 || element.y < -.5 || element.x + element.width > 360.5 || element.y + element.height > foot + .5);
+    if (off.length) add(`${quoted(off.map(element => element.name))} ${off.length === 1 ? "runs" : "run"} off the page`, "Move or resize it onto the page", "should_fix");
+    const parts = layers.filter(element => element.type !== "shape"), pairs: string[] = [];
+    parts.forEach((a, at) => parts.slice(at + 1).forEach(b => { if (overlaps(a, b)) pairs.push(`"${a.name.slice(0, 40)}" and "${b.name.slice(0, 40)}"`); }));
+    if (pairs.length) add(`${pairs.slice(0, 3).join("; ")}${pairs.length > 3 ? ` and ${pairs.length - 3} more pairs` : ""} overlap`, "Move them apart in the editor", "should_fix");
+    const cut = layers.filter(element => element.type === "image" && / logo \(cut from the original\)$/.test(element.name)).map(element => element.name.replace(/ logo \(cut from the original\)$/, ""));
+    if (cut.length) add(`No clean file was found for ${quoted(cut)}, so ${cut.length === 1 ? "it is" : "they are"} cut from the original, on ${cut.length === 1 ? "its" : "their"} own background`, "Swap in the real logo files when you have them", "note");
+    if (layers.some(element => element.type === "image" && element.name === "Picture" && element.publicAlt?.startsWith("Logos:"))) {
+      add("A block of logos stays one picture cut from the original: rebuilt, it would pass the 100 layers a slide holds", "Leave it, or rebuild part of it by hand", "note");
+    }
+  });
+  return issues;
 }
 
 async function forCritic(png: Buffer): Promise<SourceImage> {
@@ -130,12 +171,17 @@ async function factCritic(context: StageContext, document: DesignDocument, pages
 /** The design critic's card for an exact copy: fidelity to the original, never better words. */
 const EXACT_CRITIC = {
   title: "Design critic",
-  job: "Check an exact copy against the original: the same slides and words, nothing cut off, and every picture cut cleanly from the original slide.",
+  job: "Check an exact copy against the original: the same slides, words and content, nothing cut off, every part rebuilt in our style (graphics from their parts, charts redrawn from their real numbers, posts from X as our cards), and only photos cut from the original, cleanly.",
   rules: [
     "You see the original post's slides, then ours, rendered exactly as Export draws them at 1080×1440, shown smaller",
-    "Every word on each original slide is on our matching slide, in the same order (translated faithfully when the page's language differs). A missing, added or changed word is must_fix for copy, naming the exact words. Our Follow page is the one exception: its fixed first line and its limited second line, below, are right as they are",
+    "Every word on each original slide is on our matching slide, in the same order (translated faithfully when the page's language differs; brand and product names stay as they are). A missing, added or changed word is must_fix for copy, naming the exact words. Our Follow page is the one exception: its fixed first line and its limited second line, below, are right as they are",
     "Nothing is cut off, overflowing or unreadable. Text that doesn't fit is must_fix for copy: a page with more room, never fewer words",
-    "Each photo, chart or screenshot is a clean cut of the original's: no stray text from the original slide, no border, bar or background around it, and nothing that matters cut off. A bad cut is must_fix for images, saying which part of the original slide to keep",
+    "Each photo (a person, a place, a product, a product's own screen such as an app or a website, a video frame) is a clean cut of the original's: no stray text from the original slide, no border, bar or background around it, and nothing that matters cut off. A bad cut is must_fix for images, saying which part of the original slide to keep",
+    "Everything else is rebuilt in our style, never pasted: a chart, a graphic of words and logos, a screenshot of an article, a headline or a chat, or a post from X shown as one picture cut from the original is must_fix for images, saying what to rebuild. The exception is a part the deck's notes, below, say couldn't be rebuilt (a chart whose real numbers weren't found, a kind of chart we don't draw, a graphic too big for a slide, a template without the page for it): that cut is right, so leave it",
+    "A graphic made of parts (a meme of words and photos, a row or grid of logos, a comparison, a diagram with words, an article or a chat) is rebuilt in our template: its words in our text styles, its logos as clean files, its photos cut one by one, its panels as our cards. Check it against the original: the same words, the same logos in the same order (the right brand for each mark), the same photos, and the same arrangement of panels, rows and grid. A missing or wrong logo is must_fix for copy, naming the brand and its place",
+    "A redrawn chart is the original's chart in our chart style: the same kind (line or bar), series, scaling, start and end, marked events, shaded period, labels and printed values. A difference in what it shows is must_fix for data, naming what differs and what the original shows (for example: it starts in 2022; the original starts in 2020). Our style is right, not a difference: our colors, fonts, background and gridlines, and where the labels sit",
+    "A post card shows the original's post: the same name, @handle, check mark, words and photo. A difference is must_fix for copy, naming it. Our card is right, not a difference: X's buttons, counts and menus left out, our card's look and size, a post's own words in its own language when the slide's words are translated, and a card built from the screenshot (the notes say so) without counts. A real post found on X (the notes give its link) may show its whole text or its photo where the screenshot cut them off: that is right too",
+    "In a rebuilt graphic our look is right, not a difference: our fonts, colors and cards, sizes fitted to our page, labels at our smallest text size, and the original's window dots, borders, shadows and cursors left out. A logo cut from the original on its own background, or a block of logos kept as one picture, is fine when code reports it below. A logo that is blurry, tiny or hard to see on our background is should_fix with route none, naming it",
     "Never ask to change, shorten or improve the original's words, and don't judge the story. The template's look is not an issue: its fonts, colors and layout, the cover in capitals, no final periods, and the original page's own branding left out",
     "A grey placeholder in the Follow page's photo slot is fine: a person adds the profile screenshot. Report it with route none",
     "Verdict ship when nothing is must_fix. Slide numbers are ours",
@@ -143,7 +189,7 @@ const EXACT_CRITIC = {
   bar: "Side by side with the original, a reader sees the same post in our template.",
 };
 
-async function designCritic(context: StageContext, renders: SlideRender[], document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[], found: Issue[], exact = false): Promise<CriticOutput> {
+async function designCritic(context: StageContext, renders: SlideRender[], document: DesignDocument, pages: DeckPage[], catalog: PageCatalog[], found: Issue[], exact = false, deckNotes: string[] = []): Promise<CriticOutput> {
   const [originals, examples] = await Promise.all([originalSlides(context), exact ? Promise.resolve([]) : guideExampleBlocks(context.ownerKey, context.guide)]);
   const ours = await Promise.all(renders.map(render => forCritic(render.png)));
   const labelOf = (pageId: string) => catalog.find(item => item.index === pages.find(entry => entry.pageId === pageId)?.templatePage)?.label;
@@ -159,6 +205,7 @@ async function designCritic(context: StageContext, renders: SlideRender[], docum
     { type: "text", text: [
       `OUR SLIDES AS TEXT\n${slideText(document, pages, catalog)}`,
       found.length ? `CODE ALREADY FOUND THESE (don't repeat them)\n${listIssues(found)}` : "",
+      exact && deckNotes.length ? `THE DECK'S NOTES (what code rebuilt, and what it couldn't and why)\n${deckNotes.map(note => `- ${note}`).join("\n")}` : "",
     ].filter(Boolean).join("\n\n") },
   ];
   if (exact) return ask({ role: "designCritic", what: "check the copy against the original", signal: context.signal, usage: context.usage, schema: CriticSchema, system: exactPrompt(context.profile, "", EXACT_CRITIC), content });
@@ -169,6 +216,7 @@ async function designCritic(context: StageContext, renders: SlideRender[], docum
       "Check each of our slides as a reader on a phone would: is every word readable, nothing cut off, the chart clear, the spacing even? Then check the whole post against the original: does it keep the original's slides, chart and story?",
       "A grey template placeholder in a photo slot is fine when a person adds that photo (the Follow page's profile screenshot): report it with route none.",
       ...(context.guide ? [`Hold every slide to the ${context.guide.name} brand guide in your instructions${examples.length ? " and the approved example posts shown first" : ""}: colors, type, margins, spacing, the cover and how media sits on the page. Anything that breaks the guide is an issue; name the guide rule it breaks.`] : []),
+      "A photo slot showing a chart, table, diagram, logo grid or screenshot of text is must_fix for images: our charts are drawn from real data and posts from X are our cards, so a picture of either never stands in for them.",
       "Post cards are real posts from X: never ask to change their words. Verdict ship when nothing is must_fix. Slide numbers are ours.",
       pairs.length ? "Slides shown side by side share one photo, split where the slides meet. Check that the halves read as one photo and that the split misses faces and text. A split through a face or text is must_fix for images: give the seam to use, the share of the photo on the first slide (0.1 to 0.9)." : "",
     ].filter(Boolean).join("\n"), "design critic"),
@@ -188,14 +236,14 @@ export function reviewComment(review: ReviewOutput, exact = false): string {
 }
 
 /** The issues one route (or several, all fixed by one stage) fixes, as instructions for its rerun. */
-export function fixInstructions(review: ReviewOutput, route: Issue["route"] | Issue["route"][]): string {
+export function fixInstructions(review: ReviewOutput, route: Issue["route"] | Issue["route"][], exact = false): string {
   const routes = Array.isArray(route) ? route : [route];
   const issues = [...review.checks, ...(review.facts?.issues ?? []), ...(review.design?.issues ?? [])]
     .filter(issue => routes.includes(issue.route) && issue.severity !== "note");
   return [
     "The critics found these problems in the finished post. Fix every one; keep everything else exactly as it was.",
     ...issues.map(issue => `- ${issue.slide ? `Slide ${issue.slide}` : "Whole post"} (${issue.severity === "must_fix" ? "must fix" : "should fix"}): ${issue.problem}. Fix: ${issue.fix}`),
-    routes.includes("data") ? "Keep every chart's id, so the slides still find their charts." : "",
+    routes.includes("data") ? exact ? "Rebuild each chart these name again from its real numbers; keep the others as they are." : "Keep every chart's id, so the slides still find their charts." : "",
   ].filter(Boolean).join("\n").slice(0, 4000);
 }
 
@@ -219,7 +267,7 @@ export const review: StageRunner = async context => {
   // since only the template's look could fix them.
   const exact = file.mode === "exact";
   const guideChecks = guideDeckChecks(document, profile, context.guide).map(issue => exact ? { ...issue, route: "none" as const } : issue);
-  checks.unshift(...houseChecks(document, pages, catalog, profile, renders, { exact }), ...guideChecks);
+  checks.unshift(...houseChecks(document, pages, catalog, profile, renders, { exact }), ...guideChecks, ...(exact ? rebuildChecks(document, context.guide?.layout.minTextSize) : []));
   const critic = async (run: () => Promise<CriticOutput>, who: string) => {
     try { return await run(); } catch (error) {
       if (context.signal.aborted) throw error;
@@ -229,12 +277,12 @@ export const review: StageRunner = async context => {
   };
   const [facts, design] = await Promise.all([
     exact ? Promise.resolve(null) : critic(() => factCritic(context, document, pages, catalog), "fact critic"),
-    renders?.length ? critic(() => designCritic(context, renders!, document, pages, catalog, checks, exact), "design critic") : Promise.resolve(null),
+    renders?.length ? critic(() => designCritic(context, renders!, document, pages, catalog, checks, exact, built.notes ?? []), "design critic") : Promise.resolve(null),
   ]);
   const issues = [...checks, ...(facts?.issues ?? []), ...(design?.issues ?? [])];
-  // A person's edits stand: nothing is sent back over them. An exact copy has no charts to rebuild.
+  // A person's edits stand: nothing is sent back over them. An exact copy's chart fixes go to its chart rebuilder.
   const rounds = exact ? MAX_EXACT_FIX_ROUNDS : MAX_FIX_ROUNDS;
-  const sendable = built.held || context.round >= rounds ? [] : issues.filter(issue => issue.severity === "must_fix" && issue.route !== "none" && !(exact && issue.route === "data"));
+  const sendable = built.held || context.round >= rounds ? [] : issues.filter(issue => issue.severity === "must_fix" && issue.route !== "none");
   const routes = sendable.flatMap(issue => issue.route === "none" ? [] : [issue.route]);
   const output: ReviewOutput = { round: context.round, rendered: Boolean(renders), checks, facts, design, sentBack: [...new Set(routes)] };
   if (!output.sentBack.length) await commentOnDeck(context.ownerKey, built.deckId, [reviewComment(output, exact)]);

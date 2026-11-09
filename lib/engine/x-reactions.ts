@@ -1,12 +1,13 @@
 /**
  * Real reactions from X for Recreate's reaction slides. Server-only.
  *
- * `fetchXReactions` runs the Apify actor `apidojo~tweet-scraper` (Top sort,
+ * `fetchXReactions` runs the Apify actor `apidojo~tweet-scraper` (Top sort by default,
  * a like floor, one language, a start date) and returns only real posts from
  * the scraper: no retweets, no promoted posts, no duplicates. A post's text is
- * kept exactly as written. The only changes: surrounding whitespace is trimmed,
+ * kept exactly as X shows it. The only changes: surrounding whitespace is trimmed,
  * the trailing t.co links X itself hides (attached media, a quoted post) are
- * removed, and a long post the scraper cut short ends with "…", as X's
+ * removed, a reply loses the @handles it opens with (X shows them above it, as
+ * "Replying to"), and a long post the scraper cut short ends with "…", as X's
  * "Show more" does. `trimReaction` may shorten it at a word boundary with "…".
  * Every reaction keeps its link (`https://x.com/<handle>/status/<id>`).
  *
@@ -47,6 +48,8 @@ export type XReaction = {
   text: string;
   /** The post's first photo, or its video's or GIF's poster frame, drawn whole under its text. */
   media?: XPhoto | null;
+  /** How many photos, videos and GIFs the post shows, when more than one: its card draws only `media`. */
+  mediaCount?: number;
   /** ISO 8601, or null when the scraper's date can't be read. */
   createdAt: string | null;
   likes: number;
@@ -66,6 +69,8 @@ export type FetchXReactionsOptions = {
   language?: string;
   /** Minimum likes per post. Defaults to 100. */
   minLikes?: number;
+  /** X's result order: "Top" (the default) for the most-liked posts, "Latest" for every match, replies included. */
+  sort?: "Top" | "Latest";
   signal?: AbortSignal;
   fetch?: typeof fetch;
 };
@@ -142,6 +147,13 @@ function media(item: Item): XPhoto | null {
   return null;
 }
 
+/** How many photos, videos and GIFs the post shows, from the same field `media` reads. */
+function mediaCount(item: Item): number {
+  const lists = [record(item.extendedEntities)?.media, record(item.extended_entities)?.media, item.mediaDetails, record(item.entities)?.media];
+  const list = lists.find(Array.isArray) as unknown[] | undefined;
+  return (list ?? []).filter(entry => MEDIA_KINDS.has(text(record(entry)?.type))).length;
+}
+
 /** Rough SF Pro semibold widths in em for the media badge; digits are the default. */
 const BADGE_GLYPHS = new Map([[":", .3], ["G", .74], ["I", .3], ["F", .58]]);
 /** What X writes on a post's media, and the badge's width in 1080-wide pixels: a video's length
@@ -180,18 +192,37 @@ function hiddenLinks(item: Item): Set<string> {
   return links;
 }
 
-/** The post as X shows it: surrounding whitespace trimmed and trailing hidden
- * links removed; every word, emoji and line break is kept. When the scraper
- * cut a long post (X's "Show more"), the cut is marked with "…". */
+/** True when the post answers another: the scraper's isReply and reply-to fields, or the embed's in_reply_to_*. */
+function isReply(item: Item): boolean {
+  return item.isReply === true || [item.inReplyToUsername, item.inReplyToUserId, item.inReplyToId, item.in_reply_to_screen_name, item.in_reply_to_status_id_str]
+    .some(value => typeof value === "number" || text(value).trim() !== "");
+}
+
+/** A reply's text from where X starts showing it: X's own display range when the embed gives one
+ * that starts after handles only, else past the run of @handles the text opens with. */
+function replyText(item: Item, raw: string): string {
+  const range = item.display_text_range, characters = Array.from(raw);
+  const start = Array.isArray(range) && Number.isSafeInteger(range[0]) && range[0] >= 0 && range[0] <= characters.length ? range[0] as number : -1;
+  if (start >= 0 && /^\s*(?:@[A-Za-z0-9_]{1,15}\s*)*$/.test(characters.slice(0, start).join(""))) return characters.slice(start).join("");
+  return raw.trim().replace(/^(?:@[A-Za-z0-9_]{1,15}\s+)+/, "");
+}
+
+/** The post as X shows it: surrounding whitespace trimmed, trailing hidden links removed and, for
+ * a reply, the @handles it opens with dropped (X shows them above it, as "Replying to"), unless
+ * they are all it says; every other word, emoji and line break is kept. When the scraper cut a
+ * long post (X's "Show more"), the cut is marked with "…". */
 function visibleText(item: Item, raw: string): string {
   const hidden = hiddenLinks(item);
-  let body = raw.trim(), removed = false;
-  for (let match = body.match(/\s*(https:\/\/t\.co\/\w+)$/); match && hidden.has(match[1]); match = body.match(/\s*(https:\/\/t\.co\/\w+)$/)) {
-    body = body.slice(0, match.index).trimEnd(); removed = true;
-  }
-  // Long posts arrive as their first ~275 characters plus a link; regular posts stop at 280.
-  const cut = removed && Array.from(body).length >= 260 && !/[.!?…)"”’'\]]$|\p{Extended_Pictographic}$/u.test(body);
-  return cut ? `${body}…` : body;
+  const shown = (value: string) => {
+    let body = value.trim(), removed = false;
+    for (let match = body.match(/\s*(https:\/\/t\.co\/\w+)$/); match && hidden.has(match[1]); match = body.match(/\s*(https:\/\/t\.co\/\w+)$/)) {
+      body = body.slice(0, match.index).trimEnd(); removed = true;
+    }
+    // Long posts arrive as their first ~275 characters plus a link; regular posts stop at 280.
+    const cut = removed && Array.from(body).length >= 260 && !/[.!?…)"”’'\]]$|\p{Extended_Pictographic}$/u.test(body);
+    return cut ? `${body}…` : body;
+  };
+  return (isReply(item) ? shown(replyText(item, raw)) : "") || shown(raw);
 }
 
 function isRetweet(item: Item, body: string): boolean {
@@ -203,8 +234,8 @@ function isPromoted(item: Item): boolean {
   return item.isPromoted === true || item.promoted === true || Boolean(record(item.promotedMetadata)) || type === "promoted" || type === "ad";
 }
 
-/** One scraper item as a reaction, or null when it isn't a real, original post
- * with an id, a handle and text. Text is kept verbatim, trimmed of whitespace. */
+/** One scraper item (or X embed post) as a reaction, or null when it isn't a real, original
+ * post with an id, a handle and text. Its text is the post as X shows it (visibleText). */
 export function normalizeTweet(value: unknown): XReaction | null {
   const item = record(value);
   if (!item) return null;
@@ -234,6 +265,7 @@ export function normalizeTweet(value: unknown): XReaction | null {
     },
     text: body,
     media: media(item),
+    ...(mediaCount(item) > 1 ? { mediaCount: mediaCount(item) } : {}),
     createdAt: isoDate(item.createdAt ?? item.created_at),
     likes: count(item.likeCount ?? item.favorite_count),
     reposts: count(item.retweetCount ?? item.retweet_count),
@@ -439,7 +471,7 @@ function startDate(since: Date | string | undefined): string {
 
 /** Searches X for the most-liked real posts about `terms` and returns them
  * normalized, deduplicated and sorted by engagement. Throws XReactionsError. */
-export async function fetchXReactions({ terms, since, max = 30, language = "en", minLikes = 100, signal, fetch: fetcher = fetch }: FetchXReactionsOptions): Promise<XReaction[]> {
+export async function fetchXReactions({ terms, since, max = 30, language = "en", minLikes = 100, sort = "Top", signal, fetch: fetcher = fetch }: FetchXReactionsOptions): Promise<XReaction[]> {
   const token = process.env.APIFY_TOKEN?.trim();
   if (!token) throw new XReactionsError("X reactions need an Apify token. Set APIFY_TOKEN on the server.", 503);
   const searchTerms = [...new Set((terms ?? []).map(term => String(term).trim()).filter(Boolean))].slice(0, 5);
@@ -447,7 +479,7 @@ export async function fetchXReactions({ terms, since, max = 30, language = "en",
   const limit = Math.max(1, Math.min(X_REACTIONS_MAX, Math.floor(Number(max) || 30)));
   const lang = /^[a-z]{2,3}$/i.test(language) ? language.toLowerCase() : "en";
   const floor = Math.max(0, Math.floor(Number(minLikes) || 0));
-  const input = { searchTerms, maxItems: limit, sort: "Top", tweetLanguage: lang, minimumFavorites: floor, start: startDate(since) };
+  const input = { searchTerms, maxItems: limit, sort: sort === "Latest" ? "Latest" : "Top", tweetLanguage: lang, minimumFavorites: floor, start: startDate(since) };
   const scrub = (message: string) => message.split(token).join("[redacted]").replace(/\s+/g, " ").trim().slice(0, 200);
   const timeout = AbortSignal.timeout(TIMEOUT_MS);
   let response: Response;
@@ -512,7 +544,7 @@ async function readCapped(response: Response, limit: number): Promise<string | n
 /**
  * One post from X, by its link or id, read from the public data X's own embed
  * widget uses, so it needs no Apify plan or token. It comes back like a searched
- * post: verbatim text, the author's check mark and photo shape, the post's photo,
+ * post: its text as X shows it, the author's check mark and photo shape, the post's photo,
  * likes and date. Throws XReactionsError in plain words when the link isn't a post
  * on X or X won't show the post (deleted, protected or age-restricted).
  */

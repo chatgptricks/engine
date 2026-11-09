@@ -7,6 +7,7 @@ import {getEditorLibrary, saveEditorLibrary, LibraryConflictError} from "@/lib/t
 import {libraryTemplates} from "@/lib/template-editor/template-catalog";
 import {formatDimensions, parseLibrary, type DesignDocument} from "@/lib/template-editor/model";
 import {checkLibrarySaveBudget} from "@/lib/template-editor/library-budget";
+import {storeNewImages} from "@/lib/template-editor/stored-images";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -41,6 +42,7 @@ async function dispatch(ownerKey: string, input: Record<string, unknown>) {
     if (!validId(deckId)) throw new RequestError("A valid deckId is required.");
     if (action === "update_deck" && (typeof input.expectedHash !== "string" || !/^[a-f0-9]{64}$/.test(input.expectedHash))) throw new RequestError("Supply expectedHash from get_deck before updating a deck.");
     const inputHash = await contentHash(action === "create_deck" ? {action, spec} : {action, deckId, expectedHash: input.expectedHash, changes: input.changes});
+    const images = new Map<string, string | null>();
     for (let attempt = 0; attempt < 4; attempt++) {
       const stored = await getEditorLibrary(ownerKey), existing = stored.library.designs.find(document => document.id === deckId);
       const receipt = existing?.agentOperations?.find(operation => operation.id === operationId);
@@ -64,6 +66,9 @@ async function dispatch(ownerKey: string, input: Record<string, unknown>) {
         document = updateAgentDeck(before, withHtmlLayerTokens(input.changes, tokens));
       }
       document = {...document, agentOperations: [...(document.agentOperations ?? []), {id: operationId, inputHash}].slice(-20)};
+      // data: images the agent sent are stored as media files and the deck points to them, so they
+      // don't count against the library limit. Template artwork and images already saved stay (stored-images.ts).
+      document = (await storeNewImages(ownerKey, document, stored.library, images)).value;
       const next = parseLibrary({...stored.library, designs: existing ? stored.library.designs.map(item => item.id === deckId ? document : item) : [document, ...stored.library.designs]});
       if (!next) throw new RequestError("The deck exceeds Engine's document or workspace limits.");
       const budget = checkLibrarySaveBudget(next);
