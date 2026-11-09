@@ -483,7 +483,7 @@ test("another platform's comments become our cards in its own colors, and the de
     assert.deepEqual(changed.deck.slides.map(slide=>slide.slide),[2]);
     // The Follow page shows the post's photo again, closer.
     const followPhoto=layer(built.deck,2,"photo");
-    await json("edit_deck",{operations:[{op:"update_element",pageId:follow,elementId:followPhoto.id,properties:{cropScale:1.3,cropX:50,cropY:40}}]});
+    await json("edit_deck",{operations:[{op:"update_element",pageId:follow,elementId:followPhoto.id,properties:{cropScale:1.25,cropX:50,cropY:40}}]});
     await invoke("look_at_slides",{slides:[1,2,3]});
     // Slide 3 repeats slide 1's comment, so it's left out; the Follow page the original doesn't have is slide 0.
     const handIn={pages:[{slide:1,layout:"Cover"},{slide:2,layout:"blank, one Reddit card"},{slide:0,layout:"Follow"}],notes:["Slide 3 repeats slide 1's comment, so it's left out."]};
@@ -498,12 +498,12 @@ test("another platform's comments become our cards in its own colors, and the de
     assert.match(card.css,/\.when\{color:var\(--color-source\)\}/);
     assert.deepEqual(tools.deckOffBrand(deck,tokens),[],"a platform's card keeps its own colors; everything else keeps the brand's");
     assert.equal(deck.pages[2].canvas.elements.find(item=>item.slot==="cta").text,"FOR MORE LIFE STORIES");
-    assert.equal(deck.pages[2].canvas.elements.find(item=>item.slot==="photo").cropScale,1.3);
+    assert.equal(deck.pages[2].canvas.elements.find(item=>item.slot==="photo").cropScale,1.25);
     assert.deepEqual(leftovers(deck),[]);
   });
 });
 
-test("a photo that stops inside a frame the template fades isn't handed in until its edge sits at the frame's or a band covers it",async()=>{
+test("a photo under the template's fades isn't handed in until it sits on the frame's bottom, a band covers its top edge and it isn't blown up",async()=>{
   const context=await contextFor("exact",{source:done(redditNotes),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null})});
   await stand(async({call,invoke,json})=>{
     // A wide strip, like the one run 8 of the design proof cut below the original's card: 864 × 405 px, which a contain fit shows 1080 × 506 in the 1080 × 926 cover frame.
@@ -517,10 +517,17 @@ test("a photo that stops inside a frame the template fades isn't handed in until
     const handIn={pages:[{slide:1,layout:"Cover"},{slide:0,layout:"Follow"}],notes:["Slides 2 and 3 aren't in this deck."]};
     const look=async()=>{await invoke("look_at_slides",{slides:[1,2]});return call.submit.check(handIn);};
     const place=async properties=>{await json("edit_deck",{operations:[{op:"update_element",pageId:cover,elementId:frame.id,properties}]});return look();};
-    // Filling the frame leaves no edge inside it.
-    assert.equal(await look(),null);
+    // Filling the frame leaves no edge inside it, but the strip is blown up past 1.75× its own pixels: said once for each photo.
+    assert.match(await look(),/^Slide 1's photo shows at 2\.29× its own pixels, so it looks soft\. Keep it under 1\.75×: cut a bigger box/);
+    assert.match(await look(),/^Slide 2's photo shows at 2\.29× its own pixels/);
+    assert.equal(await look(),null,"each photo is said once: the original may have nothing bigger");
     // At cropY 77 the strip stops 97 px above the frame's bottom, where the template's bottom fade is still see-through.
     assert.match(await place({fit:"contain",cropX:50,cropY:77,cropScale:1}),/^Slide 1's photo stops at y 829, 97 px above the bottom of its frame \(y 926\)\. The template's fade hides a photo's edge only at the frame's own, so this one shows as a straight line\. Set cropY 100/);
+    // A band over that edge hides the line but leaves a dark gap above the headline, so it doesn't pass.
+    const banded=await json("edit_deck",{operations:[{op:"add_html",pageId:cover,index:1,name:"Band over the photo's bottom edge",x:0,y:760,width:1080,height:140,html:"<div></div>",css:":root{background:var(--color-background)}"}]});
+    assert.match(await look(),/^Slide 1's photo stops at y 829, 97 px above the bottom of its frame \(y 926\)\..*a band over that edge would leave a dark gap/);
+    const bottomBand=banded.deck.slides[0].layers.find(item=>item.name==="Band over the photo's bottom edge");
+    await json("edit_deck",{operations:[{op:"remove_element",pageId:cover,elementId:bottomBand.id}]});
     // At the frame's bottom the fade takes that edge, and the top edge needs a band.
     assert.match(await place({cropY:100}),/^Slide 1's photo starts at y 420, 420 px below the top of its frame, and nothing covers that edge/);
     // A band of the background over the top edge, right above the photo in the stack.
@@ -529,6 +536,14 @@ test("a photo that stops inside a frame the template fades isn't handed in until
     // A photo narrower than its frame shows its sides.
     assert.match(await place({cropScale:.8}),/^Slide 1's photo shows from x 108 to x 972, inside its frame's x 0 to x 1080, so its sides show as straight lines\. Bring it closer with cropScale/);
     assert.equal(await place({cropScale:1.1}),null,"coming closer fills the width again, the bottom edge at the frame's");
+    // A photo swapped in with edit_deck takes its own size, so where it lands is worked out from it: a tall cut, contained, leaves its sides inside the frame.
+    const tall=await json("cut_from_source",{slide:1,box:{x:300,y:300,width:200,height:500},kind:"photo",what:"One of the friends"});
+    assert.ok(tall.height>tall.width,"a tall cut");
+    const sides=(await place({src:tall.src,cropScale:1})).match(/^Slide 1's photo shows from x (\d+) to x (\d+), inside its frame's x 0 to x 1080/);
+    assert.ok(sides,"its sides show, as its own size puts them");
+    const width=926*tall.width/tall.height;
+    assert.ok(Math.abs(Number(sides[1])-(1080-width)/2)<=2&&Math.abs(Number(sides[2])-(1080+width)/2)<=2,`${sides[1]}–${sides[2]} for a ${tall.width} × ${tall.height} cut`);
+    assert.equal(await place({src:strip.src,cropScale:1.1}),null,"the strip again, as it was");
     return handIn;
   },async()=>{
     const {output}=await design(context);

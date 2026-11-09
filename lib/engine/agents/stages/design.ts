@@ -38,11 +38,19 @@ const WORKFLOW = [
   "6. Hand the deck in with submit_design.",
 ].join("\n");
 
+/**
+ * Past this many output pixels to one of its own, a photo under the template's
+ * fades looks soft: run 9 of the design proof filled the Follow page's frame
+ * with a strip at 2.04× (soft, a face cut at the edge); runs 6 to 8 used the
+ * whole photo at about 1.35×.
+ */
+export const MAX_PHOTO_ZOOM = 1.75;
+
 const LAYOUT_RULES = [
   "Keep each template page's branding layers (logo, hairlines, handle, page number, swipe line) where they are: never cover or redraw them",
   "The cover is the template's Cover page, exactly: the photo fills its photo frame under the template's fades, and the headline sits in its headline slot at the template's size and casing, its key phrase in [[ ]] for the accent, as the template's own cover sets one apart: the words the original sets apart, or else the phrase that carries the story, without a leading article. An exact copy's too: the accent is our template's look, not a change to the words",
   "A photo keeps every face whole and clear of the template's fades: no face is cut by the frame's edges (each is whole inside the frame, or out of it). Cut it at about its frame's proportions, then place it in the frame with cropX and cropY (0-100: the point of the photo the frame centers on) and cropScale (above 1 to come closer). When filling the frame would cut a face, fit: contain keeps them all; then cropScale brings it as close to filling the frame as the faces allow (often about 1.1), and it sits low in the frame (cropY 100), whether or not it still holds an overlay, so the template's bottom fade takes its bottom edge and its people sit clear of the card above. A fade hides a photo's edge only at the frame's own edge: any other edge left inside the frame shows as a straight line unless a band covers it (below)",
-  "A photo we reuse never shows the original's overlays (its cards, captions, stickers, logos, text). Engine can't paint them out: cut the photo's box clear of them, or cover them with the layer we rebuild in their place",
+  "A photo we reuse never shows the original's overlays (its cards, captions, stickers, logos, text). Engine can't paint them out: cut the photo's box clear of them, or cover them with the layer we rebuild in their place. On the cover, an overlay that rests on the people (a card touching their heads) is cut away, not covered: cut the photo from just below it, then place that cut low and close as below (cropY 100, cropScale as the faces allow), its top edge under a band. Kept, it would have to sit high under our card, which shrinks the people and leaves a dark gap above the headline",
   "Where an overlay reaches past the layer we rebuild over it (or there is none, as on the Follow page), our layer keeps its usual size and place, never stretched to cover it: the rest goes under a band of var(--color-background), an HTML layer right above the photo in the stack (add_html index), under the template's fades and our layers. It is solid to about 40 px past the overlay's lowest edge, its border and shadow too (a thin line left showing is easy to miss at look_at_slides' size), then fades out into the photo over 100 px or more (linear-gradient to transparent) the way the template's fades do, clear of the faces. A photo that doesn't fill its frame (fit: contain, to keep every face whole) gets the same kind of band over each edge it leaves inside the frame (at cropY 100, its top edge): solid just past the edge, then fading into the photo clear of the faces, so no hard line shows",
   "Every part that isn't a photo is rebuilt, never pasted from a screenshot: words as text, a post or comment as our card (Cards), a chart from its data, a logo from find_logos",
   "Rebuilt text matches the original's size and stays readable: never below var(--min-text-size), with text-wrap: pretty so no word sits alone on a line",
@@ -52,7 +60,7 @@ const LAYOUT_RULES = [
   "Every color in HTML comes from the brand's variables (a platform's card is the one exception: Cards); a tint is color-mix(in srgb, var(--color-text) 20%, transparent) or opacity",
   "An HTML layer's CSS pixels are output pixels unless you set designWidth: a 1080-pixel slide is 1080 CSS pixels wide",
   "A chart reads at phone size: its labels are at least var(--min-text-size) and never touch or overlap (show every other year when they crowd), and each line is named in words, next to it or in a legend, never by its color alone",
-  "The Follow page is made for this post: its call to action (the cta slot, in the accent) names what the page gives more of, tied to the post's subject (for a post of life stories, FOR MORE LIFE STORIES), on one line under FOLLOW THIS PAGE: about 21 characters at most. Its photo frame shows a photo from the post again, filling the frame and a little closer (cropScale about 1.1 to 1.25; 1 just fills it), so its people are larger than on the cover. No face is cut by the frame's edges: each is whole inside it, or out of it. The photo's own pixels aren't blown up past about twice their size. When the photo still holds the original's overlay, place it so the least of the overlay shows (an overlay at the photo's top: cropY 100, the photo as high as it goes), so the band over the rest stays short and the faces sit above the bottom fade. With no photo in the post, it keeps the template's placeholder",
+  `The Follow page is made for this post: its call to action (the cta slot, in the accent) names what the page gives more of, tied to the post's subject (for a post of life stories, FOR MORE LIFE STORIES), on one line under FOLLOW THIS PAGE: about 21 characters at most. Its photo frame shows a photo from the post again, filling the frame and a little closer (cropScale about 1.1 to 1.25; 1 just fills it), so its people are larger than on the cover. No face is cut by the frame's edges: each is whole inside it, or out of it. The photo's own pixels aren't blown up past ${MAX_PHOTO_ZOOM} times their size (a strip cut from under an overlay is often too small for this frame: use the whole photo, its overlay under a band). When the photo still holds the original's overlay, place it so the least of the overlay shows (an overlay at the photo's top: cropY 100, the photo as high as it goes), so the band over the rest stays short and the faces sit above the bottom fade. With no photo in the post, it keeps the template's placeholder`,
   "A template text slot left without words is hidden for you (an empty list would still draw its bullet); give it words and it shows again",
 ];
 
@@ -176,6 +184,37 @@ export function shownPhoto(photo: ImageElement): { left: number; top: number; ri
   return { left: zoomed(originX, left), right: zoomed(originX, left + width), top: zoomed(originY, top), bottom: zoomed(originY, top + height) };
 }
 
+/** Whether a photo sits under the template's fades (the Cover's and the Follow page's): a gradient shape above it, across most of its width. */
+function underFades(photo: CanvasElement, above: CanvasElement[]): boolean {
+  const across = (item: CanvasElement) => Math.min(item.x + item.width, photo.x + photo.width) - Math.max(item.x, photo.x) > photo.width / 2;
+  const within = (item: CanvasElement) => Math.min(item.y + item.height, photo.y + photo.height) - Math.max(item.y, photo.y) > item.height / 2;
+  return above.some(item => item.type === "shape" && Boolean(item.gradient) && across(item) && within(item));
+}
+
+/**
+ * A photo under the template's fades drawn past MAX_PHOTO_ZOOM, said for the
+ * designer; else null. Each photo is said once (`said`), since the original may
+ * have nothing bigger to cut.
+ */
+function softPhoto(document: DesignDocument, said: Set<string>): string | null {
+  const scale = formatDimensions(document).width / 360;
+  for (const [index, page] of document.pages.entries()) {
+    const elements = page.canvas?.elements ?? [];
+    for (const [order, photo] of elements.entries()) {
+      if (photo.type !== "image" || !photo.slot || photo.hidden || !photo.intrinsicWidth || !photo.intrinsicHeight) continue;
+      if (!underFades(photo, elements.slice(order + 1).filter(item => !item.hidden))) continue;
+      const fit = (photo.fit === "contain" ? Math.min : Math.max)(photo.width / photo.intrinsicWidth, photo.height / photo.intrinsicHeight);
+      const zoom = fit * (photo.cropScale ?? 1) * scale, key = `${page.id} ${photo.id} ${photo.src}`;
+      if (zoom <= MAX_PHOTO_ZOOM + .005 || said.has(key)) continue;
+      said.add(key);
+      return `Slide ${index + 1}'s photo shows at ${zoom.toFixed(2)}× its own pixels, so it looks soft. Keep it under ${MAX_PHOTO_ZOOM}×: cut a bigger box from the original's slide (the whole photo does, its overlay under a band), or bring it less close with cropScale. Then look at it again.`;
+    }
+  }
+  return null;
+}
+/** The soft photos already said, per designer's run. */
+const softSaid = new WeakMap<DesignSession, Set<string>>();
+
 /**
  * A photo that leaves an edge inside a frame the template fades, with no HTML
  * layer (a band) over that edge, said for the designer; else null. A fade hides
@@ -189,17 +228,16 @@ function looseEdge(document: DesignDocument): string | null {
     for (const [order, photo] of elements.entries()) {
       if (photo.type !== "image" || !photo.slot || photo.hidden) continue;
       const shown = shownPhoto(photo), above = elements.slice(order + 1).filter(item => !item.hidden);
-      const across = (item: CanvasElement) => Math.min(item.x + item.width, photo.x + photo.width) - Math.max(item.x, photo.x) > photo.width / 2;
-      const within = (item: CanvasElement) => Math.min(item.y + item.height, photo.y + photo.height) - Math.max(item.y, photo.y) > item.height / 2;
-      if (!shown || !above.some(item => item.type === "shape" && item.gradient && across(item) && within(item))) continue;
+      if (!shown || !underFades(photo, above)) continue;
       const frame = { left: photo.x, top: photo.y, right: photo.x + photo.width, bottom: photo.y + photo.height };
       const edge = { left: photo.x + shown.left, top: photo.y + shown.top, right: photo.x + shown.right, bottom: photo.y + shown.bottom };
       const seen = { left: Math.max(frame.left, edge.left), top: Math.max(frame.top, edge.top), right: Math.min(frame.right, edge.right), bottom: Math.min(frame.bottom, edge.bottom) };
       const covered = (left: number, top: number, right: number, bottom: number) =>
         above.some(item => item.type === "html" && item.x <= left + slack && item.x + item.width >= right - slack && item.y <= top + slack && item.y + item.height >= bottom - slack);
       const slide = index + 1;
-      if (frame.bottom - edge.bottom > slack && !covered(seen.left, edge.bottom - margin, seen.right, edge.bottom + margin)) {
-        return `Slide ${slide}'s photo stops at y ${at(edge.bottom)}, ${at(frame.bottom - edge.bottom)} px above the bottom of its frame (y ${at(frame.bottom)}). The template's fade hides a photo's edge only at the frame's own, so this one shows as a straight line. Set cropY 100 so the photo sits at the frame's bottom (cropScale brings it closer, as far as the faces allow), or cover that edge with a band, then look at it again.`;
+      // A band over the bottom edge hides the line but leaves a dark gap above the headline (run 9's cover), so the photo goes down.
+      if (frame.bottom - edge.bottom > slack) {
+        return `Slide ${slide}'s photo stops at y ${at(edge.bottom)}, ${at(frame.bottom - edge.bottom)} px above the bottom of its frame (y ${at(frame.bottom)}). The template's fade hides a photo's edge only at the frame's own, so this one shows as a straight line. Set cropY 100 so the photo sits at the frame's bottom (cropScale brings it closer, as far as the faces allow); a band over that edge would leave a dark gap above the page's words. Then look at it again.`;
       }
       if (edge.top - frame.top > slack && !covered(seen.left, edge.top - margin, seen.right, edge.top + margin)) {
         return `Slide ${slide}'s photo starts at y ${at(edge.top)}, ${at(edge.top - frame.top)} px below the top of its frame, and nothing covers that edge, so it shows as a straight line. Cover it with a band of var(--color-background): an HTML layer right above the photo in the stack, solid just past the edge, then fading into the photo clear of the faces. Then look at it again.`;
@@ -238,6 +276,9 @@ async function problemWith(session: DesignSession, value: Submitted, slides: num
   }
   const edge = looseEdge(document);
   if (edge) return edge;
+  if (!softSaid.has(session)) softSaid.set(session, new Set());
+  const soft = softPhoto(document, softSaid.get(session)!);
+  if (soft) return soft;
   if (Object.keys(session.tokens).length) {
     const off = deckOffBrand(document, session.tokens);
     if (off.length) return `These HTML layers leave the brand: ${off.join(" ")}`;

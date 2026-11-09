@@ -522,6 +522,14 @@ async function editDeck(session: DesignSession, input: { operations: Record<stri
     const richText = words.accented.get(slotKey(page.id, element));
     if (richText && element.type === "text") element.richText = richText;
   }
+  // A photo that now shows another stored image takes that image's own size, as create_deck's photo slots do,
+  // so where it lands in its frame (fit, crop, zoom) is worked out from the picture it shows, not the one before.
+  const shown = new Map(session.document.pages.flatMap(page => (page.canvas?.elements ?? []).map(element => [element.id, element.type === "image" ? element.src : null] as const)));
+  for (const page of next.pages) for (const element of page.canvas?.elements ?? []) {
+    if (element.type !== "image" || shown.get(element.id) === element.src) continue;
+    const asset = session.assets.get(element.src);
+    if (asset?.width && asset.height) { element.intrinsicWidth = asset.width; element.intrinsicHeight = asset.height; }
+  }
   // Each HTML layer the edit adds or changes keeps to the brand, as it is after the edit (a platform's card by its mark).
   // Without a brand guide or template colors there are no variables to keep to.
   const problems = Object.keys(session.tokens).length ? deckOffBrand(next, session.tokens, session.document) : [];
