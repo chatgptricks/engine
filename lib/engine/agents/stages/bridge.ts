@@ -1,10 +1,9 @@
 /**
- * The early test path (2026-11-08): until build steps B, D and F land, an
- * exact copy runs end to end on the first team's copier, chart rebuilder,
- * exact deck and fidelity critic, under the new stage names. The source stage
- * is step A's own (merged).
+ * The early test path (2026-11-08): until build steps D and F land, an exact
+ * copy runs end to end on the first team's copier, chart rebuilder, exact deck
+ * and fidelity critic, under the new stage names. The source stage is step A's
+ * own, and research and the check are step B's (both merged).
  *
- * - research: an unchecked quick check that proceeds. Nothing is looked up.
  * - design: the first team's transcript, chart data and exact deck, in one
  *   stage. What they wrote is kept under `bridge`, so a fix round or a rerun
  *   builds on it and saves over the same deck.
@@ -12,22 +11,18 @@
  *   data, images) become `design`, and the critics' report is kept under
  *   `bridge` so the fix round tells each part only its own issues.
  *
- * A full recreation goes straight to the step stubs, so it stops at the
- * research stage. Each build step switches its stage off this file when it
- * merges; the Last step deletes the file.
+ * A full recreation goes straight to the step stubs, so it stops at the brief
+ * (step C). Each build step switches its stage off this file when it merges;
+ * the Last step deletes the file.
  */
 import { outputOf, type StageContext, type StageResult, type StageRunner } from "../context";
 import { exactDeck, transcript as copyOriginal } from "../exact";
 import { exactData } from "../exact-data";
 import { templatePages } from "../pages";
 import { fixInstructions as legacyFix, review as legacyReview } from "../review";
-import type { CheckIssue, CriticOutput, CriticReport, DeckOutput, DesignOutput, Issue, Research, ReviewOutput, ReviewReport, TranscriptOutput } from "../schemas";
+import type { CheckIssue, CriticOutput, CriticReport, DeckOutput, DesignOutput, Issue, ReviewOutput, ReviewReport, TranscriptOutput } from "../schemas";
 import { design } from "./design";
-import { research } from "./research";
 import { review } from "./review";
-
-/** How an unchecked origin starts; the run card shows it as "Origin not checked yet". */
-export const UNCHECKED = "Not checked yet";
 
 type Settled = { status: "done" | "skipped"; output?: unknown; error?: string };
 type Made = { transcript: TranscriptOutput; data: Settled; deck: DeckOutput };
@@ -49,25 +44,6 @@ const withStages = (context: StageContext, made: Partial<Made>): StageContext =>
     },
   },
 });
-
-const bridgeResearch: StageRunner = async context => {
-  if (!exact(context)) return research(context);
-  const none = { likes: null, comments: null, views: null };
-  const check: Research = {
-    quick: true,
-    origin: { found: false, url: null, who: "", date: null, note: `${UNCHECKED}: the quick check comes with build step B.` },
-    surfaces: [], facts: [],
-    worth: {
-      traction: { post: none, usual: null, ratio: null, performing: false },
-      fresh: { firstSeen: null, ageDays: null, stale: false },
-      saturation: { note: "", saturated: false },
-      covered: { already: false, by: [], note: "" },
-    },
-    fabrication: [], positions: [], reactions: [],
-    recommendation: { outcome: "proceed", reason: "Nothing checked yet (the quick check is build step B). Check where the post comes from before you publish it." },
-  };
-  return { output: check };
-};
 
 /** The critics' report the fix round answers, when this design run is one. */
 function fixRound(context: StageContext): ReviewOutput | undefined {
@@ -130,4 +106,4 @@ const bridgeReview: StageRunner = async context => {
   return { output };
 };
 
-export const bridge = { research: bridgeResearch, design: bridgeDesign, review: bridgeReview };
+export const bridge = { design: bridgeDesign, review: bridgeReview };
