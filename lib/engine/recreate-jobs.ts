@@ -62,7 +62,8 @@ function summary(file: PostFile, stage: PostStage): string {
     }
     case "research": {
       const found = record.output as Research;
-      const origin = found.origin.found ? `Origin: ${found.origin.who || found.origin.url || "found"}` : "No original found";
+      // The early test path (agents/stages/bridge.ts) hands in a quick check that looked nothing up.
+      const origin = found.origin.found ? `Origin: ${found.origin.who || found.origin.url || "found"}` : found.origin.note.startsWith("Not checked yet") ? "Origin not checked yet" : "No original found";
       if (found.quick) return [origin, found.fabrication.length ? plural(found.fabrication.length, "sign") + " of fabrication" : ""].filter(Boolean).join("; ");
       const confirmed = found.facts.filter(fact => fact.label === "confirmed").length;
       return [origin, `${plural(found.facts.length, "fact")} checked${confirmed ? `, ${confirmed} confirmed` : ""}`, found.reactions.length ? plural(found.reactions.length, "reaction") + " from X" : ""].filter(Boolean).join("; ");
