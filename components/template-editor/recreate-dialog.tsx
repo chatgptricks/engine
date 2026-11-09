@@ -29,6 +29,8 @@ const VERDICT_LABELS: Record<FactCheck["verdict"], string> = {confirmed: "Confir
 const FACT_ORDER: FactCheck["verdict"][] = ["confirmed", "reported", "alleged", "unknown", "corrected", "unverified"];
 const KIND_LABELS: Record<OutlineKind, string> = {cover: "Cover", original: "From the original", question: "Reader question", reaction: "Reaction from X", takeaway: "Takeaway", follow: "Follow"};
 const HOOK_SOURCES: Record<Checkpoint["hookSource"], string> = {"headline-model": "From the headline model", copywriter: "By the copywriter", agent: "From an agent"};
+/** Who wrote each headline option: the list mixes the original's, the headline model's and the copywriter's. */
+const HOOK_WRITERS: Record<Checkpoint["hooks"][number]["by"], string> = {original: "The original's headline", "headline-model": "Headline model", copywriter: "Copywriter", agent: "Agent"};
 const MODE_LABELS: Record<RecreateMode, string> = {checkpoint: "You review the plan", autopilot: "Autopilot", exact: "Exact copy"};
 const KINDS: {value: RecreateKind; title: string; detail: string}[] = [
   {value: "exact", title: "Exact copy", detail: "The same slides and words, every part rebuilt in the page's style"},
@@ -641,12 +643,15 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
         {checkpoint.hookNote && <p className="te-recreate-note">{checkpoint.hookNote}</p>}
         <div className="te-recreate-hooks" role="radiogroup" aria-label="Headline" aria-describedby={errors.hook ? `${id}-hook-error` : undefined}>
           {checkpoint.hooks.map((option, index) => {
-            // The original's own headline leads when the post performs and its headline passed the check.
-            const about = option.by === "original" ? `The original's headline${checkpoint.performing ? ": the post is performing" : ""}` : option.framework;
+            // Decision 1: the original's own headline leads when the post performs and its headline passed the check.
+            const original = option.by === "original", leads = original && index === 0 && checkpoint.lead === "original";
+            const who = original ? `${HOOK_WRITERS.original}${leads ? ", first: the post is performing" : ""}` : [HOOK_WRITERS[option.by], option.framework].filter(Boolean).join(" · ");
+            // A Spanish page's lines name the English they come from; a translated original, its own words.
+            const from = option.english ? `${original ? "Translated from" : "From"} “${option.english}”` : "";
             return <label key={index} className={`te-recreate-hook${hook === index ? " is-selected" : ""}`}>
               <input ref={index === 0 ? firstHookRef : undefined} id={`${id}-hook-${index}`} type="radio" name={`${id}-hook`} checked={hook === index} onChange={() => choose(index)}/>
               <span className="te-recreate-hook-text">{option.text}</span>
-              {(about || option.english) && <small>{about}{about && option.english ? " · " : ""}{option.english ? `From “${option.english}”` : ""}</small>}
+              <small>{[who, from].filter(Boolean).join(" · ")}</small>
             </label>;
           })}
           <label className={`te-recreate-hook${hook === -1 ? " is-selected" : ""}`}>
