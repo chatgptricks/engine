@@ -39,6 +39,8 @@ import { snapMove, snapPoint, translateElements, type SnapGuide } from "@/lib/te
 import { gradientCss, gradientEndpoints, maskCss, shapePath } from "@/lib/template-editor/appearance";
 import { editorRichHtml, formatTextRange, textRangeTogglePatch, splitRichLines, resolveRichDecorations, scaleRichTextFonts, captureTextFormattingTarget, sameTextFormattingTarget, textEditingFingerprint, captureTextSelection, restoreTextSelection, type TextFormattingPatch, type TextFormattingTarget, type TextFormatter } from "@/lib/template-editor/rich-text-editing";
 import { duplicateSelection, expandGroupSelection, isElementHidden, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
+import { canFormatWords, takesWordColorsOnly, type WordColor } from "@/lib/template-editor/word-colors";
+import { WordColorControls } from "./word-color-controls";
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
 import { MAX_HTML_DESIGN_WIDTH, richTextToPlain } from "@/lib/template-editor/model";
 import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-layer";
@@ -597,6 +599,8 @@ type CanvasEditorProps = {
   nodeToolbarHost?: HTMLElement|null;
   /** Host outside the transformed canvas, keeping formatting clear of the typing area. */
   textToolbarHost?: HTMLElement|null;
+  /** The deck's highlight colors, offered for selected words of template text whose style is fixed. */
+  wordColors?: WordColor[];
   onRequestCrop?: (id:string)=>void;
   onPan?: (delta:ViewPoint)=>void;
   onZoom?: (gesture:{factor:number;clientX:number;clientY:number})=>void;
@@ -642,7 +646,7 @@ export function CanvasEditor({
   imageDropTargetId,
   masterScene,
   masterPageVisibility,
-  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,nodeToolbarHost,textToolbarHost,
+  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,nodeToolbarHost,textToolbarHost,wordColors,
   penClosed=false,penColor="#222222",onCancelDrawing,onRegisterDrawingControls,onDrawingPointCount,
   drawingMode,
   onDrawPath,
@@ -767,7 +771,8 @@ export function CanvasEditor({
   function formatRange(patch:TextFormattingPatch,expected?:TextFormattingTarget) {
     const node=editingNode.current; const range=richRange.current;
     if(expected&&!sameTextFormattingTarget(captureFormatting(),expected))throw new Error("The word selection changed while the photo was loading. Select the words and try again.");
-    if(!node||!range||disabled||!editingElement||!canEditElement(scene,editingElement,"content")||!canEditElement(scene,editingElement,"style"))return false;
+    // Template text with a fixed style takes word colors only, as in the chat's style_words.
+    if(!node||!range||disabled||!editingElement||!canFormatWords(scene,editingElement,patch))return false;
     if(patch.textureFill && (editingElement.wordTextures?.length??0)>=30)throw new Error("A text layer supports up to 30 word textures. Remove a texture before adding another.");
     const textureId=patch.textureFill?crypto.randomUUID():null;
     const displayPatch=patch.fontSize!==undefined?{...patch,fontSize:patch.fontSize*textDisplayFontSize(editingElement)/editingElement.fontSize}:patch;
@@ -1634,6 +1639,7 @@ export function CanvasEditor({
         <button type="button" aria-label="Italic selected text" title="Italic · ⌘/Ctrl I" onClick={()=>toggleRange("italic")}><i>I</i></button>
         <button type="button" aria-label="Underline selected text" title="Underline · ⌘/Ctrl U" onClick={()=>toggleRange("underline")}><u>U</u></button>
         <button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button>
+        {wordColors?.length&&takesWordColorsOnly(scene,editingElement)?<WordColorControls colors={wordColors} disabled={disabled} onColor={color=>formatRange({color})}/>:null}
         <button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button>
         <button type="button" className="te-rich-controls-done" onClick={()=>{finishEditing();if(!editingActive.current)root.current?.focus({preventScroll:true});}}>Done</button>
       </div>,textToolbarHost)}
