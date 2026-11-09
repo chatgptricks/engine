@@ -442,11 +442,15 @@ test("another platform's comments become our cards in its own colors, and the de
     assert.match(call.system,/the card #0E1113, its border #2F3336, the name #F2F4F5, the time #8BA2AD, the words #EEF1F3/);
     assert.match(call.system,/red #FF4500, orange #FF8717, blue #24A0ED, green #46D160/,"the avatars by the color names the notes use");
     assert.match(call.system,/a band of var\(--color-background\)/,"an overlay our card can't cover goes under a band of the brand's background");
+    assert.match(call.system,/It is solid to about 40 px past the overlay's lowest edge, its border and shadow too/,"solid past the overlay's edge, so no thin line shows");
+    assert.match(call.system,/no face is cut by the frame's edges \(each is whole inside the frame, or out of it\)/,"on every photo, the cover's too");
+    assert.match(call.system,/fit: contain keeps them all; then cropScale brings it as close to filling the frame as the faces allow/,"and a contained photo still fills as much of its frame as the faces allow");
     assert.match(call.system,/no period at the end of a paragraph/,"HTML words follow the page's no-final-periods style");
     assert.match(call.system,/then the words, word for word, in the page's text style: no period at the end of the last sentence, and curly quotes/,"said in the card rule too, where the words are");
     assert.match(call.system,/The page's text style \(Layout\) still applies to them, in slots and in HTML alike/,"and in the exact copy's words rule");
     assert.match(call.system,/An exact copy's too: the accent is our template's look, not a change to the words/,"the cover's key phrase is set apart even when the original's headline is one color");
     assert.match(call.system,/place it so the least of the overlay shows \(an overlay at the photo's top: cropY 100/,"the Follow photo shows as little of the original's overlay as it can");
+    assert.match(call.system,/a little closer \(cropScale about 1\.1 to 1\.25; 1 just fills it\)[^.]*\. No face is cut by the frame's edges/,"and comes only a little closer, as the proof's does, with no face cut by the frame");
     assert.match(call.system,/x 72, y 90, 936 px wide and 1262 px tall/,"a lone card is centred in the guide's content area");
     const photo=await json("cut_from_source",{slide:1,box:PICTURE,kind:"photo",what:"Friends at a dinner table"});
     const built=await json("create_deck",{name:"Small decisions",caption:sourceNotes.post.caption,slides:[
