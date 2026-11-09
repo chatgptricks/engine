@@ -14,7 +14,7 @@ import {CollaborationBar, type EditorCollaboration} from "./collaboration-bar";
 import {sameContent} from "@/lib/template-editor/library-sync";
 import {PageAccessibilitySection} from "./page-accessibility";
 import {prepareRasterAsset} from "@/lib/template-editor/client-media";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowLeftIcon,
   CheckIcon,
@@ -76,6 +76,7 @@ import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/pref
 import { ColorField, Modal } from "./controls";
 import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls } from "./canvas";
 import type { TextFormattingPatch, TextFormatter } from "@/lib/template-editor/rich-text-editing";
+import { wordHighlightColors } from "@/lib/template-editor/word-colors";
 import { findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { PHOTO_DRAG_TYPE, decodePhotoDrag, writePhotoDrag } from "@/lib/template-editor/photo-drag";
 import { proxied } from "@/lib/engine/util";
@@ -344,6 +345,7 @@ export function DesignEditor({
   const canvasWidth = FRAME_WIDTH * (continuous ? design.pages.length : 1);
   const scene = editingMaster ? design.masterScene??{background:'transparent',elements:[]} : design.continuousCanvas ?? page.canvas ?? sceneForPage(page, design.format);
   const smartLayoutAvailable = supportsSmartTemplate(design, templates);
+  const colorRoles = design.colorRoles, wordColors = useMemo(() => wordHighlightColors(colorRoles), [colorRoles]);
   const collaborationPageId = editingMaster ? "@master" : continuous ? "@continuous" : page.id;
   const publishAwareness = collaboration?.setAwareness;
   const awarenessScene = useRef(scene);
@@ -1867,6 +1869,7 @@ export function DesignEditor({
                     onExitNodeEditing={()=>setNavigationMode("select")}
                     nodeToolbarHost={nodeToolbarHost}
                     textToolbarHost={textToolbarHost}
+                    wordColors={wordColors}
                     onRequestCrop={id=>{setSelected([id]);setCropImageId(id);}}
                     penClosed={penClosed} penColor={brand.text}
                     onCancelDrawing={()=>setPathTool(false)}
