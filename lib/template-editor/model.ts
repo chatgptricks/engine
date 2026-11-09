@@ -66,6 +66,11 @@ export type CanvasElementBase = {
    * everything that follows it move down together when they leave room, so a
    * short page has no empty block at its foot. A full page starts at `top`. */
   smartCenter?: { top: number; bottom: number };
+  /** Carries the rest of this layer's group in smart layout: when the layout
+   * moves this layer, the group's other layers (its subgroups' too) move the
+   * same distance, so a broken-up HTML layer stays together behind its "Layout
+   * space". Layers with a flow of their own keep the place their flow gives them. */
+  leadsGroup?: boolean;
   /** Author's choice of how this layer behaves in copies of a template; inferred when absent. */
   layoutRole?: "fixed" | "text" | "media" | "free";
   componentId?: string;
@@ -1406,7 +1411,7 @@ export function releaseSmartLayout(scene: CanvasScene): CanvasScene {
     const released = { ...element } as CanvasElement & Record<string, unknown>;
     const role = element.type === "text" && element.smartText ? "text" : element.templateRole === "media" ? "media" : element.templateRole === "brand" ? "fixed" : undefined;
     const kept = element.protected?.filter(property => !role || !(ROLE_PROTECTION[role] as readonly ProtectedProperty[]).includes(property));
-    delete released.templateRole; delete released.smartFlow; delete released.smartCenter; delete released.protected;
+    delete released.templateRole; delete released.smartFlow; delete released.smartCenter; delete released.leadsGroup; delete released.protected;
     if (kept?.length) released.protected = kept;
     if (released.slot?.startsWith("smart-")) delete released.slot;
     if (released.type === "text" && released.smartText) {
@@ -1953,6 +1958,8 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
     if (!object(center) || !numberIn(center.top, -10000, 10000) || !numberIn(center.bottom, center.top, 10000)) return null;
     result.smartCenter = { top: center.top, bottom: center.bottom };
   }
+  if (!optional(value, "leadsGroup", boolean)) return null;
+  if (value.leadsGroup === true) result.leadsGroup = true;
   for (const key of ["groupId", "componentId", "componentInstanceId", "componentSourceId", "colorRoleId"] as const) {
     if (!optional(value, key, identity)) return null;
     if (value[key] !== undefined) result[key] = value[key] as string;

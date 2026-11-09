@@ -257,7 +257,8 @@ type GroupCap = { fontSize: number; paragraphSpacing?: number; height: number };
 /** Lays out a page's copy. Layers in a `group` are fitted on their own first,
  * then again at the group's shared size and gap. Each pass moves a centred flow
  * (`smartCenter`) as one block (see `centreFlows`); copy that can't reach the
- * foot of its flow is then centred on it (see `balanceShortCopy`). */
+ * foot of its flow is then centred on it (see `balanceShortCopy`). Last, a layer
+ * that `leadsGroup` carries its group as far as it moved (see `carryGroups`). */
 export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText): SmartSceneLayout {
   let caps = new Map<string, GroupCap>(), layout = layoutPass(scene, measure, caps);
   for (let pass = 0; pass < 3; pass++) {
@@ -265,7 +266,41 @@ export function layoutSmartScene(scene: CanvasScene, measure = measureSmartText)
     if (sameCaps(caps, next)) break;
     caps = next; layout = layoutPass(scene, measure, caps);
   }
-  return balanceShortCopy(layout);
+  return carryGroups(scene, balanceShortCopy(layout));
+}
+
+/** A layer that `leadsGroup` and that the layout moved carries the rest of its
+ * group (and its subgroups) the same distance, crops included. Layers with a
+ * flow of their own, and layers the layout placed itself, stay where it put them. */
+function carryGroups(before: CanvasScene, layout: SmartSceneLayout): SmartSceneLayout {
+  const elements = layout.scene.elements;
+  if (!elements.some(element => element.leadsGroup && element.groupId)) return layout;
+  const was = new Map(before.elements.map(element => [element.id, element]));
+  const moved = (element: CanvasScene["elements"][number]) => {
+    const old = was.get(element.id);
+    return old ? { x: element.x - old.x, y: element.y - old.y } : { x: 0, y: 0 };
+  };
+  const still = (move: { x: number; y: number }) => Math.abs(move.x) < 1e-6 && Math.abs(move.y) < 1e-6;
+  const moves = new Map<string, { x: number; y: number }>();
+  for (const leader of elements) {
+    if (!leader.leadsGroup || !leader.groupId || moves.has(leader.groupId)) continue;
+    const move = moved(leader);
+    if (!still(move)) moves.set(leader.groupId, move);
+  }
+  if (!moves.size) return layout;
+  const parents = new Map((layout.scene.groups ?? []).map(group => [group.id, group.parentId]));
+  const carried = (groupId: string | undefined) => {
+    for (let id = groupId, steps = 0; id && steps < 50; id = parents.get(id), steps++) {
+      const move = moves.get(id);
+      if (move) return move;
+    }
+  };
+  return { ...layout, scene: { ...layout.scene, elements: elements.map(element => {
+    const move = element.smartFlow || element.smartCenter || !still(moved(element)) ? undefined : carried(element.groupId);
+    if (!move) return element;
+    const clip = element.clipBounds;
+    return { ...element, x: element.x + move.x, y: element.y + move.y, ...(clip ? { clipBounds: { ...clip, x: clip.x + move.x, y: clip.y + move.y } } : {}) };
+  }) } };
 }
 
 function groupCaps({ scene, texts }: SmartSceneLayout): Map<string, GroupCap> {

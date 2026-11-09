@@ -56,6 +56,16 @@ const pagesLib=load("lib/engine/agents/pages.ts");
 const playbookLib=load("lib/engine/agents/playbook.ts");
 const model=load("lib/template-editor/model.ts");
 const profiles=load("lib/engine/page-profiles.ts");
+const media=load("lib/template-editor/media-storage.ts");
+/** A saved deck's cuts and charts are media files it points to (stored-images.ts); this reads one back. */
+async function picture(ownerKey,src){
+  const id=src.match(/^\/api\/template-editor\/assets\/([a-f0-9]{64})$/)?.[1];
+  assert.ok(id,`a stored image, not ${src.slice(0,40)}`);
+  const asset=await media.readOriginalAsset(ownerKey,id);
+  assert.ok(asset,"stored in the deck's workspace");
+  return asset;
+}
+const typeOf=async(ownerKey,src)=>(await picture(ownerKey,src)).mimeType;
 const template=model.BUILT_IN_TEMPLATES.find(item=>item.id==="chatgptricks-3x4");
 const english=profiles.builtInPageProfiles().find(item=>item.id==="chatgptricks");
 const spanish=profiles.builtInPageProfiles().find(item=>item.id==="pagina-es");
@@ -206,9 +216,9 @@ test("an exact copy copies, looks for its charts' data, builds and reviews",asyn
   assert.match(headline.text,/^SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED$/,"the cover headline is in capitals, as the template sets it");
   assert.match(bySlot(deck.pages[1],"body").text,/^The S&P 500 is up 96% while US job openings fell 29% since November 2022$/,"the body keeps every word");
   const photo=bySlot(deck.pages[0],"photo"),chart=bySlot(deck.pages[1],"media");
-  assert.match(photo.src,/^data:image\/jpeg;base64,/,"the photo is cut from the original slide");
+  assert.equal(await typeOf(ownerKey,photo.src),"image/jpeg","the photo is cut from the original slide");
   assert.notEqual(photo.fit,"contain","a photo fills its frame");
-  assert.match(chart.src,/^data:image\/jpeg;base64,/,"a chart whose real numbers weren't found stays cut from the original");
+  assert.equal(await typeOf(ownerKey,chart.src),"image/jpeg","a chart whose real numbers weren't found stays cut from the original");
   assert.equal(chart.fit,"contain","a chart is shown whole");
   assert.ok(!deck.tags.includes("redrawn-charts"));
   assert.ok(notesOf(deck).includes("Slide 2: the chart stays cut from the original: no real series in this test."),notesOf(deck));
@@ -232,18 +242,19 @@ test("a chart rebuilt from real data is drawn in our style where the cut was, an
   assert.equal(view.stages[1].summary,"1 chart redrawn from real data");
   const deck=await deckLib.loadDeck(ownerKey,view.result.deckId),chart=bySlot(deck.pages[1],"media");
   assert.ok(deck.tags.includes("redrawn-charts"));
-  assert.match(chart.src,/^data:image\/png;base64,/,"drawn by our chart maker, not cut");
+  const drawn=await picture(ownerKey,chart.src);
+  assert.equal(drawn.mimeType,"image/png","drawn by our chart maker, not cut");
   assert.equal(chart.fit,"contain");
   assert.match(chart.publicAlt,/Software/,"the chart's own words, for people who can't see it");
   // Our colors on the page's background: the highlighted bar in our green, the others in our grey.
-  const {data:pixels,info}=await sharp(Buffer.from(chart.src.split(",")[1],"base64")).removeAlpha().raw().toBuffer({resolveWithObject:true});
+  const {data:pixels,info}=await sharp(drawn.data).removeAlpha().raw().toBuffer({resolveWithObject:true});
   let green=0;
   for(let at=0;at<pixels.length;at+=info.channels)if(Math.abs(pixels[at]-0x00)<12&&Math.abs(pixels[at+1]-0xD9)<12&&Math.abs(pixels[at+2]-0x8A)<12)green++;
   assert.ok(green>500,`the highlighted bar is in our accent (${green} pixels)`);
   assert.ok(notesOf(deck).includes("Slide 2: the chart is redrawn in our style from real data (the values printed on the original, checked against Indeed Hiring Lab)."),notesOf(deck));
   assert.equal(bySlot(deck.pages[1],"title").text,"Stocks vs job openings","the slide keeps its own title");
   assert.equal(bySlot(deck.pages[1],"source").text,"Source: FRED","and its source line");
-  assert.match(bySlot(deck.pages[0],"photo").src,/^data:image\/jpeg;base64,/,"a photo is still cut");
+  assert.equal(await typeOf(ownerKey,bySlot(deck.pages[0],"photo").src),"image/jpeg","a photo is still cut");
 });
 
 test("a chart rebuilder that can't finish leaves the chart cut, with the reason, and the run still ends with a deck",async()=>{
@@ -254,7 +265,7 @@ test("a chart rebuilder that can't finish leaves the chart cut, with the reason,
   assert.equal(finished.status,"done");
   assert.equal(finished.stages.data.status,"skipped");
   const deck=await deckLib.loadDeck(ownerKey,finished.deckId);
-  assert.match(bySlot(deck.pages[1],"media").src,/^data:image\/jpeg;base64,/);
+  assert.equal(await typeOf(ownerKey,bySlot(deck.pages[1],"media").src),"image/jpeg");
   assert.equal(jobs.postView(finished,false).stages[1].summary,"Claude took too many steps to rebuild the charts. Try again with a simpler post.");
   assert.ok(notesOf(deck).includes("Slide 2: the chart stays cut from the original: the chart rebuilder stopped (Claude took too many steps to rebuild the charts. Try again with a simpler post)."),notesOf(deck));
 });
@@ -345,12 +356,12 @@ test("posts from X become our cards on the Reaction page: the real post when it'
   // The posts X can't find: built from the screenshot, their photos cut from the original.
   assert.equal(bySlot(second,"reaction-name").text,"Alice");
   assert.equal(bySlot(second,"reaction-text").text,"Back up your notes, people");
-  assert.match(bySlot(second,"reaction-avatar").src,/^data:image\/jpeg;base64,/,"her profile photo, cut from the original");
-  assert.match(bySlot(second,"reaction-media").src,/^data:image\/jpeg;base64,/,"her post's photo, cut too");
+  assert.equal(await typeOf(ownerKey,bySlot(second,"reaction-avatar").src),"image/jpeg","her profile photo, cut from the original");
+  assert.equal(await typeOf(ownerKey,bySlot(second,"reaction-media").src),"image/jpeg","her post's photo, cut too");
   assert.ok(!bySlot(second,"reaction-media").hidden);
   assert.ok(!bySlot(second,"reaction-badge").hidden,"her blue check");
   assert.equal(bySlot(second,"reaction-handle-2").text,"@bob_builds");
-  assert.match(bySlot(second,"reaction-avatar-2").src,/^data:image\/jpeg;base64,/);
+  assert.equal(await typeOf(ownerKey,bySlot(second,"reaction-avatar-2").src),"image/jpeg");
   const square=bySlot(second,"reaction-avatar-2");
   assert.ok(Math.abs(square.radius-square.width*.113)<1e-9,"a rounded-square profile photo, as the screenshot shows");
   assert.ok(bySlot(second,"reaction-media-2").hidden,"his post has no photo");

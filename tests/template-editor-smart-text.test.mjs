@@ -327,6 +327,32 @@ test("a layer that follows hidden copy takes its place, so a title-only page kee
   assert.equal(shown[2].y, shown[1].y + shown[1].height + 20);
 });
 
+test("a layer that leads its group carries the group as far as the layout moves it", () => {
+  const title = text({slot: "title", text: "AI vs Jobs", y: 30, height: 24, smartText: {role: "heading", lines: 0, minFontSize: 12, maxFontSize: 20, maxHeight: 40, anchorTop: 30}});
+  const layer = (type, id, options) => ({...model.createCanvasElement(type, options), id});
+  const space = layer("shape", "space", {y: 200, width: 312, height: 200, groupId: "chart", leadsGroup: true, smartFlow: {after: "title", gap: 20, bottom: 417, resize: true}});
+  const tile = layer("shape", "tile", {x: 40, y: 220, width: 30, height: 30, groupId: "chart", clipBounds: {x: 30, y: 210, width: 100, height: 100}});
+  const label = layer("text", "label", {text: "OpenAI", x: 40, y: 255, width: 60, height: 12, groupId: "inner"});
+  const rider = layer("shape", "rider", {y: 300, width: 10, height: 10, groupId: "chart", smartFlow: {after: "title", edge: "top", gap: 4, bottom: 417}});
+  const outside = layer("shape", "outside", {y: 260, width: 10, height: 10});
+  const scene = {background: "#111111", groups: [{id: "chart", name: "Chart"}, {id: "inner", name: "Labels", parentId: "chart"}], elements: [title, space, tile, label, rider, outside]};
+  const laid = smart.layoutSmartScene(scene, metrics).scene, at = id => laid.elements.find(element => element.id === id);
+  const move = at("space").y - 200;
+  assert.ok(move < -100, "the space flows up under the title");
+  assert.equal(at("tile").y, 220 + move);
+  assert.equal(at("tile").x, 40, "as far as the space moved, and no further");
+  assert.deepEqual(at("tile").clipBounds, {x: 30, y: 210 + move, width: 100, height: 100}, "its crop moves with it");
+  assert.equal(at("label").y, 255 + move, "a subgroup's layers move too");
+  assert.equal(at("rider").y, at(title.id).y + 4, "a layer with its own flow keeps the place its flow gives it");
+  assert.equal(at("outside").y, 260, "layers outside the group stay put");
+  // Laid out again, nothing moves: the group already sits with its space.
+  const again = smart.layoutSmartScene(laid, metrics).scene;
+  assert.deepEqual(again.elements.map(element => [element.id, element.x, element.y]), laid.elements.map(element => [element.id, element.x, element.y]));
+  // Without the mark, a group's layers don't follow.
+  const plain = smart.layoutSmartScene({...scene, elements: scene.elements.map(element => element === space ? {...element, leadsGroup: undefined} : element)}, metrics).scene;
+  assert.equal(plain.elements.find(element => element.id === "tile").y, 220);
+});
+
 test("a check mark follows a name's last line, a card hugs its copy past a hidden photo, and a centred flow moves as one", () => {
   const copy = {role: "body", lines: 0, minFontSize: 12, maxFontSize: 20, maxHeight: 110};
   const title = text({slot: "title", text: "Title", y: 0, height: 24, smartText: {...copy, maxHeight: 24}, smartCenter: {top: 50, bottom: 450}});

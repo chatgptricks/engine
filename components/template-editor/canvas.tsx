@@ -42,6 +42,8 @@ import { duplicateSelection, expandGroupSelection, isElementHidden, isElementLoc
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
 import { MAX_HTML_DESIGN_WIDTH, richTextToPlain } from "@/lib/template-editor/model";
 import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-layer";
+import { setHtmlNodeContent, setHtmlNodeText, withHtmlLayerMarkup, type HtmlNodeSelection } from "@/lib/template-editor/html-edit";
+import { HtmlLayerEditor, firstHtmlTextPart, htmlTextPartAt } from "./html-layer-editor";
 import { parseColor } from "@/lib/template-editor/color-utils";
 import { photoContent, updatePhotoContent, shapeViewBox, findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { textureBackgroundStyle, activeTextTextures, textTextureVariables, textTextureCss } from "@/lib/template-editor/text-textures";
@@ -55,6 +57,7 @@ import "./canvas.css";
 import "./text-editing.css";
 
 type Point = { x: number; y: number };
+type HtmlEditing = { id: string; node: number; caret?: Point; serial: number };
 type Box = Point & { width: number; height: number; rotation: number };
 type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type Gesture = {
@@ -564,6 +567,8 @@ type CanvasEditorProps = {
   historyRevision?: number;
   onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>, targetId: string | null) => void;
   editingRequest?: { id: string; serial: number };
+  /** The part of an HTML layer being typed in, and its selected words (for the style panel); null when none is. */
+  onHtmlSelection?: (selection: HtmlNodeSelection | null) => void;
   /** Editor-only view setting; thumbnails and exports always clip to the page. */
   clipToCanvas?: boolean;
   /** Blank workspace available for marquee selection, in page coordinates. */
@@ -621,6 +626,7 @@ export function CanvasEditor({
   historyRevision=0,
   onContextMenu,
   editingRequest,
+  onHtmlSelection,
   clipToCanvas = true,
   pasteboardBounds,
   slideWidth,
@@ -655,6 +661,12 @@ export function CanvasEditor({
   const formatSerial = useRef(0);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingSeed, setEditingSeed] = useState("");
+  // Typing in an HTML layer (html-layer-editor.tsx): the layer, the part of it, and where a click put the caret.
+  const [htmlEditing, setHtmlEditing] = useState<HtmlEditing | null>(null);
+  const htmlEditingRef = useRef<HtmlEditing | null>(null);
+  /** The layer's markup when this part opened (or last changed some other way): Escape goes back to it. */
+  const htmlOriginal = useRef<string | null>(null);
+  const htmlSerial = useRef(0);
   const [live, setLive] = useState<CanvasScene | null>(null);
   const awarenessCallbacks = useRef({onScenePreview,onCursorChange});
   useLayoutEffect(() => { awarenessCallbacks.current = {onScenePreview,onCursorChange}; });
@@ -775,7 +787,7 @@ export function CanvasEditor({
   useEffect(()=>{onRegisterTextFormatter?.(editingId?Object.assign(formatRange,{capture:captureFormatting}):null);return()=>onRegisterTextFormatter?.(null);});
   useEffect(()=>{onRegisterHistoryBridge?.({flush:()=>{updateEditing();return editingAccepted.current;}});return()=>onRegisterHistoryBridge?.(null);});
   useLayoutEffect(()=>{
-    if(disabled||live||editingId)return;
+    if(disabled||live||editingId||htmlEditing)return;
     const smart = layoutSmartScene(withPictureSizes(scene,root.current));
     let changed=smart.scene!==scene;
     const elements=smart.scene.elements.map(element=>{
@@ -795,7 +807,7 @@ export function CanvasEditor({
       changed=true;return {...element,autoFitFontSize:size};
     });
     if(changed)onChange({...scene,elements},"text-fit");
-  },[scene,disabled,live,editingId,onChange,isolatedGroupId,inScope,fontRevision,pictureRevision]);
+  },[scene,disabled,live,editingId,htmlEditing,onChange,isolatedGroupId,inScope,fontRevision,pictureRevision]);
 
   useLayoutEffect(() => {
     if (!editingId || !editingNode.current) return;
@@ -863,13 +875,14 @@ export function CanvasEditor({
     const request = `${editingRequest.id}:${editingRequest.serial}`;
     if (lastEditingRequest.current === request) return;
     const element = scene.elements.find((item) => item.id === editingRequest.id);
-    if (element?.type !== "text" || !canEditElement(scene,element,'content') || isElementHidden(scene,element) || !inScope(element)) return;
+    if ((element?.type !== "text" && element?.type !== "html") || !canEditElement(scene,element,'content') || isElementHidden(scene,element) || !inScope(element)) return;
     let cancelled = false;
     // Defer until a context menu has released its focus and restored the
     // canvas. Repeated scene changes during typing do not restart editing.
     queueMicrotask(() => {
       if (cancelled) return;
       lastEditingRequest.current = request;
+      if (element.type === "html") { startHtml.current(element); return; }
       onHistoryBoundary?.();
       onSelect([element.id]);
       editingActive.current = element.id;
@@ -895,6 +908,7 @@ export function CanvasEditor({
   }
 
   function finishEditing(cancel = false): CanvasScene {
+    finishHtmlEditing();
     const next = updateEditing(cancel);
     if(!editingAccepted.current)return next;
     editingActive.current = null;
@@ -907,6 +921,7 @@ export function CanvasEditor({
   }
 
   function startEditing(element: CanvasElement) {
+    if (element.type === "html") { startHtmlEditing(element); return; }
     if (disabled || !canEditElement(scene,element,'content') || isElementHidden(scene,element) || !inScope(element) || element.type !== "text") return;
     if (editingActive.current && editingActive.current !== element.id)
       finishEditing();
@@ -919,6 +934,70 @@ export function CanvasEditor({
     setEditingSeed(element.text);
     setEditingId(element.id);
   }
+
+  function showHtmlEditing(next: HtmlEditing | null) {
+    htmlEditingRef.current = next;
+    setHtmlEditing(next);
+  }
+  /** Opens the words of an HTML layer for typing: the part under `point` (screen
+   * pixels), or its first words. False when there are no words there. */
+  function startHtmlEditing(element: CanvasElement, point?: Point): boolean {
+    if (element.type !== "html" || disabled || !canEditElement(scene, element, "content") || isElementHidden(scene, element) || !inScope(element)) return false;
+    // The page's drawing of the layer has the same numbered parts as the one typed in.
+    const drawing = [...root.current?.querySelectorAll<HTMLElement>(".te-canvas-editor-scene [data-element-id] .te-canvas-html-root") ?? []].find(node => node.closest<HTMLElement>("[data-element-id]")?.dataset.elementId === element.id);
+    const node = drawing ? point ? htmlTextPartAt(drawing, point.x, point.y) : firstHtmlTextPart(drawing) : null;
+    if (node === null) return false;
+    finishEditing();
+    onHistoryBoundary?.();
+    onSelect([element.id]);
+    htmlOriginal.current = element.html;
+    showHtmlEditing({ id: element.id, node, serial: ++htmlSerial.current });
+    onHtmlSelection?.({ elementId: element.id, node });
+    return true;
+  }
+  const startHtml = useRef(startHtmlEditing);
+  useLayoutEffect(() => { startHtml.current = startHtmlEditing; });
+  /** Another part of the same layer, where it was clicked. */
+  function pickHtmlPart(node: number, caret: Point) {
+    const editing = htmlEditingRef.current;
+    if (!editing) return;
+    onHistoryBoundary?.();
+    const element = scene.elements.find(item => item.id === editing.id);
+    htmlOriginal.current = element?.type === "html" ? element.html : null;
+    showHtmlEditing({ id: editing.id, node, caret, serial: ++htmlSerial.current });
+    onHtmlSelection?.({ elementId: editing.id, node });
+  }
+  /** Saves what was typed into the part: one undo step per run of typing in it. */
+  function commitHtmlPart(value: string, kind: "content" | "text"): string | null {
+    const editing = htmlEditingRef.current;
+    if (!editing || disabled) return null;
+    const element = scene.elements.find((item): item is HtmlElement => item.id === editing.id && item.type === "html");
+    if (!element || !canEditElement(scene, element, "content")) return null;
+    let next: HtmlElement;
+    try { next = withHtmlLayerMarkup(element, kind === "text" ? setHtmlNodeText(element.html, editing.node, value) : setHtmlNodeContent(element.html, editing.node, value)); }
+    catch { return null; }
+    if (next === element) return element.html;
+    if (onChange({ ...scene, elements: scene.elements.map(item => item.id === element.id ? next : item) }, `html-text:${element.id}:${editing.node}`) === false) return null;
+    return next.html;
+  }
+  /** Ends typing in an HTML layer; Escape (cancel) puts back the part's words from when it opened. */
+  function finishHtmlEditing(cancel = false) {
+    const editing = htmlEditingRef.current;
+    if (!editing) return;
+    showHtmlEditing(null);
+    const original = htmlOriginal.current;
+    htmlOriginal.current = null;
+    const element = scene.elements.find((item): item is HtmlElement => item.id === editing.id && item.type === "html");
+    if (cancel && original !== null && element && element.html !== original && !disabled) onChange({ ...scene, elements: scene.elements.map(item => item.id === element.id ? { ...element, html: original } : item) }, `html-text:${element.id}:${editing.node}`);
+    onHtmlSelection?.(null);
+    onHistoryBoundary?.();
+  }
+  // Typing ends when the layer goes away, is deselected, hidden or locked, or the editor turns read-only.
+  useEffect(() => {
+    if (!htmlEditing) return;
+    const element = scene.elements.find(item => item.id === htmlEditing.id);
+    if (disabled || element?.type !== "html" || !selectedIds.includes(element.id) || isElementHidden(scene, element) || !inScope(element) || !canEditElement(scene, element, "content")) finishHtmlEditing();
+  });
 
   function begin(
     event: ReactPointerEvent,
@@ -1209,14 +1288,16 @@ export function CanvasEditor({
     const preview = remoteGeometry.get(element.id);
     return preview ? { ...element, ...preview } : element;
   }) } as CanvasScene : currentScene;
-  const displayScene = editingId
+  const typingId = editingId ?? htmlEditing?.id ?? null;
+  const displayScene = typingId
     ? {
         ...presentedScene,
         elements: presentedScene.elements.map((element) =>
-          element.id === editingId ? { ...element, opacity: 0 } : element,
+          element.id === typingId ? { ...element, opacity: 0 } : element,
         ),
       }
     : presentedScene;
+  const htmlEditingElement = htmlEditing ? currentScene.elements.find((element): element is HtmlElement => element.id === htmlEditing.id && element.type === "html" && !isElementHidden(currentScene, element) && inScope(element)) : undefined;
 
   return (
     <div
@@ -1278,7 +1359,7 @@ export function CanvasEditor({
           event.key === "Enter" &&
           event.target === event.currentTarget &&
           selected.length === 1 &&
-          selected[0].type === "text"
+          (selected[0].type === "text" || selected[0].type === "html")
         ) {
           event.preventDefault();
           event.stopPropagation();
@@ -1311,7 +1392,7 @@ export function CanvasEditor({
             aria-disabled={disabled}
             className={`te-canvas-hit${isElementLocked(currentScene,element) ? " is-locked" : ""}${previewSelection.includes(element.id) ? " is-selected" : ""}`}
             data-layer-id={element.id}
-            title={isElementLocked(currentScene,element) ? `${element.name || element.type} · Locked` : `${element.name || element.type} · Drag to move${element.type === "text" ? " · Double-click to edit" : ""} · Right-click for actions`}
+            title={isElementLocked(currentScene,element) ? `${element.name || element.type} · Locked` : `${element.name || element.type} · Drag to move${element.type === "text" ? " · Double-click to edit" : element.type === "html" ? " · Double-click text to edit" : ""} · Right-click for actions`}
             style={{...boxStyle(element),"--te-hit-pad-x":`${Math.max(minimumHitPadding(element,viewScale).x,shapeStrokeOutset(element))}px`,"--te-hit-pad-y":`${Math.max(minimumHitPadding(element,viewScale).y,shapeStrokeOutset(element))}px`} as CSSProperties}
             onPointerDown={(event) => selectElement(event, element)}
             onDoubleClick={(event) => {
@@ -1322,6 +1403,7 @@ export function CanvasEditor({
               if(!hit)return;
               if(hit.groupId&&hit.groupId!==isolatedGroupId){onEnterGroup?.(hit.groupId);return;}
               if(photoContent(hit)&&canEditElement(scene,hit,"content")&&canEditElement(scene,hit,"style")){onRequestCrop?.(hit.id);return;}
+              if(hit.type==="html"){startHtmlEditing(hit,{x:event.clientX,y:event.clientY});return;}
               startEditing(hit);
             }}
             onKeyDown={(event) => {
@@ -1447,6 +1529,27 @@ export function CanvasEditor({
         </div></WorldClip>
         </div>
       )}
+      {htmlEditing && htmlEditingElement && (
+        <div className={`te-canvas-page-layer is-editing${clippedIds.has(htmlEditingElement.id) ? " is-clipped" : ""}`}>
+          <WorldClip bounds={htmlEditingElement.clipBounds}>
+            <HtmlLayerEditor
+              key={htmlEditingElement.id}
+              element={htmlEditingElement}
+              node={htmlEditing.node}
+              caret={htmlEditing.caret}
+              serial={htmlEditing.serial}
+              opacity={elementEffectiveOpacity(currentScene, htmlEditingElement)}
+              viewScale={viewScale}
+              onCommit={commitHtmlPart}
+              onSelection={range => onHtmlSelection?.({ elementId: htmlEditing.id, node: htmlEditing.node, ...(range ? { range } : {}) })}
+              onPick={pickHtmlPart}
+              onRedraw={() => { htmlOriginal.current = htmlEditingElement.html; }}
+              onFinish={(cancel, refocus) => { finishHtmlEditing(cancel); if (refocus) root.current?.focus({ preventScroll: true }); }}
+              onHistory={onHistory ? direction => { onHistory(direction); } : undefined}
+            />
+          </WorldClip>
+        </div>
+      )}
       {navigationMode==="nodes"&&selected.length===1&&selected[0].type==="shape"&&canEditElement(scene,selected[0],"style")&&canEditElement(scene,selected[0],"position")&&<VectorNodeEditor toolbarHost={nodeToolbarHost} shape={selected[0]} scale={viewScale} outputScale={outputScale} onChange={(shape,group)=>onChange({...scene,elements:scene.elements.map(element=>element.id===shape.id?shape:element)},group)} onClose={()=>onExitNodeEditing?.()}/>}
       {selected.length > 1 &&
         selected.map((element) => (
@@ -1462,13 +1565,13 @@ export function CanvasEditor({
           data-canvas-selection="true"
           style={boxStyle(selectionBox)}
         >
-          {!selectionArea && !editingId && (
+          {!selectionArea && !typingId && (
             <span className="te-canvas-layer-label">
               {selected.length === 1 ? `${isElementLocked(currentScene,selected[0]) ? "Locked · " : ""}${selected[0].name || selected[0].type}${layerNotes?.has(selected[0].id) ? ` · ${layerNotes.get(selected[0].id)}` : ""}` : `${selected.length} layers selected`}
             </span>
           )}
           {!disabled &&
-            !editingId && !drawingMode && navigationMode==="select" &&
+            !typingId && !drawingMode && navigationMode==="select" &&
             !selectionArea &&
             selected.every((element) => canEditElement(currentScene,element,"position")) && (
               <>
@@ -1533,6 +1636,10 @@ export function CanvasEditor({
         <button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button>
         <button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button>
         <button type="button" className="te-rich-controls-done" onClick={()=>{finishEditing();if(!editingActive.current)root.current?.focus({preventScroll:true});}}>Done</button>
+      </div>,textToolbarHost)}
+      {htmlEditing&&htmlEditingElement&&textToolbarHost&&createPortal(<div className="te-rich-controls te-rich-controls-docked" role="toolbar" aria-label="HTML text" onPointerDown={event=>{event.preventDefault();event.stopPropagation();}}>
+        <span className="te-rich-controls-label">Editing text in {htmlEditingElement.name || "HTML layer"}</span>
+        <button type="button" className="te-rich-controls-done" onClick={()=>{finishHtmlEditing();root.current?.focus({preventScroll:true});}}>Done</button>
       </div>,textToolbarHost)}
       <span className="te-canvas-screen-reader">
         Drag layers to move them. Drag empty canvas to select layers. Hold Shift

@@ -217,7 +217,8 @@ test("a prepared layer is scoped to its own root, with its brand variables there
   assert.match(css, /\.teh-x #teh-x-c > p/);
   assert.match(html, /class="teh-x-card"/);
   assert.match(html, /id="teh-x-c"/);
-  assert.match(html, /<clipPath id="teh-x-clip">/);
+  assert.match(html, /<clipPath id="teh-x-clip"[ >]/);
+  assert.match(html, /<p data-te-node="1">Hi<\/p>/, "drawn parts carry their numbers (html-edit.ts)");
   assert.match(html, /clip-path="url\(#teh-x-clip\)"/);
   assert.match(html, /<use href="#teh-x-clip"/);
 });

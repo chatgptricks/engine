@@ -4,6 +4,7 @@ import path from "node:path";
 import sharp from "sharp";
 import {getAdminSupabase} from "@/lib/supabase/admin";
 import {developmentDirectory, readDevelopmentRecord} from "./development-storage";
+import {isSafeBrandSvg} from "./safe-brand-svg";
 
 export const MAX_ORIGINAL_BYTES = 15 * 1024 * 1024;
 const MAX_PIXELS = 100_000_000;
@@ -11,12 +12,21 @@ const hash = (value: string | Buffer) => createHash("sha256").update(value).dige
 export type OriginalAsset = {id:string; data:Buffer; mimeType:string; width:number; height:number; bytes:number; name:string};
 type AssetRecord = Omit<OriginalAsset,"data"> & {version:1; base64:string};
 const key = (owner:string,id:string) => `template-editor-media:${hash(`template-editor:${owner}`)}:${id}`;
-const formats:Record<string,string> = {jpeg:"image/jpeg",png:"image/png",webp:"image/webp"};
+/** Vectors are kept only in the passive grammar documents already accept inline
+ * (isSafeBrandSvg): paths, groups and gradients, with no script, CSS, text,
+ * links, entities or embedded images. Logos stay sharp at every size. */
+export const SVG_TYPE = "image/svg+xml";
+const formats:Record<string,string> = {jpeg:"image/jpeg",png:"image/png",webp:"image/webp",svg:SVG_TYPE};
+/** The text of a file that is markup rather than pixels (it starts with "<"). */
+const markup = (data:Buffer) => /^\s*</.test(data.subarray(0,64).toString("latin1")) ? data.toString("utf8") : null;
 export async function inspectOriginalAsset(data:Buffer,name:string):Promise<OriginalAsset> {
   if (!data.length || data.length > MAX_ORIGINAL_BYTES) throw new RangeError("Choose an image between 1 byte and 15 MB.");
+  // Markup that isn't a passive vector is refused before an SVG parser reads it.
+  const text = markup(data);
+  if (text !== null && !isSafeBrandSvg(text)) throw new TypeError("Choose a still JPG, PNG, or WebP image.");
   const metadata = await sharp(data,{limitInputPixels:MAX_PIXELS,failOn:"error"}).metadata();
   const mimeType = formats[metadata.format ?? ""];
-  if (!mimeType || !metadata.width || !metadata.height || (metadata.pages ?? 1)>1) throw new TypeError("Choose a still JPG, PNG, or WebP image.");
+  if (!mimeType || (mimeType===SVG_TYPE)!==(text!==null) || !metadata.width || !metadata.height || (metadata.pages ?? 1)>1) throw new TypeError("Choose a still JPG, PNG, or WebP image.");
   // Decode the pixels as well: metadata alone accepts truncated/corrupt files.
   await sharp(data,{limitInputPixels:MAX_PIXELS,failOn:"error"}).resize(1,1).raw().toBuffer();
   const rotated = (metadata.orientation ?? 1)>=5;
@@ -27,6 +37,7 @@ function decode(value:unknown):OriginalAsset {
   if (!record || record.version!==1 || !/^[a-f0-9]{64}$/.test(record.id) || typeof record.base64!=="string" || record.base64.length>MAX_ORIGINAL_BYTES*4/3+4) throw new Error("The original image could not be read.");
   const data=Buffer.from(record.base64,"base64");
   if (data.length!==record.bytes || hash(data)!==record.id || !Object.values(formats).includes(record.mimeType) || !Number.isInteger(record.width) || !Number.isInteger(record.height) || record.width<1 || record.height<1) throw new Error("The original image is damaged.");
+  if (record.mimeType===SVG_TYPE && !isSafeBrandSvg(data.toString("utf8"))) throw new Error("The original image is damaged.");
   return {id:record.id,data,mimeType:record.mimeType,width:record.width,height:record.height,bytes:data.length,name:record.name};
 }
 export async function readOriginalAsset(owner:string,id:string):Promise<OriginalAsset|null> {
@@ -40,6 +51,19 @@ export async function readOriginalAsset(owner:string,id:string):Promise<Original
   if(error) throw new Error("Original image storage is unavailable.");
   return data?decode(data.data):null;
 }
+/** Whether the workspace already holds this image, without reading its bytes. */
+export async function hasOriginalAsset(owner:string,id:string):Promise<boolean> {
+  if (!/^[a-f0-9]{64}$/.test(id)) return false;
+  const db=getAdminSupabase(), storageKey=key(owner,id);
+  if (!db) {
+    if(process.env.NODE_ENV==="production") throw new Error("Original image storage is unavailable.");
+    return fs.access(path.join(developmentDirectory("template-editor-media"),`${hash(storageKey)}.json`)).then(()=>true,()=>false);
+  }
+  const {data,error}=await db.from("gf_client_state").select("owner").eq("owner",storageKey).maybeSingle();
+  if(error) throw new Error("Original image storage is unavailable.");
+  return Boolean(data);
+}
+/** Saves an image under its content hash, so the same image is one record however often it is stored. */
 export async function storeOriginalAsset(owner:string,data:Buffer,name:string):Promise<OriginalAsset> {
   const asset=await inspectOriginalAsset(data,name);
   const {data:bytes,...properties}=asset;
@@ -70,6 +94,8 @@ export async function originalPreview(asset:OriginalAsset):Promise<string> {
 let renditionQueue:Promise<void>=Promise.resolve();
 export async function originalRendition(asset:OriginalAsset,maxDimension:number):Promise<{data:Buffer;mimeType:string;bytes:number}> {
   if(!Number.isInteger(maxDimension)||maxDimension<1||maxDimension>8192) throw new RangeError("Image size must be between 1 and 8192 pixels.");
+  // A vector is its own lossless rendition at every size: whatever draws it keeps it sharp.
+  if(asset.mimeType===SVG_TYPE) return {data:asset.data,mimeType:SVG_TYPE,bytes:asset.data.length};
   // Browser image loads arrive together; serialize their decoders per process.
   const previous=renditionQueue;let release!:()=>void;
   renditionQueue=new Promise<void>(resolve=>{release=resolve;});

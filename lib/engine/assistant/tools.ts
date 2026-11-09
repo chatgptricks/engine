@@ -16,6 +16,7 @@ import {renderSlides} from "@/lib/engine/slide-render";
 import {MAX_ADDED_POSTS, parseXPostLinks} from "@/lib/engine/x-links";
 import {addsHtmlLayers, AgentDeckValidationError, withHtmlLayerTokens} from "@/lib/template-editor/agent-decks";
 import type {DesignDocument} from "@/lib/template-editor/model";
+import {storeNewImages} from "@/lib/template-editor/stored-images";
 import {applyChatEdits, chatEditsSchema, MAX_CHAT_EDITS, withUploads} from "./chat-edits";
 import {applyEditsOnServer, postForAgent, readLiveDeck, runOfDeck} from "./live-deck";
 import type {ChatCard, ChatPerson, ChatPhoto, ThreadScope} from "./threads";
@@ -375,6 +376,13 @@ const editPost: ChatTool = {
       // HTML layers get the brand guide's colors, fonts and sizes as CSS variables.
       if (addsHtmlLayers(operations)) operations = withHtmlLayerTokens(operations, await htmlTokensForDeck(context.ownerKey, document.templateId));
       applyChatEdits(document, operations);
+      // Photos they sent and data: images are stored as media files before the edit goes anywhere,
+      // so the post points to them and they don't count against the library limit (stored-images.ts).
+      const stored = await storeNewImages(context.ownerKey, operations, document);
+      if (stored.value !== operations) {
+        operations = stored.value;
+        applyChatEdits(document, operations);
+      }
     } catch (error) {
       if (error instanceof AgentDeckValidationError) throw new ChatToolError(`Nothing was changed. Fix these and try again: ${issueText(error)}`);
       throw error;
