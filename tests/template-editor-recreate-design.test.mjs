@@ -448,6 +448,8 @@ test("another platform's comments become our cards in its own colors, and the de
     assert.match(call.system,/It is solid to about 40 px past the overlay's lowest edge, its border and shadow too/,"solid past the overlay's edge, so no thin line shows");
     assert.match(call.system,/no face is cut by the frame's edges \(each is whole inside the frame, or out of it\)/,"on every photo, the cover's too");
     assert.match(call.system,/fit: contain keeps them all; then cropScale brings it as close to filling the frame as the faces allow/,"and a contained photo still fills as much of its frame as the faces allow");
+    assert.match(call.system,/it sits low in the frame \(cropY 100\), whether or not it still holds an overlay, so the template's bottom fade takes its bottom edge/,"low in its frame, overlay or not, so the fade takes its bottom edge");
+    assert.match(call.system,/gets the same kind of band over each edge it leaves inside the frame \(at cropY 100, its top edge\): solid just past the edge/,"and a band takes the edge left inside the frame");
     assert.match(call.system,/no period at the end of a paragraph/,"HTML words follow the page's no-final-periods style");
     assert.match(call.system,/then the words, word for word, in the page's text style: no period at the end of the last sentence, and curly quotes/,"said in the card rule too, where the words are");
     assert.match(call.system,/The page's text style \(Layout\) still applies to them, in slots and in HTML alike/,"and in the exact copy's words rule");
@@ -499,6 +501,52 @@ test("another platform's comments become our cards in its own colors, and the de
     assert.equal(deck.pages[2].canvas.elements.find(item=>item.slot==="photo").cropScale,1.3);
     assert.deepEqual(leftovers(deck),[]);
   });
+});
+
+test("a photo that stops inside a frame the template fades isn't handed in until its edge sits at the frame's or a band covers it",async()=>{
+  const context=await contextFor("exact",{source:done(redditNotes),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null})});
+  await stand(async({call,invoke,json})=>{
+    // A wide strip, like the one run 8 of the design proof cut below the original's card: 864 × 405 px, which a contain fit shows 1080 × 506 in the 1080 × 926 cover frame.
+    const strip=await json("cut_from_source",{slide:1,box:{x:100,y:300,width:800,height:300},kind:"photo",what:"Friends at a dinner table"});
+    assert.deepEqual([strip.width,strip.height],[864,405]);
+    const built=await json("create_deck",{name:"Small decisions",caption:sourceNotes.post.caption,slides:[
+      {templatePage:COVER,slots:{"cover-headline":"REDDIT USERS REVEAL THE [[SMALL DECISIONS]] THAT CHANGED THEIR LIVES FOREVER",photo:strip.src}},
+      {templatePage:FOLLOW,slots:{cta:"FOR MORE LIFE STORIES",photo:strip.src}},
+    ]});
+    const cover=built.deck.slides[0].pageId,frame=layer(built.deck,1,"photo");
+    const handIn={pages:[{slide:1,layout:"Cover"},{slide:0,layout:"Follow"}],notes:["Slides 2 and 3 aren't in this deck."]};
+    const look=async()=>{await invoke("look_at_slides",{slides:[1,2]});return call.submit.check(handIn);};
+    const place=async properties=>{await json("edit_deck",{operations:[{op:"update_element",pageId:cover,elementId:frame.id,properties}]});return look();};
+    // Filling the frame leaves no edge inside it.
+    assert.equal(await look(),null);
+    // At cropY 77 the strip stops 97 px above the frame's bottom, where the template's bottom fade is still see-through.
+    assert.match(await place({fit:"contain",cropX:50,cropY:77,cropScale:1}),/^Slide 1's photo stops at y 829, 97 px above the bottom of its frame \(y 926\)\. The template's fade hides a photo's edge only at the frame's own, so this one shows as a straight line\. Set cropY 100/);
+    // At the frame's bottom the fade takes that edge, and the top edge needs a band.
+    assert.match(await place({cropY:100}),/^Slide 1's photo starts at y 420, 420 px below the top of its frame, and nothing covers that edge/);
+    // A band of the background over the top edge, right above the photo in the stack.
+    await json("edit_deck",{operations:[{op:"add_html",pageId:cover,index:1,name:"Band over the photo's top edge",x:0,y:0,width:1080,height:600,html:"<div></div>",css:":root{background:linear-gradient(to bottom,var(--color-background) 0,var(--color-background) 540px,transparent 600px)}"}]});
+    assert.equal(await look(),null);
+    // A photo narrower than its frame shows its sides.
+    assert.match(await place({cropScale:.8}),/^Slide 1's photo shows from x 108 to x 972, inside its frame's x 0 to x 1080, so its sides show as straight lines\. Bring it closer with cropScale/);
+    assert.equal(await place({cropScale:1.1}),null,"coming closer fills the width again, the bottom edge at the frame's");
+    return handIn;
+  },async()=>{
+    const {output}=await design(context);
+    assert.deepEqual(output.pages.map(page=>page.slide),[1,0]);
+  });
+});
+
+test("shownPhoto places a photo as the canvas draws it: fit, crop point, flip, then the zoom about the crop point",()=>{
+  const photo={type:"image",x:0,y:0,width:360,height:300,intrinsicWidth:720,intrinsicHeight:240,fit:"contain",cropX:50,cropY:100,cropScale:1};
+  // Contained: 360 × 120, at the frame's bottom.
+  assert.deepEqual(stage.shownPhoto(photo),{left:0,right:360,top:180,bottom:300});
+  // Zoomed 1.5× about the crop point (the bottom centre): 540 × 180, still on the frame's bottom.
+  assert.deepEqual(stage.shownPhoto({...photo,cropScale:1.5}),{left:-90,right:450,top:120,bottom:300});
+  // A flip mirrors it in the frame before the zoom: cropY 0 puts it at the top, flipped it sits at the bottom.
+  assert.deepEqual(stage.shownPhoto({...photo,cropY:0,flipY:true}),{left:0,right:360,top:180,bottom:300});
+  // Covering, it fills the frame: 900 × 300 around the centre.
+  assert.deepEqual(stage.shownPhoto({...photo,fit:"cover",cropY:50}),{left:-270,right:630,top:0,bottom:300});
+  assert.equal(stage.shownPhoto({...photo,intrinsicWidth:undefined}),null);
 });
 
 test("a deck keeps its page's tag and names its post file, even when a fix round builds it afresh, so the page's library finds it",async()=>{
@@ -598,32 +646,6 @@ test("a photo link that redirects to a private address, or keeps redirecting, is
   await assert.rejects(()=>place(loop),/redirects too many times/);
   assert.equal(requests.length,1+6);
   assert.match(session.document.pages[0].canvas.elements.find(item=>item.slot==="media").src,/^data:/,"the frame keeps the template's placeholder");
-});
-
-test("a photo under the template's fades shows no hard edge: run 8's cover is sent back, the proof's placement passes",()=>{
-  const document={...structuredClone(template),pages:[structuredClone(template.pages[COVER]),structuredClone(template.pages[MEDIA])]};
-  const photo=document.pages[0].canvas.elements.find(item=>item.slot==="photo"),strip={width:1254,height:455};
-  Object.assign(photo,{src:`/api/template-editor/assets/${"a".repeat(64)}`,fit:"contain",cropX:50,cropY:77,cropScale:1});
-  const edges=()=>tools.shownPhotoEdges(document,item=>item.src.startsWith("/api/")?strip:null);
-  // Run 8: a strip cut below the card, contained at cropY 77, its bottom edge a line at y 804.
-  const box=tools.photoBox(photo,strip);
-  assert.equal(Math.round(box.bottom*3),803);
-  const [found]=edges();
-  assert.match(found,/^Slide 1: the photo in “[^”]+” ends 123 px above its frame's bottom: place it low in the frame \(cropY 100\)/);
-  assert.match(found,/starts 411 px below its frame's top with nothing over that edge/);
-  // Low in the frame and a little closer, as the proof: the bottom edge on the frame's bottom, under the fade; a band over the top edge.
-  Object.assign(photo,{cropY:100,cropScale:1.1});
-  const low=tools.photoBox(photo,strip);
-  assert.ok(Math.abs(low.bottom-photo.height)<1e-9&&low.left<0&&low.right>photo.width,"it fills the frame's width and sits on its bottom");
-  assert.match(edges()[0],/starts 495 px below its frame's top/,"the top edge still needs its band");
-  const at=document.pages[0].canvas.elements.indexOf(photo);
-  document.pages[0].canvas.elements.splice(at+1,0,{type:"html",id:"band",name:"Band",x:0,y:0,width:360,height:200,rotation:0,opacity:1,locked:false,html:"<div></div>",css:""});
-  assert.deepEqual(edges(),[]);
-  // A photo filling its frame has no edge inside it; nor is a photo off the fades checked (an inset on Text + Media).
-  Object.assign(photo,{fit:"cover",cropY:50,cropScale:1});
-  const media=document.pages[1].canvas.elements.find(item=>item.slot==="media");
-  Object.assign(media,{src:`/api/template-editor/assets/${"b".repeat(64)}`,fit:"contain",cropX:50,cropY:50,cropScale:1});
-  assert.deepEqual(tools.shownPhotoEdges(document,()=>({width:400,height:1200})),[]);
 });
 
 test("a deck with an outside link or a data: image isn't handed in",()=>{
