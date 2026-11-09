@@ -17,8 +17,8 @@ export type PageCatalog = {
   photo: AgentTemplateSlot[];
   /** One photo across two slides: it starts on this page and continues on page `with` (or the reverse). The photo is filled once, on the start page. */
   pair?: { part: "start" | "end"; with: number };
-  /** A layout saved from a slide, and when to use it. */
-  layout?: { useWhen: string };
+  /** A layout saved from a slide (the page's `savedLayout`), and when to use it. */
+  savedLayout?: { useWhen: string };
   /** The page's HTML layers other than its X post cards (those count in `cards`): designs to keep, such as a chart or a Reddit comment card, filled with the new post's own data. */
   html?: { name: string; platform?: Platform }[];
 };
@@ -44,7 +44,7 @@ export function templatePages(template: DesignTemplate): PageCatalog[] {
       text: own.filter(slot => slot.type === "text" && !isCardSlot(slot)),
       photo: own.filter(slot => slot.type === "photo" && !isCardSlot(slot)),
       ...(pair ? { pair: pair.startPage === index ? { part: "start" as const, with: pair.endPage } : { part: "end" as const, with: pair.startPage } } : {}),
-      ...(useWhen ? { layout: { useWhen } } : {}),
+      ...(useWhen ? { savedLayout: { useWhen } } : {}),
       ...(html.length ? { html } : {}),
     };
   });
@@ -85,7 +85,7 @@ export function describePages(pages: PageCatalog[]): string {
     const pair = page.pair?.part === "start"
       ? [`    - one landscape photo runs across this page and page ${page.pair.with}, split at the slide edge as people swipe. Page ${page.pair.with} always comes right after it. The photo is chosen here, never a chart`]
       : page.pair ? [`    - the second half of page ${page.pair.with}'s photo. Only right after page ${page.pair.with}`] : [];
-    const layout = page.layout ? [`    - a layout saved from a slide; use it when: ${JSON.stringify(page.layout.useWhen)}`] : [];
+    const layout = page.savedLayout ? [`    - a layout saved from a slide; use it when: ${JSON.stringify(page.savedLayout.useWhen)}`] : [];
     const html = (page.html ?? []).map(layer => `    - HTML layer "${layer.name}": ${layer.platform === "reddit" ? "a Reddit comment card; give it the comment's own name, time and words" : "a design to keep, filled with this post's own data"}`);
     return [`  Page ${page.index} · ${page.label}`, ...layout, ...(text.length || photo.length || cards.length || html.length ? [...text, ...photo, ...cards, ...html, ...pair] : ["    (no editable slots)"])].join("\n");
   }).join("\n");

@@ -14,26 +14,28 @@
  *   - The template's brand layers (fades, logos, hairlines), hidden layers and
  *     master layers stay as they are.
  *
- * The "use when" line is a hidden, locked text layer on the page, in the slot
- * LAYOUT_NOTE_SLOT. It travels with the page through every copy, export and
- * template edit, and a person can show it in the template editor to change it.
- * A page whose note is empty is an ordinary page again.
+ * The page's `savedLayout` field marks it and holds its "use when" line. It
+ * travels with the page through copies, exports and the template editor's
+ * Update template. Saving under the layout's name again replaces it, with a new
+ * line.
  *
  * A built-in template gets a copy in the workspace under its own id, which
- * takes its place everywhere (template-catalog.ts). While that copy holds only
- * the built-in's pages and saved layouts, each save rebuilds it from the
- * built-in's current pages, so the copy keeps Engine's later changes to them.
+ * takes its place everywhere (template-catalog.ts). The first copy carries the
+ * fingerprint of the built-in it was made from (`builtInFingerprint`). While no
+ * one has changed the built-in's part of it, libraryTemplates shows the
+ * built-in's current pages and then the saved layouts, so Engine's later
+ * changes still reach it. A copy someone edited, or one that was there before
+ * (no fingerprint), is theirs: a layout is added to it and the rest stays as it
+ * is.
  *
  * Pure and client-safe: the editor's page menu (design-editor.tsx) and the
  * chat's save_layout (lib/engine/agents/layouts.ts) share it.
  */
-import { BUILT_IN_TEMPLATES, duplicatePage, formatDimensions, sceneForPage, type CanvasElement, type DesignDocument, type DesignPage, type DesignTemplate, type EditorLibrary, type ImageElement, type ShapeElement, type SmartTextRole, type TextElement } from "./model";
+import { duplicatePage, formatDimensions, MAX_SAVED_LAYOUT_USE_WHEN, sceneForPage, templateFingerprint, type CanvasElement, type DesignDocument, type DesignPage, type DesignTemplate, type EditorLibrary, type ImageElement, type ShapeElement, type SmartTextRole, type TextElement } from "./model";
 import { libraryTemplates, trashedTemplates } from "./template-catalog";
 
-/** The slot of the hidden text layer that holds a saved layout's "use when" line. */
-export const LAYOUT_NOTE_SLOT = "layout-use-when";
 export const MAX_LAYOUT_NAME = 80;
-export const MAX_LAYOUT_USE_WHEN = 400;
+export const MAX_LAYOUT_USE_WHEN = MAX_SAVED_LAYOUT_USE_WHEN;
 /** parseLibrary's limits: pages in a template, and the workspace's own templates. */
 const MAX_TEMPLATE_PAGES = 20, MAX_TEMPLATES = 80;
 
@@ -61,14 +63,12 @@ const clean = (value: string) => value.replace(/\s+/g, " ").trim();
 const sameName = (label: string | undefined, name: string) => clean(label ?? "").toLowerCase() === name.toLowerCase();
 const round = (value: number) => Math.round(value * 100) / 100;
 
-const noteOf = (page: DesignPage) => page.canvas?.elements.find((element): element is TextElement => element.type === "text" && element.slot === LAYOUT_NOTE_SLOT);
-
 /** When to use a saved layout, or null for a page that isn't one. */
 export function layoutUseWhen(page: DesignPage): string | null {
-  const text = noteOf(page)?.text.trim();
+  const text = page.savedLayout?.useWhen.trim();
   return text ? text : null;
 }
-export const isSavedLayout = (page: DesignPage) => layoutUseWhen(page) !== null;
+export const isSavedLayout = (page: DesignPage) => Boolean(page.savedLayout);
 
 /** The template a post's slides would be saved in, or null when it isn't in the workspace. */
 export function layoutTemplateOf(library: EditorLibrary, document: Pick<DesignDocument, "templateId">): DesignTemplate | null {
@@ -143,8 +143,8 @@ function unlinked(element: CanvasElement, template: DesignTemplate): CanvasEleme
 
 /**
  * A slide as a template page: a fresh copy with its own ids, named `name`,
- * its text and photo layers made slots and its "use when" note added. Throws a
- * SavedLayoutError for a slide that can't be one.
+ * its text and photo layers made slots, marked as a saved layout with its "use
+ * when" line. Throws a SavedLayoutError for a slide that can't be one.
  */
 export function layoutPageFrom(document: DesignDocument, pageId: string, layout: { name: string; useWhen: string }, template: DesignTemplate): DesignPage {
   const index = document.pages.findIndex(page => page.id === pageId), source = document.pages[index];
@@ -152,10 +152,9 @@ export function layoutPageFrom(document: DesignDocument, pageId: string, layout:
   if (document.continuousCanvas) throw new SavedLayoutError("This post is one wide canvas across its slides, so a slide can't be saved on its own.");
   const scene = source.canvas ?? sceneForPage(source, document.format);
   if (scene.elements.some(element => !element.hidden && element.type === "image" && element.span)) throw new SavedLayoutError(`Slide ${index + 1} holds half of a photo that runs across two slides, so it can't be saved on its own. Save a slide without a photo pair.`);
-  const copy = duplicatePage({ ...source, canvas: { ...scene, elements: scene.elements.filter(element => element.slot !== LAYOUT_NOTE_SLOT) } });
-  const kept = scene.elements.filter(element => element.slot !== LAYOUT_NOTE_SLOT), copied = copy.canvas!.elements;
+  const copy = duplicatePage({ ...source, canvas: scene }), copied = copy.canvas!.elements;
   // Copies get new ids, so flows that follow a layer by its id follow its copy.
-  const ids = new Map(kept.map((element, at) => [element.id, copied[at].id]));
+  const ids = new Map(scene.elements.map((element, at) => [element.id, copied[at].id]));
   const follow = (anchor: string) => ids.get(anchor) ?? anchor;
   const taken = new Set(copied.flatMap(element => element.slot ? [element.slot] : []));
   const slotFor = (element: CanvasElement, fallback: string) => {
@@ -178,15 +177,10 @@ export function layoutPageFrom(document: DesignDocument, pageId: string, layout:
     if (element.type === "shape" && element.imageFill) return frameSlot(element, slotFor(element, "photo"), scale);
     return element;
   });
-  const note: TextElement = {
-    type: "text", id: crypto.randomUUID(), name: "Use when", x: 0, y: 0, width: 360, height: 24, rotation: 0, opacity: 1, locked: true, hidden: true,
-    text: layout.useWhen, font: "sans", fontSize: 10, fontWeight: 400, italic: false, underline: false, color: "#7D858A", align: "left", lineHeight: 1.25, letterSpacing: 0,
-    textMode: "fixed", verticalAlign: "top", slot: LAYOUT_NOTE_SLOT, templateRole: "brand", layoutRole: "fixed", protected: ["position", "style"],
-  };
   // The page's legacy photo and style come from the template, so no picture or words of the post stay behind there.
   const first = template.pages[0];
   const page: DesignPage = {
-    ...copy, label: layout.name, canvas: { ...copy.canvas!, elements: [...elements, note] },
+    ...copy, label: layout.name, canvas: { ...copy.canvas!, elements }, savedLayout: { useWhen: layout.useWhen },
     ...(first ? { image: { ...first.image, id: copy.image.id }, style: { ...first.style } } : {}),
   };
   delete page.publicDescription;
@@ -196,7 +190,8 @@ export function layoutPageFrom(document: DesignDocument, pageId: string, layout:
 /**
  * The library with slide `pageId` of `document` saved as a layout in the
  * post's template: a new last page, or in place of the saved layout that has
- * the same name. Throws a SavedLayoutError when it can't be saved.
+ * the same name. A built-in template's first copy remembers the built-in it
+ * was made from. Throws a SavedLayoutError when it can't be saved.
  */
 export function withSavedLayout(library: EditorLibrary, document: DesignDocument, request: SaveLayoutRequest): { library: EditorLibrary; saved: SavedLayoutResult } {
   const name = clean(request.name), useWhen = clean(request.useWhen);
@@ -210,18 +205,19 @@ export function withSavedLayout(library: EditorLibrary, document: DesignDocument
   const post = formatDimensions(document), frame = formatDimensions(template);
   if (post.width !== frame.width || post.height !== frame.height) throw new SavedLayoutError(`This post is ${post.width}×${post.height} and ${template.name} is ${frame.width}×${frame.height}, so its slides can't be pages of that template.`);
   const page = layoutPageFrom(document, request.pageId, { name, useWhen }, template);
-  const builtIn = BUILT_IN_TEMPLATES.find(item => item.id === template.id), own = library.templates.find(item => item.id === template.id);
-  // A copy of a built-in that holds only its pages and saved layouts is rebuilt from the built-in's current pages.
-  const fresh = builtIn && (!own || own.pages.every(item => isSavedLayout(item) || builtIn.pages.some(original => original.id === item.id))) ? builtIn : null;
-  const pages = fresh ? [...fresh.pages, ...(own?.pages.filter(isSavedLayout) ?? [])] : (own ?? template).pages;
+  // The template as people see it: a copy that still follows its built-in has the built-in's current pages, then its layouts.
+  const own = library.templates.find(item => item.id === template.id), pages = template.pages;
   const same = pages.findIndex(item => sameName(item.label, name));
   if (same >= 0 && !isSavedLayout(pages[same])) throw new SavedLayoutError(`${template.name} already has a page called "${clean(pages[same].label ?? name)}". Pick another name for the layout.`, 409);
   if (same < 0 && pages.length >= MAX_TEMPLATE_PAGES) throw new SavedLayoutError(`${template.name} has ${MAX_TEMPLATE_PAGES} pages, the most a template holds. Delete a saved layout from it in the template editor, or save over one by giving its name.`, 413);
   if (!own && library.templates.length >= MAX_TEMPLATES) throw new SavedLayoutError(`The workspace has ${MAX_TEMPLATES} templates of its own, the most it holds. Delete one, then save the layout again.`, 413);
   if (same >= 0) page.id = pages[same].id;
   const nextPages = same >= 0 ? pages.map((item, at) => at === same ? page : item) : [...pages, page];
-  const kept = own ? Object.fromEntries((["tags", "folderId", "favorite"] as const).filter(key => own[key] !== undefined).map(key => [key, own[key]])) : {};
-  const next: DesignTemplate = fresh ? { ...fresh, ...kept, custom: true, pages: nextPages } : { ...(own ?? template), pages: nextPages };
+  // No copy yet means `template` is the built-in: its copy carries the built-in's fingerprint, so it keeps following it.
+  const builtInFingerprint = own ? null : templateFingerprint(template);
+  const next: DesignTemplate = own
+    ? { ...template, ...(own.deletedAt ? { deletedAt: own.deletedAt } : {}), pages: nextPages }
+    : { ...template, custom: true, ...(builtInFingerprint ? { builtInFingerprint } : {}), pages: nextPages };
   const templates = own ? library.templates.map(item => item.id === next.id ? next : item) : [next, ...library.templates];
   return {
     library: { ...library, templates },

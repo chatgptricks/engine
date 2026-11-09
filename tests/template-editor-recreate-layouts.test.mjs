@@ -81,11 +81,14 @@ test("a slide saved as a layout is a new page of its template, listed with its s
   assert.deepEqual(saved,{templateId:TEMPLATE_ID,templateName:BUILT_IN.name,pageIndex:BUILT_IN.pages.length,pageCount:BUILT_IN.pages.length+1,name:"Big chart",replaced:false});
   const result=parsed(next), template=catalog.libraryTemplates(result).find(item=>item.id===TEMPLATE_ID);
   // The workspace's copy takes the built-in's place: its own pages first, then the layout.
+  // It remembers the built-in it was copied from, so it keeps following it.
   assert.equal(result.templates.length,1);
+  assert.equal(result.templates[0].builtInFingerprint,model.templateFingerprint(BUILT_IN));
   assert.deepEqual(template.pages.slice(0,-1).map(page=>page.id),BUILT_IN.pages.map(page=>page.id));
   const page=template.pages.at(-1);
   assert.equal(page.label,"Big chart");
   assert.equal(layouts.layoutUseWhen(page),"One chart carries the slide, with a caption under it");
+  assert.deepEqual(page.savedLayout,{useWhen:"One chart carries the slide, with a caption under it"});
   assert.equal(page.publicDescription,undefined);
   // Fresh ids: nothing is shared with the slide.
   const slide=document.pages[1];
@@ -94,7 +97,7 @@ test("a slide saved as a layout is a new page of its template, listed with its s
 
   const listed=pages.templatePages(template).at(-1);
   assert.equal(listed.index,BUILT_IN.pages.length);
-  assert.deepEqual(listed.layout,{useWhen:"One chart carries the slide, with a caption under it"});
+  assert.deepEqual(listed.savedLayout,{useWhen:"One chart carries the slide, with a caption under it"});
   assert.deepEqual(listed.text.map(slot=>slot.slot),["title","body","chart-caption","source"]);
   assert.deepEqual(listed.photo.map(slot=>slot.slot).sort(),["media","openai-logo"]);
   assert.deepEqual(listed.html,[{name:"Chart"}]);
@@ -116,10 +119,8 @@ test("a slide saved as a layout is a new page of its template, listed with its s
   assert.ok(!JSON.stringify(page.canvas.elements.filter(element=>element.type!=="html")).includes("/api/template-editor/assets/"));
   // The HTML keeps its pattern.
   assert.equal(page.canvas.elements.find(element=>element.type==="html").html,'<div class="bars"><span style="height:40%"></span></div>');
-  // The note is hidden, so it's never drawn or offered as a slot.
-  const note=page.canvas.elements.find(element=>element.slot===layouts.LAYOUT_NOTE_SLOT);
-  assert.equal(note.hidden,true);
-  assert.ok(!listed.text.some(slot=>slot.slot===layouts.LAYOUT_NOTE_SLOT));
+  // The use-when line is the page's, not a layer: the slide's layers are all there is.
+  assert.equal(page.canvas.elements.length,slide.canvas.elements.length);
 
   const described=pages.describePages(pages.templatePages(template));
   assert.match(described,/  Page 9 · Big chart\n    - a layout saved from a slide; use it when: "One chart carries the slide, with a caption under it"\n/);
@@ -168,7 +169,19 @@ test("saving under a layout's name replaces it; a template page's name, a draft 
   refused({pageId:pair.pages[0].id,name:"Wide",useWhen:"Wide photos"},/half of a photo that runs across two slides/,400,pair,emptyLibrary([pair]));
 });
 
-test("a template holds 20 pages, and a copy of the built-in keeps up with the built-in's own pages",()=>{
+test("a saved layout's page field and a copy's fingerprint are parsed, and bad ones are refused",()=>{
+  const document=chartDeck(), raw=JSON.parse(JSON.stringify(layouts.withSavedLayout(emptyLibrary([document]),document,REQUEST(document)).library));
+  assert.deepEqual(parsed(raw).templates[0].pages.at(-1).savedLayout,{useWhen:"One chart carries the slide, with a caption under it"});
+  const changed=change=>{const copy=structuredClone(raw);change(copy.templates[0]);return model.parseLibrary(copy);};
+  assert.ok(changed(template=>{template.pages.at(-1).savedLayout={useWhen:"x".repeat(model.MAX_SAVED_LAYOUT_USE_WHEN)};}));
+  assert.equal(changed(template=>{template.pages.at(-1).savedLayout={useWhen:"x".repeat(model.MAX_SAVED_LAYOUT_USE_WHEN+1)};}),null);
+  assert.equal(changed(template=>{template.pages.at(-1).savedLayout={useWhen:"  "};}),null);
+  assert.equal(changed(template=>{template.pages.at(-1).savedLayout="yes";}),null);
+  assert.equal(changed(template=>{template.builtInFingerprint="Not a fingerprint!";}),null);
+  assert.equal(changed(template=>{delete template.builtInFingerprint;}).templates[0].builtInFingerprint,undefined);
+});
+
+test("a template holds 20 pages",()=>{
   const document=chartDeck();
   let library=emptyLibrary([document]);
   for (let n=BUILT_IN.pages.length; n<20; n++) library=layouts.withSavedLayout(library,document,{...REQUEST(document),name:`Layout ${n}`}).library;
@@ -176,18 +189,97 @@ test("a template holds 20 pages, and a copy of the built-in keeps up with the bu
   assert.throws(()=>layouts.withSavedLayout(library,document,{...REQUEST(document),name:"One more"}),/20 pages, the most a template holds/);
   // Over an earlier one by its name still works when the template is full.
   assert.equal(layouts.withSavedLayout(library,document,{...REQUEST(document),name:"layout 9"}).saved.replaced,true);
+});
 
-  // A copy saved before the built-in's Cover changed gets today's Cover with the next save.
-  const stale=structuredClone(layouts.withSavedLayout(emptyLibrary([document]),document,REQUEST(document)).library);
-  stale.templates[0].pages[0].label="Old cover";
-  const fresh=layouts.withSavedLayout(stale,document,{...REQUEST(document),name:"Second"}).library;
-  assert.equal(fresh.templates[0].pages[0].label,"Cover");
-  assert.deepEqual(fresh.templates[0].pages.slice(-2).map(page=>page.label),["Big chart","Second"]);
-  // A copy someone edited in the template editor (a page of its own) is left as it is.
-  const edited=structuredClone(stale);
-  edited.templates[0].pages[0].id="edited-cover";
-  const kept=layouts.withSavedLayout(edited,document,{...REQUEST(document),name:"Second"}).library;
-  assert.equal(kept.templates[0].pages[0].label,"Old cover");
+// ── The workspace's copy of a built-in and the built-in's later changes ──────
+/** The built-in as a later version of Engine might ship it: a new cover label and a new first text. */
+const NEXT_BUILT_IN=(()=>{
+  const next=structuredClone(BUILT_IN);
+  next.pages[0].label="New cover";
+  next.pages[1].canvas.elements.find(element=>element.type==="text").text="A NEW SAMPLE";
+  return next;
+})();
+/** Runs `run` while the built-in is NEXT_BUILT_IN. */
+function withNextBuiltIn(run) {
+  const at=model.BUILT_IN_TEMPLATES.indexOf(BUILT_IN);
+  model.BUILT_IN_TEMPLATES[at]=NEXT_BUILT_IN;
+  try { return run(); } finally { model.BUILT_IN_TEMPLATES[at]=BUILT_IN; }
+}
+const shown=library=>catalog.libraryTemplates(library).find(item=>item.id===TEMPLATE_ID);
+/** A copy made by saving REQUEST's layout, read back as storage keeps it. */
+function storedCopy(document) {
+  return parsed(JSON.parse(JSON.stringify(layouts.withSavedLayout(emptyLibrary([document]),document,REQUEST(document)).library)));
+}
+
+test("an untouched copy of a built-in picks up the built-in's later changes",()=>{
+  const document=chartDeck(), stored=storedCopy(document);
+  // Filing it (tags, a favourite) isn't a change to the built-in's part.
+  Object.assign(stored.templates[0],{tags:["mine"],favorite:true});
+  withNextBuiltIn(()=>{
+    const view=shown(stored);
+    assert.equal(view.pages[0].label,"New cover");
+    assert.ok(JSON.stringify(view.pages[1]).includes("A NEW SAMPLE"));
+    assert.deepEqual(view.pages.slice(0,-1).map(page=>page.id),NEXT_BUILT_IN.pages.map(page=>page.id));
+    assert.equal(view.pages.at(-1).label,"Big chart");
+    assert.deepEqual([view.tags,view.favorite,view.custom],[["mine"],true,true]);
+    assert.equal(view.builtInFingerprint,model.templateFingerprint(NEXT_BUILT_IN));
+    // The designer's page list is the new built-in's, then the layout.
+    assert.equal(pages.templatePages(view).at(-1).savedLayout.useWhen,"One chart carries the slide, with a caption under it");
+    // The next save keeps what people saw, and the copy goes on following the built-in.
+    const next=parsed(layouts.withSavedLayout(stored,document,{...REQUEST(document),name:"Second"}).library), copy=next.templates[0];
+    assert.equal(copy.pages[0].label,"New cover");
+    assert.deepEqual(copy.pages.slice(-2).map(page=>page.label),["Big chart","Second"]);
+    assert.equal(copy.builtInFingerprint,model.templateFingerprint(NEXT_BUILT_IN));
+    assert.equal(model.templateFingerprint(copy),copy.builtInFingerprint);
+    assert.deepEqual(copy.tags,["mine"]);
+  });
+});
+
+test("an edited built-in page keeps the edit",()=>{
+  const document=chartDeck(), edited=storedCopy(document);
+  edited.templates[0].pages[1].canvas.elements.find(element=>element.type==="text").text="MY OWN WORDS";
+  withNextBuiltIn(()=>{
+    // The copy is the person's now: it shows as saved, and no page of the built-in comes back.
+    const view=shown(edited);
+    assert.equal(view,edited.templates[0]);
+    assert.equal(view.pages[0].label,"Cover");
+    assert.ok(JSON.stringify(view.pages[1]).includes("MY OWN WORDS"));
+    // A layout saved to it now leaves the rest as it is.
+    const copy=layouts.withSavedLayout(edited,document,{...REQUEST(document),name:"Second"}).library.templates[0];
+    assert.deepEqual(copy.pages.slice(0,-1),edited.templates[0].pages);
+    assert.equal(copy.pages.at(-1).label,"Second");
+    assert.equal(shown(parsed(JSON.parse(JSON.stringify({...edited,templates:[copy]})))).pages[0].label,"Cover");
+  });
+  // So does any other change to the built-in's part: its name, a page it lost, a layout moved among its pages.
+  const changes=[
+    template=>{template.name="My carousel";},
+    template=>{template.pages.splice(2,1);},
+    template=>{template.pages.splice(1,0,template.pages.pop());},
+  ];
+  for (const change of changes) {
+    const copy=storedCopy(document);
+    change(copy.templates[0]);
+    withNextBuiltIn(()=>assert.equal(shown(copy),copy.templates[0]));
+  }
+  // Editing it in the template editor (Update template) keeps its layouts and makes it the person's own.
+  const view=shown(storedCopy(document)), updated=model.designAsTemplate(model.editTemplateDesign(view),view.name);
+  assert.deepEqual(updated.pages.filter(page=>page.savedLayout).map(page=>page.label),["Big chart"]);
+  assert.equal(updated.builtInFingerprint,undefined);
+});
+
+test("an older copy with no fingerprint stays as saved",()=>{
+  const document=chartDeck(), older=emptyLibrary([document]);
+  // Made before copies remembered their built-in: page for page the same as the built-in.
+  older.templates=[{...structuredClone(BUILT_IN),custom:true}];
+  const stored=parsed(older);
+  withNextBuiltIn(()=>{
+    assert.equal(shown(stored),stored.templates[0]);
+    assert.equal(shown(stored).pages[0].label,"Cover");
+    const copy=layouts.withSavedLayout(stored,document,REQUEST(document)).library.templates[0];
+    assert.deepEqual(copy.pages.slice(0,-1),stored.templates[0].pages);
+    assert.equal(copy.pages.at(-1).label,"Big chart");
+    assert.equal(copy.builtInFingerprint,undefined);
+  });
 });
 
 test("save_layout saves the live slide to the workspace, and the layout survives a reload",async()=>{
@@ -206,7 +298,12 @@ test("save_layout saves the live slide to the workspace, and the layout survives
   const stored=(await persistence.getEditorLibrary(owner)).library;
   const template=catalog.libraryTemplates(stored).find(item=>item.id===TEMPLATE_ID), listed=pages.templatePages(template).at(-1);
   assert.equal(listed.label,"Big chart");
-  assert.deepEqual(listed.layout,{useWhen:"One chart carries the slide"});
+  assert.deepEqual(listed.savedLayout,{useWhen:"One chart carries the slide"});
+  // Storage kept the copy as it was made, so it still follows the built-in.
+  const copy=stored.templates.find(item=>item.id===TEMPLATE_ID);
+  assert.equal(copy.builtInFingerprint,model.templateFingerprint(BUILT_IN));
+  assert.equal(model.templateFingerprint(copy),copy.builtInFingerprint);
+  assert.deepEqual(template.pages.slice(0,-1).map(page=>page.id),BUILT_IN.pages.map(page=>page.id));
   assert.equal(listed.text.find(slot=>slot.slot==="chart-caption").sample,"Openings fell a third");
   assert.deepEqual(listed.html,[{name:"Chart"}]);
   assert.match(pages.describePages(pages.templatePages(template)),/Page 9 · Big chart\n    - a layout saved from a slide; use it when: "One chart carries the slide"/);
