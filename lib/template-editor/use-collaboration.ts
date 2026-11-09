@@ -2,9 +2,9 @@
 
 import {useCallback, useEffect, useLayoutEffect, useRef, useState} from "react";
 import * as Y from "yjs";
-import {sameDocumentContent} from "./history";
+import {sameDocumentContent, type DocumentChange} from "./history";
 import type {DesignDocument} from "./model";
-import {createCollaborationDocument, readCollaborationDocument, writeCollaborationDocument, encodeCollaborationUpdate, decodeCollaborationUpdate, COLLABORATION_LOCAL_ORIGIN, COLLABORATION_REMOTE_ORIGIN} from "./collaboration-document";
+import {createCollaborationDocument, readCollaborationDocument, writeCollaborationDocument, encodeCollaborationUpdate, decodeCollaborationUpdate, COLLABORATION_AUTOMATIC_ORIGIN, COLLABORATION_LOCAL_ORIGIN, COLLABORATION_REMOTE_ORIGIN} from "./collaboration-document";
 import type {CollaborationAwareness, CollaborationSnapshot} from "./collaboration-types";
 
 export type CollaborationConnection = "connecting" | "live" | "reconnecting" | "offline" | "error";
@@ -14,13 +14,15 @@ type Options = {
   onPending: () => void;
   onError: (message: string) => void;
 };
-type Controls = {submit: (before: DesignDocument, next: DesignDocument) => boolean; awareness: (value: Partial<CollaborationAwareness>) => void; name: (value: string) => void; undo: () => void; redo: () => void};
+type Controls = {submit: (before: DesignDocument, next: DesignDocument, change?: DocumentChange) => boolean; awareness: (value: Partial<CollaborationAwareness>) => void; name: (value: string) => void; undo: () => void; redo: () => void};
 const ENDPOINT = "/api/template-editor/collaboration";
 const EMPTY_AWARENESS: CollaborationAwareness = {selected: [], cursor: null, preview: null};
 const NAME_KEY = "engine:collaboration-name";
 
-/** A cookie-authenticated provider. Only local Yjs transactions enter this
- * participant's undo stack; remote transactions never become autosave edits. */
+/** A cookie-authenticated provider. Only this participant's own edits enter
+ * its undo stack: remote transactions never become autosave edits, and
+ * automatic changes (text fitting) sync without becoming undo steps, as in
+ * local history. Undo and Redo then always reach the person's last edit. */
 export function useLiveCollaboration(designDocument: DesignDocument | undefined, scope: string, options: Options) {
   const callbacks = useRef(options);
   const latest = useRef(designDocument);
@@ -38,6 +40,7 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
     if (!documentId || !scope) return;
     const opened = latest.current!;
     let disposed = false, initialized = false, sending = false, paused = false, awaitingGeneration = false, epoch = "", version = -1, retry = 0;
+    let personEditedWhileOpening = false;
     let localName = "";
     try {localName = sessionStorage.getItem(NAME_KEY) ?? "";} catch { /* Collaboration does not depend on browser preferences. */ }
     const sessionId = crypto.randomUUID();
@@ -62,12 +65,21 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
       undo = new Y.UndoManager(doc.getMap("document"), {trackedOrigins: new Set([COLLABORATION_LOCAL_ORIGIN]), captureTimeout: 650});
       undo.on("stack-item-added", publishStacks); undo.on("stack-item-popped", publishStacks); undo.on("stack-item-updated", publishStacks);
     };
+    /** Edits this browser already held when the room opened (browser
+     * recovery) stay one undo step, and so does everything when a person
+     * edited while it opened. Changes only the canvas made meanwhile (fitting
+     * text as the deck appeared) are automatic: they sync, but Undo skips them. */
+    const rebase = (saved: DesignDocument, local: DesignDocument, opening: boolean) => {
+      if (!opening || personEditedWhileOpening) {writeCollaborationDocument(doc, saved, local); return;}
+      if (!sameDocumentContent(saved, opened)) writeCollaborationDocument(doc, saved, opened);
+      if (!sameDocumentContent(opened, local)) writeCollaborationDocument(doc, opened, local, COLLABORATION_AUTOMATIC_ORIGIN);
+    };
     function receive(value: CollaborationSnapshot) {
       if (disposed || value.scope !== scope || value.document?.id !== documentId || typeof value.epoch !== "string" || typeof value.state !== "string") return;
       if (retiredEpochs.has(value.epoch)) return;
       if (epoch === value.epoch && value.version < version) return;
       const local = initialized ? readCollaborationDocument(doc) : latest.current;
-      const previousSaved = acknowledged;
+      const previousSaved = acknowledged, opening = !epoch;
       if (epoch && epoch !== value.epoch) {
         retiredEpochs.add(epoch);
         doc.off("update", changed); undo?.destroy(); doc.destroy(); doc = createCollaborationDocument();
@@ -79,7 +91,7 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
         observe(); initialized = true;
         // Changes made while the first connection was opening remain local
         // operations against the server's one atomically seeded document.
-        if (local && !sameDocumentContent(previousSaved, local)) writeCollaborationDocument(doc, previousSaved, local);
+        if (local && !sameDocumentContent(previousSaved, local)) rebase(previousSaved, local, opening);
       }
       acknowledged = value.document;
       snapshotRef.current = value;
@@ -206,9 +218,16 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
       publishStacks();
     };
     controls.current = {
-      submit(before, next) {
-        if (!initialized || disposed || paused || before.id !== documentId || next.id !== documentId) return false;
-        writeCollaborationDocument(doc, before, next); publishStacks(); return true;
+      submit(before, next, change) {
+        if (disposed || before.id !== documentId || next.id !== documentId) return false;
+        // Until the room opens, receive() rebases this browser's edits. It only
+        // needs to know whether a person made one.
+        if (!initialized) {if (!change?.automatic) personEditedWhileOpening = true; return false;}
+        if (paused) return false;
+        // An automatic fit has its own untracked origin. Tracked, it became an
+        // undo step of its own: Undo reverted the fit, the canvas fitted again
+        // and cleared Redo, so Undo never reached the person's last edit.
+        writeCollaborationDocument(doc, before, next, change?.automatic ? COLLABORATION_AUTOMATIC_ORIGIN : COLLABORATION_LOCAL_ORIGIN); publishStacks(); return true;
       },
       awareness(value) {awareness = {...awareness, ...value}; awarenessDirty = true; schedule(100);},
       name(value) {localName = value.trim().slice(0, 64); awarenessDirty = true; connect(); schedule(0);},
@@ -251,7 +270,7 @@ export function useLiveCollaboration(designDocument: DesignDocument | undefined,
     };
   }, [documentId, scope]);
 
-  const submitDocument = useCallback((before: DesignDocument, next: DesignDocument) => controls.current?.submit(before, next) ?? false, []);
+  const submitDocument = useCallback((before: DesignDocument, next: DesignDocument, change?: DocumentChange) => controls.current?.submit(before, next, change) ?? false, []);
   const setAwareness = useCallback((value: Partial<CollaborationAwareness>) => controls.current?.awareness(value), []);
   const setName = useCallback((value: string) => {
     setNameState(value); try {sessionStorage.setItem(NAME_KEY, value);} catch { /* Optional preference. */ }

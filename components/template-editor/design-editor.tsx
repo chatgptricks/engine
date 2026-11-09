@@ -68,7 +68,7 @@ import { getTextWords, applyTextWordTexture } from "@/lib/template-editor/text-w
 import { activeTextTextures } from "@/lib/template-editor/text-textures";
 import { importSVG, combineShapes } from "@/lib/template-editor/vector";
 import {applyDesignPatch} from "@/lib/template-editor/document-patch";
-import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type HistoryContext} from "@/lib/template-editor/history";
+import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type DocumentChange,type HistoryContext} from "@/lib/template-editor/history";
 import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/preflight";
 import { ColorField, Modal } from "./controls";
 import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls } from "./canvas";
@@ -128,7 +128,9 @@ type Props = {
   onManageBrand: () => void;
   saveStatus: string;
   canEdit: boolean;
-  onChange: (design: DesignDocument) => boolean | void;
+  /** `change.automatic` marks the editor's own follow-up edits, such as text
+   * fitting: a live room syncs them without making them undo steps. */
+  onChange: (design: DesignDocument, change?: DocumentChange) => boolean | void;
   onExit: () => void;
   onSaveTemplate: (template: DesignTemplate) => void;
   onAddDesigns?: (designs: DesignDocument[]) => boolean | void;
@@ -497,7 +499,9 @@ export function DesignEditor({
       if(sameDocumentContent(changed,previous))return true;
       const next = { ...changed, updatedAt: new Date().toISOString() };
       const h = history.current;
-      if(!commitHistory(h,previous,next,historyContext.current,value=>onChangeRef.current(value),{group,automatic:group==="text-fit"}))return false;
+      // Local history and the live room both leave automatic fits out of Undo.
+      const automatic = group === "text-fit";
+      if(!commitHistory(h,previous,next,historyContext.current,value=>onChangeRef.current(value,{automatic}),{group,automatic}))return false;
       setHistoryState({ undo: h.past.length > 0, redo: h.future.length>0 });
       current.current = next;
       setDesign(next);

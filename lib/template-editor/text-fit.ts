@@ -26,9 +26,20 @@ export function measureTextHeight(node: HTMLElement): number {
   }
 }
 
-/** Keep the visual top edge in place when a rotated text box grows or shrinks. */
+/** A text box shrinks only when its words are more than this many units
+ * shorter. Measured heights round up to whole units, so two browsers can
+ * disagree by one; without this slack, two canvases in a live room would keep
+ * re-fitting the same layer to each other's height. */
+export const TEXT_HEIGHT_SLACK = 1;
+/** A fitted font size grows back only by more than this share of itself, for
+ * the same reason. Overflow is always fixed, so canvases settle on the
+ * smaller size. */
+export const TEXT_FONT_SIZE_SLACK = .01;
+
+/** Keep the visual top edge in place when a rotated text box grows or shrinks.
+ * A box always grows to fit its words, and shrinks past TEXT_HEIGHT_SLACK. */
 export function resizeTextHeight(element: TextElement, height: number): TextElement {
-  if (!Number.isFinite(height) || Math.abs(height - element.height) < .5) return element;
+  if (!Number.isFinite(height) || height - element.height < .5 && element.height - height <= TEXT_HEIGHT_SLACK) return element;
   const nextHeight = Math.max(1, Math.min(10000, height));
   const delta = (nextHeight - element.height) / 2, radians = element.rotation * Math.PI / 180;
   return { ...element, height: nextHeight, x: element.x - delta * Math.sin(radians), y: element.y + delta * Math.cos(radians) - delta };
@@ -40,6 +51,14 @@ export function fitTextFontSize(element:TextElement,fits:(size:number)=>boolean)
   if(!fits(low))return low;
   for(let attempt=0;attempt<16;attempt++){const middle=(low+high)/2;if(fits(middle))low=middle;else high=middle;}
   return Math.floor(low*100)/100;
+}
+
+/** Whether a measured auto-fit size should replace the current one: always
+ * when the words overflow at the current size, and when they have room to
+ * grow by more than TEXT_FONT_SIZE_SLACK. */
+export function shouldRefitFontSize(current:number,fitted:number):boolean {
+  if(!Number.isFinite(fitted))return false;
+  return fitted<=current-.01||fitted-current>Math.max(.01,current*TEXT_FONT_SIZE_SLACK);
 }
 
 /** Measure candidates, then put the editable DOM back exactly as it was. */

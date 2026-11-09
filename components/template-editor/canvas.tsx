@@ -1,7 +1,7 @@
 "use client";
 import { VectorNodeEditor } from "./vector-node-editor";
 import { layersAtPoint,cycleLayerAtPoint } from "@/lib/template-editor/canvas-hit-testing";
-import { textDisplayFontSize,measureFittedText,measureTextHeight,resizeTextHeight,scaleEditableText } from "@/lib/template-editor/text-fit";
+import { textDisplayFontSize,measureFittedText,measureTextHeight,resizeTextHeight,scaleEditableText,shouldRefitFontSize } from "@/lib/template-editor/text-fit";
 import { keyboardTransform } from "@/lib/template-editor/editing-actions";
 import { viewGestureDelta,type ViewPoint } from "@/lib/template-editor/view-gestures";
 import {elementEffectiveOpacity} from "@/lib/template-editor/group-opacity";
@@ -791,7 +791,7 @@ export function CanvasEditor({
       }
       if(!canEditElement(scene,element,"style"))return element;
       const size=measureFittedText(text,element);
-      if(Math.abs(size-textDisplayFontSize(element))<.01)return element;
+      if(!shouldRefitFontSize(textDisplayFontSize(element),size))return element;
       changed=true;return {...element,autoFitFontSize:size};
     });
     if(changed)onChange({...scene,elements},"text-fit");
