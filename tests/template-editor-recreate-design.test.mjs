@@ -195,8 +195,8 @@ test("a platform card (its outermost element marked platform-card platform-reddi
   assert.match(tools.offBrand('<div class="platform-card platform-tiktok">x</div>',"div{background:#121212}",tokens).at(-1),/Only X and Reddit have colors of their own/);
   assert.equal(tools.offBrand('<div class="card">x</div>',"div{background:#0E1113}",tokens).length,1,"an unmarked layer is checked as before, with no word about marks");
   // The designer's Reddit card: every color it's given is Reddit's, and the avatar passes as drawn.
-  for(const color of Object.values(stage.REDDIT_CARD).flat())assert.ok(cards.isPlatformColor("reddit",color),color);
-  for(const color of stage.REDDIT_CARD.avatars)assert.deepEqual(tools.offBrand(`<div ${reddit}>${stage.REDDIT_AVATAR.replaceAll("COLOR",color)}</div>`,"",tokens),[],color);
+  for(const color of Object.values(stage.REDDIT_CARD).flatMap(value=>typeof value==="string"?[value]:Object.values(value)))assert.ok(cards.isPlatformColor("reddit",color),color);
+  for(const color of Object.values(stage.REDDIT_CARD.avatars))assert.deepEqual(tools.offBrand(`<div ${reddit}>${stage.REDDIT_AVATAR.replaceAll("COLOR",color)}</div>`,"",tokens),[],color);
 });
 
 test("an exact copy rebuilds every slide in the template, with stored images and brand variables only",async()=>{
@@ -414,6 +414,9 @@ test("another platform's comments become our cards in its own colors, and the de
     assert.match(call.system,/Inside the card, as on our X card, 44 px of padding; the avatar, 105 px and round; beside it the name in bold at 37 px/,"and its header's sizes");
     assert.match(call.system,/the outermost element of the layer's markup carries class="platform-card platform-reddit"/,"the mark the review reads too");
     assert.match(call.system,/the card #0E1113, its border #2F3336, the name #F2F4F5, the time #8BA2AD, the words #EEF1F3/);
+    assert.match(call.system,/red #FF4500, orange #FF8717, blue #24A0ED, green #46D160/,"the avatars by the color names the notes use");
+    assert.match(call.system,/a band of var\(--color-background\)/,"an overlay our card can't cover goes under a band of the brand's background");
+    assert.match(call.system,/no period at the end of a paragraph/,"HTML words follow the page's no-final-periods style");
     assert.match(call.system,/x 72, y 90, 936 px wide and 1262 px tall/,"a lone card is centred in the guide's content area");
     const photo=await json("cut_from_source",{slide:1,box:PICTURE,kind:"photo",what:"Friends at a dinner table"});
     const built=await json("create_deck",{name:"Small decisions",caption:sourceNotes.post.caption,slides:[
