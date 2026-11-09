@@ -222,10 +222,12 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
   };
   // A frame that takes its photo's shape (smartFlow.media) needs the photo's size; one that
   // can't be measured keeps the frame's own shape and crops the photo into it, as before.
+  // Any other frame still learns a size it is given, so its layer says what the picture is.
   const photoSizes = await Promise.all(prepared.map((item, index) => {
     const frame = frameOf(index);
+    if (!item.photo || frame?.type !== "image") return null;
     // A photo's known size is used as it is: a data URL (a picture cut from an original slide) can't be measured over the network.
-    return item.photo && frame?.type === "image" && frame.smartFlow?.media ? item.photo.size ?? imageSize(item.photo.url, input.signal) : null;
+    return frame.smartFlow?.media ? item.photo.size ?? imageSize(item.photo.url, input.signal) : item.photo.size ?? null;
   }));
   for (const [index, item] of prepared.entries()) {
     const page = document.pages[index], elements = page.canvas?.elements ?? [];
@@ -271,7 +273,8 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
     if (frame && !filled && (brief || hidden)) comment(`${brief ? `Photo to add: ${brief}` : "No photo or chart for this slide yet"}${hidden ? ". The empty photo frame is hidden; show it in Layers to add one" : ""}`, page.id);
     if (item.posts.length) {
       styleCards(elements, item.posts, pixels, imagesPlaced);
-      comment(`Real posts from X, word for word:\n${item.posts.map(post => `@${post.author.handle}${formatReactionMeta(post, profile.language) ? ` (${formatReactionMeta(post, profile.language)})` : ""}: ${post.url}`).join("\n")}`, page.id);
+      // A card an exact copy built from the original's screenshot has no link: it says so.
+      comment(`${item.posts.every(post => post.url) ? "Real posts" : "Posts"} from X, word for word:\n${item.posts.map(post => `@${post.author.handle}${formatReactionMeta(post, profile.language) ? ` (${formatReactionMeta(post, profile.language)})` : ""}: ${post.url || "built from the original's screenshot, not found on X"}`).join("\n")}`, page.id);
     }
   }
   // The template's fixed lines are English; a page in another language has its own.

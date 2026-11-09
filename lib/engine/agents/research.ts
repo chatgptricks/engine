@@ -14,7 +14,7 @@ import { imagesFromPage } from "../research-engine";
 import type { StoryImage } from "../types";
 import { fetchXPosts, fetchXReactions, videoLength, X_PAID_PLAN, XReactionsError, xSearchNeedsPaidPlan, type XReaction } from "../x-reactions";
 import { ask, imageBlock, ToolError, work, type ClientTool, type SourceImage } from "./claude";
-import { CHART_FIELDS, dataTools, resolveChart } from "./charts";
+import { CHART_FIELDS, dataTools, oneScale, resolveChart } from "./charts";
 import { need, outputOf, rerunNote, today, type StageContext, type StageRunner } from "./context";
 import { rolePrompt } from "./playbook";
 import { BriefSchema, DataSchema, FactsSchema, type Brief, type Facts, type ReactionsOutput, type VisualsOutput } from "./schemas";
@@ -104,7 +104,8 @@ export const data: StageRunner = async context => {
       },
     },
   });
-  return { output };
+  // A full recreation draws every chart on one scale, whatever it is handed.
+  return { output: { ...output, charts: output.charts.map(item => ({ ...item, chart: oneScale(item.chart) })) } };
 };
 
 /** Viral charts and claims keep circulating, so a search may reach back three years. */

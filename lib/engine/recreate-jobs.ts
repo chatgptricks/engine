@@ -6,8 +6,8 @@
  * "post-" prefix, so older clients that poll `?jobId=` keep working.
  */
 import { editorUrl } from "./agents/deck";
-import { roleCardFor } from "./agents/playbook";
-import type { Approval, Brief, ChartsOutput, CopyOutput, DataOutput, DeckOutput, Facts, HooksOutput, ImagesOutput, Outline, ReactionsOutput, ReviewOutput, TranscriptOutput, VisualsOutput } from "./agents/schemas";
+import { roleCardIn } from "./agents/playbook";
+import type { Approval, Brief, ChartsOutput, CopyOutput, DataOutput, DeckOutput, ExactDataOutput, Facts, HooksOutput, ImagesOutput, Outline, ReactionsOutput, ReviewOutput, TranscriptOutput, VisualsOutput } from "./agents/schemas";
 import { POST_STAGES, stagesFor, type PostFile, type PostStage } from "./post-files";
 
 export type RecreateStatus = "queued" | "importing" | "researching" | "planning" | "paused" | "writing" | "building" | "reviewing" | "done" | "error";
@@ -44,17 +44,32 @@ function summary(file: PostFile, stage: PostStage): string {
   if (record.status !== "done") return record.instructions ? `To fix: ${record.instructions.split("\n").slice(1, 3).join(" ").slice(0, 200)}` : "";
   switch (stage) {
     case "transcript": {
-      const t = record.output as TranscriptOutput, cut = t.slides.filter(slide => slide.media.box).length;
+      const t = record.output as TranscriptOutput, boxed = t.slides.filter(slide => slide.media.box);
+      const charts = boxed.filter(slide => slide.media.kind === "chart").length, cut = boxed.length - charts, rebuilt = t.slides.filter(slide => slide.graphic).length;
+      const posts = t.slides.reduce((sum, slide) => sum + (slide.posts?.length ?? 0), 0);
       const from = LANGUAGES[t.originalLanguage.toLowerCase()];
       const words = t.translated ? `Translated ${plural(t.slides.length, "slide")}${from ? ` from ${from}` : ""}` : `Copied ${plural(t.slides.length, "slide")} word for word`;
-      return `${words}${cut ? `; ${plural(cut, "picture")} to cut from the original` : ""}`;
+      return [
+        words,
+        rebuilt ? `${plural(rebuilt, "graphic")} to rebuild from ${rebuilt === 1 ? "its" : "their"} parts` : "",
+        charts ? `${plural(charts, "chart")} to redraw` : "",
+        posts ? `${plural(posts, "post")} from X as our cards` : "",
+        cut ? `${plural(cut, "picture")} to cut from the original` : "",
+      ].filter(Boolean).join("; ");
     }
     case "brief": { const b = record.output as Brief; return `Read ${plural(b.slides.length, "slide")}: ${b.topic}`; }
     case "facts": {
       const f = record.output as Facts, corrected = f.claims.filter(claim => claim.verdict === "corrected").length;
       return `${plural(f.claims.length, "claim")} checked${corrected ? `, ${corrected} corrected` : ""}; ${plural(f.answers.length, "reader question")} answered`;
     }
-    case "data": { const d = record.output as DataOutput; return d.charts.length ? `${plural(d.charts.length, "chart")} rebuilt with real data` : "No chart to rebuild"; }
+    case "data": {
+      if (file.mode === "exact") {
+        const d = record.output as ExactDataOutput, kept = d.missing.length;
+        return [d.charts.length ? `${plural(d.charts.length, "chart")} redrawn from real data` : "", kept ? `${plural(kept, "chart")} kept as cut from the original: ${d.missing[0].why}` : ""].filter(Boolean).join("; ") || "No chart to rebuild";
+      }
+      const d = record.output as DataOutput;
+      return d.charts.length ? `${plural(d.charts.length, "chart")} rebuilt with real data` : "No chart to rebuild";
+    }
     case "reactions": { const r = record.output as ReactionsOutput; return r.reactions.length ? `${plural(r.reactions.length, "real post")} picked from X` : r.note || "No posts picked"; }
     case "visuals": { const v = record.output as VisualsOutput; return v.candidates.length ? `${plural(v.candidates.length, "photo")} found` : v.note || "No photos found"; }
     case "outline": return `${plural((record.output as Outline).slides.length, "slide")} planned`;
@@ -119,9 +134,9 @@ export function postView(file: PostFile, active: boolean) {
   return {
     jobId: jobIdFor(file.id), postId: file.id, mode: file.mode, status, message,
     startedAt: file.createdAt, updatedAt: file.updatedAt,
-    // Only the stages this run's mode goes through: an exact copy shows three.
+    // Only the stages this run's mode goes through: an exact copy shows four.
     stages: stagesFor(file.mode).map(stage => {
-      const record = file.stages[stage], card = roleCardFor(stage);
+      const record = file.stages[stage], card = roleCardIn(stage, file.mode);
       return {
         stage, title: card.title, by: card.by === "code" || card.by === "human" ? card.by : "agent",
         status: record?.status === "running" && !active ? "error" as const : record?.status ?? "pending" as const,
