@@ -51,7 +51,8 @@ type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue => value !== null && typeof value === "object" && !Array.isArray(value);
 const IMAGE_KEYS = new Set(["src", "previewSrc", "url"]);
 // Layout internals the agent doesn't edit; they only make the view longer.
-const DROPPED = new Set(["smartText", "autoFitFontSize", "wordTextures", "textureFill", "imageFill", "clipBounds", "groups", "readingOrder"]);
+// An HTML layer's tokens are the brand's CSS variables, which Engine sets; the system prompt names them.
+const DROPPED = new Set(["smartText", "autoFitFontSize", "wordTextures", "textureFill", "imageFill", "clipBounds", "groups", "readingOrder", "tokens"]);
 
 function compact(value: unknown, key = ""): unknown {
   if (typeof value === "string") {

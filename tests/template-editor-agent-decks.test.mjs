@@ -10,14 +10,15 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requireModule = createRequire(import.meta.url);
 function loadModule(relative, dependencies = {}) {
   const filename = path.join(root, relative);
-  const source = ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, fileName: filename }).outputText;
+  const source = ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true }, fileName: filename }).outputText;
   const unit = { exports: {} };
   vm.runInThisContext(`(function(require,module,exports){${source}\n})`, { filename })(name => Object.hasOwn(dependencies, name) ? dependencies[name] : requireModule(name), unit, unit.exports);
   return unit.exports;
 }
 const model = loadModule("lib/template-editor/model.ts");
 const spans = loadModule("lib/template-editor/spanning-photos.ts", { "./model": model });
-const agent = loadModule("lib/template-editor/agent-decks.ts", { "./model": model, "./spanning-photos": spans });
+const htmlLayer = loadModule("lib/template-editor/html-layer.ts", { "./model": model });
+const agent = loadModule("lib/template-editor/agent-decks.ts", { "./model": model, "./spanning-photos": spans, "./html-layer": htmlLayer });
 const { createAgentDeck, updateAgentDeck, agentCapabilities, editableDeckPackage, agentDeckView, AgentDeckValidationError } = agent;
 const text = (id = "heading", extra = {}) => ({ id, type: "text", text: "Editable text", x: 192, y: 108, width: 1536, height: 180, fontSize: 96, ...extra });
 const shape = (id = "accent", extra = {}) => ({ id, type: "shape", shape: "rectangle", x: 192, y: 350, width: 1000, height: 30, fill: "#00d98a", ...extra });

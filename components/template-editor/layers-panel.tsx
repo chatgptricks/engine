@@ -31,7 +31,7 @@ export type LayersPanelProps = {
 };
 
 function typeName(element: CanvasElement) {
-  return element.type === "text" ? "Text" : element.type === "image" ? "Image" : element.shape.charAt(0).toUpperCase() + element.shape.slice(1);
+  return element.type === "text" ? "Text" : element.type === "image" ? "Image" : element.type === "html" ? "HTML" : element.shape.charAt(0).toUpperCase() + element.shape.slice(1);
 }
 function layerName(element: CanvasElement) {
   return element.name.trim() || (element.type === "text" ? element.text.trim().slice(0, 40) : "") || typeName(element);
@@ -58,7 +58,7 @@ function Thumbnail({ element }: { element: CanvasElement }) {
       // Reuse the same proxy as the canvas; never inline remote SVG markup.
       // eslint-disable-next-line @next/next/no-img-element
       <img src={proxied(element.src)} alt="" draggable={false} style={{ objectPosition: `${element.cropX}% ${element.cropY}%` }} />
-    ) : element.type === "text" ? <span className={`gf-font-${element.font}`} style={{ color: element.color, fontWeight: element.fontWeight, fontStyle: element.italic ? "italic" : "normal" }}>{element.text.trim().slice(0, 2) || "T"}</span> : <span className="te-layer-shape-preview" style={{ background: element.fill, border: element.strokeWidth ? `1px solid ${element.stroke}` : undefined, borderRadius: element.shape === "ellipse" ? "50%" : Math.min(7, element.radius), aspectRatio: `${element.width}/${element.height}` }} />}
+    ) : element.type === "text" ? <span className={`gf-font-${element.font}`} style={{ color: element.color, fontWeight: element.fontWeight, fontStyle: element.italic ? "italic" : "normal" }}>{element.text.trim().slice(0, 2) || "T"}</span> : element.type === "html" ? <span className="te-layer-html-preview">&lt;/&gt;</span> : <span className="te-layer-shape-preview" style={{ background: element.fill, border: element.strokeWidth ? `1px solid ${element.stroke}` : undefined, borderRadius: element.shape === "ellipse" ? "50%" : Math.min(7, element.radius), aspectRatio: `${element.width}/${element.height}` }} />}
   </span>;
 }
 

@@ -75,7 +75,7 @@ export async function renderDocumentPdf(design:DesignDocument,pageIds:string|str
     const y=padding+(element.verticalAlign==='bottom'?Math.max(0,element.height-2*padding-measuredTextHeight):element.verticalAlign==='middle'?Math.max(0,(element.height-2*padding-measuredTextHeight)/2):0);
     const structure=pdf.struct('P',{actual:visibleText});semantic.set(element.id,structure);const marked=pdf.markStructureContent('P',{actual:visibleText});structure.add(marked);pdf.rect(0,0,element.width,element.height).clip();
     for(let i=0;i<runs.length;i++){const run=runs[i],color=parseColor(run.color);pdf.font(await fontBytes(run.font,run.weight,run.italic)).fontSize(run.size).fillColor(color?.rgb??'#000000',requiresRaster?0:(color?.alpha??1)*element.opacity).text(run.text,i?undefined:padding,i?undefined:y,{width:Math.max(1,element.width-2*padding),align:element.align,characterSpacing:element.letterSpacing,lineGap:run.size*element.lineHeight-pdf.currentLineHeight(true),paragraphGap,continued:i<runs.length-1,underline:run.underline,strike:run.strike,oblique:run.italic&&!['libre','serif','sfpro'].includes(run.font)});}pdf.endMarkedContent();structure.end();
-   }else if(!requiresRaster){
+   }else if(!requiresRaster&&element.type!=='html'){
     const alt=element.type==='image'?(element as typeof element&{publicAlt?:string}).publicAlt:(element.imageFill as typeof element.imageFill&{publicAlt?:string}|undefined)?.publicAlt;
     let figure:PDFKit.PDFStructureElement|undefined;
     if(alt){figure=pdf.struct('Figure',{alt});semantic.set(element.id,figure);figure.add(pdf.markStructureContent('Figure',{alt}));}

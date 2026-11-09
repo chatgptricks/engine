@@ -516,3 +516,21 @@ test("credential pagination exposes every connection beyond the first hundred wi
   assert.equal(localFirst.length,100);assert.equal(localSecond.length,5);
   assert.deepEqual(new Set([...localFirst,...localSecond].map(record=>record.id)),new Set(records.map(record=>record.id)));
 });
+
+test("an HTML layer gets its deck's brand guide as CSS variables, and a deck with no brand none",async t=>{
+  const f=fixture(t);
+  const addChart=async created=>{
+    const response=await runAction(f,"update_deck",{deckId:created.document.id,expectedHash:created.hash,operationId:randomUUID(),changes:{operations:[
+      {op:"add_html",pageId:created.document.pages[0].id,id:"chart",html:"<div class='chart'>Jobs<script>steal()</script></div>",tokens:{"--color-accent":"#FF0000"}},
+    ]}});
+    assert.equal(response.status,200,await response.clone().text());
+    return (await response.json()).document.pages[0].canvas.elements.find(element=>element.id==="chart");
+  };
+  const branded=await addChart(await createDeck(f,{name:"Branded chart",templateId:"chatgptricks-3x4"}));
+  assert.equal(branded.html,'<div class="chart">Jobs</div>');
+  assert.equal(branded.tokens["--color-accent"],"#00D98A","Engine's brand values win over the agent's");
+  assert.equal(branded.tokens["--color-background"],"#0B1014");
+  assert.match(branded.tokens["--title-font"],/--gf-f-sfpro/);
+  const plain=await addChart(await createDeck(f));
+  assert.equal(plain.tokens,undefined,"without a brand guide a layer has no brand variables");
+});

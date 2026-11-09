@@ -4,7 +4,7 @@ import {RecreateError} from "@/lib/engine/agents/claude";
 import {addRecreatePosts, approveRecreate, isRunning, rerunRecreateStage, startRecreate} from "@/lib/engine/agents/orchestrator";
 import {photoSize} from "@/lib/engine/agents/research";
 import {searchXImages} from "@/lib/engine/apify";
-import {checkAgainstGuide} from "@/lib/engine/brand-actions";
+import {checkAgainstGuide, htmlTokensForDeck} from "@/lib/engine/brand-actions";
 import {isHeadlineModelConfigured, requestHeadlines} from "@/lib/engine/headline-model";
 import {curateImages} from "@/lib/engine/image-curator";
 import {parseInstagramUrl} from "@/lib/engine/instagram-import";
@@ -13,7 +13,7 @@ import {getPostFile, POST_STAGES, type PostStage} from "@/lib/engine/post-files"
 import {postView, type PostView} from "@/lib/engine/recreate-jobs";
 import {renderSlides} from "@/lib/engine/slide-render";
 import {MAX_ADDED_POSTS, parseXPostLinks} from "@/lib/engine/x-links";
-import {AgentDeckValidationError} from "@/lib/template-editor/agent-decks";
+import {addsHtmlLayers, AgentDeckValidationError, withHtmlLayerTokens} from "@/lib/template-editor/agent-decks";
 import type {DesignDocument} from "@/lib/template-editor/model";
 import {applyChatEdits, chatEditsSchema, MAX_CHAT_EDITS, withUploads} from "./chat-edits";
 import {applyEditsOnServer, postForAgent, readLiveDeck, runOfDeck} from "./live-deck";
@@ -321,8 +321,11 @@ const editPost: ChatTool = {
     const changes = input.changes as string[];
     let operations: unknown[];
     try {
+      const document = await liveDeck(context);
       operations = withUploads(input.operations, context.uploads) as unknown[];
-      applyChatEdits(await liveDeck(context), operations);
+      // HTML layers get the brand guide's colors, fonts and sizes as CSS variables.
+      if (addsHtmlLayers(operations)) operations = withHtmlLayerTokens(operations, await htmlTokensForDeck(context.ownerKey, document.templateId));
+      applyChatEdits(document, operations);
     } catch (error) {
       if (error instanceof AgentDeckValidationError) throw new ChatToolError(`Nothing was changed. Fix these and try again: ${issueText(error)}`);
       throw error;

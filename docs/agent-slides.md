@@ -149,7 +149,7 @@ Photo slots (`slots` values) and `image.src` accept up to 2,000,000 characters (
 - `data:image/png`, `jpeg`, `webp`, `gif` and `avif` URLs with `;base64,`. The decoded bytes must start with the declared format's signature, so a mislabelled file is rejected.
 - SVG only as `data:image/svg+xml;charset=utf-8,<URI-encoded SVG>`, using the passive vector grammar from the Brand importer: `svg`, `g`, `path`, `defs`, `linearGradient`, `radialGradient` and `stop`. Text, `rect`, `circle`, styles, links and embedded images are not allowed, and `data:image/svg+xml;base64,…` is always rejected.
 
-Generated charts should therefore be rendered to PNG, for example as `data:image/png;base64,…`, and dropped into the photo slot. Images count once each towards the workspace's 12 MB save budget, so keep chart PNGs reasonably small.
+A chart for a photo slot should therefore be rendered to PNG, for example as `data:image/png;base64,…`. Images count once each towards the workspace's 12 MB save budget, so keep chart PNGs reasonably small. Elsewhere on a slide, draw charts as an HTML layer instead (see [HTML layers](#html-layers)): it stays sharp and uses the brand's colors and fonts.
 
 Text that cannot fit at the readable minimum is flagged in the editor and must be shortened before that page can be exported.
 
@@ -199,6 +199,41 @@ For a fully positioned slide, use `layout: "blank"` and independent `elements`. 
 `engine_get_deck` returns an output-pixel `view` alongside the saved native `document`. Use `view.slides` and their elements to inspect positions and prepare updates in the same coordinate system as the authoring API. The raw native document stores positions on Engine's **360-wide scene**, with the conversion described in the response's `coordinates`. If working directly from the raw document at 1920 output pixels, multiply a scene value by `1920 / 360` before sending it as an agent authoring value.
 
 Image layers accept a supported image `src` and optional public alt text. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
+
+### HTML layers
+
+An HTML layer draws part of a slide, or a whole slide, from HTML and CSS: charts, tables, comparisons, logo grids, memes, X post cards, anything boxes of text, images and shapes draw badly. It is a normal layer: people move, resize, rotate, hide, delete and undo it in the editor, it syncs live, and it exports to PNG and SVG as drawn (a PDF page with an HTML layer is exported as an image). Keep the headline and photos people will want to change on their own as text and image layers.
+
+Add one with `add_html`, or as an element of `type: "html"` in a new deck's slides. Its box (`x`, `y`, `width`, `height`, output pixels) defaults to the whole slide:
+
+```json
+{
+  "op": "add_html",
+  "pageId": "opening",
+  "name": "Revenue chart",
+  "x": 80, "y": 520, "width": 920, "height": 640,
+  "html": "<div class=\"chart\"><svg viewBox=\"0 0 920 560\">…</svg><p class=\"note\">Source: company filings</p></div>",
+  "css": ".chart { height: 100%; display: flex; flex-direction: column; gap: 16px; } .note { font: var(--source-weight) var(--source-size) var(--source-font); color: var(--color-source); }"
+}
+```
+
+- The HTML is laid out `designWidth` CSS pixels wide, by default the box's width, so 1 CSS pixel is 1 output pixel, and as tall as the box, then scaled to fit it. Anything outside the box is cut off. Resizing the box scales the HTML; pass `designWidth` too to lay it out again at the new width.
+- CSS goes in `css` or in `<style>` blocks and applies only inside the layer: `:root`, `html` and `body` mean the layer's box. Engine's base styles apply (margins 0, unstyled headings and lists, `img` as `display: block`, `box-sizing: border-box`).
+- When the deck's template follows a brand guide, Engine sets its values as CSS variables: `--color-background`, `--color-text`, `--color-accent`, `--color-accent-end`, `--color-surface`, `--color-secondary`, `--color-source`, `--gradient-accent`; for each text style (`title`, `body`, `cover`, `source`, `list`, `follow`…) `--title-font`, `--title-size`, `--title-weight`, `--title-leading`, `--title-tracking`, `--title-case`, `--title-color`; and `--page-width`, `--page-height`, `--margin-left`, `--margin-right`, `--margin-top`, `--margin-bottom`. The layer's default font and color are the brand's body font and text color. Agents don't send these variables (`tokens`); Engine sets them.
+- Fonts come only from the brand: `var(--title-font)` and the like, the brand fonts' names (`"SF Pro Display"`), and generic families. Any other font is replaced by the body font. A deck with no brand guide can name any of Engine's fonts.
+- Images (`img src`, SVG `image href`, CSS `url()`) take base64 `data:image/png`, `jpeg`, `webp`, `gif` and `avif` URLs and Engine asset paths (`/api/template-editor/assets/…`). Nothing loads from outside Engine. Inline SVG works, with gradients, clip paths, masks, text and `use` with `#id`s.
+- Alt text and screen readers get the layer's words. Give a chart, or anything else that is a picture, `role="img"` and an `aria-label` saying what it shows; it is read instead of the words inside it (tick labels and the like). `img` alt text is read too.
+- Engine removes scripts, event handlers, iframes, objects, canvas, video and audio; forms, buttons and links keep their text but do nothing; `@import`, `@font-face`, `@media` and every other at-rule, animations and transitions go. HTML that is left with nothing to draw is rejected.
+
+On a template slide with a photo or chart frame, pass `replaces` with the frame's id to draw the HTML in its place:
+
+```json
+{ "op": "add_html", "pageId": "chart-slide", "replaces": "media-photo-id", "name": "Jobs chart", "html": "<svg viewBox=\"0 0 936 919\">…</svg>" }
+```
+
+The layer takes the frame's box (unless you pass `x`, `y`, `width` or `height`) and its place in the template's layout: the template keeps it under the copy and fits it to the space as it would the frame, so its height can change with the copy above it, and layers that followed the frame follow the HTML layer. The frame is hidden and the layer goes just above it in the stack. Don't hide a template's frame yourself to make room: a page with an empty frame centres its copy in the space, on top of your layer.
+
+`replace_html` (`pageId`, `elementId`, `html`, optional `css`) replaces a layer's HTML and keeps its box. Without `css`, the layer keeps its CSS unless the new HTML has its own `<style>` blocks. `update_element` can also set `html`, `css` and `designWidth`, or move and resize the layer.
 
 ## Recreate a post for one of our pages
 
@@ -269,7 +304,7 @@ Call `engine_get_deck` with `{ "deckId": "THE_SAVED_ID" }` immediately before re
 }
 ```
 
-Updates apply atomically. The API supports adding, editing, removing, and moving slides; adding, updating, and removing elements; renaming a deck; and changing its caption. Read the live update schema for exact fields. Locked and protected layers remain protected. A stale `expectedHash` returns HTTP 409: fetch the deck again, reconcile with its current content, and make a new operation. This prevents an agent from overwriting a person's intervening edit.
+Updates apply atomically. The API supports adding, editing, removing, and moving slides; adding, updating, and removing elements; adding HTML layers and replacing their HTML; renaming a deck; and changing its caption. Read the live update schema for exact fields. Locked and protected layers remain protected. A stale `expectedHash` returns HTTP 409: fetch the deck again, reconcile with its current content, and make a new operation. This prevents an agent from overwriting a person's intervening edit.
 
 The bridge generates a UUID `operationId` for each mutation when omitted and returns it on success or failure. It never automatically retries a mutation. For recovery after a timeout or lost connection, retry with **the same operationId and identical arguments**. Reusing an ID with different content is rejected. The server retains the most recent 20 operation receipts per deck; retry promptly. Supply your own UUID before calling if your agent must retain it even if the entire MCP process disconnects.
 

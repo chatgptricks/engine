@@ -362,6 +362,7 @@ const APPEARANCE_TYPE = {
   text: ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textStyleId", "textureFill"],
   image: ["fit", "cropScale", "cropX", "cropY", "radius", "mask", "flipX", "flipY"],
   shape: ["fill", "stroke", "strokeWidth", "strokeAlign", "radius", "imageFill"],
+  html: [],
 };
 export function copyAppearance(element: CanvasElement): ElementAppearance {
   const properties: Record<string, unknown> = {};

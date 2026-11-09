@@ -4,6 +4,7 @@ const photo = <T extends ShapeImageFill>(value:T):T => value.previewSrc?{...valu
 export function elementWithPreviewAsset(element:CanvasElement):CanvasElement {
   if(element.type==="image") return element.previewSrc?{...element,src:element.previewSrc}:element;
   if(element.type==="shape") return element.imageFill?.previewSrc?{...element,imageFill:photo(element.imageFill)}:element;
+  if(element.type==="html") return element;
   return {...element,...(element.textureFill?{textureFill:photo(element.textureFill)}:{}),...(element.wordTextures?{wordTextures:element.wordTextures.map(photo)}:{})};
 }
 export function sceneWithPreviewAssets(scene:CanvasScene):CanvasScene {return {...scene,elements:scene.elements.map(elementWithPreviewAsset)};}

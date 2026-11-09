@@ -29,6 +29,8 @@ import { createPortal } from "react-dom";
 import type {
   CanvasElement,
   CanvasScene,
+  HtmlElement,
+  ImageElement,
   TextElement,
   ShapeElement,
 } from "@/lib/template-editor/model";
@@ -38,7 +40,8 @@ import { gradientCss, gradientEndpoints, maskCss, shapePath } from "@/lib/templa
 import { editorRichHtml, formatTextRange, textRangeTogglePatch, splitRichLines, resolveRichDecorations, scaleRichTextFonts, captureTextFormattingTarget, sameTextFormattingTarget, textEditingFingerprint, captureTextSelection, restoreTextSelection, type TextFormattingPatch, type TextFormattingTarget, type TextFormatter } from "@/lib/template-editor/rich-text-editing";
 import { duplicateSelection, expandGroupSelection, isElementHidden, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
-import { richTextToPlain } from "@/lib/template-editor/model";
+import { MAX_HTML_DESIGN_WIDTH, richTextToPlain } from "@/lib/template-editor/model";
+import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-layer";
 import { parseColor } from "@/lib/template-editor/color-utils";
 import { photoContent, updatePhotoContent, shapeViewBox, findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { textureBackgroundStyle, activeTextTextures, textTextureVariables, textTextureCss } from "@/lib/template-editor/text-textures";
@@ -147,6 +150,8 @@ function bounded(element: CanvasElement): CanvasElement {
   };
 }
 
+const hasRadius = (element: CanvasElement): element is ImageElement | ShapeElement => element.type === "image" || element.type === "shape";
+
 /** Uploads can complete during a gesture. Preserve the latest layer list and
  * content, and apply only fields that this gesture actually transformed. */
 export function mergeGesture(scene: CanvasScene, active: Gesture): CanvasScene {
@@ -177,8 +182,13 @@ export function mergeGesture(scene: CanvasScene, active: Gesture): CanvasScene {
         }
       }
     }
-    if (canEditElement(scene,element,"style") && replacement.type !== "text" && original.type !== "text" && next.type !== "text" && next.radius !== original.radius && next.radius !== replacement.radius) {
+    if (canEditElement(scene,element,"style") && hasRadius(replacement) && hasRadius(original) && hasRadius(next) && next.radius !== original.radius && next.radius !== replacement.radius) {
       replacement.radius = next.radius;
+      modified = true;
+    }
+    // A side drag reflows an HTML layer: its design width follows the box.
+    if (replacement.type === "html" && original.type === "html" && next.type === "html" && next.designWidth !== original.designWidth && next.designWidth !== replacement.designWidth) {
+      replacement.designWidth = next.designWidth;
       modified = true;
     }
     if (canEditElement(scene,element,"style") && replacement.type === "shape" && original.type === "shape" && next.type === "shape" && next.strokeWidth !== original.strokeWidth && next.strokeWidth !== replacement.strokeWidth) {
@@ -277,6 +287,24 @@ function TextureResources({ element }: { element: TextElement }) {
   return <span ref={holder} style={{display:"none"}} aria-hidden="true"><style>{textTextureCss(element)}</style>{textures.map(texture=><img key={texture.id} src={proxied(texture.src)} alt="" data-engine-texture-preload="true" data-engine-texture-id={texture.id} data-engine-image-fit={texture.objectFit} data-engine-image-crop-scale={texture.cropScale??1} onLoad={measure} />)}</span>;
 }
 
+/** An HTML layer: markup laid out designWidth px wide and scaled to its box.
+ * The markup is cleaned again here (html-layer.ts) and its CSS is scoped to
+ * this one drawing, so a thumbnail and the canvas never share ids or rules. */
+function HtmlLayerContent({ element }: { element: HtmlElement }) {
+  const instance = useId().replace(/[^a-zA-Z0-9]/g, "");
+  const { html, css, tokens, designWidth, width, height } = element;
+  const prepared = useMemo(() => prepareHtmlLayer({ html, css, tokens }), [html, css, tokens]);
+  const scope = `teh-${prepared.key}-${instance}`;
+  const markup = useMemo(() => ({ __html: scopeHtmlLayer(prepared.html, scope) }), [prepared, scope]);
+  const scale = width / designWidth;
+  return <div className="te-canvas-html" style={{ position: "absolute", inset: 0, overflow: "hidden", contain: "layout paint style", isolation: "isolate" }}>
+    <style>{scopeHtmlLayer(prepared.css, scope)}</style>
+    <div style={{ position: "absolute", left: 0, top: 0, width: designWidth, height: height / scale, transform: `scale(${scale})`, transformOrigin: "0 0" }}>
+      <div className={`te-canvas-html-root ${scope}`} dangerouslySetInnerHTML={markup} />
+    </div>
+  </div>;
+}
+
 /** A world-space viewport stays fixed while its editable object moves/rotates. */
 function WorldClip({ bounds, children }: { bounds?: CanvasElement["clipBounds"]; children: ReactNode }) {
   if (!bounds) return <>{children}</>;
@@ -316,7 +344,7 @@ function SceneElement({ element, smartLayout }: { element: CanvasElement; smartL
     </div> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
-    </div></div> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
+    </div></div> : element.type === "html" ? <HtmlLayerContent element={element} /> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
       <clipPath id={photoClipId} clipPathUnits="userSpaceOnUse">{geometry({fillRule,clipRule:fillRule})}</clipPath>
       {strokeAlign === "outside" && <mask id={outsideMaskId} maskUnits="userSpaceOnUse" x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} style={{maskType:"luminance"}}><rect x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} fill="white" />{geometry({fill:"black",fillRule})}</mask>}
       {gradient && (gradient.type === "radial" ? <radialGradient id={gradientId} cx=".5" cy=".5" r="1" gradientTransform={`translate(.5 .5) scale(${radialRadius/element.width} ${radialRadius/element.height}) translate(-.5 -.5)`}>{gradient.stops.map((stop, index) => <stop key={index} offset={`${stop.position}%`} stopColor={stop.color} />)}</radialGradient> : <linearGradient id={gradientId} x1={`${endpoints.x1}%`} y1={`${endpoints.y1}%`} x2={`${endpoints.x2}%`} y2={`${endpoints.y2}%`}>{gradient.stops.map((stop, index) => <stop key={index} offset={`${stop.position}%`} stopColor={stop.color} />)}</linearGradient>)}
@@ -393,8 +421,8 @@ export function resizeSingle(
   let width = sx ? clamp(element.width + sx * local.x, 1, 10_000) : element.width;
   let height = sy ? clamp(element.height + sy * local.y, 1, 10_000) : element.height;
   const isCorner = Boolean(sx && sy);
-  // Text corners scale the type; side handles reflow the text within its box.
-  if ((isCorner && element.type === "text") || preserveAspect) {
+  // Text corners scale the type and HTML corners scale the design; side handles reflow either within its box.
+  if ((isCorner && (element.type === "text" || element.type === "html")) || preserveAspect) {
     const dw = (width - element.width) / element.width;
     const dh = (height - element.height) / element.height;
     const maximum = Math.min(10_000 / element.width, 10_000 / element.height);
@@ -421,6 +449,9 @@ export function resizeSingle(
     width: round(width),
     height: round(height),
   };
+  if (element.type === "html") return sx && !isCorner && !preserveAspect
+    ? ({ ...result, designWidth: round(clamp(element.designWidth * width / element.width, 1, MAX_HTML_DESIGN_WIDTH)) } as CanvasElement)
+    : result;
   return element.type === "text" && isCorner
     ? ({
         ...result,
@@ -494,6 +525,7 @@ export function resizeGroup(
         radius: round(clamp(element.radius * scale, 0, 5000)),
         strokeWidth: round(clamp(element.strokeWidth * scale, 0, 200)),
       } as CanvasElement;
+    if (element.type === "html") return resized;
     return {
       ...resized,
       radius: round(clamp(element.radius * scale, 0, 5000)),
@@ -1133,7 +1165,7 @@ export function CanvasEditor({
     elements = elements.map(element => {
       const original=sourceElements.find(source=>source.id===element.id);
       if(!original||canEditElement(active.source,original,"style"))return element;
-      return {...element,...(original.type==="text"?{fontSize:original.fontSize,letterSpacing:original.letterSpacing,richText:original.richText,padding:original.padding,paragraphSpacing:original.paragraphSpacing}:original.type==="shape"?{radius:original.radius,strokeWidth:original.strokeWidth}:{radius:original.radius})} as CanvasElement;
+      return {...element,...(original.type==="text"?{fontSize:original.fontSize,letterSpacing:original.letterSpacing,richText:original.richText,padding:original.padding,paragraphSpacing:original.paragraphSpacing}:original.type==="shape"?{radius:original.radius,strokeWidth:original.strokeWidth}:original.type==="image"?{radius:original.radius}:{})} as CanvasElement;
     });
     const replacements = new Map(
       elements.map((element) => [element.id, bounded(element)]),

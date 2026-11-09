@@ -1,11 +1,12 @@
 /** Agent authoring uses output pixels; Engine stores editable layers on a 360-wide scene. */
 import {
-  BUILT_IN_TEMPLATES, EMPTY_LIBRARY, createBlankDesign, createCanvasElement,
+  BUILT_IN_TEMPLATES, EMPTY_LIBRARY, MAX_HTML_CHARS, MAX_HTML_CSS_CHARS, MAX_HTML_DESIGN_WIDTH, MAX_HTML_TOKENS, createBlankDesign, createCanvasElement,
   createDesign, duplicatePage, formatDimensions, parseCanvasScene, parseLibrary, prepareSmartTemplate, sceneForPage,
   type CanvasElement, type CanvasScene, type DesignDocument, type DesignPage,
-  type DesignTemplate, type EditorLibrary, type SmartTextRole,
+  type DesignTemplate, type EditorLibrary, type HtmlElement, type SmartTextRole,
 } from "./model";
 import { findSpan, hasSpans, isSpanHalf, reconcileSpans, seamOf, setSeam, spanPairs, spanPhoto, syncSpans, unlinkSpan } from "./spanning-photos";
+import { cleanHtmlLayer, cleanHtmlTokens } from "./html-layer";
 
 type RecordValue = Record<string, unknown>;
 type Schema = Record<string, unknown>;
@@ -62,6 +63,27 @@ const shapeProperties = {
   sides: { type: "integer", minimum: 3, maximum: 30 }, starPoints: { type: "integer", minimum: 3, maximum: 30 },
   innerRadius: num(.05, .95), strokeAlign: choice(["inside", "center", "outside"]),
 };
+/** HTML layers (html-layer.ts): markup designed at the box's own pixel size. */
+const htmlProperties = {
+  html: str(MAX_HTML_CHARS, { minLength: 1, description: "The layer's HTML, designed for a box designWidth pixels wide: 1 CSS px is 1 output pixel. <style> blocks become its CSS. No scripts, event handlers, iframes, forms or links; images only as data: URLs or Engine asset paths (/api/template-editor/assets/…); fonts only through the brand variables" }),
+  css: str(MAX_HTML_CSS_CHARS, { description: "The layer's CSS. :root, html and body mean the layer's box. Brand values are CSS variables: var(--color-accent), var(--title-font), var(--title-size)…" }),
+  designWidth: { ...num(1, MAX_HTML_DESIGN_WIDTH), description: "The width in CSS pixels the HTML is laid out at, scaled to the box. Default: the box's width in pixels" },
+};
+const htmlTokensSchema: Schema = { type: "object", maxProperties: MAX_HTML_TOKENS, additionalProperties: str(300), description: "Brand CSS variables. Engine sets these from the deck's brand guide; leave them out" };
+/** How to design an HTML layer; agentCapabilities lists it as htmlLayers. */
+const HTML_LAYER_GUIDE = {
+  use: "Part of a slide, or a whole slide, drawn from HTML and CSS: charts, tables, logo grids, comparisons, memes, X post cards. Keep headlines and photos people will want to change on their own as text and image layers.",
+  operations: "add_html adds one (its box defaults to the whole slide). replace_html swaps its HTML, and its CSS when you pass css. update_element moves, resizes or rotates it, or sets html, css or designWidth. remove_element deletes it. A layer can also be an element of type html in a new deck's slides.",
+  templates: "To draw a chart or other HTML where a template slide has a photo or chart frame, pass add_html replaces with the frame's id. The HTML takes the frame's box and its place in the template's layout: the template keeps it under the copy and fits it to the space as it would the frame, so its height can change with the copy above it. The frame is hidden. Don't hide a frame yourself to make room: the template then centres the copy in the empty space, over your layer.",
+  size: "The HTML is laid out designWidth CSS pixels wide (default: the box's width in output pixels, so 1 CSS px is 1 output pixel) and as tall as the box, then scaled to the box. Anything outside the box is cut off. Resizing the box scales the HTML; set designWidth too to lay it out again at a new width.",
+  css: "Put CSS in css or in <style> blocks. It applies only inside the layer: :root, html and body mean the layer's box. Engine's base styles apply: margins are 0, headings and lists are unstyled, images are display: block, box-sizing is border-box.",
+  brand: "When the deck has a brand guide, its values are CSS variables: --color-background, --color-text, --color-accent, --color-accent-end, --color-surface, --color-secondary, --color-source and --gradient-accent; for each text style (title, body, cover, source, list, follow…) --title-font, --title-size, --title-weight, --title-leading, --title-tracking, --title-case, --title-color; and --page-width, --page-height, --margin-left, --margin-right, --margin-top, --margin-bottom. Sizes are pixels on a --page-width wide slide. The layer's default font and color are the brand's body font and text color.",
+  fonts: "font-family takes the brand's fonts, as var(--title-font) and the like or by name (\"SF Pro Display\"), and generic families. Other fonts are replaced by the body font. Without a brand guide, any of Engine's fonts works by name.",
+  images: "img src, SVG image href and CSS url() take base64 data:image PNG, JPEG, WebP, GIF or AVIF, and Engine asset paths (/api/template-editor/assets/…). Anything else is removed, so nothing loads from outside Engine. Inline SVG works, with gradients, clip paths, masks, text and use with #ids.",
+  removed: "Scripts, event handlers, iframes, objects, canvas, video and audio; forms, buttons and links (their text stays); @import, @font-face, @media and every other at-rule; animations and transitions. position: fixed becomes absolute.",
+  exports: "PNG and SVG show the layer as drawn; a PDF page with an HTML layer is exported as an image.",
+  access: "Alt text and screen readers get the layer's words. Give a chart, or anything else that is a picture, role=\"img\" and an aria-label saying what it shows: it is read instead of the words inside it. img alt text is read too.",
+};
 const elementSchema: Schema = { oneOf: [
   obj({ ...baseProperties, type: { const: "text" }, ...textProperties }, ["type", "text", "x", "y", "width", "height"]),
   obj({ ...baseProperties, type: { const: "image" }, ...imageProperties,
@@ -69,6 +91,7 @@ const elementSchema: Schema = { oneOf: [
     seam: seamSchema("With span: the share of the photo on this slide, from 0.1 to 0.9 (default 0.5). Choose it so the cut misses faces and text"),
   }, ["type", "src", "x", "y", "width", "height"]),
   obj({ ...baseProperties, type: { const: "shape" }, ...shapeProperties }, ["type", "x", "y", "width", "height"]),
+  obj({ ...baseProperties, type: { const: "html" }, ...htmlProperties, tokens: htmlTokensSchema }, ["type", "html", "x", "y", "width", "height"]),
 ] };
 const slideImageSchema = obj({ src: imageProperties.src, alt: str(2000), fit: imageProperties.fit }, ["src"]);
 const slideSchema = obj({
@@ -95,7 +118,7 @@ export const AGENT_DECK_SPEC_SCHEMA: Schema = {
     slides: { type: "array", minItems: 1, maxItems: 20, items: slideSchema },
   }, ["name"]),
 };
-const editableProperties = { ...baseProperties, ...textProperties, ...imageProperties, ...shapeProperties };
+const editableProperties = { ...baseProperties, ...textProperties, ...imageProperties, ...shapeProperties, ...htmlProperties };
 // Protection flags and identity cannot be changed through a property patch.
 const patchProperties = Object.fromEntries(Object.entries(editableProperties).filter(([key]) => !["id", "locked", "protected"].includes(key)));
 const operation = (op: string, properties: Record<string, Schema>, required: string[]) => obj({ op: { const: op }, ...properties }, ["op", ...required]);
@@ -104,6 +127,14 @@ export const AGENT_UPDATE_SCHEMA: Schema = {
   ...obj({ operations: { type: "array", minItems: 1, maxItems: 200, items: { oneOf: [
     operation("update_element", { pageId: id, elementId: id, properties: obj(patchProperties, [], { minProperties: 1 }) }, ["pageId", "elementId", "properties"]),
     operation("add_element", { pageId: id, element: elementSchema }, ["pageId", "element"]),
+    { ...operation("add_html", {
+      pageId: id, id, name: str(200), html: htmlProperties.html, css: htmlProperties.css,
+      x: num(-100_000, 100_000), y: num(-100_000, 100_000), width: num(1, 100_000), height: num(1, 100_000), designWidth: htmlProperties.designWidth,
+      index: { type: "integer", minimum: 0, maximum: 100, description: "Where the layer goes in the stack: 0 is the bottom. Default: the top, or just above the layer it replaces" },
+      replaces: { ...id, description: "Id of a layer on this slide, such as a template's photo or chart frame, that the HTML takes the place of: the HTML gets its box and its place in the template's layout, and that layer is hidden" },
+      tokens: htmlTokensSchema,
+    }, ["pageId", "html"]), description: "Add an HTML layer: part of a slide, or the whole slide, drawn from HTML and CSS. Use it for charts, tables, logo grids, comparisons, memes and X post cards. The box (x, y, width, height in output pixels) defaults to the whole slide, or with replaces to the replaced layer's box." },
+    { ...operation("replace_html", { pageId: id, elementId: id, html: htmlProperties.html, css: htmlProperties.css, tokens: htmlTokensSchema }, ["pageId", "elementId", "html"]), description: "Replace an HTML layer's HTML, keeping its box. css replaces its CSS too; without css (and without <style> blocks in the HTML) the CSS stays." },
     operation("remove_element", { pageId: id, elementId: id }, ["pageId", "elementId"]),
     operation("add_slide", { slide: slideSchema, index: { type: "integer", minimum: 0, maximum: 20 } }, ["slide"]),
     operation("remove_slide", { pageId: id }, ["pageId"]),
@@ -185,14 +216,78 @@ function checkNativeElement(element: CanvasElement, path: string): CanvasElement
   if (!parseCanvasScene({ background: "#ffffff", elements: [{ ...element, groupId: undefined }] })) fail(path, "element contains an unsupported image URL or values outside Engine's editable layer limits");
   return element;
 }
+/** An HTML layer with clean markup, CSS and brand tokens; a layer left with nothing to draw is an error. */
+function withHtml(element: HtmlElement, input: { html: string; css?: string; tokens?: unknown }, path: string): HtmlElement {
+  const tokens = cleanHtmlTokens(record(input.tokens) ? input.tokens as Record<string, string> : undefined);
+  const clean = cleanHtmlLayer({ html: input.html, css: input.css, tokens });
+  if (!clean.html.trim() && !clean.css.trim()) fail(`${path}.html`, "has nothing Engine can draw once scripts, links, forms and outside images or fonts are removed");
+  const next: HtmlElement = { ...element, html: clean.html };
+  if (clean.css) next.css = clean.css; else delete next.css;
+  if (Object.keys(tokens).length) next.tokens = tokens; else delete next.tokens;
+  return next;
+}
+/** An HTML layer that replaces another takes its place in the template's layout: the
+ * flow that layer follows, the centred block it heads and its layout role. A frame that
+ * takes its picture's shape (smartFlow.media) fills its space instead, as HTML has no
+ * picture to take the shape of. */
+function takePlace(element: CanvasElement, replaced: CanvasElement): CanvasElement {
+  const next = { ...element };
+  if (replaced.smartFlow) {
+    const { media, ...flow } = replaced.smartFlow;
+    next.smartFlow = media ? { ...flow, resize: true } : flow;
+  }
+  if (replaced.smartCenter) next.smartCenter = { ...replaced.smartCenter };
+  if (replaced.layoutRole) next.layoutRole = replaced.layoutRole;
+  return next;
+}
+/** Layers that flowed under (or hugged) `replaced` follow layer `id` instead, since a
+ * hidden layer takes no room. */
+function followInstead(elements: CanvasElement[], replaced: CanvasElement, id: string): CanvasElement[] {
+  const keys = new Set([replaced.id, ...(replaced.slot ? [replaced.slot] : [])]);
+  return elements.map(element => {
+    const flow = element.smartFlow;
+    if (!flow || element.id === id || !keys.has(flow.after) && !(flow.hug && keys.has(flow.hug.after))) return element;
+    return { ...element, smartFlow: { ...flow, ...(keys.has(flow.after) ? { after: id } : {}), ...(flow.hug && keys.has(flow.hug.after) ? { hug: { ...flow.hug, after: id } } : {}) } } as CanvasElement;
+  });
+}
+const htmlLayerInput = (value: RecordValue) => value.type === "html" || value.op === "add_html" || value.op === "replace_html";
+/** Whether a deck spec or a list of operations adds or replaces an HTML layer. */
+export function addsHtmlLayers(input: unknown): boolean {
+  if (Array.isArray(input)) return input.some(addsHtmlLayers);
+  return record(input) && (htmlLayerInput(input) || Object.values(input).some(addsHtmlLayers));
+}
+/**
+ * Gives every HTML layer a deck spec or operation list adds or replaces the
+ * brand's CSS variables (html-layer.ts htmlTokensForGuide), or none without a
+ * brand guide. Engine sets them, whatever the agent sent.
+ */
+export function withHtmlLayerTokens<T>(input: T, tokens: Record<string, string> | undefined): T {
+  if (!addsHtmlLayers(input)) return input;
+  const brand = tokens && Object.keys(tokens).length ? tokens : undefined;
+  const visit = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(visit);
+    if (!record(value)) return value;
+    const next = Object.fromEntries(Object.entries(value).map(([key, child]) => [key, visit(child)]));
+    if (htmlLayerInput(next)) {
+      if (brand) next.tokens = { ...brand };
+      else delete next.tokens;
+    }
+    return next;
+  };
+  return visit(input) as T;
+}
 function makeElement(source: RecordValue, scale: number, theme: Theme, used: Set<string>, path: string): CanvasElement {
   // span and seam ask for a spanning photo once every slide exists (see SpanRequest); they aren't layer properties.
-  const { span, seam, ...input } = source;
+  const { span, seam, tokens, ...input } = source;
   if (seam !== undefined && span === undefined) fail(`${path}.seam`, "requires span: \"next\"");
   const type = input.type as CanvasElement["type"];
+  if (tokens !== undefined && type !== "html") fail(`${path}.tokens`, "is not supported");
   const defaults: RecordValue = type === "text" ? { font: theme.font, color: theme.text, fontSize: theme.bodySize * scale, textMode: "auto-fit", verticalAlign: "top" }
-    : type === "shape" ? { fill: theme.accent, stroke: "transparent" } : {};
-  const element = { ...createCanvasElement(type), ...defaults, ...toScene(input, scale), id: input.id ?? crypto.randomUUID() } as CanvasElement;
+    : type === "shape" ? { fill: theme.accent, stroke: "transparent" }
+    // HTML is designed at the box's own pixel width unless the agent says otherwise.
+    : type === "html" ? { designWidth: Number(input.width) } : {};
+  let element = { ...createCanvasElement(type), ...defaults, ...toScene(input, scale), id: input.id ?? crypto.randomUUID() } as CanvasElement;
+  if (element.type === "html") element = withHtml(element, { html: String(input.html), css: input.css === undefined ? undefined : String(input.css), tokens }, path);
   if (used.has(element.id)) fail(`${path}.id`, "must be unique across this deck");
   used.add(element.id);
   return checkNativeElement(element, path);
@@ -473,8 +568,8 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
   document.caption = String(spec.caption ?? "");
   return validateDocument(document);
 }
-const positionKeys = new Set(["x", "y", "width", "height", "rotation"]);
-const contentKeys = new Set(["text", "src", "publicAlt"]);
+const positionKeys = new Set(["x", "y", "width", "height", "rotation", "designWidth"]);
+const contentKeys = new Set(["text", "src", "publicAlt", "html", "css"]);
 function ensureEditable(element: CanvasElement, scene: CanvasScene, properties: string[], path: string, deleting = false) {
   let group = scene.groups?.find(candidate => candidate.id === element.groupId);
   const seen = new Set<string>();
@@ -553,6 +648,43 @@ export function updateAgentDeck(document: DesignDocument, input: unknown): Desig
       next = applySpanRequests(next, spans);
       continue;
     }
+    if (op === "add_html") {
+      if (canvas.elements.length >= 100) fail(path, "slide already contains the maximum 100 elements");
+      // replaces: the HTML takes a layer's box and its place in the template's layout, and that layer is hidden.
+      const replacedIndex = operation.replaces === undefined ? -1 : canvas.elements.findIndex(item => item.id === operation.replaces);
+      const replaced = canvas.elements[replacedIndex];
+      if (operation.replaces !== undefined) {
+        if (!replaced) fail(`${path}.replaces`, "must identify a layer on this slide");
+        if (replaced.type === "image" && replaced.span) fail(`${path}.replaces`, "continues on another slide; unlink_span it first");
+        ensureEditable(replaced, canvas, ["hidden"], `${path}.replaces`);
+      }
+      const px = (value: number) => Math.round(value / scale * 1000) / 1000;
+      const source: RecordValue = { type: "html", name: operation.name ?? "HTML", ...(replaced ? { x: px(replaced.x), y: px(replaced.y), width: px(replaced.width), height: px(replaced.height), ...(replaced.rotation ? { rotation: replaced.rotation } : {}) } : { x: 0, y: 0, width: size.width, height: size.height }) };
+      for (const key of ["id", "html", "css", "x", "y", "width", "height", "designWidth", "tokens"]) if (operation[key] !== undefined) source[key] = operation[key];
+      let element = makeElement(source, scale, theme, used, path);
+      if (replaced) {
+        element = takePlace(element, replaced);
+        canvas.elements[replacedIndex] = { ...replaced, hidden: true } as CanvasElement;
+        canvas.elements = followInstead(canvas.elements, replaced, element.id);
+      }
+      canvas.elements.splice(Math.min(Number(operation.index ?? (replaced ? replacedIndex + 1 : canvas.elements.length)), canvas.elements.length), 0, element);
+      if (page.readingOrder) {
+        const after = replaced ? page.readingOrder.indexOf(replaced.id) : -1;
+        page.readingOrder.splice(after < 0 ? page.readingOrder.length : after + 1, 0, element.id);
+      }
+      continue;
+    }
+    if (op === "replace_html") {
+      const elementIndex = canvas.elements.findIndex(item => item.id === operation.elementId);
+      const element = canvas.elements[elementIndex];
+      if (!element || element.type !== "html") fail(`${path}.elementId`, "must identify an HTML layer on this slide");
+      ensureEditable(element, canvas, ["html"], path);
+      const html = String(operation.html);
+      // New CSS, or a page with its own <style>, replaces the CSS; otherwise the layer keeps it.
+      const css = operation.css !== undefined ? String(operation.css) : /<style\b/i.test(html) ? "" : element.css;
+      canvas.elements[elementIndex] = checkNativeElement(withHtml(element, { html, css, tokens: operation.tokens ?? element.tokens }, path), path);
+      continue;
+    }
     if (op === "span_photo" || op === "unlink_span") {
       const element = canvas.elements.find(item => item.id === operation.elementId);
       if (!element || element.type !== "image") fail(`${path}.elementId`, "must identify an image on this slide");
@@ -576,10 +708,11 @@ export function updateAgentDeck(document: DesignDocument, input: unknown): Desig
       if (page.readingOrder) page.readingOrder = page.readingOrder.filter(id => id !== element.id);
     } else {
       const properties = operation.properties as RecordValue;
-      const allowed = new Set(Object.keys({ ...baseProperties, ...(element.type === "text" ? textProperties : element.type === "image" ? imageProperties : shapeProperties) }));
+      const allowed = new Set(Object.keys({ ...baseProperties, ...(element.type === "text" ? textProperties : element.type === "image" ? imageProperties : element.type === "html" ? htmlProperties : shapeProperties) }));
       for (const key of Object.keys(properties)) if (!allowed.has(key)) fail(`${path}.properties.${key}`, `is not supported on a ${element.type} element`);
       ensureEditable(element, canvas, Object.keys(properties), `${path}.properties`);
-      const updated = { ...element, ...toScene(properties, scale) } as CanvasElement;
+      let updated = { ...element, ...toScene(properties, scale) } as CanvasElement;
+      if (updated.type === "html" && (properties.html !== undefined || properties.css !== undefined)) updated = withHtml(updated, { html: updated.html, css: updated.css, tokens: updated.tokens }, `${path}.properties`);
       if (element.type === "text") {
         const updatedText = updated as Extract<CanvasElement, { type: "text" }>;
         if (properties.text !== undefined) delete updatedText.richText;
@@ -634,7 +767,8 @@ export function agentCapabilities() {
   const composable = BUILT_IN_TEMPLATES.find(template => template.pages.length > 1 && !template.continuousCanvas);
   return {
     version: 1, coordinates: "output pixels (including fontSize); native scene width is 360",
-    editable: ["text", "image", "shape"], layouts: LAYOUTS, presets: PRESETS, fonts: FONTS, limits: LIMITS,
+    editable: ["text", "image", "shape", "html"], layouts: LAYOUTS, presets: PRESETS, fonts: FONTS, limits: LIMITS,
+    htmlLayers: HTML_LAYER_GUIDE,
     deckSchema: AGENT_DECK_SPEC_SCHEMA, updateSchema: AGENT_UPDATE_SCHEMA,
     templates: BUILT_IN_TEMPLATES.map(template => ({ id: template.id, name: template.name, pages: template.pages.length, size: formatDimensions(template), pageTypes: agentTemplatePages(template) })),
     imageSources: ["https:// or http:// URLs, or root-relative paths on the Engine origin","data:image/png|jpeg|webp|gif|avif;base64 (the bytes must match the declared type)", "data:image/svg+xml;charset=utf-8,<URI-encoded SVG> using only svg, g, path, defs and gradient elements (no text, rect, style or base64 SVG)"],

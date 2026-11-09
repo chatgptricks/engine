@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {agentResponse as reply, allowedAgentOrigin, readAgentBody, resolveAgentRequest} from "@/lib/template-editor/agent-http";
-import {agentCapabilities, agentDeckSummary, agentTemplatePages, agentTemplateSlots, agentDeckView, createAgentDeck, updateAgentDeck, editableDeckPackage, AgentDeckValidationError} from "@/lib/template-editor/agent-decks";
+import {htmlTokensForTemplate} from "@/lib/engine/brand-actions";
+import {addsHtmlLayers, agentCapabilities, agentDeckSummary, agentTemplatePages, agentTemplateSlots, agentDeckView, createAgentDeck, updateAgentDeck, editableDeckPackage, withHtmlLayerTokens, AgentDeckValidationError} from "@/lib/template-editor/agent-decks";
 import {contentHash} from "@/lib/template-editor/library-sync";
 import {getEditorLibrary, saveEditorLibrary, LibraryConflictError} from "@/lib/template-editor/persistence";
 import {libraryTemplates} from "@/lib/template-editor/template-catalog";
@@ -49,13 +50,18 @@ async function dispatch(ownerKey: string, input: Record<string, unknown>) {
         return reply(await deckResult(existing!, {replayed: true}));
       }
       let document: DesignDocument;
+      const templates = libraryTemplates(stored.library);
+      // HTML layers get the brand guide's colors, fonts and sizes as CSS variables.
+      const brandTokens = (templateId: unknown) => htmlTokensForTemplate(ownerKey, templates.find(template => template.id === templateId));
       if (action === "create_deck") {
         if (existing) throw new RequestError("A deck with this id already exists. Use update_deck to revise it.", 409);
-        document = createAgentDeck({...spec, id: deckId}, libraryTemplates(stored.library));
+        const tokens = addsHtmlLayers(spec) ? await brandTokens(spec.templateId) : undefined;
+        document = createAgentDeck(withHtmlLayerTokens({...spec, id: deckId}, tokens), templates);
       } else {
         const before = checkedDocument(deckId, stored.library.designs);
         if (await contentHash(before) !== input.expectedHash) throw new RequestError("This deck changed. Call get_deck and apply your edits to its latest hash.", 409);
-        document = updateAgentDeck(before, input.changes);
+        const tokens = addsHtmlLayers(input.changes) ? await brandTokens(before.templateId) : undefined;
+        document = updateAgentDeck(before, withHtmlLayerTokens(input.changes, tokens));
       }
       document = {...document, agentOperations: [...(document.agentOperations ?? []), {id: operationId, inputHash}].slice(-20)};
       const next = parseLibrary({...stored.library, designs: existing ? stored.library.designs.map(item => item.id === deckId ? document : item) : [document, ...stored.library.designs]});

@@ -181,7 +181,34 @@ export type ShapeElement = CanvasElementBase & {
   imageFill?: ShapeImageFill;
   strokeAlign?: "inside" | "center" | "outside";
 };
-export type CanvasElement = TextElement | ImageElement | ShapeElement;
+/** Part of a slide, or a whole slide, drawn from HTML and CSS: charts, tables,
+ * logo grids, post cards. The markup is laid out `designWidth` CSS pixels wide
+ * and scaled to the box, so it's designed at the export's pixel size (a full
+ * 1080 px slide has designWidth 1080). Corner drags scale it; side drags change
+ * `designWidth` so it reflows. html-layer.ts cleans the markup and CSS when a
+ * layer is saved and again before it's drawn. */
+export type HtmlElement = CanvasElementBase & {
+  type: "html";
+  html: string;
+  /** The layer's own CSS. `:root`, `html` and `body` mean the layer's box. */
+  css?: string;
+  designWidth: number;
+  /** Brand values the markup reads as CSS variables, such as --color-accent.
+   * Copied from the deck's brand guide when the layer is made. */
+  tokens?: Record<string, string>;
+};
+export type CanvasElement = TextElement | ImageElement | ShapeElement | HtmlElement;
+export const MAX_HTML_CHARS = 600_000;
+export const MAX_HTML_CSS_CHARS = 120_000;
+export const MAX_HTML_TOKENS = 120;
+export const MAX_HTML_DESIGN_WIDTH = 20_000;
+/** A brand value an HTML layer reads: a custom property name and a value with no
+ * way to load anything (no url(), image-set(), escapes or declaration breaks). */
+export function isSafeHtmlToken(name: unknown, value: unknown): boolean {
+  return typeof name === "string" && /^--[a-z][a-z0-9-]{0,62}$/.test(name) &&
+    typeof value === "string" && value.length <= 300 && /^[#a-zA-Z0-9 .,%()'"/+_-]*$/.test(value) &&
+    !/(?:url|image|image-set|element|cross-fade|src|expression|attr|paint)\s*\(/i.test(value);
+}
 export type CanvasScene = { background: string; elements: CanvasElement[]; groups?: CanvasGroup[]; layout?: CanvasLayout };
 export type TextStyle = Omit<TextElement, keyof CanvasElementBase | "type" | "text" | "richText" | "textStyleId" | "textMode" | "wordTextures" | "autoFitFontSize"> & { id: string; name: string; workspaceSourceId?: string };
 export type ReusableComponent = { id: string; name: string; scene: CanvasScene; width: number; height: number; workspaceSourceId?: string };
@@ -651,7 +678,7 @@ export function createCanvasElement(
   options: Partial<CanvasElement> = {},
 ): CanvasElement {
   const base = {
-    name: type === "text" ? "Text" : type === "image" ? "Image" : "Shape",
+    name: type === "text" ? "Text" : type === "image" ? "Image" : type === "html" ? "HTML" : "Shape",
     x: 36,
     y: 60,
     width: 288,
@@ -689,6 +716,12 @@ export function createCanvasElement(
       stroke: DEFAULT_BRAND.text,
       strokeWidth: 0,
       radius: 0,
+    },
+    // 288 scene units are 864 px on a 1080 px wide slide.
+    html: {
+      height: 216,
+      html: "",
+      designWidth: 864,
     },
   };
   return {
@@ -1145,6 +1178,8 @@ function baseLayoutRole(element: CanvasElement, context: LayoutContext): LayoutR
   }
   if (isProfile(element) || BRAND_NAME.test(element.name) || area < .06) return "fixed";
   if (element.type === "image") return "media";
+  // An HTML layer is designed content: it keeps its place, like a fixed panel.
+  if (element.type === "html") return "fixed";
   if (element.imageFill) return "media";
   return element.width > 180 && element.height > 100 && area < .85 && !element.gradient && !DECOR_NAME.test(element.name) ? "media" : "fixed";
 }
@@ -1787,6 +1822,53 @@ export function richTextToPlain(value: string): string {
   });
 }
 
+const VOID_TAGS = new Set(["area", "br", "col", "hr", "img", "input", "source", "track", "wbr"]);
+const attributeValue = (attributes: string, name: string) => new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(attributes)?.slice(1).find(value => value !== undefined);
+
+/** Markup where each element with role="img" and an aria-label is replaced by its
+ * label, as screen readers read it: a chart's description instead of its tick labels.
+ * Expects clean (well-formed) markup. */
+function withImageLabels(html: string): string {
+  const open = /<([a-zA-Z][\w:-]*)(\s[^>]*)?>/g;
+  let result = "", from = 0;
+  for (let match; (match = open.exec(html));) {
+    const [tag, name, attributes = ""] = match;
+    const label = /\srole\s*=\s*["']?img["'\s/>]/i.test(`${attributes}>`) ? attributeValue(attributes, "aria-label") : undefined;
+    if (!label?.trim()) continue;
+    let end = match.index + tag.length;
+    if (!tag.endsWith("/>") && !VOID_TAGS.has(name.toLowerCase())) {
+      const nested = new RegExp(`<(/?)${name}(?:\\s[^>]*?)?(/?)>`, "gi");
+      nested.lastIndex = end;
+      for (let depth = 1, next; depth && (next = nested.exec(html));) {
+        if (next[1]) depth--; else if (!next[2]) depth++;
+        end = next.index + next[0].length;
+      }
+    }
+    result += `${html.slice(from, match.index)} ${label} `;
+    from = open.lastIndex = end;
+  }
+  return result + html.slice(from);
+}
+
+/** The words in an HTML layer, for alt text, reading order and agents: its text, with an
+ * element marked role="img" read as its aria-label and an image as its alt text. Text
+ * only: never draw what this returns as markup. */
+export function htmlLayerText(html: string, limit = 2_000): string {
+  return withImageLabels(html)
+    .replace(/<(style|script|title|head|textarea|noscript|template|desc|metadata)\b[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<img(\s[^>]*)?>/gi, (_, attributes = "") => ` ${attributeValue(attributes, "alt") ?? ""} `)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (entity, code: string) => {
+      const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+      if (named[code.toLowerCase()]) return named[code.toLowerCase()];
+      const point = code.toLowerCase().startsWith("#x") ? parseInt(code.slice(2), 16) : Number(code.slice(1));
+      return Number.isInteger(point) && point > 0 && point <= 0x10ffff && (point < 0xd800 || point > 0xdfff) ? String.fromCodePoint(point) : entity;
+    })
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
 const BLEND_MODES = new Set(["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"]);
 const optional = (value: Record<string, unknown>, key: string, check: (candidate: unknown) => boolean) => value[key] === undefined || check(value[key]);
 const boolean = (value: unknown): value is boolean => typeof value === "boolean";
@@ -2352,6 +2434,22 @@ export function parseCanvas(value: unknown): CanvasScene | null {
         stroke: element.stroke,
         strokeWidth: element.strokeWidth,
         radius: element.radius,
+      });
+    } else if (element.type === "html") {
+      if (
+        !string(element.html, MAX_HTML_CHARS) ||
+        !numberIn(element.designWidth, 1, MAX_HTML_DESIGN_WIDTH) ||
+        !optional(element, "css", candidate => string(candidate, MAX_HTML_CSS_CHARS)) ||
+        !optional(element, "tokens", candidate => object(candidate) && Object.keys(candidate).length <= MAX_HTML_TOKENS && Object.entries(candidate).every(([name, value]) => isSafeHtmlToken(name, value)))
+      )
+        return null;
+      scene.elements.push({
+        ...base,
+        type: "html",
+        html: element.html,
+        designWidth: element.designWidth,
+        ...(element.css !== undefined ? { css: element.css as string } : {}),
+        ...(object(element.tokens) ? { tokens: { ...element.tokens as Record<string, string> } } : {}),
       });
     } else return null;
     ids.add(element.id);

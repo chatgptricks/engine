@@ -25,7 +25,7 @@ function fixture(t,stubs={}) {
   const directory=fs.mkdtempSync(path.join(os.tmpdir(),"engine-assistant-agent-test-"));
   t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
   const environment={cwd:()=>directory,env:{NODE_ENV:"test",ANTHROPIC_API_KEY:"test-key"}};
-  const calls={started:[],approved:[],saved:[]};
+  const calls={started:[],approved:[],saved:[],tokens:[]};
   const overrides={
     "@/lib/supabase/admin":{getAdminSupabase:()=>null},
     "@/lib/engine/agents/orchestrator":{
@@ -36,7 +36,10 @@ function fixture(t,stubs={}) {
     },
     "@/lib/engine/agents/research":{photoSize:async()=>({width:1200,height:800})},
     "@/lib/engine/apify":stubs.apify??{searchXImages:async()=>[]},
-    "@/lib/engine/brand-actions":{checkAgainstGuide:async()=>({brand:{name:"ChatGPTricks"},summary:"Fine",issues:[]})},
+    "@/lib/engine/brand-actions":{
+      checkAgainstGuide:async()=>({brand:{name:"ChatGPTricks"},summary:"Fine",issues:[]}),
+      htmlTokensForDeck:async(ownerKey,templateId)=>{calls.tokens.push({ownerKey,templateId});return {"--color-accent":"#00D98A","--title-size":"56px"};},
+    },
     "@/lib/engine/headline-model":{isHeadlineModelConfigured:()=>false,requestHeadlines:async()=>{throw new Error("unused");}},
     "@/lib/engine/image-curator":stubs.curator??{curateImages:async images=>images},
     "@/lib/engine/page-profiles":{listPageProfiles:async()=>[{id:"chatgptricks",name:"ChatGPTricks",handle:"chatgptricks",language:"en"}]},
@@ -252,6 +255,28 @@ test("with no editor to take them, edits go into the live room for everyone",asy
   assert.equal(title.text,"AI jobs are FREE");
   assert.match(title.richText,/AI jobs are <span style="color: #00d98a">FREE<\/span>/);
   assert.equal(saved.parts.find(part=>part.type==="card").card.applied,"server");
+});
+
+test("an HTML layer the chat adds is cleaned and gets the brand's variables from Engine",async t=>{
+  const room={};const f=fixture(t,{persistence:new Proxy({}, {get:(_,name)=>(...args)=>room.persistence[name](...args)})});
+  Object.assign(room,liveRoom(f));
+  const pageId=room.document.pages[0].id;
+  const operations=[{op:"add_html",pageId,id:"chart",html:"<div class='chart' onclick='steal()'>Jobs</div><script>steal()</script>",css:".chart { color: var(--color-accent) }",tokens:{"--color-accent":"#FF0000"}}];
+  const {client}=scripted([
+    {content:[use("t1","edit_post",{changes:["Chart added"],operations})],stop:"tool_use"},
+    {content:[use("t2","edit_post",{changes:["Title"],operations:[{op:"update_element",pageId,elementId:room.title.id,properties:{text:"AI and jobs"}}]})],stop:"tool_use"},
+    {content:[text("Added the chart.")]},
+  ]);
+  const sent=[];
+  await ask(f,{scope:{kind:"deck",deckId:"deck-1"},client,applyInEditor:async ops=>{sent.push(ops);return sent.length===1?{gone:true}:{applied:true};}});
+  assert.deepEqual(f.calls.tokens,[{ownerKey:"owner",templateId:room.document.templateId}],"only edits with HTML layers look up the brand");
+  assert.equal(sent[0][0].tokens["--color-accent"],"#00D98A","the editor gets the brand's variables, not the ones Claude sent");
+  const chart=room.current().pages[0].canvas.elements.find(element=>element.id==="chart");
+  assert.equal(chart.type,"html");
+  assert.equal(chart.html,'<div class="chart">Jobs</div>');
+  assert.equal(chart.css,".chart { color: var(--color-accent) }");
+  assert.deepEqual(chart.tokens,{"--color-accent":"#00D98A","--title-size":"56px"});
+  assert.equal(chart.designWidth,1080);
 });
 
 test("past 12 tool calls nothing more runs, Claude wraps up, and the next message continues cleanly",async t=>{

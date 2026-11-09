@@ -11,7 +11,7 @@ function load(relative) {
   const file = path.resolve(relative);
   if (cache.has(file)) return cache.get(file).exports;
   const unit = {exports: {}}; cache.set(file, unit);
-  const source = ts.transpileModule(fs.readFileSync(file, "utf8"), {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText;
+  const source = ts.transpileModule(fs.readFileSync(file, "utf8"), {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true}}).outputText;
   vm.runInThisContext(`(function(require,module,exports){${source}\n})`, {filename: file})(name => name.startsWith(".") ? load(path.resolve(path.dirname(file), `${name}.ts`)) : require(name), unit, unit.exports);
   return unit.exports;
 }

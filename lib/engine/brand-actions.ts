@@ -1,6 +1,7 @@
 import {randomUUID} from "node:crypto";
 import {BrandGuideError, GUIDE_CHECKS, enabledChecks, runGuideChecks, type BrandGuide, type GuideIssue} from "@/lib/template-editor/brand-guide";
 import {designTemplateFromGuide, guideTemplateId, templateBrand, type GuideLanguage} from "@/lib/template-editor/guide-template";
+import {htmlTokensForGuide} from "@/lib/template-editor/html-layer";
 import {parseLibrary, type DesignDocument, type DesignTemplate} from "@/lib/template-editor/model";
 import {checkLibrarySaveBudget} from "@/lib/template-editor/library-budget";
 import {getEditorLibrary, LibraryConflictError, saveEditorLibrary} from "@/lib/template-editor/persistence";
@@ -36,6 +37,24 @@ async function guideFor(ownerKey: string, brandId: string | undefined, template:
   const guide = await getBrandGuide(ownerKey, id);
   if (!guide) throw new BrandGuideError(`There's no brand guide called ${id}.`, 404);
   return guide;
+}
+
+/** The CSS variables a deck's HTML layers get: its template's brand guide, or none when no guide applies. */
+export async function htmlTokensForTemplate(ownerKey: string, template: DesignTemplate | undefined): Promise<Record<string, string> | undefined> {
+  if (!template) return undefined;
+  try {
+    return htmlTokensForGuide(await guideFor(ownerKey, undefined, template));
+  } catch (error) {
+    if (error instanceof BrandGuideError) return undefined;
+    throw error;
+  }
+}
+
+/** htmlTokensForTemplate for a deck made from the template with this id. */
+export async function htmlTokensForDeck(ownerKey: string, templateId: string | undefined): Promise<Record<string, string> | undefined> {
+  if (!templateId) return undefined;
+  const {library} = await getEditorLibrary(ownerKey);
+  return htmlTokensForTemplate(ownerKey, libraryTemplates(library).find(template => template.id === templateId));
 }
 
 export async function checkAgainstGuide(ownerKey: string, input: {brandId?: string; deckId?: string; templateId?: string}): Promise<GuideCheckResult> {
