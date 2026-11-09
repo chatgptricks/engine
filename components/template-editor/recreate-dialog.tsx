@@ -29,7 +29,7 @@ const KIND_LABELS: Record<OutlineKind, string> = {cover: "Cover", original: "Fro
 const HOOK_SOURCES: Record<HookOption["by"], string> = {"headline-model": "From the headline model", copywriter: "By the copywriter", agent: "From an agent"};
 const MODE_LABELS: Record<RecreateMode, string> = {checkpoint: "You review the plan", autopilot: "Autopilot", exact: "Exact copy"};
 const KINDS: {value: RecreateKind; title: string; detail: string}[] = [
-  {value: "exact", title: "Exact copy", detail: "The same slides and words, in the page's template"},
+  {value: "exact", title: "Exact copy", detail: "The same slides and words, every part rebuilt in the page's style"},
   {value: "full", title: "Full recreation", detail: "Researched, planned and rewritten in the page's voice"},
 ];
 const STAGE_STATES: Record<StageStatus, string> = {pending: "waiting", running: "working", done: "done", skipped: "skipped", error: "failed"};
@@ -266,7 +266,7 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
     else if (draft.mode === "link" && !url) next.url = "That doesn't look like an Instagram post link. It should look like instagram.com/p/…";
     if (draft.mode === "screenshots" && !draft.uploads.length) next.uploads = "Add at least one slide screenshot.";
     if (!profile) next.profileId = profiles?.length === 0 ? "No page profiles are set up yet." : "Choose the page this post is for.";
-    // An exact copy adds nothing, so posts from X are left out.
+    // An exact copy adds nothing: it shows only the original's own posts from X.
     const posts = parseXPostLinks(exact ? "" : draft.xPosts);
     if (posts.invalid.length) next.xPosts = `${posts.invalid.length === 1 ? `"${posts.invalid[0].slice(0, 40)}" isn't` : `${posts.invalid.length} of these aren't`} a link to a post on X.`;
     else if (posts.links.length > MAX_ADDED_POSTS) next.xPosts = `Add at most ${MAX_ADDED_POSTS} posts.`;
@@ -300,7 +300,7 @@ function RecreateForm({draft, setDraft, blockedReason, onStart, onClose}: {
   return <form noValidate onSubmit={submit} onPaste={onPaste}>
     <fieldset disabled={busy} className="te-pro-panel te-tool-dialog te-recreate">
       <p className="te-recreate-intro">{exact
-        ? <>Rebuild an Instagram post as it is in one of your pages&apos; templates: the same slides in the same order, with the same words. Photos and charts are cut from the original, and nothing is added.</>
+        ? <>Rebuild an Instagram post as it is in one of your pages&apos; templates: the same slides in the same order, with the same words, every part in the page&apos;s style. Graphics such as memes, logo grids, articles and chats are rebuilt from their parts, with the logos found online; charts are redrawn from their real numbers; posts from X become your post cards. Only photos are cut from the original. Nothing is added.</>
         : <>Turn an Instagram post into a new editable post for one of your pages. A team of agents researches it, plans the slides and writes them in the page&apos;s voice.</>}</p>
       <div className="te-recreate-kind" role="radiogroup" aria-label="What to make">
         {KINDS.map(option => <label key={option.value} className={draft.kind === option.value ? "is-selected" : ""}>
@@ -463,7 +463,7 @@ function RecreateProgress({tracked, job, reconnecting, onAct, onClose}: {tracked
       <RecreateLanes job={job} mode={runMode(tracked, job)}/>
       {reconnecting && <p className="te-dialog-status">Connection lost. Retrying…</p>}
       {stopError && <p className="te-dialog-error te-recreate-alert" role="alert">{stopError}</p>}
-      <p className="te-recreate-time"><span>{elapsed}</span> since it started · usually {runMode(tracked, job) === "exact" ? "1–3" : "5–10"} minutes · it keeps going if you close this</p>
+      <p className="te-recreate-time"><span>{elapsed}</span> since it started · usually {runMode(tracked, job) === "exact" ? "1–4" : "5–10"} minutes · it keeps going if you close this</p>
     </div>
     <div className="te-dialog-footer">
       <button type="button" className="te-text-button te-recreate-another" disabled={stopping || !job} onClick={stop}>{stopping ? "Stopping…" : "Stop"}</button>

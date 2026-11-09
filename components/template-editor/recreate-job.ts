@@ -103,9 +103,9 @@ export const RECREATE_LANES: {title: string; stages: StageName[]}[] = [
   {title: "Make", stages: ["copy", "charts", "images"]},
   {title: "Finish", stages: ["deck", "review"]},
 ];
-/** An exact copy's stages: the original read word for word, then the deck and its check. */
+/** An exact copy's stages: the original read word for word and its charts' real numbers found, then the deck and its check. */
 export const EXACT_LANES: {title: string; stages: StageName[]}[] = [
-  {title: "Copy", stages: ["transcript"]},
+  {title: "Copy", stages: ["transcript", "data"]},
   {title: "Finish", stages: ["deck", "review"]},
 ];
 export const lanesFor = (mode?: RecreateMode) => mode === "exact" ? EXACT_LANES : RECREATE_LANES;
