@@ -543,7 +543,11 @@ export function DesignEditor({
     (direction: "undo" | "redo") => {
       if (blocked.current || historyBridge.current?.flush()===false) return false;
       if (sharedHistory) {
+        // As in local history below: only an existing step is traveled, and
+        // it clears the notice, which may still offer to undo the edit.
+        if (!(direction === "undo" ? sharedHistory.canUndo : sharedHistory.canRedo)) return false;
         sharedHistory[direction]();
+        setNotice("");
         return true;
       }
       const h = history.current;
@@ -1325,7 +1329,7 @@ export function DesignEditor({
       {notice && (
         <div className="te-notice te-editor-notice" role="status">
           {notice}
-          {notice===undoNotice&&historyState.undo&&<button type="button" className="te-text-button te-notice-undo" disabled={disabled} onClick={()=>{if(travel("undo")){setNotice("");setUndoNotice("");}}}>Undo</button>}
+          {notice===undoNotice&&(sharedHistory?.canUndo??historyState.undo)&&<button type="button" className="te-text-button te-notice-undo" disabled={disabled} onClick={()=>{if(travel("undo")){setNotice("");setUndoNotice("");}}}>Undo</button>}
           <button
             onClick={() => setNotice("")}
             aria-label="Dismiss notification"
