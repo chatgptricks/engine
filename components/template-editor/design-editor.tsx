@@ -73,6 +73,7 @@ import { importSVG, combineShapes } from "@/lib/template-editor/vector";
 import {applyDesignPatch} from "@/lib/template-editor/document-patch";
 import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type HistoryContext} from "@/lib/template-editor/history";
 import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/preflight";
+import { layoutTemplateOf, MAX_LAYOUT_NAME, MAX_LAYOUT_USE_WHEN, withSavedLayout, type SavedLayoutResult } from "@/lib/template-editor/saved-layouts";
 import { ColorField, Modal } from "./controls";
 import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls } from "./canvas";
 import type { TextFormattingPatch, TextFormatter } from "@/lib/template-editor/rich-text-editing";
@@ -249,6 +250,8 @@ export function DesignEditor({
   /** The notice that offers Undo, while it is the one showing. */
   const [undoNotice, setUndoNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
+  /** "Save as layout" from the page menu: the slide, the name and "use when" line typed so far, and why the last try failed. */
+  const [layoutDraft, setLayoutDraft] = useState<{ pageId: string; name: string; useWhen: string; error?: string } | null>(null);
   const [exportDialog,setExportDialog]=useState(false);
   const [textureTarget,setTextureTarget]=useState<{element:TextElement;context:string;words?:number[];photos:ShapeImageFill[];background:string}|null>(null);
   const [preflightIssues,setPreflightIssues]=useState<PreflightIssue[]>([]);
@@ -875,6 +878,23 @@ export function DesignEditor({
       ],
     });
   }
+  // Save as layout puts a slide in the post's template, so it needs the workspace (the studio's editor), and a template draft's pages are its template's already.
+  const canSaveLayouts = Boolean(workspaceLibrary && onWorkspaceChange && design.purpose !== "template");
+  const layoutTemplate = canSaveLayouts && workspaceLibrary ? layoutTemplateOf(workspaceLibrary, design) : null;
+  function saveLayoutDraft() {
+    if (!layoutDraft || !workspaceLibrary || blocked.current) return;
+    const request = {pageId: layoutDraft.pageId, name: layoutDraft.name, useWhen: layoutDraft.useWhen};
+    let saved: SavedLayoutResult;
+    // Tried on the workspace as shown first, so a refusal stays in the dialog with its reason.
+    try { saved = withSavedLayout(workspaceLibrary, current.current, request).saved; }
+    catch (reason) { setLayoutDraft({...layoutDraft, error: reason instanceof Error ? reason.message : "The layout couldn't be saved."}); return; }
+    if (!updateWorkspace(library => withSavedLayout(library, current.current, request).library)) {
+      setLayoutDraft({...layoutDraft, error: "The layout couldn't be saved, so the template is unchanged. Check the workspace's save status, then try again."});
+      return;
+    }
+    setLayoutDraft(null);
+    setNotice(`${saved.replaced ? "Replaced the layout" : "Saved the layout"} “${saved.name}” in ${saved.templateName}, as its page ${saved.pageIndex + 1}. Recreate's designer can start slides from it.`);
+  }
   function pageMenu(event: React.MouseEvent, target: DesignPage) {
     const targetIndex = design.pages.findIndex((p) => p.id === target.id);
     openMenu(event, {label: `Page ${targetIndex + 1}`, items: [
@@ -884,6 +904,7 @@ export function DesignEditor({
       {id: "left", label: "Move page left", separator: true, disabled: disabled || continuous || targetIndex === 0, onSelect: () => movePage(targetIndex, targetIndex - 1)},
       {id: "right", label: "Move page right", disabled: disabled || continuous || targetIndex === design.pages.length - 1, onSelect: () => movePage(targetIndex, targetIndex + 1)},
       {id: "export-page", label: "Download page as PNG", separator: true, disabled: Boolean(job) || uploading, onSelect: () => {void startExport({},[target.id]);}},
+      ...(canSaveLayouts ? [{id: "save-layout", label: "Save as layout…", disabled: disabled || continuous || !layoutTemplate, onSelect: () => setLayoutDraft({pageId: target.id, name: "", useWhen: ""})}] : []),
       {id: "delete-page", label: "Delete page", danger: true, separator: true, disabled: disabled || (continuous ? design.pages.length <= 2 || targetIndex !== design.pages.length - 1 : design.pages.length <= 1), onSelect: () => setRemovePageId(target.id)},
     ]});
   }
@@ -2064,6 +2085,26 @@ export function DesignEditor({
                 <CheckIcon />
                 {design.editingTemplateId ? "Update template" : "Save template"}
               </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {layoutDraft && (
+        <Modal title={`Save page ${Math.max(1, design.pages.findIndex(item => item.id === layoutDraft.pageId) + 1)} as a layout`} onClose={() => setLayoutDraft(null)}>
+          <form onSubmit={(event) => {event.preventDefault(); saveLayoutDraft();}}>
+            <p>Adds this page to {layoutTemplate?.name ?? "the post's template"} as a new layout, so Recreate&apos;s designer can start slides from it. Its text and photos become slots to fill; its HTML layers keep their design. A layout saved under the same name is replaced.</p>
+            <label className="te-field">
+              Layout name
+              <input autoFocus required maxLength={MAX_LAYOUT_NAME} value={layoutDraft.name} placeholder="Two charts side by side" onChange={(event) => setLayoutDraft({...layoutDraft, name: event.target.value, error: undefined})} />
+            </label>
+            <label className="te-field">
+              Use when
+              <textarea required rows={3} maxLength={MAX_LAYOUT_USE_WHEN} value={layoutDraft.useWhen} placeholder="Two numbers compared over the same years" onChange={(event) => setLayoutDraft({...layoutDraft, useWhen: event.target.value, error: undefined})} />
+            </label>
+            {layoutDraft.error && <p className="te-dialog-error" role="alert">{layoutDraft.error}</p>}
+            <div className="te-modal-actions">
+              <button type="button" className="te-button" onClick={() => setLayoutDraft(null)}>Cancel</button>
+              <button className="te-button te-primary" disabled={disabled}><CheckIcon />Save layout</button>
             </div>
           </form>
         </Modal>
