@@ -38,6 +38,7 @@ import { resolveChartData, type ChartData } from "../recreate-data";
 import { renderSlides } from "../slide-render";
 import type { StoryImage } from "../types";
 import { fetchXPost, reactionSlots, type XReaction } from "../x-reactions";
+import { isPlatformColor, PLATFORM_CARD_CLASS, PLATFORM_COLORS, PLATFORMS, platformCardClass, platformOfLayer, type Platform } from "../../template-editor/platform-cards";
 import { ToolError, type ClientTool, type SourceImage } from "./claude";
 import { chartSources, chartSpecFrom, dataTools, oneScale } from "./charts";
 import { cleanBox, cropOriginal, cutLogo, snapBox } from "./cut";
@@ -233,46 +234,32 @@ async function stored(session: DesignSession, url: string, asset: Asset): Promis
 
 // ── Brand: HTML layers take colors from the brand's variables ───────────────
 const NAMED_COLORS = new Set("aliceblue antiquewhite aqua aquamarine azure beige bisque black blanchedalmond blue blueviolet brown burlywood cadetblue chartreuse chocolate coral cornflowerblue cornsilk crimson cyan darkblue darkcyan darkgoldenrod darkgray darkgreen darkgrey darkkhaki darkmagenta darkolivegreen darkorange darkorchid darkred darksalmon darkseagreen darkslateblue darkslategray darkslategrey darkturquoise darkviolet deeppink deepskyblue dimgray dimgrey dodgerblue firebrick floralwhite forestgreen fuchsia gainsboro ghostwhite gold goldenrod gray green greenyellow grey honeydew hotpink indianred indigo ivory khaki lavender lavenderblush lawngreen lemonchiffon lightblue lightcoral lightcyan lightgoldenrodyellow lightgray lightgreen lightgrey lightpink lightsalmon lightseagreen lightskyblue lightslategray lightslategrey lightsteelblue lightyellow lime limegreen linen magenta maroon mediumaquamarine mediumblue mediumorchid mediumpurple mediumseagreen mediumslateblue mediumspringgreen mediumturquoise mediumvioletred midnightblue mintcream mistyrose moccasin navajowhite navy oldlace olive olivedrab orange orangered orchid palegoldenrod palegreen paleturquoise palevioletred papayawhip peachpuff peru pink plum powderblue purple rebeccapurple red rosybrown royalblue saddlebrown salmon sandybrown seagreen seashell sienna silver skyblue slateblue slategray slategrey snow springgreen steelblue tan teal thistle tomato turquoise violet wheat white whitesmoke yellow yellowgreen".split(" "));
-const COLOR_FUNCTION = /(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\(/i;
-const HEX_COLOR = /#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3,4})(?![\w-])/i;
+const COLOR_LITERAL = /#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3,4})(?![\w-])|(?<![\w-])(?:rgba?|hsla?|hwb|lab|lch|oklab|oklch|color)\s*\((?:[^()]|\([^()]*\))*\)?/gi;
 const COLOR_ATTRIBUTE = /\s(fill|stroke|stop-color|flood-color|lighting-color|color)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/gi;
 const STYLE_ATTRIBUTE = /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const STYLE_BLOCK = /<style\b[^>]*>([\s\S]*?)(?:<\/style\s*>|$)/gi;
 const VARIABLE = /var\(\s*(--[\w-]+)/g;
+const CARD_MARK = new RegExp(`\\sclass\\s*=\\s*["']?[^"'>]*(?<![\\w-])${PLATFORM_CARD_CLASS}(?![\\w-])`, "i");
 
-/** The color a value writes out itself (#hex, rgb(), a named color) instead of a brand variable, or null. */
-function colorLiteral(value: string): string | null {
+/** The colors a value writes out itself (#hex, rgb(), a named color) instead of a brand variable, in order. */
+function colorLiterals(value: string): string[] {
   const bare = value.replace(/var\(\s*--[\w-]+\s*(?:,(?:[^()]|\([^()]*\))*)?\)/g, " ").replace(/url\([^)]*\)/gi, " ").replace(/(["'])(?:(?!\1).)*\1/g, " ");
-  const literal = bare.match(HEX_COLOR)?.[0] ?? bare.match(COLOR_FUNCTION)?.[0];
-  if (literal) return literal.replace(/\s*\($/, "()");
-  return bare.toLowerCase().split(/[^a-z]+/).find(word => NAMED_COLORS.has(word)) ?? null;
+  const written = [...bare.matchAll(COLOR_LITERAL)].map(match => match[0].replace(/\s+/g, " "));
+  return [...written, ...bare.toLowerCase().replace(COLOR_LITERAL, " ").split(/[^a-z]+/).filter(word => NAMED_COLORS.has(word))];
 }
 
-/**
- * Platforms whose posts and comments are rebuilt as our cards in HTML layers.
- * A card marks itself with a class, platform-card-reddit (Engine's HTML
- * sanitizer keeps classes but drops data- attributes): like our X card, it
- * keeps its platform's own colors, outside the brand on purpose. The review's
- * palette check skips the same layers.
- */
-export const PLATFORM_CARDS = ["reddit", "x", "threads", "instagram", "tiktok", "youtube", "facebook", "linkedin", "bluesky"] as const;
-const PLATFORM_MARK = /\sclass\s*=\s*["'][^"']*?(?<![\w-])platform-card-([\w-]+)/i;
-/** The platform whose card an HTML layer holds, or null. */
-export function platformCardOf(html: string): (typeof PLATFORM_CARDS)[number] | null {
-  const name = html.match(PLATFORM_MARK)?.[1]?.toLowerCase();
-  return PLATFORM_CARDS.find(platform => platform === name) ?? null;
-}
+const PLATFORM_NAME: Record<Platform, string> = { x: "X", reddit: "Reddit" };
 
 /**
  * What in an HTML layer leaves the brand: a color written out instead of the
  * brand's variables (var(--color-accent)), or a variable the brand doesn't
- * have. The layer may define its own variables from the brand's. A platform's
- * card (platformCardOf) may write its platform's colors.
+ * have. The layer may define its own variables from the brand's. A platform
+ * card (platform-cards.ts: its outermost element carries class="platform-card
+ * platform-reddit") may also write out its platform's own colors, and only those.
  */
 export function offBrand(html: string, css: string | undefined, tokens: Record<string, string>): string[] {
   const declarations: { property: string; value: string }[] = [], problems = new Set<string>();
-  const platform = platformCardOf(html), mark = html.match(PLATFORM_MARK)?.[1];
-  if (mark && !platform) problems.add(`platform-card-${mark} isn't a platform with its own card: use one of ${PLATFORM_CARDS.map(name => `platform-card-${name}`).join(", ")}.`);
+  const platform = platformOfLayer(html);
   const sheets = [css ?? "", ...[...html.matchAll(STYLE_BLOCK)].map(match => match[1])];
   for (const sheet of sheets) {
     if (!sheet.trim()) continue;
@@ -291,14 +278,20 @@ export function offBrand(html: string, css: string | undefined, tokens: Record<s
   }
   for (const match of markup.matchAll(COLOR_ATTRIBUTE)) declarations.push({ property: match[1].toLowerCase(), value: match[2] ?? match[3] ?? match[4] ?? "" });
   const own = new Set(declarations.filter(item => item.property.startsWith("--")).map(item => item.property));
+  let written = false;
   for (const { property, value } of declarations) {
-    const literal = platform ? null : colorLiteral(value);
-    if (literal) problems.add(`${property}: ${value.trim().slice(0, 60)} writes the color ${literal} itself. Use the brand's variables (var(--color-accent), var(--color-text)…); for a tint, color-mix(in srgb, var(--color-text) 20%, transparent) or opacity.`);
+    const literal = colorLiterals(value).find(color => !platform || !isPlatformColor(platform, color));
+    if (literal && platform) problems.add(`${property}: ${value.trim().slice(0, 60)} writes ${literal}, which isn't one of ${PLATFORM_NAME[platform]}'s own colors (${PLATFORM_COLORS[platform].join(", ")}). Write one of those as it is, or use the brand's variables.`);
+    else if (literal) problems.add(`${property}: ${value.trim().slice(0, 60)} writes the color ${literal} itself. Use the brand's variables (var(--color-accent), var(--color-text)…); for a tint, color-mix(in srgb, var(--color-text) 20%, transparent) or opacity.`);
+    written ||= Boolean(literal);
     for (const [, name] of value.matchAll(VARIABLE)) {
       if (!(name in tokens) && !own.has(name)) problems.add(`var(${name}) isn't one of the brand's variables.`);
     }
   }
-  return [...problems].slice(0, 6);
+  const list = [...problems].slice(0, 6);
+  // A card marked in the wrong place, or for a platform without colors of its own: say how the mark goes.
+  if (written && !platform && CARD_MARK.test(markup)) list.push(`To keep a platform's own colors, the layer's outermost element carries the mark: class="${platformCardClass("reddit")}" or "${platformCardClass("x")}". Only ${PLATFORMS.map(name => PLATFORM_NAME[name]).join(" and ")} have colors of their own; other platforms' cards use the brand's.`);
+  return list;
 }
 
 /** Every HTML layer in the deck that leaves the brand, by slide; with `was`, only the layers added or changed since. */

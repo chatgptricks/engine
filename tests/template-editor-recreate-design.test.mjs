@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import vm from "node:vm";
 import {createRequire} from "node:module";
+import {randomUUID} from "node:crypto";
 import {fileURLToPath} from "node:url";
 import ts from "typescript";
 import sharp from "sharp";
@@ -43,7 +44,7 @@ function load(relative) {
   return unit.exports;
 }
 
-const {design}=load("lib/engine/agents/stages/design.ts");
+const stage=load("lib/engine/agents/stages/design.ts"),{design}=stage;
 const tools=load("lib/engine/agents/design-tools.ts");
 const claude=load("lib/engine/agents/claude.ts");
 const deckLib=load("lib/engine/agents/deck.ts");
@@ -56,6 +57,8 @@ const htmlLayer=load("lib/template-editor/html-layer.ts");
 const profiles=load("lib/engine/page-profiles.ts");
 const seed=load("lib/template-editor/brand-guide-seed.ts");
 const persistence=load("lib/template-editor/persistence.ts");
+const cards=load("lib/template-editor/platform-cards.ts");
+const pagePosts=load("lib/engine/page-posts.ts");
 const template=model.BUILT_IN_TEMPLATES.find(item=>item.id==="chatgptricks-3x4");
 const english=profiles.builtInPageProfiles().find(item=>item.id==="chatgptricks");
 const guide=seed.builtInBrandGuide("chatgptricks");
@@ -171,10 +174,29 @@ test("HTML layers keep to the brand's variables: written colors and unknown vari
   assert.deepEqual(tools.offBrand('<div class="x"><svg><defs><linearGradient id="g"/></defs><rect fill="url(#g)"/></svg></div>',":root{--line:var(--color-accent)}.x{color:var(--line)}",tokens),[],"a layer may name its own variables from the brand's, and point to its own gradients");
   assert.equal(tools.offBrand('<div style="color:#FF0000">x</div>',"",tokens).length,1);
   assert.match(tools.offBrand("<p>x</p>","p{color:white}",tokens)[0],/writes the color white/);
-  assert.match(tools.offBrand('<svg><rect fill="rgb(0, 0, 0)"/></svg>',"",tokens)[0],/rgb\(\)/);
+  assert.match(tools.offBrand('<svg><rect fill="rgb(0, 0, 0)"/></svg>',"",tokens)[0],/writes the color rgb\(0, 0, 0\)/);
   assert.match(tools.offBrand("<p>x</p>","p{color:var(--color-made-up)}",tokens)[0],/isn't one of the brand's variables/);
   assert.match(tools.offBrand("<style>p{background:#0B1014}</style><p>x</p>","",tokens)[0],/#0B1014/,"style blocks are read too");
   assert.deepEqual(tools.offBrand("<p>x</p>","p{font-family:var(--title-font);white-space:nowrap;text-transform:var(--title-case)}",tokens),[],"words that only look like colors don't count");
+});
+
+test("a platform card (its outermost element marked platform-card platform-reddit) may write out that platform's colors, and only those",()=>{
+  const reddit=`class="${cards.platformCardClass("reddit")}"`;
+  assert.deepEqual(tools.offBrand(`<div ${reddit}><svg><circle fill="#FF4500"/><path stroke="#fff"/></svg><b style="color:#F2F4F5">u/a</b></div>`,"div{background:#0E1113;border:3px solid #2F3336;box-shadow:0 0 0 1px rgb(47, 51, 54)}p{color:var(--color-text)}",tokens),[],"Reddit's colors, as hex or rgb(), and the brand's variables");
+  assert.match(tools.offBrand(`<div ${reddit}>x</div>`,"div{background:#0E1113;border:3px solid #343536}",tokens)[0],/writes #343536, which isn't one of Reddit's own colors \(#0E1113, /);
+  assert.match(tools.offBrand(`<div ${reddit}>x</div>`,"div{box-shadow:0 0 0 1px #2F3336, 0 8px 24px #123456}",tokens)[0],/#123456/,"every color in a value is read, not only the first");
+  assert.match(tools.offBrand(`<div ${reddit}>x</div>`,"div{color:white}",tokens)[0],/writes white, which isn't one of Reddit's/,"named colors aren't read as the platform's");
+  assert.match(tools.offBrand(`<div ${reddit}>x</div>`,"div{color:#000000}",tokens)[0],/isn't one of Reddit's/,"X's black isn't Reddit's");
+  assert.deepEqual(tools.offBrand(`<div class="${cards.platformCardClass("x")}">x</div>`,"div{background:#000;color:#E7E9EA;border-color:#2F3336}",tokens),[],"an X post drawn in HTML keeps X's colors");
+  // Marked in the wrong place, or for a platform without colors of its own: the brand's rule, and how the mark goes.
+  const inner=tools.offBrand(`<div class="area"><div ${reddit}>x</div></div>`,".card{background:#0E1113}",tokens);
+  assert.match(inner[0],/writes the color #0E1113 itself/);
+  assert.match(inner.at(-1),/the layer's outermost element carries the mark: class="platform-card platform-reddit"/);
+  assert.match(tools.offBrand('<div class="platform-card platform-tiktok">x</div>',"div{background:#121212}",tokens).at(-1),/Only X and Reddit have colors of their own/);
+  assert.equal(tools.offBrand('<div class="card">x</div>',"div{background:#0E1113}",tokens).length,1,"an unmarked layer is checked as before, with no word about marks");
+  // The designer's Reddit card: every color it's given is Reddit's, and the avatar passes as drawn.
+  for(const color of Object.values(stage.REDDIT_CARD).flat())assert.ok(cards.isPlatformColor("reddit",color),color);
+  for(const color of stage.REDDIT_CARD.avatars)assert.deepEqual(tools.offBrand(`<div ${reddit}>${stage.REDDIT_AVATAR.replaceAll("COLOR",color)}</div>`,"",tokens),[],color);
 });
 
 test("an exact copy rebuilds every slide in the template, with stored images and brand variables only",async()=>{
@@ -256,6 +278,8 @@ test("an exact copy rebuilds every slide in the template, with stored images and
     assert.equal(deck.caption,sourceNotes.post.caption);
     assert.ok(deck.comments.some(comment=>/Cut from the original's slide 2/.test(comment.text)),"the deck's notes say what was cut");
     assert.ok(deck.tags.includes("recreated"));
+    assert.ok(deck.tags.includes(context.file.profileId),"the page's tag");
+    assert.equal(deck.comments.filter(comment=>comment.text.includes(context.file.id)).length,1,"a comment names the post file");
 
     // A fix round opens the same deck and edits it.
     const fix={...context,round:1,instructions:"Slide 2 (must fix): the title should say AI vs Jobs: the data. Fix: change the title",previous:output};
@@ -277,6 +301,8 @@ test("an exact copy rebuilds every slide in the template, with stored images and
       assert.equal(fixed.pages[1].canvas.elements.find(item=>item.slot==="title").text,"AI vs Jobs: the data");
       assert.equal(fixed.pages[0].canvas.elements.filter(item=>item.type==="html").length,1,"the rest stays as it was");
       assert.ok(fixed.comments.some(comment=>/Fix round 1/.test(comment.text)));
+      assert.ok(fixed.tags.includes(context.file.profileId));
+      assert.equal(fixed.comments.filter(comment=>comment.text.includes(context.file.id)).length,1,"still named once");
       const {library}=await persistence.getEditorLibrary(context.ownerKey);
       assert.equal(library.designs.filter(item=>item.name.startsWith("AI vs Jobs")).length,1,"no copy is made");
     });
@@ -378,16 +404,16 @@ const redditNotes={...sourceNotes,shows:"A dinner photo under a Reddit comment, 
   {index:2,role:"post",texts:[{role:"label",text:"no_thanks_nate · 9h"},{role:"quote",text:"Said no to one more drink at a bar."}],parts:[{kind:"screenshot",box:{x:60,y:300,width:880,height:300},what:"A Reddit comment by no_thanks_nate, 9h",text:"Said no to one more drink at a bar.",post:null}]},
   {index:3,role:"post",texts:[{role:"label",text:"seat12b · 1d"},{role:"quote",text:COMMENT}],parts:[{kind:"screenshot",box:{x:60,y:300,width:880,height:300},what:"A Reddit comment by seat12b, 1d",text:COMMENT,post:null}]},
 ]};
-const redditCard=(name,words,mark=" platform-card-reddit")=>`<div class="area"><div class="card${mark}"><div class="who"><svg viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Reddit avatar"><circle cx="32" cy="32" r="32" fill="#FF4500"/></svg><b>${name}</b><span class="when">· 9h</span></div><p>${words}</p></div></div>`;
-const REDDIT_CSS=".area{height:100%;display:flex;flex-direction:column;justify-content:center}.card{background:#0E1113;border:3px solid #2F3336;border-radius:24px;padding:44px 48px}b{color:#F2F4F5}.when{color:#8BA2AD}p{color:#EEF1F3;font-size:50px;line-height:63px;text-wrap:pretty}";
+const redditCard=(name,words,mark="platform-card platform-reddit")=>`<div class="card ${mark}"><div class="who">${stage.REDDIT_AVATAR.replaceAll("COLOR","#FF4500")}<b>${name}</b><span class="when">· 9h</span></div><p>${words}</p></div>`;
+const REDDIT_CSS=":root{display:flex;flex-direction:column;justify-content:center}.card{background:#0E1113;border:3px solid #2F3336;border-radius:24px;padding:45px}.who svg{width:105px;height:105px}b{color:#F2F4F5}.when{color:#8BA2AD}p{color:#EEF1F3;font-family:var(--body-font);font-size:50px;line-height:1.25;text-wrap:pretty}";
 
 test("another platform's comments become our cards in its own colors, and the deck ends on a Follow page made for the post",async()=>{
-  assert.equal(tools.platformCardOf('<div class="card Platform-Card-Reddit">'),"reddit");
-  assert.equal(tools.platformCardOf('<div class="card my-platform-card-reddit">'),null);
-  assert.equal(tools.platformCardOf('<div data-platform-card="reddit">'),null,"a data- attribute wouldn't survive the sanitizer, so it isn't the mark");
   const context=await contextFor("exact",{source:done(redditNotes),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null})});
   await stand(async({call,invoke,refused,json})=>{
-    assert.match(call.system,/the frame of our X card: 936 px wide at x 72, 24 px corners, a 3 px #2F3336 border/,"cards take the template's X card frame");
+    assert.match(call.system,/the frame of our X card: 936 px wide at x 72, 24 px corners and a 3 px border/,"cards take the template's X card frame");
+    assert.match(call.system,/Inside the card, as on our X card, 44 px of padding; the avatar, 105 px and round; beside it the name in bold at 37 px/,"and its header's sizes");
+    assert.match(call.system,/the outermost element of the layer's markup carries class="platform-card platform-reddit"/,"the mark the review reads too");
+    assert.match(call.system,/the card #0E1113, its border #2F3336, the name #F2F4F5, the time #8BA2AD, the words #EEF1F3/);
     assert.match(call.system,/x 72, y 90, 936 px wide and 1262 px tall/,"a lone card is centred in the guide's content area");
     const photo=await json("cut_from_source",{slide:1,box:PICTURE,kind:"photo",what:"Friends at a dinner table"});
     const built=await json("create_deck",{name:"Small decisions",caption:sourceNotes.post.caption,slides:[
@@ -397,17 +423,21 @@ test("another platform's comments become our cards in its own colors, and the de
     const [cover,follow]=built.deck.slides.map(slide=>slide.pageId);
     // The cover's comment is rebuilt where the original's was, over the photo.
     await json("edit_deck",{operations:[{op:"add_html",pageId:cover,name:"Reddit comment · seat12b",x:72,y:90,width:936,height:300,html:redditCard("seat12b",COMMENT),css:REDDIT_CSS}]});
-    // A comment alone is a blank slide with one card. Unmarked, or marked for a platform Engine doesn't know, its colors are refused.
+    // A comment alone is a blank slide with one card. Unmarked, marked inside a wrapper, or marked for a platform without colors of its own, its colors are refused.
     const story=mark=>({op:"add_slide",index:1,slide:{label:"Story",layout:"blank",background:"#0B1014",elements:[
       {type:"html",id:"story-card",name:"Reddit comment · no_thanks_nate",x:72,y:90,width:936,height:1262,html:redditCard("no_thanks_nate","Said no to one more drink at a bar.",mark),css:REDDIT_CSS},
     ]}});
     await refused("edit_deck",{operations:[story("")]},/writes the color #0E1113/);
-    await refused("edit_deck",{operations:[story(" platform-card-myspace")]},/isn't a platform with its own card/);
-    const added=await json("edit_deck",{operations:[story(" platform-card-reddit")]});
+    await refused("edit_deck",{operations:[story("platform-card platform-myspace")]},/Only X and Reddit have colors of their own/);
+    const wrapped=story();
+    wrapped.slide.elements[0].html=`<div class="area">${wrapped.slide.elements[0].html}</div>`;
+    await refused("edit_deck",{operations:[wrapped]},/outermost element carries the mark/);
+    const added=await json("edit_deck",{operations:[story()]});
     assert.deepEqual(added.deck.slides.map(slide=>slide.slide),[2],"the card's slide goes in second");
     const storyPage=added.deck.slides[0].pageId;
-    // A change to its CSS alone is checked on the card as it ends up, mark and all.
-    const changed=await json("edit_deck",{operations:[{op:"update_element",pageId:storyPage,elementId:"story-card",properties:{css:REDDIT_CSS.replace("#2F3336","#343536")}}]});
+    // A change to its CSS alone is checked on the card as it ends up, mark and all: Reddit's colors or the brand's.
+    await refused("edit_deck",{operations:[{op:"update_element",pageId:storyPage,elementId:"story-card",properties:{css:REDDIT_CSS.replace("#2F3336","#343536")}}]},/#343536, which isn't one of Reddit's own colors/);
+    const changed=await json("edit_deck",{operations:[{op:"update_element",pageId:storyPage,elementId:"story-card",properties:{css:REDDIT_CSS.replace(".when{color:#8BA2AD}",".when{color:var(--color-source)}")}}]});
     assert.deepEqual(changed.deck.slides.map(slide=>slide.slide),[2]);
     // The Follow page shows the post's photo again, closer.
     const followPhoto=layer(built.deck,2,"photo");
@@ -422,12 +452,43 @@ test("another platform's comments become our cards in its own colors, and the de
     assert.deepEqual(output.pages.map(page=>page.slide),[1,2,0]);
     const deck=await deckLib.loadDeck(context.ownerKey,output.deckId);
     const card=deck.pages[1].canvas.elements.find(item=>item.type==="html");
-    assert.equal(tools.platformCardOf(card.html),"reddit");
-    assert.match(card.css,/#343536/);
+    assert.equal(cards.platformOfLayer(card.html),"reddit","the mark survives the save");
+    assert.match(card.css,/\.when\{color:var\(--color-source\)\}/);
     assert.deepEqual(tools.deckOffBrand(deck,tokens),[],"a platform's card keeps its own colors; everything else keeps the brand's");
     assert.equal(deck.pages[2].canvas.elements.find(item=>item.slot==="cta").text,"FOR MORE LIFE STORIES");
     assert.equal(deck.pages[2].canvas.elements.find(item=>item.slot==="photo").cropScale,1.3);
     assert.deepEqual(leftovers(deck),[]);
+  });
+});
+
+test("a deck keeps its page's tag and names its post file, even when a fix round builds it afresh, so the page's library finds it",async()=>{
+  const context=await contextFor("exact",{source:done(redditNotes),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null})});
+  context.file={...context.file,id:`post-${randomUUID()}`};
+  const build=async({call,invoke,json})=>{
+    const photo=await json("cut_from_source",{slide:1,box:PICTURE,kind:"photo",what:"Friends at a dinner table"});
+    await json("create_deck",{name:"Small decisions",caption:sourceNotes.post.caption,slides:[
+      {templatePage:COVER,slots:{"cover-headline":"REDDIT USERS REVEAL THE [[SMALL DECISIONS]] THAT CHANGED THEIR LIVES FOREVER",photo:photo.src}},
+      {templatePage:FOLLOW,slots:{cta:"FOR MORE LIFE STORIES",photo:photo.src}},
+    ]});
+    await invoke("look_at_slides",{slides:[1,2]});
+    const handIn={pages:[{slide:1,layout:"Cover"},{slide:0,layout:"Follow"}],notes:[]};
+    assert.equal(await call.submit.check(handIn),null);
+    return handIn;
+  };
+  let output;
+  await stand(build,async()=>{({output}=await design(context));});
+  // The fix round calls create_deck again instead of editing, so the deck it saves starts without comments.
+  await stand(build,async()=>{
+    const {output:again}=await design({...context,round:1,instructions:"Slide 1 (must fix): build the deck again.",previous:output});
+    assert.equal(again.deckId,output.deckId);
+    const deck=await deckLib.loadDeck(context.ownerKey,again.deckId);
+    assert.ok(deck.tags.includes("chatgptricks"),"the page's tag");
+    assert.equal(deck.comments.filter(comment=>comment.text.includes(context.file.id)).length,1,"the post file is named again, once");
+    const asked=[];
+    const [mine]=await pagePosts.ourLibrary(context.ownerKey,"chatgptricks",{readPostFile:async(ownerKey,id)=>{asked.push(id);return context.file;}});
+    assert.equal(mine.id,deck.id);
+    assert.equal(mine.page,"chatgptricks");
+    assert.deepEqual(asked,[context.file.id],"step B's library reads the post file the deck names");
   });
 });
 

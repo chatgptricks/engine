@@ -17,12 +17,13 @@ import { z } from "zod";
 import { agentCapabilities } from "../../../template-editor/agent-decks";
 import { htmlTokensForGuide } from "../../../template-editor/html-layer";
 import { formatDimensions, type DesignComment, type DesignDocument } from "../../../template-editor/model";
+import { platformCardClass, PLATFORMS } from "../../../template-editor/platform-cards";
 import { htmlTokensForTemplate } from "../../brand-actions";
 import { imageBlock, RecreateError, work } from "../claude";
 import { CHART_FIELDS, EXACT_CHART_FIELDS } from "../charts";
 import { need, rerunNote, type StageContext, type StageRunner } from "../context";
 import { loadDeck, MAX_DECK_SLIDES, saveDeck } from "../deck";
-import { creditsFor, deckOffBrand, deckView, designSession, designTools, PLATFORM_CARDS, unstoredImages, type DesignSession } from "../design-tools";
+import { creditsFor, deckOffBrand, deckView, designSession, designTools, unstoredImages, type DesignSession } from "../design-tools";
 import { coverPage, describePages, followPage, templatePages, type PageCatalog } from "../pages";
 import { stagePrompt } from "../playbook";
 import { originalSlides } from "../research";
@@ -67,28 +68,42 @@ const EXACT_RULES = [
 ];
 
 const px = (value: string | undefined) => value && /^-?[\d.]+px$/.test(value.trim()) ? parseFloat(value) : null;
+
+/** Reddit's dark mode by role, as the design proof draws it (every one is in platform-cards.ts PLATFORM_COLORS.reddit). */
+export const REDDIT_CARD = { card: "#0E1113", border: "#2F3336", name: "#F2F4F5", time: "#8BA2AD", text: "#EEF1F3", avatars: ["#FF4500", "#FF8717", "#24A0ED", "#46D160"] } as const;
+/** Reddit's default avatar, the white alien head on a circle of its color (COLOR), as the design proof draws it. */
+export const REDDIT_AVATAR = '<svg viewBox="0 0 64 64" aria-hidden="true"><circle cx="32" cy="32" r="32" fill="COLOR"/><path d="M33 25 L36.5 14.5" stroke="#fff" stroke-width="2.4" stroke-linecap="round"/><circle cx="38.6" cy="13.4" r="3.8" fill="#fff"/><circle cx="16.5" cy="31" r="5" fill="#fff"/><circle cx="47.5" cy="31" r="5" fill="#fff"/><ellipse cx="32" cy="38" rx="17.5" ry="12.5" fill="#fff"/><circle cx="25.5" cy="36.5" r="3" fill="COLOR"/><circle cx="38.5" cy="36.5" r="3" fill="COLOR"/><path d="M26 43.2 Q32 47.2 38 43.2" stroke="COLOR" stroke-width="2.2" fill="none" stroke-linecap="round"/></svg>';
+const PLATFORM_NAMES = { x: "X", reddit: "Reddit" } as const;
+
 /**
  * How the designer draws a post or comment: X's on the template's own X card;
- * another platform's in HTML on that card's frame, in the platform's colors,
- * as the design proof Ivan approved does (sizes from the template and guide).
+ * another platform's in one HTML layer on that card's frame and with its
+ * header's sizes, in the platform's own colors when it has them (a platform
+ * card, platform-cards.ts), as the design proof Ivan approved does.
  */
 function cardRules(template: StageContext["template"], tokens: Record<string, string>): string[] {
-  const { width } = formatDimensions(template), scale = width / 360;
-  const card = template.pages.flatMap(page => page.canvas?.elements ?? []).find(element => element.type === "shape" && element.slot === "reaction-card");
+  const { width } = formatDimensions(template), scale = width / 360, size = (value: number) => Math.round(value * scale);
+  const elements = template.pages.flatMap(page => page.canvas?.elements ?? []), slot = (name: string) => elements.find(element => element.slot === name);
+  const card = slot("reaction-card"), avatar = slot("reaction-avatar"), name = slot("reaction-name"), words = slot("reaction-text");
   const frame = card?.type === "shape"
-    ? `the frame of our X card: ${Math.round(card.width * scale)} px wide at x ${Math.round(card.x * scale)}, ${Math.round((card.radius ?? 0) * scale)} px corners, a ${Math.round((card.strokeWidth ?? 0) * scale)} px ${card.stroke ?? ""} border`
+    ? `the frame of our X card: ${size(card.width)} px wide at x ${size(card.x)}, ${size(card.radius ?? 0)} px corners and a ${size(card.strokeWidth ?? 0)} px border`
     : "as wide as the page between its margins, with rounded corners and a thin border";
+  const header = card && avatar && name?.type === "text" && words
+    ? `as on our X card, ${size(avatar.x - card.x)} px of padding; the avatar, ${size(avatar.width)} px and round; beside it the name in bold at ${size(name.fontSize)} px, then · and the time in grey at the same size, on one line; the words ${size(words.y - avatar.y - avatar.height)} px below`
+    : "the avatar; beside it the name in bold, then · and the time in grey, on one line; then the words";
   const [left, right, top, bottom, pageWidth, pageHeight] = ["--margin-left", "--margin-right", "--margin-top", "--margin-bottom", "--page-width", "--page-height"].map(name => px(tokens[name]));
   const area = left !== null && right !== null && top !== null && bottom !== null && pageWidth !== null && pageHeight !== null
     ? `x ${left}, y ${top}, ${pageWidth - left - right} px wide and ${pageHeight - top - bottom} px tall` : "the page between its margins";
+  const named = PLATFORMS.map(platform => PLATFORM_NAMES[platform]).join(" and ");
   return [
     "A post from X is our X card: x_post, on the template's Reaction page",
-    `A post or comment from another platform (Reddit, Threads, Instagram, TikTok, YouTube…) is our card, one HTML layer: ${frame}, filled and colored in the platform's own dark mode, the way our X card copies X's`,
-    `Its colors are the platform's, outside the brand on purpose: give the card's element the class platform-card-reddit (or platform-card- with ${PLATFORM_CARDS.filter(platform => platform !== "reddit").join(", ")}) and they're allowed. Reddit's: card #0E1113, border #2F3336, name #F2F4F5, time #8BA2AD, text #EEF1F3; its default avatar (the white alien head on a circle, drawn in inline SVG) in the color the original shows: #FF4500, #FF8717, #24A0ED or #46D160`,
-    "Inside the card: the avatar, the name in bold, then · and the time in grey, as the original shows them; then the words, word for word. No vote row, buttons, counts or menus, as on our X card",
-    "Its text is the brand's body font, sized so its lines hold about as many words as the original's (the brand's font is narrower than most apps', so it often runs larger than the original's), with text-wrap: pretty",
-    `A card alone on its slide is centered between the top and bottom margins: its layer takes the content area (${area}) and centers the card in it with flexbox, so the card hugs its words. That slide is a blank slide: edit_deck add_slide with layout "blank", background ${tokens["--color-background"] ?? "the brand's background color"}, and the layer as its one element`,
-    "A card on a photo (a cover's) sits where the original's card was, covering it",
+    `A post or comment from another platform (Reddit, Threads, Instagram, TikTok, YouTube…) is our card, one HTML layer: ${frame}`,
+    `${named} cards keep their platform's own colors, outside the brand on purpose, the way our X card copies X's dark mode. Mark the card: the outermost element of the layer's markup carries class="${platformCardClass("reddit")}" (an X post drawn in HTML: "${platformCardClass("x")}"). In a marked card a color may be written out, as hex, when it's one of the platform's own; every other color still comes from the brand's variables. A card from a platform without colors of its own (Threads, TikTok, YouTube…) is drawn on the same frame in the brand's colors, unmarked`,
+    `Reddit's colors: the card ${REDDIT_CARD.card}, its border ${REDDIT_CARD.border}, the name ${REDDIT_CARD.name}, the time ${REDDIT_CARD.time}, the words ${REDDIT_CARD.text}. Its default avatar is this SVG, with COLOR the avatar's color in the original (${REDDIT_CARD.avatars.join(", ")}): ${REDDIT_AVATAR}`,
+    `Inside the card, ${header}. The words word for word. No vote row, buttons, counts or menus, as on our X card`,
+    "Its words are in the brand's body font (var(--body-font)), never smaller than var(--body-size), sized so its lines hold about as many words as the original's (the brand's font is narrower than most apps', so they often run larger than the original's), on lines about 1.25 times their size, with text-wrap: pretty",
+    `A card alone on its slide is a blank slide: edit_deck add_slide with layout "blank", background ${tokens["--color-background"] ?? "the brand's background color"}, and the card's layer as its one element. The layer takes the content area (${area}); the card is the outermost element of its markup, hugging its words, and the layer's CSS centers it between the top and bottom margins with :root { display: flex; flex-direction: column; justify-content: center }`,
+    "A card on a photo (a cover's) sits where the original's card was, covering it: its layer a little taller than the card, the card at the layer's top",
   ];
 }
 
@@ -219,9 +234,12 @@ export const design: StageRunner = async context => {
   const now = new Date().toISOString();
   const comment = (text: string): DesignComment => ({ id: randomUUID(), pageId: document.pages[0].id, text: text.slice(0, 2000), createdAt: now });
   const written = [...submitted.notes.map(note => note.trim()).filter(Boolean), ...creditsFor(session, document)];
+  // The deck names its post file (page-posts.ts ourLibrary reads it, with the page's tag): once, and again
+  // when a fix round built the deck afresh instead of editing the earlier one.
+  const named = (document.comments ?? []).some(item => item.text.includes(file.id));
   document.comments = [
     ...(document.comments ?? []),
-    ...(earlier ? [] : [comment(`Made by Recreate for ${profile.name}. The team's working file is ${file.id}; agents can read it with engine_recreate_status.`)]),
+    ...(named ? [] : [comment(`Made by Recreate for ${profile.name}. The team's working file is ${file.id}; agents can read it with engine_recreate_status.`)]),
     ...(written.length ? [comment(`${context.round ? `Fix round ${context.round}: notes` : "Notes"} from Recreate\n${written.map(note => `• ${note}`).join("\n")}`)] : []),
   ].slice(-200);
 
