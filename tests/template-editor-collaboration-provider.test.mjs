@@ -73,7 +73,8 @@ function fakeClock() {
   };
 }
 
-function harness(document) {
+/** `baseline` is the document the server last confirmed; the browser may hold newer edits. */
+function harness(document, baseline = document) {
   const hooks = hookRunner(), clock = fakeClock(), requests = [], streams = [], deliveries = [], errors = [];
   const originalSignalTimeout = Object.getOwnPropertyDescriptor(AbortSignal,"timeout");
   Object.defineProperty(AbortSignal,"timeout",{configurable:true,value:delay=>{const controller=new AbortController();clock.setTimeout(()=>controller.abort(new DOMException("Request timed out","TimeoutError")),delay);return controller.signal;}});
@@ -100,11 +101,13 @@ function harness(document) {
   });
   const {useLiveCollaboration} = loader({react: hooks.react})("lib/template-editor/use-collaboration.ts");
   let visible = document, pendingCount = 0, controls;
-  const options = {baselineDocument: document, onDocument(saved, next, snapshot) {visible = next; deliveries.push({saved, visible: next, snapshot});}, onPending() {pendingCount++;}, onError(message) {errors.push(message);}};
+  const options = {baselineDocument: baseline, onDocument(saved, next, snapshot) {visible = next; deliveries.push({saved, visible: next, snapshot});}, onPending() {pendingCount++;}, onError(message) {errors.push(message);}};
   const render = () => (controls = hooks.render(() => useLiveCollaboration(visible, scope, options)));
   render();
   return {requests, streams, deliveries, errors, clock, render, get controls() {return controls;}, get pendingCount() {return pendingCount;}, get visible() {return visible;},
     async start(snapshot) {await settle(); render(); streams.at(-1).emit("snapshot", snapshot); render();},
+    /** The editor shows a newer document, as the studio does after each accepted edit. */
+    present(next) {visible = next; render();},
     event(type, properties = {}) {windowTarget.dispatchEvent(Object.assign(new Event(type), properties));},
     offline() {navigatorState.onLine = false; windowTarget.dispatchEvent(new Event("offline"));},
     online() {navigatorState.onLine = true; windowTarget.dispatchEvent(new Event("online"));},
@@ -401,4 +404,123 @@ test("a fatal authorization response pauses mutations and reconnects while keepi
     assert.equal(client.controls.status, "error");
     assert.ok(client.pendingCount > 0, "The caller was told to preserve the unsaved work before sending");
   } finally {client.dispose(); shared.doc.destroy();}
+});
+
+const firstLayer = document => document.pages[0].canvas.elements[0];
+function withFirstLayer(document, patch) {const next = structuredClone(document); Object.assign(firstLayer(next), patch); return next;}
+
+test("automatic fits sync to the room but are never live undo steps, even inside a person's capture window", async () => {
+  const original = fixture(), shared = room(original), client = harness(original);
+  try {
+    await client.start(shared.snapshot()); await client.clock.advance(70);
+    client.requests[0].respond(shared.snapshot()); await settle(); client.render();
+    // The canvas fits a layer as the deck opens: the room gets the fit, Undo doesn't.
+    assert.equal(client.controls.submitDocument(original, withFirstLayer(original, {height: 15}), {automatic: true}), true); client.render();
+    assert.equal(client.controls.history.canUndo, false, "A fit made by the canvas is not an undo step");
+    await client.clock.advance(70);
+    const fitted = client.requests[1]; assert.ok(fitted?.body.update, "The fit still syncs to the room");
+    Y.applyUpdate(shared.doc, protocol.decodeCollaborationUpdate(fitted.body.update));
+    assert.equal(firstLayer(protocol.readCollaborationDocument(shared.doc)).height, 15);
+    fitted.respond(shared.snapshot(2)); await settle(); client.render();
+    assert.equal(client.controls.history.canUndo, false);
+    // A person's edit, then the canvas's fit in the same moment, well inside Yjs's 650 ms capture window.
+    const opened = client.visible, edited = withFirstLayer(opened, {text: "Hello there, now on two lines"});
+    client.controls.submitDocument(opened, edited);
+    client.controls.submitDocument(edited, withFirstLayer(edited, {height: 44}), {automatic: true}); client.render();
+    assert.equal(client.controls.history.canUndo, true);
+    client.controls.history.undo(); client.render();
+    assert.equal(firstLayer(client.visible).text, "Hello", "One Undo reverts the person's edit");
+    assert.equal(firstLayer(client.visible).height, 44, "The fit did not join the person's undo step; the canvas fits again");
+    assert.equal(client.controls.history.canUndo, false); assert.equal(client.controls.history.canRedo, true);
+    // The canvas fits the restored words again. That must not clear Redo.
+    client.controls.submitDocument(client.visible, withFirstLayer(client.visible, {height: 15}), {automatic: true}); client.render();
+    assert.equal(client.controls.history.canRedo, true, "A fit after Undo keeps Redo");
+    client.controls.history.redo(); client.render();
+    assert.equal(firstLayer(client.visible).text, "Hello there, now on two lines");
+    assert.equal(client.controls.history.canUndo, true); assert.equal(client.controls.history.canRedo, false);
+  } finally {client.dispose(); shared.doc.destroy();}
+});
+
+test("one Undo and one Redo cover a big change, with fits long after it and after Undo", async () => {
+  const original = fixture(), shared = room(original), client = harness(original);
+  // Yjs merges tracked edits made within 650 ms. Move its clock to place each fit well outside that window.
+  const time = native("lib0/time"), realTime = time.getUnixTime; let later = 0;
+  time.getUnixTime = () => realTime() + later;
+  try {
+    await client.start(shared.snapshot()); await client.clock.advance(70);
+    client.requests[0].respond(shared.snapshot()); await settle(); client.render();
+    const elements = document => document.pages[0].canvas.elements, opened = client.visible, source = firstLayer(opened);
+    // Like Break into layers: one layer becomes 23 text layers in a single edit.
+    const pieces = Array.from({length: 23}, (_, index) => ({...structuredClone(source), id: `piece-${index + 1}`, name: `Piece ${index + 1}`, text: `Piece ${index + 1}`, y: index * 20, height: 16, textMode: "auto-height"}));
+    const broken = structuredClone(opened); broken.pages[0].canvas.elements = pieces;
+    client.controls.submitDocument(opened, broken);
+    // The canvas then fits three pieces, one pass a second.
+    let current = broken;
+    for (const index of [2, 9, 17]) {
+      later += 1000;
+      const next = structuredClone(current); elements(next)[index].height = 15;
+      client.controls.submitDocument(current, next, {automatic: true}); current = next;
+    }
+    client.render();
+    later += 1000; client.controls.history.undo(); client.render();
+    assert.deepEqual(elements(client.visible), elements(opened), "One Undo brings back the original layer, not the last fit");
+    assert.equal(client.controls.history.canUndo, false); assert.equal(client.controls.history.canRedo, true);
+    // The canvas fits the restored layer: Redo stays.
+    later += 1000;
+    client.controls.submitDocument(client.visible, withFirstLayer(client.visible, {height: 21}), {automatic: true}); client.render();
+    assert.equal(client.controls.history.canRedo, true);
+    later += 1000; client.controls.history.redo(); client.render();
+    assert.deepEqual(elements(client.visible).map(element => element.id), pieces.map(piece => piece.id), "One Redo brings all 23 layers back");
+    assert.deepEqual(elements(client.visible).map(element => element.height), pieces.map((_, index) => [2, 9, 17].includes(index) ? 15 : 16), "with the fits the canvas made");
+    assert.equal(client.controls.history.canUndo, true); assert.equal(client.controls.history.canRedo, false);
+    client.controls.history.undo(); client.render();
+    assert.deepEqual(elements(client.visible).map(element => element.id), [source.id]);
+  } finally {time.getUnixTime = realTime; client.dispose(); shared.doc.destroy();}
+});
+
+test("fits the canvas makes while the room opens sync but leave nothing to undo", async () => {
+  const original = fixture(), shared = room(original), client = harness(original);
+  try {
+    // The deck appears and the canvas fits its text before the room's first snapshot arrives.
+    const fitted = withFirstLayer(original, {height: 15});
+    assert.equal(client.controls.submitDocument(original, fitted, {automatic: true}), false, "The room isn't open yet");
+    client.present(fitted);
+    await client.start(shared.snapshot());
+    assert.equal(firstLayer(client.visible).height, 15);
+    assert.equal(client.controls.history.canUndo, false, "Opening a deck leaves nothing to undo");
+    await client.clock.advance(70);
+    const sent = client.requests[0]; assert.ok(sent?.body.update, "The fits still sync to the room");
+    Y.applyUpdate(shared.doc, protocol.decodeCollaborationUpdate(sent.body.update));
+    assert.equal(firstLayer(protocol.readCollaborationDocument(shared.doc)).height, 15);
+  } finally {client.dispose(); shared.doc.destroy();}
+});
+
+test("a person's edit while the room opens, and edits the browser recovered, stay undoable", async () => {
+  {
+    const original = fixture(), shared = room(original), client = harness(original);
+    try {
+      const edited = withFirstLayer(original, {text: "Typed while connecting"}), fitted = withFirstLayer(edited, {height: 44});
+      client.controls.submitDocument(original, edited); client.controls.submitDocument(edited, fitted, {automatic: true});
+      client.present(fitted);
+      await client.start(shared.snapshot());
+      assert.equal(client.controls.history.canUndo, true);
+      client.controls.history.undo(); client.render();
+      assert.equal(firstLayer(client.visible).text, "Hello");
+    } finally {client.dispose(); shared.doc.destroy();}
+  }
+  {
+    // Browser recovery: the server last confirmed `original`, and this browser holds a newer edit.
+    const original = fixture(), recovered = withFirstLayer(original, {text: "Recovered words"}), shared = room(original), client = harness(recovered, original);
+    try {
+      const fitted = withFirstLayer(recovered, {height: 44});
+      client.controls.submitDocument(recovered, fitted, {automatic: true}); client.present(fitted);
+      await client.start(shared.snapshot());
+      assert.equal(firstLayer(client.visible).text, "Recovered words"); assert.equal(firstLayer(client.visible).height, 44);
+      assert.equal(client.controls.history.canUndo, true, "The recovered edit is still one undo step");
+      client.controls.history.undo(); client.render();
+      assert.equal(firstLayer(client.visible).text, "Hello", "Undo reverts the recovered words");
+      assert.equal(firstLayer(client.visible).height, 44, "but not the canvas's fit");
+      assert.equal(client.controls.history.canUndo, false);
+    } finally {client.dispose(); shared.doc.destroy();}
+  }
 });

@@ -69,6 +69,30 @@ test("per-user undo preserves another editor's changes", () => {
   undo.undo(); const result = collaboration.readCollaborationDocument(one); assert.equal(result.caption, ""); assert.equal(result.pages[0].canvas.elements[0].x, 92);
   undo.destroy(); [baseline, one, two].forEach(doc => doc.destroy());
 });
+test("automatic fits reach peers but stay out of the writer's undo stack and leave timestamps to the server", () => {
+  const original = fixture(), baseline = collaboration.createCollaborationDocument(original), state = Y.encodeStateAsUpdate(baseline), one = replica(state), two = replica(state);
+  const undo = new Y.UndoManager(one.getMap("document"), {trackedOrigins: new Set([collaboration.COLLABORATION_LOCAL_ORIGIN]), captureTimeout: 650});
+  const write = (doc, mutation, origin) => {
+    const before = collaboration.readCollaborationDocument(doc), next = structuredClone(before); mutation(next);
+    const vector = Y.encodeStateVector(doc); collaboration.writeCollaborationDocument(doc, before, next, origin); return Y.encodeStateAsUpdate(doc, vector);
+  };
+  const updates = [
+    write(one, value => {value.pages[0].canvas.elements[0].text = "Hello there";}),
+    write(one, value => {value.pages[0].canvas.elements[0].height = 44; value.updatedAt = "2026-11-08T21:00:00.000Z";}, collaboration.COLLABORATION_AUTOMATIC_ORIGIN),
+  ];
+  assert.equal(undo.undoStack.length, 1, "Only the person's edit is an undo step");
+  for (const update of updates) Y.applyUpdate(two, update, collaboration.COLLABORATION_REMOTE_ORIGIN);
+  const peer = collaboration.readCollaborationDocument(two);
+  assert.equal(peer.pages[0].canvas.elements[0].height, 44); assert.equal(peer.pages[0].canvas.elements[0].text, "Hello there");
+  assert.equal(peer.updatedAt, original.updatedAt, "Timestamps belong to the server snapshot");
+  undo.undo();
+  assert.equal(collaboration.readCollaborationDocument(one).pages[0].canvas.elements[0].text, "Hello");
+  assert.equal(collaboration.readCollaborationDocument(one).pages[0].canvas.elements[0].height, 44, "The fit is not part of the undone step");
+  write(one, value => {value.pages[0].canvas.elements[0].height = 15;}, collaboration.COLLABORATION_AUTOMATIC_ORIGIN);
+  assert.equal(undo.redoStack.length, 1, "A fit after Undo keeps Redo");
+  undo.redo(); assert.equal(collaboration.readCollaborationDocument(one).pages[0].canvas.elements[0].text, "Hello there");
+  undo.destroy(); [baseline, one, two].forEach(doc => doc.destroy());
+});
 test("a focused input with an earlier baseline preserves remote prefixes and avoids stale text indices", () => {
   const original = fixture(), baseline = collaboration.createCollaborationDocument(original), state = Y.encodeStateAsUpdate(baseline), one = replica(state), two = replica(state);
   const before = collaboration.readCollaborationDocument(one), remote = edit(two, value => {value.pages[0].canvas.elements[0].text = "Remote Hello";});

@@ -2,6 +2,9 @@ import * as Y from "yjs";
 import {sanitizeRichText, richTextToPlain, type DesignDocument} from "./model";
 
 export const COLLABORATION_LOCAL_ORIGIN = "engine-collaboration-local";
+/** The editor's own follow-up changes, such as the canvas fitting text to its
+ * box. They sync like local edits, but no UndoManager tracks this origin. */
+export const COLLABORATION_AUTOMATIC_ORIGIN = "engine-collaboration-automatic";
 export const COLLABORATION_REMOTE_ORIGIN = "engine-collaboration-remote";
 const KIND = "__engineKind", ROWS = "__engineRows", ORDER = "__engineOrder", RICH = "__engineRichText";
 type RecordValue = Record<string, unknown>;
@@ -174,7 +177,7 @@ export function readCollaborationDocument(doc: Y.Doc): DesignDocument {
 export function writeCollaborationDocument(doc: Y.Doc, before: DesignDocument, next: DesignDocument, origin: unknown = COLLABORATION_LOCAL_ORIGIN): void {
   if (before.id !== next.id) throw new Error("A collaboration room cannot change document identity.");
   const rootBefore = {...before} as RecordValue, rootNext = {...next} as RecordValue;
-  if (origin === COLLABORATION_LOCAL_ORIGIN) {
+  if (origin === COLLABORATION_LOCAL_ORIGIN || origin === COLLABORATION_AUTOMATIC_ORIGIN) {
     // Document identity and timestamps belong to the durable server snapshot.
     // Capturing a concurrent LWW timestamp in a user's UndoManager can remove
     // the required key when their write wins over a peer's timestamp.

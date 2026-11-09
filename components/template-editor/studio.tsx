@@ -410,7 +410,7 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
             setView(active.purpose === "template" ? "templates" : "designs");
             if (active.purpose === "template") setCategory("My templates");
           }}
-          onChange={(design) => {
+          onChange={(design, change) => {
             const before = lastVisibleDocument.current ?? active;
             const accepted = setLibrary((current) => ({
               ...current,
@@ -418,7 +418,9 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
                 d.id === design.id ? design : d,
               ),
             }));
-            if (accepted && collaboration.ready) {lastVisibleDocument.current = design; collaboration.submitDocument(before, design);}
+            // While the room opens, it can't take the edit yet: it rebases this
+            // document when it connects, and only notes whether a person edited.
+            if (accepted && (collaboration.submitDocument(before, design, change) || collaboration.ready)) lastVisibleDocument.current = design;
             return accepted;
           }}
           onAddDesigns={(documents) => setLibrary(current => { if (current.designs.length + documents.length > 150) throw new Error("This batch would exceed the 150-design limit."); return {...current, designs: [...documents, ...current.designs]}; })}

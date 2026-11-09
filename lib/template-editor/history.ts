@@ -3,6 +3,9 @@ export type HistoryDirection = "undo" | "redo";
 export interface HistoryContext {pageId:string;selectedIds:string[];editingMaster:boolean;isolatedGroupId:string|null}
 export interface HistoryEntry<T> {document:T;context:HistoryContext}
 export interface DocumentHistory<T> {past:HistoryEntry<T>[];future:HistoryEntry<T>[];group:string;scope:string;time:number}
+/** How an accepted edit came about. An automatic edit is one the editor makes
+ * by itself, such as fitting text to its box, and is never an undo step. */
+export interface DocumentChange {automatic?:boolean}
 export function createDocumentHistory<T>():DocumentHistory<T> {return {past:[],future:[],group:"",scope:"",time:0};}
 function equal(left:unknown,right:unknown):boolean {
   if(left===right)return true;
