@@ -71,7 +71,10 @@ const FONT_DEFINITION = /^--(?:[a-z0-9-]+-font|font-[a-z0-9-]*|gf-f-[a-z0-9-]*)$
 const GENERIC_FAMILIES = new Set(["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji"]);
 const WIDE_KEYWORDS = new Set(["inherit", "initial", "unset", "revert", "revert-layer"]);
 
-type CleanContext = { fonts: ReadonlySet<string>; prefix?: string };
+type CleanContext = { fonts: ReadonlySet<string>; prefix?: string; nodes?: { next: number } };
+
+/** Drawn markup numbers its elements in document order (html-edit.ts finds them by it). */
+export const HTML_NODE_ATTRIBUTE = "data-te-node";
 type Attributes = Record<string, string>;
 
 /** Engine's own storage, and data: images. Nothing outside Engine is ever fetched. */
@@ -413,6 +416,7 @@ function transformTag(context: CleanContext, inSvg: () => boolean) {
         } else next[name] = value;
       }
     }
+    if (context.nodes) next[HTML_NODE_ATTRIBUTE] = String(context.nodes.next++);
     return { tagName: tag, attribs: next };
   };
 }
@@ -421,7 +425,7 @@ function sanitizeMarkup(html: string, context: CleanContext): string {
   let svgDepth = 0;
   return sanitizeHtml(html.slice(0, MAX_HTML_CHARS), {
     allowedTags: ALLOWED_TAGS,
-    allowedAttributes: { "*": [...GLOBAL_ATTRIBUTES, ...SVG_ATTRIBUTES], ...TAG_ATTRIBUTES },
+    allowedAttributes: { "*": [...GLOBAL_ATTRIBUTES, ...SVG_ATTRIBUTES, ...(context.nodes ? [HTML_NODE_ATTRIBUTE] : [])], ...TAG_ATTRIBUTES },
     allowedSchemes: [],
     allowedSchemesByTag: { img: ["data"], image: ["data"] },
     allowedSchemesAppliedToAttributes: ["href", "src", "xlink:href"],
@@ -624,13 +628,15 @@ function rootRule(tokens: Record<string, string>): string {
   return `.${SCOPE} { ${variables} position: relative; width: 100%; height: 100%; overflow: hidden; font-family: var(--body-font, var(--font-sans), system-ui, sans-serif); font-size: 16px; font-weight: 400; font-style: normal; line-height: 1.25; letter-spacing: normal; word-spacing: normal; text-align: left; text-transform: none; text-decoration: none; text-shadow: none; white-space: normal; direction: ltr; color: var(--color-text, #111111); -webkit-font-smoothing: antialiased; }`;
 }
 
-/** Cleans a layer for drawing and scopes it. Cached, since every thumbnail draws it too. */
+/** Cleans a layer for drawing and scopes it. Each element carries its number in
+ * data-te-node, so a click finds it in the saved markup (html-edit.ts). Cached,
+ * since every thumbnail draws it too. */
 export function prepareHtmlLayer(element: Pick<HtmlElement, "html" | "css" | "tokens">): PreparedHtmlLayer {
   const tokens = cleanHtmlTokens(element.tokens);
   const cacheKey = `${element.html}\u0000${element.css ?? ""}\u0000${JSON.stringify(tokens)}`;
   const cached = PREPARED.get(cacheKey);
   if (cached) return cached;
-  const context: CleanContext = { fonts: htmlLayerFonts(tokens), prefix: SCOPE };
+  const context: CleanContext = { fonts: htmlLayerFonts(tokens), prefix: SCOPE, nodes: { next: 0 } };
   const split = splitStyles(element.html);
   const css = cleanStylesheet([element.css ?? "", ...split.styles].filter(part => part.trim()).join("\n"), context);
   return remember(PREPARED, cacheKey, { key: hash(cacheKey), html: sanitizeMarkup(split.html, context), css: `${rootRule(tokens)}\n${css}` }, 48);

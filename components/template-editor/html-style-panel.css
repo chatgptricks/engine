@@ -1,0 +1,101 @@
+/* The HTML tab of the element inspector (html-style-panel.tsx). It uses the editor's
+   UI variables (interaction-system.css) where they're set, else the inspector's colors. */
+.te-html-style-selection {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 2px 8px;
+  margin: -2px 0 14px;
+  padding: 8px 10px;
+  border: 1px solid #ffffff12;
+  border-radius: 8px;
+  background: #ffffff07;
+  color: var(--te-ui-text, #e9e9eb);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.te-html-style-selection q { quotes: "\201C" "\201D"; }
+.te-html-style-selection code {
+  font: 500 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: var(--te-ui-accent, #bda0fc);
+}
+.te-html-style-selection span {
+  display: -webkit-box;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--te-ui-muted, #98989f);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+}
+.te-element-hint.te-html-style-error { margin: -6px 0 12px; color: var(--te-ui-danger, #ffb3b8); }
+.te-element-hint.te-html-style-brandless { margin: 0 0 12px; line-height: 1.5; }
+
+/* Brand colors: a labelled chip each; the current one is ringed and its label bold. */
+.te-html-style-swatches {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px 6px;
+  margin: 0 0 14px;
+}
+.te-html-style-swatches button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  padding: 3px 0 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--te-ui-muted, #98989f);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+.te-html-style-swatches button > span:last-child {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.te-html-style-chip {
+  display: block;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  box-shadow: inset 0 0 0 1px #ffffff30;
+  transition: box-shadow 120ms ease;
+}
+.te-html-style-swatches button:hover:not(:disabled) { color: var(--te-ui-text, #f0eef7); }
+.te-html-style-swatches button:hover:not(:disabled) .te-html-style-chip {
+  box-shadow: inset 0 0 0 1px #ffffff30, 0 0 0 2px var(--te-ui-panel, #161618), 0 0 0 3px var(--te-ui-border-hover, #828292);
+}
+.te-html-style-swatches button[aria-pressed="true"] { color: var(--te-ui-text, #f0eef7); font-weight: 650; }
+.te-html-style-swatches button[aria-pressed="true"] .te-html-style-chip {
+  box-shadow: inset 0 0 0 1px #ffffff30, 0 0 0 2px var(--te-ui-panel, #161618), 0 0 0 4px var(--te-ui-accent, #bda0fc);
+}
+.te-html-style-swatches button:disabled { opacity: 0.45; cursor: not-allowed; }
+
+/* Brand sizes: two columns of segments, largest first. */
+.te-element-segments.te-html-style-sizes {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-bottom: 14px;
+}
+.te-element-inspector .te-html-style .te-html-style-sizes button { min-width: 0; font-variant-numeric: tabular-nums; }
+/* One flex item, so the spaces around the dot stay. */
+.te-html-style-sizes button > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.te-element-inspector .te-html-style .te-html-style-tools { margin-bottom: 0; }
+.te-element-inspector .te-html-style .te-html-style-tools b { margin-right: 5px; font-weight: 750; }
+.te-html-style .te-html-style-action { margin: 0; }
+.te-html-style .te-element-hint + .te-html-style-action { margin-top: 10px; }
+.te-html-style .te-html-style-action + .te-element-hint { margin-top: 8px; line-height: 1.5; }
+.te-html-style .te-html-style-action:disabled { opacity: 0.45; cursor: not-allowed; }

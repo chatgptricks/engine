@@ -58,6 +58,9 @@ import {WorkspaceResourcesPanel} from "./workspace-resources-panel";
 import {captureBrandImage,brandAssetPhoto} from "@/lib/template-editor/brand-assets";
 import {insertWorkspaceStyle,insertWorkspaceComponent,brandScene} from "@/lib/template-editor/library-workflows";
 import type {EditorLibrary,TextStyle,ReusableComponent} from "@/lib/template-editor/model";
+import { htmlLayerText } from "@/lib/template-editor/model";
+import type { HtmlNodeSelection } from "@/lib/template-editor/html-edit";
+import { breakHtmlLayer, htmlPiecesToLayers, measureHtmlLayer, readingOrderAfterBreak } from "@/lib/template-editor/html-break";
 import {assertDesignExportBudget} from '@/lib/template-editor/export-renditions';
 import {prepareExportDimensions} from '@/lib/template-editor/export-dimensions';
 
@@ -98,6 +101,8 @@ import "./editor-shell.css";
 import "./interaction-system.css";
 import "./editor-workflow.css";
 import { DesignFrame, DesignPreview, FRAME_WIDTH } from "./preview";
+
+const BREAKING_HTML = "Breaking the HTML layer into layers…";
 
 type Tab =
   | "smart"
@@ -185,6 +190,8 @@ export function DesignEditor({
   const compactEditor=useSyncExternalStore(subscribeCompactEditor,compactEditorSnapshot,desktopEditorSnapshot);
   const otherEditors=useDocumentPresence(initial.id,workspaceScope,canEdit&&!collaboration);
   const [editingRequest, setEditingRequest] = useState<{id: string; serial: number}>();
+  /** The part of an HTML layer being typed in on the canvas, and its selected words. */
+  const [htmlSelection, setHtmlSelection] = useState<HtmlNodeSelection | null>(null);
   const [renameLayer, setRenameLayer] = useState<{id: string; name: string} | null>(null);
   const [design, setDesign] = useState<DesignDocument>(initial);
   const current = useRef<DesignDocument>(design);
@@ -357,6 +364,9 @@ export function DesignEditor({
   const previousPage = !continuous && index > 0 ? design.pages[index - 1] : undefined;
   const onionScene = onionSkin && page.canvas && previousPage ? previousPage.canvas ?? sceneForPage(previousPage, design.format) : undefined;
   const selectedPhoto = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && (element.type === "image" || (element.type === "shape" && element.imageFill))) : undefined;
+  const selectedHtml = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && element.type === "html") : undefined;
+  // The canvas reports the part being typed in; it only counts while that layer is the selection.
+  const activeHtmlSelection = htmlSelection && selectedHtml?.id === htmlSelection.elementId ? htmlSelection : null;
   const selectedImage = selected.length === 1 ? scene.elements.find((element) => element.id === selected[0] && element.type === "image") : undefined;
   const selectedElements = scene.elements.filter(element=>selected.includes(element.id));
   const textSelection = selectedElements.length>0&&selectedElements.every(element=>element.type==="text");
@@ -602,6 +612,54 @@ export function DesignEditor({
     return result.scene!==live&&!result.limited;
   }
   function applyCommand(command: (live:CanvasScene)=>SceneCommandResult):void { applyCommandChecked(command); }
+  const breakingHtml = useRef(false);
+  /** Break into layers: draws the HTML layer offscreen and reads its pieces (a moment),
+   * then swaps in text, image and shape layers as one undo step. Like an SVG import, it
+   * lands on the slide it started from, and not when the layer changed meanwhile. */
+  async function breakHtml(id: string) {
+    const element = scene.elements.find(item => item.id === id);
+    if (blocked.current || breakingHtml.current || element?.type !== "html") return;
+    const targetId = page.id, targetMaster = editingMaster, targetContinuous = Boolean(current.current.continuousCanvas);
+    breakingHtml.current = true;
+    setNotice(BREAKING_HTML);
+    try {
+      const pieces = await measureHtmlLayer(element, {pixelsPerUnit: format.width / FRAME_WIDTH});
+      if (!mounted.current) return;
+      let made: string[] = [], spacer = false;
+      const accepted = commit(d => {
+        const target = d.pages.find(p => p.id === targetId);
+        if (!target) throw new Error("That slide was removed, so nothing changed.");
+        if (Boolean(d.continuousCanvas) !== targetContinuous) throw new Error("The canvas layout changed. Break the layer into layers again.");
+        const live = targetMaster ? d.masterScene ?? {background: "transparent", elements: []} : d.continuousCanvas ?? target.canvas ?? sceneForPage(target, d.format);
+        const now = live.elements.find(item => item.id === id);
+        if (now?.type !== "html") throw new Error("That HTML layer isn't on this slide any more.");
+        if (now.html !== element.html || now.css !== element.css || now.designWidth !== element.designWidth || now.width !== element.width || now.height !== element.height || JSON.stringify(now.tokens ?? null) !== JSON.stringify(element.tokens ?? null))
+          throw new Error("The HTML layer changed while it was being measured. Break it into layers again.");
+        const result = breakHtmlLayer(live, id, htmlPiecesToLayers(now, pieces));
+        made = result.selectedIds;
+        // A layer with a place in the template's flow leaves a clear "Layout space" box in the group too.
+        const group = result.scene.elements.find(item => item.id === made[0])?.groupId;
+        spacer = result.scene.elements.filter(item => item.groupId === group).length > made.length;
+        const placed = targetMaster ? {...d, masterScene: result.scene} : targetContinuous ? {...d, continuousCanvas: result.scene} : {...d, pages: d.pages.map(p => p.id === targetId ? {...p, canvas: result.scene} : p)};
+        // A slide with its own reading order reads the new words and pictures where the HTML layer was.
+        const ids = new Set(made), layers = result.scene.elements.filter(item => ids.has(item.id));
+        return {...placed, pages: placed.pages.map(p => {
+          const order = readingOrderAfterBreak(p.readingOrder, id, layers);
+          return order === p.readingOrder ? p : {...p, readingOrder: order};
+        })};
+      });
+      // A refused change has already said why; otherwise the progress notice just goes.
+      if (!accepted) { setNotice(value => value === BREAKING_HTML ? "" : value); return; }
+      if (activePage.current === targetId) setSelected(made);
+      const message = `“${element.name}” is now ${made.length} layer${made.length === 1 ? "" : "s"} in a group.${spacer ? " A clear “Layout space” box keeps its place in the slide’s layout." : ""}`;
+      setNotice(message);
+      setUndoNotice(message);
+    } catch (error) {
+      if (mounted.current) setNotice(error instanceof Error && error.message ? error.message : "This HTML layer couldn't be broken into layers.");
+    } finally {
+      breakingHtml.current = false;
+    }
+  }
   async function upload(file: File, replaceId?: string) {
     if (disabled || uploading) return;
     if(!replaceId&&(file.type==='image/svg+xml'||file.name.toLowerCase().endsWith('.svg'))){
@@ -771,7 +829,8 @@ export function DesignEditor({
     const shapeOperations = elements.length > 1 && elements.every(element => element.type === "shape") ? shapeOperationItems(ids) : [];
     return [
       ...shapeOperations,
-      ...(single?.type === "text" ? [{id: "edit-text", label: "Edit text", disabled: disabled || !canEditElement(scene, single, "content") || isElementHidden(scene,single), onSelect: () => setEditingRequest({id: single.id, serial: Date.now()})}] : []),
+      ...(single?.type === "text" || single?.type === "html" ? [{id: "edit-text", label: "Edit text", disabled: disabled || !canEditElement(scene, single, "content") || isElementHidden(scene,single) || (single.type === "html" && !htmlLayerText(single.html).trim()), onSelect: () => setEditingRequest({id: single.id, serial: Date.now()})}] : []),
+      ...(single?.type === "html" ? [{id: "break-html", label: "Break into layers", disabled: disabled || !canEditElement(scene, single, "content") || !canEditElement(scene, single, "delete"), onSelect: () => {void breakHtml(single.id);}}] : []),
       {id: "copy", label: "Copy", shortcut: "⌘/Ctrl C", separator: shapeOperations.length > 0, onSelect: () => copyElements(ids)},
       {id: "cut", label: "Cut", shortcut: "⌘/Ctrl X", disabled: disabled || !deletable.length, onSelect: () => copyElements(ids, true)},
       {id: "duplicate", label: "Duplicate", shortcut: "⌘/Ctrl D", disabled: disabled || !editable.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => duplicateSelection(live, ids,undefined,isolatedGroupId??undefined))},
@@ -1207,6 +1266,9 @@ export function DesignEditor({
       onTextTexture={openTextTexture}
       onUploadFramePhoto={(file:File,id:string)=>upload(file,id)}
       templateDraft={isTemplateDraft&&!editingMaster&&!continuous}
+      htmlSelection={activeHtmlSelection}
+      onEditHtmlLayer={id=>setEditingRequest({id,serial:Date.now()})}
+      onBreakHtmlLayer={id=>{void breakHtml(id);}}
     />
   );
   const inspector = inspectorFor();
@@ -1369,7 +1431,7 @@ export function DesignEditor({
                 const updated = updateSmartTemplateText(d, page.id, id, patch, templates);
                 return {...updated, pages: updated.pages.map(item => item.id === page.id && item.canvas ? {...item, canvas: layoutSmartScene(item.canvas).scene} : item)};
               }, `${page.id}:smart-${patch.lines === undefined ? "copy" : "lines"}:${id}`)) {setIsolatedGroupId(null); setSelected([id]);}
-            }}>{inspectorFor(selectedPhoto ? "photo" : "position", true)}</SmartLayoutPanel></>}
+            }}>{inspectorFor(selectedHtml ? "html" : selectedPhoto ? "photo" : "position", true)}</SmartLayoutPanel></>}
             {tab === "text" && (
               <>
                 <button type="button" className="te-button te-primary te-full te-insert-text" onClick={()=>addText()}><PlusIcon size={18}/>Add a text box<span className="te-shortcut-hint">T</span></button>
@@ -1778,6 +1840,7 @@ export function DesignEditor({
                     disabled={disabled}
                     onContextMenu={canvasMenu}
                     editingRequest={editingRequest}
+                    onHtmlSelection={setHtmlSelection}
                     clipToCanvas={clipToCanvas}
                     pasteboardBounds={pasteboardBounds}
                     slideWidth={continuous ? FRAME_WIDTH : undefined}

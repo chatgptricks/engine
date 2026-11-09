@@ -1,0 +1,35 @@
+/* Typing in an HTML layer (html-layer-editor.tsx). The layer is drawn again above the page; only the part being typed in takes the pointer. */
+.te-html-edit-box {
+  position: absolute;
+  box-sizing: border-box;
+  transform-origin: center center;
+  z-index: 2;
+  pointer-events: auto;
+}
+/* The layer's own CSS can't switch typing off; the outline stays about 1.5 screen pixels at any zoom or layer scale. */
+.te-html-edit-box [data-te-editing] {
+  pointer-events: auto !important;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+  cursor: text;
+  outline: calc(1.5px * var(--te-control-scale, 1) / var(--te-html-scale, 1)) solid var(--te-canvas-accent, #7967df) !important;
+  outline-offset: calc(2px * var(--te-control-scale, 1) / var(--te-html-scale, 1));
+}
+.te-html-edit-box svg [data-te-editing] { outline: none !important; cursor: default; }
+
+/* An SVG label's field, under the label (outside the zoomed canvas, so it stays readable). */
+.te-html-text-field {
+  position: fixed;
+  z-index: 2147483000;
+  box-sizing: border-box;
+  height: 34px;
+  padding: 0 10px;
+  border: 1px solid #7967df;
+  border-radius: 6px;
+  background: #1f1e27;
+  color: #ffffff;
+  font: 500 14px/32px system-ui, -apple-system, sans-serif;
+  box-shadow: 0 0 0 3px #7967df40, 0 8px 24px #00000066;
+  outline: none;
+}
+.te-html-text-field::selection { background: #7967df; color: #ffffff; }

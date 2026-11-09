@@ -22,9 +22,11 @@ import { updatePhotoContent } from "@/lib/template-editor/photo-frames";
 import { boldState, booleanState } from "@/lib/template-editor/property-utils";
 import { historyShortcut } from "@/lib/template-editor/history";
 import { alignSelectionTo, distributeSelection, matchSelectionSize, copyAppearance, pasteAppearance, applyTextTexture, duplicateSelection, removeSelection, reorderSelection, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
+import type { HtmlNodeSelection } from "@/lib/template-editor/html-edit";
 import "./element-inspector.css";
+import { HtmlStylePanel } from "./html-style-panel";
 
-export type InspectorSection = "edit"|"outline"|"photo"|"position"|"effects"|"advanced";
+export type InspectorSection = "html"|"edit"|"outline"|"photo"|"position"|"effects"|"advanced";
 
 type Props = {
   scene: CanvasScene;
@@ -51,6 +53,12 @@ type Props = {
   onUploadFramePhoto?: (file:File,shapeId:string)=>Promise<void>;
   /** Template drafts show how each layer behaves in copies of the template. */
   templateDraft?: boolean;
+  /** The part of an HTML layer being edited on the canvas, with any selected words. */
+  htmlSelection?: HtmlNodeSelection | null;
+  /** Starts editing an HTML layer's words on the canvas. */
+  onEditHtmlLayer?: (id: string) => void;
+  /** Turns an HTML layer into text, image and shape layers. */
+  onBreakHtmlLayer?: (id: string) => void;
 };
 
 const ROLE_HINTS: Record<LayoutRole, string> = {
@@ -207,6 +215,7 @@ export function ElementInspector({
   height,
   disabled = false, outputScale = 3, initialSection = "edit",onSectionChange,
   slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onTextTexture, onUploadTextTexture, onUploadFramePhoto, templateDraft = false,
+  htmlSelection, onEditHtmlLayer, onBreakHtmlLayer,
 }: Props) {
   const [section,setSection]=useState<InspectorSection>(initialSection);
   const [sectionRequest,setSectionRequest]=useState(initialSection);
@@ -233,6 +242,13 @@ export function ElementInspector({
   const shapes = displayed.filter(
     (element): element is ShapeElement => element.type === "shape",
   );
+  const [onlyElement] = elements.length === 1 ? elements : [];
+  const htmlLayer = onlyElement?.type === "html" ? onlyElement : undefined;
+  // Starting to edit another part of the HTML layer on the canvas brings up its style controls.
+  const htmlPart = htmlLayer && htmlSelection?.elementId === htmlLayer.id ? `${htmlLayer.id}:${htmlSelection.node}` : "";
+  const [shownHtmlPart, setShownHtmlPart] = useState("");
+  if (htmlPart !== shownHtmlPart) { setShownHtmlPart(htmlPart); if (htmlPart && !onSectionChange) setSection("html"); }
+  useEffect(() => { if (htmlPart) onSectionChange?.("html"); }, [htmlPart, onSectionChange]);
   const editableIds = new Set(editable.map((element) => element.id));
   const groupPrefix = `inspector:${editable.map((element) => element.id).join(",")}`;
   const allLocked = elements.length > 0 && editable.length === 0;
@@ -351,6 +367,7 @@ export function ElementInspector({
   const photoStyleDisabled=noEdits||images.every(element=>!canEditElement(scene,element,"style"));
   const photoContentDisabled=noEdits||images.every(element=>!canEditElement(scene,element,"content"));
   const categories:{id:InspectorSection;label:string}[]=[
+    ...(htmlLayer?[{id:"html" as const,label:"HTML"}]:[]),
     ...(texts.length||shapes.length?[{id:"edit" as const,label:texts.length&&!shapes.length?"Text":shapes.length&&!texts.length?"Fill":"Edit"}]:[]),
     ...(shapes.length?[{id:"outline" as const,label:"Outline"}]:[]),
     ...(images.length?[{id:"photo" as const,label:"Photo"}]:[]),
@@ -490,6 +507,7 @@ export function ElementInspector({
         {displayed.some(element=>element.protected?.length)&&<p className="te-element-hint">{displayed.some(element=>element.templateRole||element.type==="text"&&element.smartText)?"Template fonts and layout stay fixed. Edit the content or choose a line count.":"Protected properties stay unchanged. Manage protection in Advanced."}</p>}
         <div className="te-inspector-content" data-section={effectiveSection}>
           <fieldset disabled={noEdits}>
+            {effectiveSection==="html"&&htmlLayer&&<HtmlStylePanel scene={scene} element={htmlLayer} selection={htmlSelection} disabled={noEdits} onChange={onChange} onEditHtmlLayer={onEditHtmlLayer} onBreakHtmlLayer={onBreakHtmlLayer}/>}
             {effectiveSection==="edit"&&<>
               {templateDraft&&<TemplateRoleSection scene={scene} elements={displayed} height={height} disabled={disabled} onChange={onChange}/>}
               {texts.length>0&&<>
