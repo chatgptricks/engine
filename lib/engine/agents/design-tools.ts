@@ -249,12 +249,30 @@ function colorLiteral(value: string): string | null {
 }
 
 /**
+ * Platforms whose posts and comments are rebuilt as our cards in HTML layers.
+ * A card marks itself with a class, platform-card-reddit (Engine's HTML
+ * sanitizer keeps classes but drops data- attributes): like our X card, it
+ * keeps its platform's own colors, outside the brand on purpose. The review's
+ * palette check skips the same layers.
+ */
+export const PLATFORM_CARDS = ["reddit", "x", "threads", "instagram", "tiktok", "youtube", "facebook", "linkedin", "bluesky"] as const;
+const PLATFORM_MARK = /\sclass\s*=\s*["'][^"']*?(?<![\w-])platform-card-([\w-]+)/i;
+/** The platform whose card an HTML layer holds, or null. */
+export function platformCardOf(html: string): (typeof PLATFORM_CARDS)[number] | null {
+  const name = html.match(PLATFORM_MARK)?.[1]?.toLowerCase();
+  return PLATFORM_CARDS.find(platform => platform === name) ?? null;
+}
+
+/**
  * What in an HTML layer leaves the brand: a color written out instead of the
  * brand's variables (var(--color-accent)), or a variable the brand doesn't
- * have. The layer may define its own variables from the brand's.
+ * have. The layer may define its own variables from the brand's. A platform's
+ * card (platformCardOf) may write its platform's colors.
  */
 export function offBrand(html: string, css: string | undefined, tokens: Record<string, string>): string[] {
   const declarations: { property: string; value: string }[] = [], problems = new Set<string>();
+  const platform = platformCardOf(html), mark = html.match(PLATFORM_MARK)?.[1];
+  if (mark && !platform) problems.add(`platform-card-${mark} isn't a platform with its own card: use one of ${PLATFORM_CARDS.map(name => `platform-card-${name}`).join(", ")}.`);
   const sheets = [css ?? "", ...[...html.matchAll(STYLE_BLOCK)].map(match => match[1])];
   for (const sheet of sheets) {
     if (!sheet.trim()) continue;
@@ -274,7 +292,7 @@ export function offBrand(html: string, css: string | undefined, tokens: Record<s
   for (const match of markup.matchAll(COLOR_ATTRIBUTE)) declarations.push({ property: match[1].toLowerCase(), value: match[2] ?? match[3] ?? match[4] ?? "" });
   const own = new Set(declarations.filter(item => item.property.startsWith("--")).map(item => item.property));
   for (const { property, value } of declarations) {
-    const literal = colorLiteral(value);
+    const literal = platform ? null : colorLiteral(value);
     if (literal) problems.add(`${property}: ${value.trim().slice(0, 60)} writes the color ${literal} itself. Use the brand's variables (var(--color-accent), var(--color-text)…); for a tint, color-mix(in srgb, var(--color-text) 20%, transparent) or opacity.`);
     for (const [, name] of value.matchAll(VARIABLE)) {
       if (!(name in tokens) && !own.has(name)) problems.add(`var(${name}) isn't one of the brand's variables.`);
@@ -283,19 +301,12 @@ export function offBrand(html: string, css: string | undefined, tokens: Record<s
   return [...problems].slice(0, 6);
 }
 
-/** The HTML an operation adds or changes, to check against the brand. */
-function htmlOf(operation: Record<string, unknown>): { html: string; css?: string } | null {
-  const text = (value: unknown) => typeof value === "string" ? value : undefined;
-  if (operation.op === "add_html" || operation.op === "replace_html") return { html: text(operation.html) ?? "", css: text(operation.css) };
-  const element = operation.op === "add_element" ? operation.element as Record<string, unknown> | undefined : operation.op === "update_element" ? operation.properties as Record<string, unknown> | undefined : undefined;
-  if (element && (typeof element.html === "string" || typeof element.css === "string")) return { html: text(element.html) ?? "", css: text(element.css) };
-  return null;
-}
-
-/** Every HTML layer in the deck that leaves the brand, by slide. */
-export function deckOffBrand(document: DesignDocument, tokens: Record<string, string>): string[] {
+/** Every HTML layer in the deck that leaves the brand, by slide; with `was`, only the layers added or changed since. */
+export function deckOffBrand(document: DesignDocument, tokens: Record<string, string>, was?: DesignDocument): string[] {
+  const drawn = (element: CanvasElement) => element.type === "html" ? `${element.html}\n${element.css ?? ""}` : null;
+  const before = new Map(was?.pages.flatMap(page => (page.canvas?.elements ?? []).map(element => [`${page.id}\n${element.id}`, drawn(element)])) ?? []);
   return document.pages.flatMap((page, index) => (page.canvas?.elements ?? []).flatMap(element => {
-    if (element.type !== "html") return [];
+    if (element.type !== "html" || (was && before.get(`${page.id}\n${element.id}`) === drawn(element))) return [];
     const problems = offBrand(element.html, element.css, tokens);
     return problems.length ? [`Slide ${index + 1}, layer ${element.id}: ${problems.join(" ")}`] : [];
   }));
@@ -472,25 +483,23 @@ async function placeImages(session: DesignSession, operations: Record<string, un
 
 async function editDeck(session: DesignSession, input: { operations: Record<string, unknown>[] }): Promise<string> {
   if (!session.document) throw new ToolError("There is no deck yet: build it with create_deck first.");
-  // Without a brand guide or template colors there are no variables to keep to.
-  const branded = Object.keys(session.tokens).length > 0;
-  const problems = input.operations.flatMap((operation, index) => {
-    const html = branded ? htmlOf(operation) : null;
-    const found = html ? offBrand(html.html, html.css, session.tokens) : [];
-    return found.length ? [`Operation ${index + 1} (${String(operation.op)}): ${found.join(" ")}`] : [];
-  });
-  if (problems.length) throw new ToolError(`Nothing was changed. ${problems.join(" ")}`);
   let operations = await placeImages(session, input.operations);
   // HTML layers get the brand guide's colors, fonts and sizes as CSS variables.
   if (addsHtmlLayers(operations)) operations = withHtmlLayerTokens(operations, session.tokens);
   const before = new Map(session.document.pages.map(page => [page.id, JSON.stringify(page)]));
   const wasEmpty = emptySlots(session.document);
+  let next: DesignDocument;
   try {
-    session.document = updateAgentDeck(session.document, { operations });
+    next = updateAgentDeck(session.document, { operations });
   } catch (error) {
     if (error instanceof AgentDeckValidationError) throw new ToolError(`Nothing was changed. Fix these and try again: ${issues(error)}`);
     throw error;
   }
+  // Each HTML layer the edit adds or changes keeps to the brand, as it is after the edit (a platform's card by its mark).
+  // Without a brand guide or template colors there are no variables to keep to.
+  const problems = Object.keys(session.tokens).length ? deckOffBrand(next, session.tokens, session.document) : [];
+  if (problems.length) throw new ToolError(`Nothing was changed. ${problems.join(" ")}`);
+  session.document = next;
   tidySlots(session.document, wasEmpty);
   // The slides this changed (new ones too) wait to be looked at.
   const changed = new Set(session.document.pages.filter(page => before.get(page.id) !== JSON.stringify(page)).map(page => page.id));
@@ -649,19 +658,18 @@ async function chartData(session: DesignSession, input: { chart: WrittenChart; w
 }
 
 // ── The tools ───────────────────────────────────────────────────────────────
-type DesignTool = Omit<ClientTool, "run"> & { run: (input: Record<string, unknown>) => Promise<ToolContent> };
 const OPERATIONS = (AGENT_UPDATE_SCHEMA.properties as Record<string, { items: unknown }>).operations.items;
 const LOGO_CREDITS: Record<LogoSource, string> = { guide: "the brand guide's logos", svgl: "svgl.app", "simple-icons": "Simple Icons (CC0)", lobe: "Lobe Icons (MIT)" };
 
 /** The designer's tools for one run. */
-export function designTools(session: DesignSession): DesignTool[] {
+export function designTools(session: DesignSession): ClientTool[] {
   const exact = session.mode === "exact";
   const slideImage = (slide: number) => {
     const image = session.slides[slide - 1];
     if (!image) throw new ToolError(session.slides.length ? `The original has ${session.slides.length} slides.` : "The original's slides aren't available in this run.");
     return image;
   };
-  const tools: DesignTool[] = [
+  const tools: ClientTool[] = [
     {
       name: "create_deck",
       description: [

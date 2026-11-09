@@ -95,8 +95,11 @@ export type ClientTool = {
   name: string;
   description: string;
   schema: z.ZodObject;
-  /** Returns the text the agent reads. Throw a ToolError for a message the agent should see. */
-  run: (input: Record<string, unknown>) => Promise<string>;
+  /**
+   * Returns what the agent reads, as a tool_result's content: text, or blocks
+   * (text and images). Throw a ToolError for a message the agent should see.
+   */
+  run: (input: Record<string, unknown>) => Promise<string | Anthropic.Beta.BetaToolResultBlockParam["content"]>;
 };
 /** An error the agent may read and recover from (a bad series id, an empty window). */
 export class ToolError extends Error {}

@@ -218,6 +218,8 @@ test("an exact copy rebuilds every slide in the template, with stored images and
     assert.match(await call.submit.check(handIn),/Look at slides 1, 2, 3, 4 with look_at_slides first/);
     const seen=await invoke("look_at_slides",{slides:[1,2,3,4]});
     assert.equal(seen.filter(block=>block.type==="image").length,4,"look_at_slides shows the slides as pictures");
+    const shot=await sharp(Buffer.from(seen.find(block=>block.type==="image").source.data,"base64")).metadata();
+    assert.ok(shot.format==="jpeg"&&shot.width<=540,"each slide comes back as a small JPEG: it stays in the conversation for every later turn");
     assert.match(await call.submit.check({...handIn,pages:handIn.pages.slice(1)}),/The deck has 4 slides/);
     assert.match(await call.submit.check({...handIn,pages:[...handIn.pages.slice(0,3),{slide:5,layout:"Follow"}]}),/only 4 slides to rebuild/);
     assert.equal(await call.submit.check(handIn),null);
@@ -342,25 +344,90 @@ test("a full recreation builds the approved plan with the approved headline, on 
   });
 });
 
-test("slide 1 is built on the Cover page, or the deck isn't handed in",async()=>{
+test("slide 1 is built on the Cover page and the last on the Follow page, or the deck isn't handed in",async()=>{
   const context=await contextFor("autopilot",{
     source:done(sourceNotes),research:done(research),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null}),brief:done(brief),
     approval:done({plan,headline:{text:APPROVED,option:0},notes:""}),
   });
   const handIn={pages:[{slide:1,layout:"Cover"},{slide:2,layout:"Text + Media"},{slide:3,layout:"Follow"}],notes:[]};
   await stand(async({call,invoke,json})=>{
-    const build=async first=>{
-      await json("create_deck",{name:"AI vs Jobs",caption:"Openings fell as rates rose.",slides:[first,{templatePage:MEDIA,slots:{title:"What the chart shows"}},{templatePage:FOLLOW,slots:{cta:"FOR MORE"}}]});
+    const build=async(first,last={templatePage:FOLLOW,slots:{cta:"FOR MORE"}})=>{
+      await json("create_deck",{name:"AI vs Jobs",caption:"Openings fell as rates rose.",slides:[first,{templatePage:MEDIA,slots:{title:"What the chart shows"}},last]});
       await invoke("look_at_slides",{slides:[1,2,3]});
     };
     await build({templatePage:MEDIA,slots:{title:APPROVED}});
     assert.match(await call.submit.check(handIn),new RegExp(`Slide 1 is the post's cover: build it on the Cover page \\(templatePage ${COVER}\\)`));
+    await build({templatePage:COVER,slots:{"cover-headline":APPROVED}},{templatePage:MEDIA,slots:{title:"Follow us"}});
+    assert.match(await call.submit.check(handIn),new RegExp(`The last slide is the Follow page \\(templatePage ${FOLLOW}\\)`));
     await build({templatePage:COVER,slots:{"cover-headline":APPROVED}});
     assert.equal(await call.submit.check(handIn),null);
     return handIn;
   },async()=>{
     const {output}=await design(context);
     assert.deepEqual(output.pages.map(page=>page.layout),["Cover","Text + Media","Follow"]);
+  });
+});
+
+/** A post of Reddit comments, like the design proof's: a photo under a comment on the cover, a comment alone, the cover's comment again, and no follow slide. */
+const COMMENT="Swapped airplane seats with a mom so she could sit next to her kid. The guy next to my new seat became my business partner. We sold the company last year";
+const redditNotes={...sourceNotes,shows:"A dinner photo under a Reddit comment, then Reddit comments",claims:"Small decisions changed people's lives",slides:[
+  {index:1,role:"cover",texts:[{role:"label",text:"seat12b · 1d"},{role:"quote",text:COMMENT},{role:"headline",text:"Reddit Users Reveal the Small Decisions That Changed Their Lives Forever"}],parts:[
+    {kind:"screenshot",box:{x:80,y:30,width:840,height:200},what:"A Reddit comment by seat12b, 1d",text:COMMENT,post:null},
+    {kind:"photo",box:PICTURE,what:"Friends at a dinner table",text:"",post:null},
+  ]},
+  {index:2,role:"post",texts:[{role:"label",text:"no_thanks_nate · 9h"},{role:"quote",text:"Said no to one more drink at a bar."}],parts:[{kind:"screenshot",box:{x:60,y:300,width:880,height:300},what:"A Reddit comment by no_thanks_nate, 9h",text:"Said no to one more drink at a bar.",post:null}]},
+  {index:3,role:"post",texts:[{role:"label",text:"seat12b · 1d"},{role:"quote",text:COMMENT}],parts:[{kind:"screenshot",box:{x:60,y:300,width:880,height:300},what:"A Reddit comment by seat12b, 1d",text:COMMENT,post:null}]},
+]};
+const redditCard=(name,words,mark=" platform-card-reddit")=>`<div class="area"><div class="card${mark}"><div class="who"><svg viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Reddit avatar"><circle cx="32" cy="32" r="32" fill="#FF4500"/></svg><b>${name}</b><span class="when">· 9h</span></div><p>${words}</p></div></div>`;
+const REDDIT_CSS=".area{height:100%;display:flex;flex-direction:column;justify-content:center}.card{background:#0E1113;border:3px solid #2F3336;border-radius:24px;padding:44px 48px}b{color:#F2F4F5}.when{color:#8BA2AD}p{color:#EEF1F3;font-size:50px;line-height:63px;text-wrap:pretty}";
+
+test("another platform's comments become our cards in its own colors, and the deck ends on a Follow page made for the post",async()=>{
+  assert.equal(tools.platformCardOf('<div class="card Platform-Card-Reddit">'),"reddit");
+  assert.equal(tools.platformCardOf('<div class="card my-platform-card-reddit">'),null);
+  assert.equal(tools.platformCardOf('<div data-platform-card="reddit">'),null,"a data- attribute wouldn't survive the sanitizer, so it isn't the mark");
+  const context=await contextFor("exact",{source:done(redditNotes),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null})});
+  await stand(async({call,invoke,refused,json})=>{
+    assert.match(call.system,/the frame of our X card: 936 px wide at x 72, 24 px corners, a 3 px #2F3336 border/,"cards take the template's X card frame");
+    assert.match(call.system,/x 72, y 90, 936 px wide and 1262 px tall/,"a lone card is centred in the guide's content area");
+    const photo=await json("cut_from_source",{slide:1,box:PICTURE,kind:"photo",what:"Friends at a dinner table"});
+    const built=await json("create_deck",{name:"Small decisions",caption:sourceNotes.post.caption,slides:[
+      {templatePage:COVER,slots:{"cover-headline":"REDDIT USERS REVEAL THE [[SMALL DECISIONS]] THAT CHANGED THEIR LIVES FOREVER",photo:photo.src}},
+      {templatePage:FOLLOW,slots:{cta:"FOR MORE LIFE STORIES",photo:photo.src}},
+    ]});
+    const [cover,follow]=built.deck.slides.map(slide=>slide.pageId);
+    // The cover's comment is rebuilt where the original's was, over the photo.
+    await json("edit_deck",{operations:[{op:"add_html",pageId:cover,name:"Reddit comment · seat12b",x:72,y:90,width:936,height:300,html:redditCard("seat12b",COMMENT),css:REDDIT_CSS}]});
+    // A comment alone is a blank slide with one card. Unmarked, or marked for a platform Engine doesn't know, its colors are refused.
+    const story=mark=>({op:"add_slide",index:1,slide:{label:"Story",layout:"blank",background:"#0B1014",elements:[
+      {type:"html",id:"story-card",name:"Reddit comment · no_thanks_nate",x:72,y:90,width:936,height:1262,html:redditCard("no_thanks_nate","Said no to one more drink at a bar.",mark),css:REDDIT_CSS},
+    ]}});
+    await refused("edit_deck",{operations:[story("")]},/writes the color #0E1113/);
+    await refused("edit_deck",{operations:[story(" platform-card-myspace")]},/isn't a platform with its own card/);
+    const added=await json("edit_deck",{operations:[story(" platform-card-reddit")]});
+    assert.deepEqual(added.deck.slides.map(slide=>slide.slide),[2],"the card's slide goes in second");
+    const storyPage=added.deck.slides[0].pageId;
+    // A change to its CSS alone is checked on the card as it ends up, mark and all.
+    const changed=await json("edit_deck",{operations:[{op:"update_element",pageId:storyPage,elementId:"story-card",properties:{css:REDDIT_CSS.replace("#2F3336","#343536")}}]});
+    assert.deepEqual(changed.deck.slides.map(slide=>slide.slide),[2]);
+    // The Follow page shows the post's photo again, closer.
+    const followPhoto=layer(built.deck,2,"photo");
+    await json("edit_deck",{operations:[{op:"update_element",pageId:follow,elementId:followPhoto.id,properties:{cropScale:1.3,cropX:50,cropY:40}}]});
+    await invoke("look_at_slides",{slides:[1,2,3]});
+    // Slide 3 repeats slide 1's comment, so it's left out; the Follow page the original doesn't have is slide 0.
+    const handIn={pages:[{slide:1,layout:"Cover"},{slide:2,layout:"blank, one Reddit card"},{slide:0,layout:"Follow"}],notes:["Slide 3 repeats slide 1's comment, so it's left out."]};
+    assert.equal(await call.submit.check(handIn),null);
+    return handIn;
+  },async()=>{
+    const {output}=await design(context);
+    assert.deepEqual(output.pages.map(page=>page.slide),[1,2,0]);
+    const deck=await deckLib.loadDeck(context.ownerKey,output.deckId);
+    const card=deck.pages[1].canvas.elements.find(item=>item.type==="html");
+    assert.equal(tools.platformCardOf(card.html),"reddit");
+    assert.match(card.css,/#343536/);
+    assert.deepEqual(tools.deckOffBrand(deck,tokens),[],"a platform's card keeps its own colors; everything else keeps the brand's");
+    assert.equal(deck.pages[2].canvas.elements.find(item=>item.slot==="cta").text,"FOR MORE LIFE STORIES");
+    assert.equal(deck.pages[2].canvas.elements.find(item=>item.slot==="photo").cropScale,1.3);
+    assert.deepEqual(leftovers(deck),[]);
   });
 });
 
