@@ -7,7 +7,7 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { GUIDE_CHECKS, guideBrief, guidePalette, guideTextStyle, runGuideChecks, type BrandGuide, type GuideCheckKind } from "../../template-editor/brand-guide";
 import { formatDimensions, type DesignDocument, type HtmlElement } from "../../template-editor/model";
-import { hexColor, PLATFORM_COLORS, type Platform } from "../../template-editor/platform-cards";
+import { hexColor } from "../../template-editor/platform-cards";
 import { getBrandGuide, guideExampleImages } from "../brand-guides";
 import type { PageProfile } from "../page-profiles";
 import { imageBlock } from "./claude";
@@ -67,10 +67,10 @@ export function reviewGuideChecks(document: DesignDocument, profile: PageProfile
  * What the review holds an HTML layer to, in the deck's output pixels: the
  * colors it may draw with, its smallest text and the size of a title. The
  * colors are the guide's and those in the layer's brand variables (Engine
- * sets them from the guide the deck was made with); `withPlatform` adds a
- * platform's own for its card (platform-cards.ts). Without a guide, sizes come
- * from the layer's variables, else a 1080-wide page's 24 px and 56 px; with no
- * colors known, there's no palette to check.
+ * sets them from the guide the deck was made with). A platform card's own
+ * colors are allowed on top, by the palette check (review-checks.ts). Without
+ * a guide, sizes come from the layer's variables, else a 1080-wide page's
+ * 24 px and 56 px; with no colors known, there's no palette to check.
  */
 export type ReviewBrand = { name: string; palette: string[]; minText: number; titleSize: number };
 const DEFAULT_LIMITS = { width: 1080, minText: 24, title: 56 };
@@ -90,9 +90,6 @@ export function reviewBrand(document: Pick<DesignDocument, "format" | "customSiz
   const scale = width / (number("--page-width") ?? DEFAULT_LIMITS.width);
   return { name: "brand", palette, minText: (number("--min-text-size") ?? DEFAULT_LIMITS.minText) * scale, titleSize: (number("--title-size") ?? DEFAULT_LIMITS.title) * scale };
 }
-/** The brand's colors and a platform's own, for that platform's card. */
-export const withPlatform = (brand: ReviewBrand, platform: Platform | null): ReviewBrand =>
-  platform ? { ...brand, name: `${brand.name} or ${platform === "x" ? "X" : "Reddit"}`, palette: hexes([...brand.palette, ...PLATFORM_COLORS[platform]]) } : brand;
 
 /** The guide's approved posts as images with their notes, ahead of the critic's own slides. */
 export async function guideExampleBlocks(ownerKey: string, guide: BrandGuide | null | undefined): Promise<Anthropic.Beta.BetaContentBlockParam[]> {

@@ -240,6 +240,13 @@ test("colors outside the palette are caught; the brand's variables, tints and a 
   assert.deepEqual(checks.paletteChecks(addHtml(baseDeck(),2,{id:"post",html:`<div class="platform-card platform-x" style="background:${x[0]};color:${x[1]}"><span style="color:${x[2]}">@sama</span></div>`}),guide),[],"an X card's own colors pass");
   const stray=checks.paletteChecks(addHtml(baseDeck(),2,{id:"card",html:`<div class="platform-card platform-reddit" style="background:${reddit[0]};color:#FF0000">x</div>`}),guide);
   assert.match(one(stray,/#FF0000/).problem,/outside the ChatGPTricks or Reddit colors/);
+  // As in the designer's brand rule: a platform's colors count exactly as isPlatformColor reads them (#hex as written, rgb()
+  // as computed styles give it, see-through or not), and each layer is held to the mark on its own outermost element.
+  assert.deepEqual(checks.paletteChecks(addHtml(baseDeck(),2,{id:"card",html:'<div class="platform-card platform-reddit" style="background:rgb(14, 17, 19);border-color:rgb(47 51 54 / 50%);color:#f2f4f5cc">x</div>'}),guide),[],"rgb() and see-through platform colors pass");
+  const nearly=one(checks.paletteChecks(addHtml(baseDeck(),2,{id:"card",html:`<div class="platform-card platform-reddit" style="background:${reddit[0]};color:#FF4501">x</div>`}),guide),/#FF4501/);
+  assert.equal(nearly.severity,"must_fix","a near miss of Reddit's orange isn't Reddit's");
+  assert.match(nearly.fix,/, or one of Reddit's own colors exactly as listed: #0E1113, #2F3336/);
+  assert.equal(checks.paletteChecks(addHtml(baseDeck(),2,{id:"card",html:`<div><div class="platform-card platform-reddit" style="background:${reddit[0]}">x</div></div>`}),guide).length,1,"the mark counts on the outermost element only");
   // With no brand colors known (no guide, no variables) there's nothing to hold a layer to.
   assert.deepEqual(checks.paletteChecks(addHtml(baseDeck(),2,{id:"badge",html:"<b>x</b>",css:"b{color:#FF3B30}",brandTokens:null}),null),[]);
 });

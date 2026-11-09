@@ -7,7 +7,8 @@
  *   - houseChecks: the page's format rules on the template's text slots, empty
  *     photo frames, and pages Export would refuse;
  *   - paletteChecks: CSS colors in HTML layers that aren't the brand's (a
- *     platform card may also use its platform's own, platform-cards.ts);
+ *     platform card may also write its platform's own, by isPlatformColor in
+ *     platform-cards.ts, as the designer's brand rule allows);
  *   - headlineChecks: a headline or title drawn inside HTML instead of in its
  *     native text slot, found by its words;
  *   - measuredChecks, from the drawing: text in HTML under the brand's minimum
@@ -20,10 +21,10 @@ import { Parser } from "htmlparser2";
 import { parse as parseCss } from "postcss";
 import type { BrandGuide } from "../../template-editor/brand-guide";
 import { formatDimensions, htmlLayerText, type CanvasElement, type DesignDocument, type HtmlElement } from "../../template-editor/model";
-import { platformOfLayer } from "../../template-editor/platform-cards";
+import { isPlatformColor, PLATFORM_COLORS, platformOfLayer, type Platform } from "../../template-editor/platform-cards";
 import type { PageProfile } from "../page-profiles";
 import type { MeasuredBox, SlideMeasures, SlideRender } from "../slide-render";
-import { reviewBrand, withPlatform } from "./brand";
+import { reviewBrand } from "./brand";
 import { coverPage, followPage, type PageCatalog } from "./pages";
 import type { CheckIssue } from "./schemas";
 
@@ -211,8 +212,13 @@ export function paletteColor(value: string): Rgba | null {
   const match = value.trim().match(/^#([0-9a-f]{3,8})$/i);
   return match && [3, 4, 6, 8].includes(match[1].length) ? hexColor(match[1]) : null;
 }
-/** The colors an HTML layer draws with that aren't in the palette, each with where it is used. */
-export function offPaletteColors(element: Pick<HtmlElement, "html" | "css" | "tokens">, palette: Rgba[]): { text: string; property: string; alpha: number }[] {
+/**
+ * The colors an HTML layer draws with that aren't in the palette, each with
+ * where it is used. In a platform card (`platform`), a color passes when
+ * isPlatformColor takes it as written, as in the designer's brand rule;
+ * every other color still has to be in the palette.
+ */
+export function offPaletteColors(element: Pick<HtmlElement, "html" | "css" | "tokens">, palette: Rgba[], platform: Platform | null = null): { text: string; property: string; alpha: number }[] {
   const tokens = element.tokens ?? {}, declarations = declarationsOf(element);
   const own = new Map<string, string[]>();
   for (const declaration of declarations) if (declaration.property.startsWith("--")) own.set(declaration.property, [...(own.get(declaration.property) ?? []), declaration.value]);
@@ -232,6 +238,7 @@ export function offPaletteColors(element: Pick<HtmlElement, "html" | "css" | "to
   const off = new Map<string, { text: string; property: string; alpha: number }>();
   for (const { property, value } of checked) {
     for (const found of literalColors(withoutVariables(value, defined).value, property)) {
+      if (platform && isPlatformColor(platform, found.text)) continue;
       if (found.color && (found.color.a === 0 || palette.some(color => near(color, found.color!)))) continue;
       const key = found.text.toLowerCase();
       if (!off.has(key)) off.set(key, { text: found.text, property, alpha: found.color?.a ?? 1 });
@@ -240,26 +247,32 @@ export function offPaletteColors(element: Pick<HtmlElement, "html" | "css" | "to
   return [...off.values()];
 }
 
+const PLATFORM_NAME: Record<Platform, string> = { x: "X", reddit: "Reddit" };
 /**
  * CSS colors in HTML layers that aren't the brand's: the guide's and the
- * layer's brand variables. A platform card may also use its platform's own.
- * With no brand colors known (no guide, no variables) there's nothing to check.
+ * layer's brand variables. Each layer is held to its own mark: inside a
+ * platform card (platform-cards.ts, its outermost element's classes) that
+ * platform's own colors pass too, exactly as listed, and only those. With no
+ * brand colors known (no guide, no variables) there's nothing to check.
  */
 export function paletteChecks(document: DesignDocument, guide: BrandGuide | null | undefined): Issue[] {
   const issues: Issue[] = [];
   document.pages.forEach((page, index) => {
     for (const element of page.canvas?.elements ?? []) {
       if (element.type !== "html" || !shown(element)) continue;
-      const own = reviewBrand(document, guide, element);
-      if (!own.palette.length) continue;
-      const brand = withPlatform(own, platformOfLayer(element.html));
-      const off = offPaletteColors(element, brand.palette.map(paletteColor).filter((color): color is Rgba => Boolean(color)));
+      const brand = reviewBrand(document, guide, element);
+      if (!brand.palette.length) continue;
+      const platform = platformOfLayer(element.html);
+      const off = offPaletteColors(element, brand.palette.map(paletteColor).filter((color): color is Rgba => Boolean(color)), platform);
       if (!off.length) continue;
       const strong = off.some(color => color.alpha >= 0.5);
+      const variables = `the brand's variables (var(--color-accent), var(--color-text) and the rest: ${brand.palette.join(", ")})`;
       issues.push({
         slide: index + 1,
-        problem: `The HTML layer ${label(element)} uses ${quoted(off.map(color => `${color.property}: ${color.text}`), 60)}, outside the ${brand.name} colors`,
-        fix: `Use the brand's variables instead (var(--color-accent), var(--color-text) and the rest: ${own.palette.join(", ")}); for a tint, color-mix(in srgb, var(--color-text) 20%, transparent)`,
+        problem: `The HTML layer ${label(element)} uses ${quoted(off.map(color => `${color.property}: ${color.text}`), 60)}, outside the ${brand.name}${platform ? ` or ${PLATFORM_NAME[platform]}` : ""} colors`,
+        fix: platform
+          ? `Use ${variables}, or one of ${PLATFORM_NAME[platform]}'s own colors exactly as listed: ${PLATFORM_COLORS[platform].join(", ")}`
+          : `Use ${variables} instead; for a tint, color-mix(in srgb, var(--color-text) 20%, transparent)`,
         severity: strong ? "must_fix" : "should_fix", route: "design",
       });
     }
