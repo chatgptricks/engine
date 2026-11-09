@@ -6,19 +6,33 @@ import {developmentDirectory} from "@/lib/template-editor/development-storage";
 
 /**
  * The post file: one saved record per Recreate run, shared by every agent on
- * the team. Each stage (brief, research, outline, copy, charts, images, deck,
- * review) writes its output here, so a run can pause at the human checkpoint,
- * resume after a server restart, rerun one stage, or let an outside agent do a
- * stage itself. People see a short summary on the deck; agents read the file.
+ * the team. Each stage (source, research, verdict, brief, headline, approval,
+ * design, review) writes its output here, so a run can stop or pause at the
+ * check, pause at the human checkpoint, resume after a server restart, rerun
+ * one stage, or let an outside agent do a stage itself. People see a short
+ * summary on the deck; agents read the file.
+ *
+ * Version 2 is the current team. Version-1 files, from the first team, still
+ * open until they expire, but only to be looked at: no action runs on them.
  *
  * Stored per workspace owner in gf_client_state as one row per post under
  * `post-file:<owner>:<id>` (never `template-editor:`), or as local JSON files
  * in development, with a revision check on every write.
  */
 
-/** Every stage either mode can run. A full recreation runs all but `transcript`; an exact copy runs `transcript`, `data`, `deck` and `review`. */
-export const POST_STAGES = ["transcript", "brief", "facts", "data", "reactions", "visuals", "outline", "hooks", "approval", "copy", "charts", "images", "deck", "review"] as const;
+/** The version new post files are written in. */
+export const POST_FILE_VERSION = 2;
+/** Every stage of a run, in order. A full recreation runs them all; an exact copy runs source, research (a quick check), verdict, design and review. */
+export const POST_STAGES = ["source", "research", "verdict", "brief", "headline", "approval", "design", "review"] as const;
 export type PostStage = typeof POST_STAGES[number];
+/**
+ * The first team's stages. Version-1 files record these, and the first team's
+ * modules still use their names until the cleanup step deletes them.
+ */
+export const LEGACY_STAGES = ["transcript", "brief", "facts", "data", "reactions", "visuals", "outline", "hooks", "approval", "copy", "charts", "images", "deck", "review"] as const;
+export type LegacyStage = typeof LEGACY_STAGES[number];
+/** A stage of either version, as a post file records it. */
+export type StageName = PostStage | LegacyStage;
 export type StageStatus = "pending" | "running" | "done" | "error" | "skipped";
 export type StageActor = "engine" | "agent" | "human";
 export type StageRecord = {
@@ -39,22 +53,30 @@ export type StageRecord = {
 };
 /** checkpoint and autopilot run the full team (checkpoint pauses for a person's approval); exact rebuilds the post as it is. */
 export type PostMode = "checkpoint" | "autopilot" | "exact";
-export type PostStatus = "running" | "paused" | "done" | "error";
+/** `stopped`: the check found the story shouldn't be made (fabricated, untraceable, stale or saturated), so there is no deck. */
+export type PostStatus = "running" | "paused" | "done" | "error" | "stopped";
+/** What a paused run waits for: a person's answer to the check, or their approval of the plan. */
+export type PostWaiting = "verdict" | "approval";
 export type PostSource = {
   url?: string; caption: string; owner?: string; notes: string; slideCount: number; imageIds: string[];
   /** Links to posts on X the person added for the reaction slides (https://x.com/i/status/<id>). */
   xPosts?: string[];
+  /** The story's original (the first post or article), added by a person when research couldn't find it. */
+  originUrl?: string;
 };
 export type PostFile = {
   id: string;
-  version: 1;
+  /** 2 for the current team; 1 for the first team's runs, which open read-only. */
+  version: 1 | 2;
   profileId: string;
   mode: PostMode;
   status: PostStatus;
+  /** Set while the run is paused. */
+  waiting?: PostWaiting;
   message: string;
   source: PostSource;
-  stages: Partial<Record<PostStage, StageRecord>>;
-  history: {at: string; stage: PostStage | "run"; event: string; by: StageActor}[];
+  stages: Partial<Record<StageName, StageRecord>>;
+  history: {at: string; stage: StageName | "run"; event: string; by: StageActor}[];
   deckId?: string;
   createdAt: string;
   updatedAt: string;
@@ -85,7 +107,7 @@ function assertDevelopmentStorage() {
 function decode(value: unknown): PostFile | null {
   if (value === null || value === undefined) return null;
   const file = value as PostFile;
-  if (typeof file !== "object" || file.version !== 1 || !isPostFileId(file.id) || typeof file.revision !== "string" || typeof file.stages !== "object") {
+  if (typeof file !== "object" || (file.version !== 1 && file.version !== POST_FILE_VERSION) || !isPostFileId(file.id) || typeof file.revision !== "string" || typeof file.stages !== "object") {
     throw new PostFileError("The post's working file could not be read. It has not been changed.", 503);
   }
   return Date.parse(file.expiresAt) < Date.now() ? null : file;
@@ -156,7 +178,7 @@ export async function createPostFile(ownerKey: string, init: {profileId: string;
   checkedOwner(ownerKey);
   const now = new Date().toISOString();
   const file: PostFile = {
-    id: `post-${randomUUID()}`, version: 1, profileId: init.profileId, mode: init.mode, status: "running", message: "Starting",
+    id: `post-${randomUUID()}`, version: POST_FILE_VERSION, profileId: init.profileId, mode: init.mode, status: "running", message: "Starting",
     source: init.source, stages: {}, history: [{at: now, stage: "run", event: `Started in ${init.mode} mode`, by: "engine"}],
     createdAt: now, updatedAt: now, expiresAt: new Date(Date.now() + TTL_DAYS * 864e5).toISOString(), revision: randomUUID(),
   };
@@ -210,24 +232,32 @@ export function setStage(file: PostFile, stage: PostStage, record: Partial<Stage
   file.history.push({at: now, stage, event: event ?? record.status, by});
 }
 
-/** What each stage of a full recreation reads. A stage must rerun when one it reads changes. */
+/** True for a file the current team can act on; a version-1 file only opens to be looked at. */
+export const isCurrentPostFile = (file: PostFile) => file.version === POST_FILE_VERSION;
+
+/**
+ * What each stage of a full recreation reads. A stage must rerun when one it
+ * reads changes. A stage that reads the verdict also waits for it to say
+ * proceed (or for a person to answer it so); the orchestrator holds that gate.
+ */
 export const STAGE_INPUTS: Record<PostStage, PostStage[]> = {
-  transcript: [], brief: [], facts: ["brief"], data: ["brief"], reactions: ["brief"], visuals: ["brief", "facts"],
-  outline: ["brief", "facts", "data", "reactions"], hooks: ["brief", "facts"], approval: ["outline", "hooks"],
-  copy: ["approval", "facts", "data", "reactions"], charts: ["approval", "data"], images: ["approval", "visuals"],
-  deck: ["copy", "charts", "images"], review: ["deck"],
+  source: [], research: ["source"], verdict: ["research"],
+  brief: ["source", "research", "verdict"], headline: ["source", "research", "brief"], approval: ["brief", "headline"],
+  design: ["source", "research", "brief", "approval"], review: ["source", "brief", "design"],
 };
-/** An exact copy: the original read word for word, its charts redrawn from real data (skipped when it has none), then the deck, then the check. */
-export const EXACT_STAGES: PostStage[] = ["transcript", "data", "deck", "review"];
-const EXACT_INPUTS: Partial<Record<PostStage, PostStage[]>> = { transcript: [], data: ["transcript"], deck: ["transcript", "data"], review: ["deck"] };
+/** An exact copy: the original read slide by slide, a quick check of where it comes from, the gate, then the design and its check. */
+export const EXACT_STAGES: PostStage[] = ["source", "research", "verdict", "design", "review"];
+const EXACT_INPUTS: Partial<Record<PostStage, PostStage[]>> = {
+  source: [], research: ["source"], verdict: ["research"], design: ["source", "verdict"], review: ["source", "design"],
+};
 
 /** The stages a run in this mode goes through, in order. */
 export function stagesFor(mode: PostMode): PostStage[] {
-  return mode === "exact" ? [...EXACT_STAGES] : POST_STAGES.filter(stage => stage !== "transcript");
+  return mode === "exact" ? [...EXACT_STAGES] : [...POST_STAGES];
 }
 /** What a stage reads in this mode. */
 export function inputsOf(stage: PostStage, mode: PostMode): PostStage[] {
-  return mode === "exact" ? EXACT_INPUTS[stage] ?? [] : STAGE_INPUTS[stage];
+  return mode === "exact" ? EXACT_INPUTS[stage] ?? [] : STAGE_INPUTS[stage] ?? [];
 }
 /** Stages that must rerun when one changes: everything that read its output, in this mode (a full recreation by default). */
 export function downstreamOf(stage: PostStage, mode: PostMode = "autopilot"): PostStage[] {
@@ -237,4 +267,9 @@ export function downstreamOf(stage: PostStage, mode: PostMode = "autopilot"): Po
   };
   visit(stage);
   return stages.filter(candidate => result.has(candidate));
+}
+
+/** A version-1 run's stages, in order, for showing its file. */
+export function legacyStagesFor(mode: PostMode): LegacyStage[] {
+  return mode === "exact" ? ["transcript", "data", "deck", "review"] : LEGACY_STAGES.filter(stage => stage !== "transcript");
 }

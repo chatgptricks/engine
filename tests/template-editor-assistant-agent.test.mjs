@@ -348,12 +348,12 @@ test("recreate_post passes attached screenshots to the run and shows a run card"
   assert.equal(card.postId,"post-11111111-2222-3333-4444-555555555555");
   const thread=await f.threads.getThread("owner",{kind:"home",personId:"p1"});
   assert.match(thread.conversation.messages[0].content[0].text,/Attached: upload-a "slide1\.png"/);
-  // A later "approve with hook 2" acts on that run.
-  const next=scripted([{content:[use("t2","approve_plan",{hook:2})],stop:"tool_use"},{content:[text("Approved.")]}]);
-  await ask(f,{client:next.client,text:"you pick, use the second hook"});
+  // A later "approve with headline 2" acts on that run.
+  const next=scripted([{content:[use("t2","approve_plan",{headline:2})],stop:"tool_use"},{content:[text("Approved.")]}]);
+  await ask(f,{client:next.client,text:"you pick, use the second headline"});
   assert.equal(f.calls.approved[0][1],"post-11111111-2222-3333-4444-555555555555");
   assert.deepEqual(f.calls.approved[0][2],{option:1});
-  assert.equal(f.calls.approved[0][3],"agent","a hook the agent chose is never sent as a person's pick");
+  assert.equal(f.calls.approved[0][3],"agent","a headline the agent chose is never sent as a person's pick");
 });
 
 test("tools refuse what they can't do with a message Claude can act on",async t=>{
@@ -402,7 +402,7 @@ test("an exact copy starts in exact mode without posts from X, and what it doesn
   assert.deepEqual(definition.input_schema.properties.mode.enum,["exact","checkpoint","autopilot"]);
   const {client,requests}=scripted([
     {content:[use("t1","recreate_post",{link:"https://www.instagram.com/p/DfUR7MxoA62/",page:"chatgptricks",mode:"exact",xPosts:["https://x.com/sama/status/1850000000000000000"]})],stop:"tool_use"},
-    {content:[use("t2","approve_plan",{hook:1})],stop:"tool_use"},
+    {content:[use("t2","approve_plan",{headline:1})],stop:"tool_use"},
     {content:[text("It's an exact copy, so there's no plan to approve.")]},
   ]);
   const saved=await ask(f,{client,text:"exact copy of this for chatgptricks"});

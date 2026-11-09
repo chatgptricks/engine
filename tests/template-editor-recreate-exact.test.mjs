@@ -1,13 +1,15 @@
 /* Run: node --test tests/template-editor-recreate-exact.test.mjs
- * Exact copy: the original post rebuilt as it is. The run goes transcript,
- * data (its charts' real numbers), deck, review with no pause; the critics send
- * work back to the transcript at most once; and the pieces code owns: the
- * transcript clean-up, snapping a picture's box to its real edges, cutting it
- * out of the original slide, redrawing a chart from its data, our cards for its
- * posts from X, the cover in capitals and the tidy-up. Claude is never called:
- * the transcript, the chart rebuilder and the review are stand-ins, and the
- * real deck stage builds the deck. X is a stand-in too. Local development
- * storage only. */
+ * The first Recreate team's exact copy, kept until the cleanup: the original
+ * post rebuilt as it is. Its run (transcript, data for its charts' real
+ * numbers, deck, review, and the critic's must-fix sent back once) goes
+ * through the stand-in driver in helpers-legacy-recreate, as the first
+ * orchestrator ran it; the current team's exact copy is in
+ * template-editor-recreate-flow. Also the pieces code owns: the transcript
+ * clean-up, snapping a picture's box to its real edges, cutting it out of the
+ * original slide, redrawing a chart from its data, our cards for its posts from
+ * X, the cover in capitals and the tidy-up. Claude is never called: the
+ * transcript, the chart rebuilder and the review are stand-ins, and the real
+ * deck stage builds the deck. X is a stand-in too. Local development storage only. */
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -18,6 +20,7 @@ import {createRequire} from "node:module";
 import {fileURLToPath} from "node:url";
 import ts from "typescript";
 import sharp from "sharp";
+import {LEGACY_EXACT_INPUTS,legacyExact} from "./helpers-legacy-recreate.mjs";
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");
 const nativeRequire=createRequire(import.meta.url);
@@ -42,7 +45,6 @@ function load(relative) {
   return unit.exports;
 }
 
-const orchestrator=load("lib/engine/agents/orchestrator.ts");
 const posts=load("lib/engine/post-files.ts");
 const jobs=load("lib/engine/recreate-jobs.ts");
 const exact=load("lib/engine/agents/exact.ts");
@@ -147,7 +149,7 @@ const REVIEWED=round=>({round,rendered:false,checks:[],facts:null,design:null,se
 function crew({transcript,review:critic,images,data}={}) {
   const calls=[];
   const record=(stage,context)=>{
-    for(const input of posts.inputsOf(stage,context.file.mode))assert.ok(["done","skipped"].includes(context.file.stages[input]?.status),`${stage} started before ${input} finished`);
+    for(const input of LEGACY_EXACT_INPUTS[stage])assert.ok(["done","skipped"].includes(context.file.stages[input]?.status),`${stage} started before ${input} finished`);
     calls.push({stage,round:context.round,instructions:context.instructions,previous:context.previous});
   };
   const runners={
@@ -169,23 +171,23 @@ function crew({transcript,review:critic,images,data}={}) {
   };
   return {calls,runners,count:stage=>calls.filter(call=>call.stage===stage).length};
 }
-const start=(ownerKey,team,extra={})=>orchestrator.startRecreate(ownerKey,{profileId:"chatgptricks",url:"https://www.instagram.com/p/exact/",mode:"exact",...extra},{runners:team.runners,environment:env(english)});
+const driver=legacyExact({posts,claude,exact,exactData,review},env(english));
+const start=(ownerKey,team,extra={})=>driver.start(ownerKey,team,extra);
 const read=(ownerKey,id)=>posts.getPostFile(ownerKey,id);
 const elements=page=>page.canvas?.elements??[];
 const bySlot=(page,slot)=>elements(page).find(element=>element.slot===slot);
 const notesOf=deck=>(deck.comments??[]).find(comment=>comment.text.startsWith("Notes from Recreate"))?.text??"";
 
-test("an exact copy copies, looks for its charts' data, builds and reviews, with no pause, research or added posts from X",async()=>{
+test("an exact copy copies, looks for its charts' data, builds and reviews",async()=>{
   const images=[await slide(),await slide()];
   const team=crew({images}),ownerKey=owner();
-  const {file,done}=await start(ownerKey,team,{xPosts:["https://x.com/alice/status/101"],notes:"Keep the chart"});
+  const {file,done}=await start(ownerKey,team,{notes:"Keep the chart"});
   assert.equal(file.mode,"exact");
-  assert.equal(file.source.xPosts,undefined,"an exact copy shows only the original's posts from X");
   await done;
   const finished=await read(ownerKey,file.id);
   assert.equal(finished.status,"done");
   assert.deepEqual(team.calls.map(call=>call.stage),["transcript","data","review"]);
-  assert.deepEqual(Object.keys(finished.stages).sort(),["data","deck","review","transcript"],"no brief, research, outline, hooks or approval");
+  assert.deepEqual(Object.keys(finished.stages).sort(),["data","deck","review","transcript"]);
   const view=jobs.postView(finished,false);
   assert.equal(view.mode,"exact");
   assert.equal(view.status,"done");
@@ -443,43 +445,6 @@ test("the critic's must-fix goes back to the transcript once, with what to fix a
   assert.equal(Object.keys(finished.stages).length,4,"a fix never reaches a full recreation's stages");
 });
 
-test("an exact copy can't be approved or given posts from X, and only its own stages rerun or are handed in",async()=>{
-  const images=[await slide(),await slide()];
-  const team=crew({images}),ownerKey=owner(),{file,done}=await start(ownerKey,team);
-  await done;
-  const options={runners:team.runners,environment:env(english)};
-  await assert.rejects(orchestrator.approveRecreate(ownerKey,file.id,{option:0},"human",options),/doesn't pause for approval/);
-  await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/alice/status/101"],"human"),/shows only the posts from X its original shows/);
-  await assert.rejects(orchestrator.rerunRecreateStage(ownerKey,file.id,"copy",undefined,"human",options),/An exact copy has no copy stage\. Its stages are transcript, data, deck, review/);
-  await assert.rejects(orchestrator.submitRecreateStage(ownerKey,file.id,"brief",{},"agent",options),/no brief stage/);
-  const again=await orchestrator.rerunRecreateStage(ownerKey,file.id,"transcript","Keep the brand name off slide 2","human",options);
-  await again.done;
-  assert.equal(team.count("transcript"),2);
-  assert.equal(team.calls.filter(call=>call.stage==="transcript")[1].instructions,"Keep the brand name off slide 2");
-  assert.equal(team.count("review"),2,"the deck and the review follow the transcript");
-  assert.equal(team.count("data"),2,"and so does the chart rebuilder");
-  const handed=await orchestrator.submitRecreateStage(ownerKey,file.id,"transcript",{...structuredClone(TRANSCRIPT),slides:[{...structuredClone(TRANSCRIPT.slides[1]),templatePage:REACTION}]},"agent",options);
-  await handed.done;
-  const after=await read(ownerKey,file.id);
-  assert.equal(after.stages.transcript.by,"agent");
-  assert.equal(after.stages.transcript.output.slides[0].templatePage,MEDIA,"a Reaction page shows posts from X, so the copy goes on the photo page");
-  assert.equal(team.count("transcript"),2,"the handed-in transcript isn't rewritten");
-  assert.equal(after.status,"done");
-});
-
-test("the stage graph of an exact copy is its own",()=>{
-  assert.deepEqual(posts.stagesFor("exact"),["transcript","data","deck","review"]);
-  assert.ok(!posts.stagesFor("autopilot").includes("transcript"),"a full recreation never copies word for word");
-  assert.deepEqual(posts.inputsOf("data","exact"),["transcript"]);
-  assert.deepEqual(posts.inputsOf("deck","exact"),["transcript","data"]);
-  assert.deepEqual(posts.inputsOf("review","exact"),["deck"]);
-  assert.deepEqual(posts.downstreamOf("transcript","exact"),["data","deck","review"]);
-  assert.deepEqual(posts.downstreamOf("data","exact"),["deck","review"]);
-  assert.deepEqual(posts.downstreamOf("deck","exact"),["review"]);
-  assert.deepEqual(posts.inputsOf("data"),["brief"],"the full recreation's data stage is unchanged");
-  assert.ok(posts.downstreamOf("copy").includes("deck"),"the full graph is unchanged");
-});
-
 test("normalizeTranscript keeps the copy to pages and slots the template has, and says what it left out",()=>{
   const output=exact.normalizeTranscript({
     name:"  ",originalLanguage:"en",translated:false,caption:"  Caption  ",notes:[],
@@ -708,11 +673,6 @@ test("the copier's prompt keeps the words and leaves out the page's voice and ho
   assert.ok(prompt.includes(`Its first line is always "${spanish.followCta.line1}"`)&&prompt.includes(`fit in ${spanish.followCta.maxChars} characters`),"the page's own Follow line and its limit");
   const critic=playbookLib.exactPrompt(english,"",{title:"Design critic",job:"Check",rules:["Rule"],bar:"Bar"});
   assert.ok(critic.includes(`Its first line is always "${english.followCta.line1}"`),"the critic is told the Follow page's second line is limited, so it never asks for more");
-  const book=playbookLib.playbook();
-  assert.equal(book.stages[0].stage,"transcript");
-  assert.deepEqual(book.exactRules,playbookLib.EXACT_RULES);
-  assert.ok(book.notes.some(note=>/mode exact/.test(note)));
-  assert.deepEqual(book.exactStages.map(card=>[card.stage,card.title]),[["data","Chart rebuilder"]]);
 });
 
 test("the copier rebuilds every part in our style and cuts only photos; the chart rebuilder never reads numbers off a picture",()=>{
@@ -754,17 +714,16 @@ test("the critics' chart fix goes to the chart rebuilder, with what to fix, and 
   assert.equal(team.count("review"),2);
 });
 
-test("the dialog's job model reads an exact copy and lays out its four stages",async()=>{
+test("the dialog's job model reads an earlier exact copy and lists its own four stages",async()=>{
   const job=load("components/template-editor/recreate-job.ts");
-  assert.deepEqual(job.lanesFor("exact").flatMap(lane=>lane.stages),["transcript","data","deck","review"]);
-  assert.ok(!job.lanesFor("autopilot").flatMap(lane=>lane.stages).includes("transcript"));
   const original=globalThis.fetch;
-  globalThis.fetch=async()=>new Response(JSON.stringify({jobId:"0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f",postId:"post-0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f",mode:"exact",status:"writing",message:"Copying",
-    stages:[{stage:"transcript",title:"Exact copy",by:"agent",status:"running",summary:""},{stage:"data",title:"Chart rebuilder",by:"agent",status:"pending",summary:""},{stage:"deck",title:"Designer",by:"code",status:"pending",summary:""},{stage:"review",title:"Critics",by:"agent",status:"pending",summary:""}]}),{status:200,headers:{"content-type":"application/json"}});
+  globalThis.fetch=async()=>new Response(JSON.stringify({jobId:"0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f",postId:"post-0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f",version:1,mode:"exact",status:"done",message:"Created 2 editable slides",
+    stages:[{stage:"transcript",title:"Exact copy",by:"agent",status:"done",summary:""},{stage:"data",title:"Chart rebuilder",by:"agent",status:"skipped",summary:""},{stage:"deck",title:"Designer",by:"code",status:"done",summary:""},{stage:"review",title:"Critics",by:"agent",status:"done",summary:""}]}),{status:200,headers:{"content-type":"application/json"}});
   try {
     const parsed=await job.fetchRecreateJob("0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f");
-    assert.equal(parsed.mode,"exact");
+    assert.deepEqual([parsed.version,parsed.mode],[1,"exact"]);
     assert.deepEqual(parsed.stages.map(stage=>stage.stage),["transcript","data","deck","review"]);
+    assert.deepEqual(job.lanesOf(parsed,parsed.mode),[{title:"Earlier Recreate",stages:["transcript","data","deck","review"]}]);
   } finally { globalThis.fetch=original; }
 });
 

@@ -1,10 +1,10 @@
 /* Run: node --test tests/template-editor-recreate-agents.test.mjs
- * The Recreate agent team: the orchestrator's stage order, parallel research,
- * the checkpoint pause and approval, autopilot, the critics' fix rounds (at
- * most two), reruns, hand-ins, failures and resume; plus the pieces code owns
- * (outline clean-up, distinct hooks, the headline pick, the designer, house
- * checks and the playbook). Claude, X and the headline model are never called:
- * every stage here is a stand-in. Local development storage only. */
+ * The first Recreate team's modules, which the current team still builds on
+ * until the cleanup: outline clean-up, distinct hooks, the designer, the
+ * critics' instructions, X reactions, photos, house checks and their role
+ * cards. The current team's flow (the check, the checkpoint, autopilot, fix
+ * rounds, reruns, hand-ins, resume) is in template-editor-recreate-flow.
+ * Claude, X and the headline model are never called. Local development storage only. */
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -38,9 +38,7 @@ function load(relative) {
   return unit.exports;
 }
 
-const orchestrator=load("lib/engine/agents/orchestrator.ts");
 const posts=load("lib/engine/post-files.ts");
-const jobs=load("lib/engine/recreate-jobs.ts");
 const story=load("lib/engine/agents/story.ts");
 const deckLib=load("lib/engine/agents/deck.ts");
 const review=load("lib/engine/agents/review.ts");
@@ -57,251 +55,13 @@ const catalog=pagesLib.templatePages(template);
 const pageIndex=label=>catalog.find(page=>page.label===label).index;
 const COVER=pageIndex("Cover"),MEDIA=pageIndex("Text + Media"),FOLLOW=pageIndex("Follow"),REACTION=pageIndex("Reaction"),REACTIONS=pageIndex("Two reactions"),THREE=pageIndex("Three reactions");
 const WIDE=catalog.find(page=>page.pair?.part==="start").index,WIDE_END=catalog.find(page=>page.pair?.part==="end").index;
-const env=profile=>async()=>({profile,template,templates:model.BUILT_IN_TEMPLATES});
 let owners=0;
 const owner=()=>`owner-agents-${++owners}`;
 
 const post=(id,handle,text,likes)=>({id,url:`https://x.com/${handle}/status/${id}`,author:{name:handle.toUpperCase(),handle,avatarUrl:null,verified:false},text,createdAt:"2026-11-03T12:00:00.000Z",likes,reposts:10,replies:5,views:1000,why:"Clear take"});
-const chart={unit:"index",labels:[],series:[{name:"S&P 500",source:"fred",fred:"SP500",values:[],emphasis:false}],from:"2016-01-01",markerDate:"2022-11-30",indexToMarker:true,markerIndex:-1,markerLabel:"ChatGPT",markerIcon:"openai",endLabel:"change_since_marker",markers:[],band:null};
-const OUTPUTS={
-  brief:{topic:"AI and jobs",story:"Stocks rose while US job openings fell after ChatGPT came out.",originalHeadline:"STOCKS UP, JOBS DOWN",angle:"Your job search got harder",
+const BRIEF={topic:"AI and jobs",story:"Stocks rose while US job openings fell after ChatGPT came out.",originalHeadline:"STOCKS UP, JOBS DOWN",angle:"Your job search got harder",
     slides:[{index:1,role:"cover",says:"STOCKS UP, JOBS DOWN",shows:"Photo",keep:"The claim"},{index:2,role:"chart",says:"Chart",shows:"Two lines",keep:"The chart"}],
-    chart:null,claims:["Job openings fell 29%"],questions:["Is AI the reason?"],reactionSearch:{terms:["chatgpt jobs"],since:"2026-10-01"},photos:[],risks:[]},
-  facts:{claims:[{claim:"Job openings fell 29%",verdict:"confirmed",detail:"JOLTS, seasonally adjusted",sources:[{title:"BLS JOLTS",url:"https://www.bls.gov/jlt/"}]}],answers:[{question:"Is AI the reason?",answer:"Not alone: rates rose too",sources:[]}],context:[],risks:[]},
-  data:{charts:[{id:"main",purpose:"Stocks vs job openings",recreates:"Slide 2",chart,source:"Source: FRED SP500, 2016 to 2026"}],notes:[]},
-  reactions:{reactions:[post("101","alice","AI didn't take the jobs, rates did",5000),post("102","bob","Openings are back to 2019 levels",3000)],note:""},
-  visuals:{candidates:[],note:"No usable photos turned up on X."},
-  outline:{slides:[
-    {kind:"cover",templatePage:COVER,purpose:"Hook",points:[],chartId:null,reactionIds:[],photo:"ChatGPT on a phone"},
-    {kind:"original",templatePage:MEDIA,purpose:"The chart",points:["Openings fell 29%"],chartId:"main",reactionIds:[],photo:""},
-    {kind:"reaction",templatePage:REACTIONS,purpose:"How X reacted",points:[],chartId:null,reactionIds:["101","102"],photo:""},
-    {kind:"follow",templatePage:FOLLOW,purpose:"Follow",points:[],chartId:null,reactionIds:[],photo:""},
-  ],why:"The original, then reactions"},
-  hooks:{options:[
-    {text:"STOCKS UP, JOBS DOWN",framework:"story",by:"headline-model",english:null},
-    {text:"AI DIDN'T TAKE YOUR JOB YET",framework:"stakes",by:"copywriter",english:null},
-  ],source:"headline-model",story:"Stocks rose while US job openings fell after ChatGPT.",modelOptions:[{text:"STOCKS UP, JOBS DOWN",framework:"story",sources:["model-v3"]}],note:""},
-  copy:{name:"AI vs Jobs",slides:[
-    {templatePage:COVER,texts:[{slot:"cover-headline",text:"STOCKS UP, [[JOBS DOWN]]"}]},
-    {templatePage:MEDIA,texts:[{slot:"title",text:"AI vs Jobs"},{slot:"body",text:"Stocks went up and job openings went down"},{slot:"source",text:"Source: FRED"}]},
-    {templatePage:REACTIONS,texts:[{slot:"title",text:"How X reacted"},{slot:"source",text:"Source: X, Nov 2026"}]},
-    {templatePage:FOLLOW,texts:[{slot:"cta",text:"FOR AI JOB NEWS"}]},
-  ],caption:"Stocks up, jobs down.\n\nSource: BLS",notes:[]},
-  charts:{charts:[{id:"main",ok:true,error:"",points:120,from:"2016-01",to:"2026-09"}]},
-  images:{photos:[],notes:[]},
-  deck:{deckId:"recreate-test-deck",name:"AI vs Jobs",slideCount:4,savedAt:"2026-11-07T00:00:00.000Z",notes:[],pages:[],held:""},
-  review:{round:0,rendered:false,checks:[],facts:null,design:null,sentBack:[]},
-};
-const SKIPPED=new Set(["visuals","images"]);
-
-/** Stand-in stages: each records its call, checks its inputs finished first, and returns the canned output. */
-function team(custom={}) {
-  const calls=[];
-  const runners={};
-  for(const stage of posts.POST_STAGES) {
-    if(stage==="approval"&&!custom.approval)continue; // autopilot uses Engine's own auto-approval
-    runners[stage]=async context=>{
-      for(const input of posts.inputsOf(stage,context.file.mode))assert.ok(["done","skipped"].includes(context.file.stages[input]?.status),`${stage} started before ${input} finished`);
-      calls.push({stage,round:context.round,instructions:context.instructions,previous:context.previous});
-      await new Promise(resolve=>setTimeout(resolve,2));
-      if(custom[stage])return custom[stage](context,calls.filter(call=>call.stage===stage).length);
-      return SKIPPED.has(stage)?{status:"skipped",output:structuredClone(OUTPUTS[stage])}:{output:structuredClone(OUTPUTS[stage])};
-    };
-  }
-  return {calls,runners,count:stage=>calls.filter(call=>call.stage===stage).length};
-}
-const start=(ownerKey,crew,mode,extra={})=>orchestrator.startRecreate(ownerKey,{profileId:"chatgptricks",url:"https://www.instagram.com/p/abc/",mode},{runners:crew.runners,environment:env(english),...extra});
-const read=(ownerKey,id)=>posts.getPostFile(ownerKey,id);
-
-test("a checkpoint run researches in parallel, then pauses for a person",async()=>{
-  let started=0,release;const together=new Promise(resolve=>{release=resolve;});
-  const research=async()=>{started+=1;if(started===3)release(true);return Promise.race([together,new Promise(resolve=>setTimeout(()=>resolve(false),2000))]);};
-  const parallel=[];
-  const crew=team(Object.fromEntries(["facts","data","reactions"].map(stage=>[stage,async()=>{parallel.push(await research());return {output:OUTPUTS[stage]};}])));
-  const ownerKey=owner(),{file,done}=await start(ownerKey,crew,"checkpoint");
-  await done;
-  assert.deepEqual(parallel,[true,true,true],"facts, data and reactions were all being researched at once");
-  const order=crew.calls.map(call=>call.stage);
-  assert.ok(order.indexOf("visuals")>order.indexOf("facts"),"the photo search reads the facts' sources, so it starts after them");
-  const paused=await read(ownerKey,file.id);
-  assert.equal(paused.status,"paused");
-  assert.equal(paused.stages.approval,undefined,"nobody approved it");
-  assert.equal(crew.count("copy"),0,"nothing is written before the approval");
-  assert.equal(crew.calls[0].stage,"brief","the editor-in-chief goes first");
-  const view=jobs.postView(paused,false);
-  assert.equal(view.status,"paused");
-  assert.equal(view.checkpoint.outline.slides.length,4);
-  assert.equal(view.checkpoint.hooks.options[0].text,"STOCKS UP, JOBS DOWN");
-  assert.equal(view.checkpoint.reactions[0].url,"https://x.com/alice/status/101","reactions keep their links");
-  assert.equal(view.jobId,file.id.slice(5));
-  assert.equal(view.stages.find(stage=>stage.stage==="visuals").status,"skipped");
-});
-
-test("a person's approval with their own hook finishes the post, and their pick goes to the headline model",async()=>{
-  const crew=team(),ownerKey=owner(),picks=[];
-  const savePick=async input=>{picks.push(input);return {id:"pick-1"};};
-  const first=await start(ownerKey,crew,"checkpoint",{savePick});
-  await first.done;
-  await assert.rejects(orchestrator.approveRecreate(ownerKey,first.file.id,{option:9},"human",{runners:crew.runners,environment:env(english),savePick}),/Pick one of the hook options/);
-  const approved=await orchestrator.approveRecreate(ownerKey,first.file.id,{text:"WALL STREET WON, WORKERS WAIT"},"human",{runners:crew.runners,environment:env(english),savePick});
-  await approved.done;
-  const done=await read(ownerKey,first.file.id);
-  assert.equal(done.status,"done");
-  assert.equal(done.deckId,"recreate-test-deck");
-  assert.deepEqual(done.stages.approval.output.hook,{text:"WALL STREET WON, WORKERS WAIT",option:-1});
-  assert.equal(done.stages.approval.by,"human");
-  assert.equal(picks.length,1,"one pick, for one human choice");
-  const pick=picks[0];
-  assert.deepEqual(pick.options.map(option=>option.sources),[["model-v3"],["engine-copywriter"],["human"]],"the copywriter's and the person's lines are tagged as theirs");
-  assert.equal(pick.chosen,2);
-  assert.equal(pick.finalText,"WALL STREET WON, WORKERS WAIT");
-  assert.equal(pick.originalHeadline,"STOCKS UP, JOBS DOWN");
-  assert.equal(pick.account,"chatgptricks");
-  assert.ok(done.history.some(entry=>/Sent the hook pick to the headline model \(pick-1\)/.test(entry.event)));
-  await assert.rejects(orchestrator.approveRecreate(ownerKey,first.file.id,{option:0},"human",{runners:crew.runners,environment:env(english),savePick}),/already approved/);
-  const view=jobs.postView(done,false);
-  assert.equal(view.status,"done");
-  assert.equal(view.result.deckId,"recreate-test-deck");
-  assert.match(view.result.editorUrl,/design=recreate-test-deck/);
-  assert.equal(view.result.factChecks[0].verdict,"confirmed");
-});
-
-test("autopilot takes the plan and the first hook, and never sends a pick",async()=>{
-  const crew=team(),ownerKey=owner(),picks=[];
-  const {file,done}=await start(ownerKey,crew,"autopilot",{savePick:async input=>{picks.push(input);return {id:"x"};}});
-  await done;
-  const finished=await read(ownerKey,file.id);
-  assert.equal(finished.status,"done");
-  assert.equal(finished.stages.approval.by,"engine");
-  assert.deepEqual(finished.stages.approval.output.hook,{text:"STOCKS UP, JOBS DOWN",option:0});
-  assert.equal(picks.length,0,"autopilot choices never reach the headline model");
-  const order=crew.calls.map(call=>call.stage);
-  assert.ok(order.indexOf("outline")>order.indexOf("data")&&order.indexOf("copy")>order.indexOf("outline")&&order.indexOf("review")>order.indexOf("deck"));
-});
-
-test("the critics send work back at most twice, with what to fix and the earlier version",async()=>{
-  const crew=team({
-    review:async context=>({output:{round:context.round,rendered:true,checks:[{slide:2,problem:"The body runs to three lines",fix:"Cut it to one short sentence",severity:"must_fix",route:"copy"}],facts:null,design:null,
-      sentBack:context.round<review.MAX_FIX_ROUNDS?["copy"]:[]}}),
-  });
-  const ownerKey=owner(),{file,done}=await start(ownerKey,crew,"autopilot");
-  await done;
-  const finished=await read(ownerKey,file.id);
-  assert.equal(finished.status,"done");
-  assert.equal(crew.count("copy"),1+review.MAX_FIX_ROUNDS,"the first draft plus two fix rounds");
-  assert.equal(crew.count("review"),1+review.MAX_FIX_ROUNDS);
-  assert.equal(crew.count("facts"),1,"research isn't redone for a copy fix");
-  const fixes=crew.calls.filter(call=>call.stage==="copy").slice(1);
-  assert.ok(fixes.every(call=>/The body runs to three lines/.test(call.instructions)&&call.previous?.name==="AI vs Jobs"));
-  assert.deepEqual(crew.calls.filter(call=>call.stage==="review").map(call=>call.round),[0,1,2]);
-  assert.equal(finished.stages.review.output.sentBack.length,0,"the last round sends nothing back");
-});
-
-test("a failed stage stops the post, and resume picks up from that stage",async()=>{
-  const crew=team({data:async(context,count)=>{if(count===1)throw new claude.RecreateError("FRED is down. Try again.",502);return {output:OUTPUTS.data};}});
-  const ownerKey=owner(),{file,done}=await start(ownerKey,crew,"autopilot");
-  await done;
-  const failed=await read(ownerKey,file.id);
-  assert.equal(failed.status,"error");
-  assert.equal(failed.message,"FRED is down. Try again.");
-  assert.equal(failed.stages.data.status,"error");
-  assert.equal(failed.stages.facts.status,"done","the stages that could finish did");
-  const view=jobs.postView(failed,false);
-  assert.equal(view.status,"error");
-  assert.equal(view.resumable,true);
-  const resumed=await orchestrator.resumeRecreate(ownerKey,file.id,{runners:crew.runners,environment:env(english)});
-  await resumed.done;
-  assert.equal((await read(ownerKey,file.id)).status,"done");
-  assert.equal(crew.count("brief"),1,"finished stages aren't redone");
-  assert.equal(crew.count("data"),2);
-});
-
-test("a run that stopped without finishing shows as stopped and can be resumed",async()=>{
-  const ownerKey=owner();
-  const file=await posts.createPostFile(ownerKey,{profileId:"chatgptricks",mode:"autopilot",source:{caption:"",notes:"",slideCount:0,imageIds:[]}});
-  await posts.updatePostFile(ownerKey,file.id,next=>{posts.setStage(next,"brief",{status:"running",attempt:"gone"});});
-  const view=jobs.postView(await read(ownerKey,file.id),false);
-  assert.equal(view.status,"error");
-  assert.equal(view.resumable,true);
-  assert.match(view.message,/Resume it/);
-  const crew=team(),resumed=await orchestrator.resumeRecreate(ownerKey,file.id,{runners:crew.runners,environment:env(english)});
-  await resumed.done;
-  assert.equal((await read(ownerKey,file.id)).status,"done");
-});
-
-test("an optional stage that fails is skipped and the post goes on",async()=>{
-  const crew=team({reactions:async()=>{throw new claude.RecreateError("Apify is out of credit.",502);}});
-  const ownerKey=owner(),{file,done}=await start(ownerKey,crew,"autopilot");
-  await done;
-  const finished=await read(ownerKey,file.id);
-  assert.equal(finished.status,"done");
-  assert.equal(finished.stages.reactions.status,"skipped");
-  assert.equal(finished.stages.reactions.error,"Apify is out of credit.");
-});
-
-test("rerunning a stage reruns everything that read it, with the person's instructions",async()=>{
-  const crew=team(),ownerKey=owner(),{file,done}=await start(ownerKey,crew,"autopilot");
-  await done;
-  const again=await orchestrator.rerunRecreateStage(ownerKey,file.id,"copy","Make the cover shorter","human",{runners:crew.runners,environment:env(english)});
-  await again.done;
-  assert.equal((await read(ownerKey,file.id)).status,"done");
-  assert.deepEqual(["copy","deck","review","facts","charts"].map(crew.count),[2,2,2,1,1]);
-  const rerun=crew.calls.filter(call=>call.stage==="copy")[1];
-  assert.equal(rerun.instructions,"Make the cover shorter");
-  assert.equal(rerun.previous.name,"AI vs Jobs","the copywriter sees its earlier version");
-});
-
-test("a rerun on a stopped run also picks up what the stop left unfinished",async()=>{
-  // Hooks stop once, the way a person's Stop leaves them; they don't read the reactions.
-  const crew=team({hooks:async(context,count)=>{if(count===1)throw new claude.RecreateError("Stopped. Resume the run to continue.",409);return {output:structuredClone(OUTPUTS.hooks)};}});
-  const ownerKey=owner(),{file,done}=await start(ownerKey,crew,"autopilot");
-  await done;
-  assert.equal((await read(ownerKey,file.id)).stages.hooks.status,"error");
-  const again=await orchestrator.rerunRecreateStage(ownerKey,file.id,"reactions",undefined,"human",{runners:crew.runners,environment:env(english)});
-  await again.done;
-  const finished=await read(ownerKey,file.id);
-  assert.equal(finished.status,"done","the rerun doesn't stop again at the hooks");
-  assert.deepEqual(["reactions","hooks","brief","facts"].map(crew.count),[2,2,1,1]);
-});
-
-test("an agent can hand in a stage, checked against the stage's schema",async()=>{
-  const crew=team(),ownerKey=owner(),{file,done}=await start(ownerKey,crew,"checkpoint");
-  await done;
-  const options={runners:crew.runners,environment:env(english)};
-  await assert.rejects(orchestrator.submitRecreateStage(ownerKey,file.id,"deck",{},"agent",options),/Engine builds the deck stage itself/);
-  await assert.rejects(orchestrator.submitRecreateStage(ownerKey,file.id,"hooks",{options:"nope"},"agent",options),/doesn't match its schema: options/);
-  await assert.rejects(orchestrator.submitRecreateStage(ownerKey,file.id,"copy",OUTPUTS.copy,"agent",options),/needs approval first/);
-  const hooks={...OUTPUTS.hooks,options:[{text:"THE JOBS DATA AI CAN'T EXPLAIN",framework:"number",by:"agent",english:null}],source:"agent",modelOptions:[]};
-  const handed=await orchestrator.submitRecreateStage(ownerKey,file.id,"hooks",hooks,"agent",options);
-  await handed.done;
-  const after=await read(ownerKey,file.id);
-  assert.equal(after.stages.hooks.by,"agent");
-  assert.equal(after.status,"paused","it still waits for the approval");
-  assert.equal(crew.count("hooks"),1,"the handed-in hooks aren't rewritten");
-});
-
-test("the checkpoint accepts an edited outline and refuses one the template can't show",async()=>{
-  const crew=team(),ownerKey=owner(),{file,done}=await start(ownerKey,crew,"checkpoint");
-  await done;
-  const options={runners:crew.runners,environment:env(english)};
-  const bad={slides:[{...OUTPUTS.outline.slides[0],templatePage:42}],why:""};
-  await assert.rejects(orchestrator.approveRecreate(ownerKey,file.id,{outline:bad,option:0},"human",options),/no slides this template can show/);
-  const shorter={slides:[OUTPUTS.outline.slides[0],OUTPUTS.outline.slides[3]],why:"Cover and Follow only"};
-  const approved=await orchestrator.approveRecreate(ownerKey,file.id,{outline:shorter,option:1,notes:"Keep it short"},"agent",options);
-  await approved.done;
-  const finished=await read(ownerKey,file.id);
-  assert.equal(finished.stages.approval.output.outline.slides.length,2);
-  assert.equal(finished.stages.approval.output.notes,"Keep it short");
-  assert.equal(finished.stages.approval.by,"agent");
-});
-
-test("readyStages waits on inputs, holds the checkpoint, and reruns a stage left running",()=>{
-  const file={mode:"checkpoint",stages:{brief:{status:"done"},facts:{status:"running"},data:{status:"error"},reactions:{status:"done"},visuals:{status:"skipped"}}};
-  assert.deepEqual(orchestrator.readyStages(file),["facts"],"facts was left running by a stopped run; the outline waits for the failed data stage");
-  const later={mode:"checkpoint",stages:Object.fromEntries(["brief","facts","data","reactions","visuals","outline","hooks"].map(stage=>[stage,{status:"done"}]))};
-  assert.deepEqual(orchestrator.readyStages(later),[],"the checkpoint waits for a person");
-  assert.deepEqual(orchestrator.readyStages({...later,mode:"autopilot"}),["approval"]);
-});
+    chart:null,claims:["Job openings fell 29%"],questions:["Is AI the reason?"],reactionSearch:{terms:["chatgpt jobs"],since:"2026-10-01"},photos:[],risks:[]};
 
 test("normalizeOutline keeps the plan to real pages, built charts and real posts",()=>{
   const slide=(extra)=>({kind:"original",templatePage:MEDIA,purpose:"x",points:[],chartId:null,reactionIds:[],photo:"",...extra});
@@ -367,26 +127,6 @@ test("hook options drop the credit, source and link lines the headline model som
     {text:"THE SOURCE OF THE JOB SLUMP ISN'T AI"},
   ]);
   assert.deepEqual(kept.map(item=>item.text),["JUST IN: STOCKS NEARLY DOUBLED WHILE JOB OPENINGS FELL 30%","SOURCES SAY: OPENAI IS HIRING AGAIN","THE SOURCE OF THE JOB SLUMP ISN'T AI"]);
-});
-
-test("a Spanish page's pick sends only the headline model's own English lines",()=>{
-  const file=(hook,by="human")=>({stages:{
-    brief:{status:"done",output:OUTPUTS.brief},
-    hooks:{status:"done",output:{...OUTPUTS.hooks,options:[
-      {text:"BOLSA ARRIBA, EMPLEOS ABAJO",framework:"story",by:"headline-model",english:"STOCKS UP, JOBS DOWN"},
-      {text:"LA IA AÚN NO TE QUITÓ EL EMPLEO",framework:"stakes",by:"copywriter",english:null},
-    ]}},
-    approval:{status:"done",by,output:{outline:OUTPUTS.outline,hook,notes:""}},
-  }});
-  const model=orchestrator.pickPayload(file({text:"BOLSA ARRIBA, EMPLEOS ABAJO",option:0}),spanish);
-  assert.deepEqual(model.options.map(option=>option.text),["STOCKS UP, JOBS DOWN"],"no Spanish line reaches the model");
-  assert.equal(model.chosen,0);
-  assert.equal(model.finalText,"STOCKS UP, JOBS DOWN");
-  assert.equal(model.account,"pagina-es");
-  const other=orchestrator.pickPayload(file({text:"LA IA AÚN NO TE QUITÓ EL EMPLEO",option:1}),spanish);
-  assert.equal(other.chosen,-1,"a line the model didn't write counts as none of its lines");
-  assert.equal(orchestrator.pickPayload(file({text:"BOLSA ARRIBA, EMPLEOS ABAJO",option:0},"engine"),spanish),null,"autopilot never sends a pick");
-  assert.equal(orchestrator.pickPayload(file({text:"BOLSA ARRIBA, EMPLEOS ABAJO",option:0},"agent"),spanish),null,"an agent's choice isn't a person's");
 });
 
 test("the designer fills post cards word for word, keeps links, places photos and speaks the page's language",async()=>{
@@ -571,8 +311,9 @@ test("the critics' instructions and report name each slide and fix",()=>{
   assert.ok(!/Nice/.test(report),"notes stay out of the to-do list");
 });
 
-test("every stage has a role card, and its prompt carries the page's voice and the house rules",()=>{
-  for(const stage of posts.POST_STAGES)assert.ok(playbookLib.roleCardFor(stage).rules.length,`${stage} has rules`);
+test("every first-team stage keeps its role card, and its prompt carries the page's voice and the house rules",()=>{
+  // The first team's modules still write with these until the cleanup; the current team's cards are tested in the flow tests.
+  for(const stage of posts.LEGACY_STAGES)assert.ok(playbookLib.roleCardFor(stage).rules.length,`${stage} has rules`);
   const prompt=playbookLib.rolePrompt("copy",spanish);
   assert.match(prompt,/written in Spanish/);
   assert.ok(prompt.includes(spanish.voice));
@@ -648,7 +389,7 @@ test("posts added by link lead the reactions and need no Apify plan",async()=>{
     return id==="404"?new Response("",{status:404}):new Response(JSON.stringify(embed(id)),{status:200,headers:{"Content-Type":"application/json"}});
   };
   try {
-    const file={source:{caption:"",notes:"",slideCount:0,imageIds:[],xPosts:["https://x.com/i/status/301","https://x.com/i/status/404","https://x.com/i/status/302"]},stages:{brief:{status:"done",output:OUTPUTS.brief}}};
+    const file={source:{caption:"",notes:"",slideCount:0,imageIds:[],xPosts:["https://x.com/i/status/301","https://x.com/i/status/404","https://x.com/i/status/302"]},stages:{brief:{status:"done",output:BRIEF}}};
     const result=await research.reactions({file,profile:english,signal:undefined,usage:[]});
     assert.equal(result.status,undefined,"the stage succeeds with the added posts although X can't be searched");
     assert.deepEqual(result.output.reactions.map(post=>[post.id,post.url,post.why]),[["301","https://x.com/person301/status/301","Added by you"],["302","https://x.com/person302/status/302","Added by you"]]);
@@ -661,75 +402,6 @@ test("posts added by link lead the reactions and need no Apify plan",async()=>{
     globalThis.fetch=original;
   }
   assert.ok(playbookLib.roleCardFor("outline").rules.some(rule=>/Added by you/.test(rule)),"the story editor puts them first");
-});
-
-test("at the checkpoint a person adds posts from X by link: nothing reruns, and the approval can use them",async()=>{
-  const embed=id=>({__typename:"Tweet",id_str:id,text:`Post ${id} about the job market`,created_at:"2026-11-05T19:08:45.000Z",favorite_count:7291,user:{name:`Person ${id}`,screen_name:`person${id}`,is_blue_verified:true}});
-  const original=globalThis.fetch,asked=[];
-  globalThis.fetch=async url=>{
-    const id=new URL(url).searchParams.get("id");asked.push(id);
-    return id==="404"?new Response("",{status:404}):new Response(JSON.stringify(embed(id)),{status:200,headers:{"Content-Type":"application/json"}});
-  };
-  try {
-    // X couldn't be searched, so the plan has no reaction slide yet.
-    const crew=team({
-      reactions:async()=>({status:"skipped",output:{reactions:[],note:"X reactions need APIFY_TOKEN on the server."}}),
-      outline:async()=>({output:{...OUTPUTS.outline,slides:OUTPUTS.outline.slides.filter(slide=>slide.kind!=="reaction")}}),
-    });
-    const ownerKey=owner(),{file,done}=await start(ownerKey,crew,"checkpoint");
-    await done;
-    const calls=crew.calls.length;
-    const added=await orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/301","https://x.com/i/status/404"],"human");
-    await added.done;
-    assert.equal(added.added,1);
-    assert.match(added.problems.join(" "),/won't show post 404/);
-    assert.equal(crew.calls.length,calls,"nothing reruns: the plan and the hooks stay");
-    const paused=await read(ownerKey,file.id);
-    assert.equal(paused.status,"paused");
-    assert.equal(paused.stages.reactions.status,"done");
-    assert.deepEqual(paused.stages.reactions.output.reactions.map(item=>[item.id,item.url,item.why]),[["301","https://x.com/person301/status/301","Added by you"]]);
-    assert.equal(paused.stages.reactions.output.note,"X reactions need APIFY_TOKEN on the server.","the search's note stays");
-    assert.deepEqual(paused.source.xPosts,["https://x.com/i/status/301"],"only posts X showed are kept as added");
-    assert.ok(paused.history.some(entry=>entry.stage==="reactions"&&entry.by==="human"&&/added a post from X by link/.test(entry.event)));
-    assert.deepEqual(jobs.postView(paused,false).checkpoint.reactions.map(item=>item.id),["301"]);
-    // The same post again, by another kind of link, changes nothing and asks X nothing.
-    const fetched=asked.length;
-    const again=await orchestrator.addRecreatePosts(ownerKey,file.id,["https://twitter.com/person301/status/301?s=20"],"human");
-    assert.equal(again.added,0); assert.equal(asked.length,fetched);
-    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/404"],"human"),/won't show post 404/);
-    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,Array.from({length:8},(_,index)=>`https://x.com/i/status/${500+index}`),"human"),/at most 8 posts/);
-    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://example.com/a/status/1"],"human"),/isn't a link to a post on X/);
-    assert.equal(asked.length,fetched+1,"refused links never reach X");
-    // The approval puts the added post on a reaction slide.
-    const slides=jobs.postView(paused,false).checkpoint.outline.slides;
-    const planned=[...slides.slice(0,-1),{kind:"reaction",templatePage:REACTION,purpose:"How X reacted",points:[],chartId:null,reactionIds:["301"],photo:""},slides.at(-1)];
-    const approved=await orchestrator.approveRecreate(ownerKey,file.id,{outline:{slides:planned,why:"With the post I added"},option:0},"agent",{runners:crew.runners,environment:env(english)});
-    await approved.done;
-    const finished=await read(ownerKey,file.id);
-    assert.deepEqual(finished.stages.approval.output.outline.slides.find(slide=>slide.kind==="reaction").reactionIds,["301"]);
-    await assert.rejects(orchestrator.addRecreatePosts(ownerKey,file.id,["https://x.com/i/status/302"],"human"),/already approved/);
-  } finally {
-    globalThis.fetch=original;
-  }
-});
-
-test("a post added at the checkpoint goes on the last reaction slide with room, or on a new one before Follow",()=>{
-  const job=load("components/template-editor/recreate-job.ts");
-  const page=count=>count>=3?THREE:count===2?REACTIONS:REACTION;
-  const slide=templatePage=>({kind:"reaction",templatePage,purpose:"New",points:[],chartId:null,reactionIds:[],photo:"",key:"new"});
-  const base=OUTPUTS.outline.slides.map((item,index)=>({...item,key:`s${index}`}));
-  let placed=job.placePost(base,"301",{maxPosts:3,page,slide});
-  assert.deepEqual([placed.at,placed.created,placed.changed],[2,false,true],"the plan's two-post slide has room for a third");
-  assert.deepEqual([placed.slides[2].reactionIds,placed.slides[2].templatePage],[["101","102","301"],THREE]);
-  assert.equal(base[2].reactionIds.length,2,"the slides passed in are left as they were");
-  const same=job.placePost(placed.slides,"102",{maxPosts:3,page,slide});
-  assert.deepEqual([same.at,same.changed,same.slides],[2,false,placed.slides],"a post already on a slide stays where it is");
-  placed=job.placePost(placed.slides,"302",{maxPosts:3,page,slide});
-  assert.deepEqual([placed.at,placed.created],[3,true]);
-  assert.deepEqual(placed.slides.map(item=>item.kind),["cover","original","reaction","reaction","follow"],"a new reaction slide goes before Follow");
-  assert.deepEqual([placed.slides[3].reactionIds,placed.slides[3].templatePage,placed.slides[3].key],[["302"],REACTION,"new"]);
-  const full=Array.from({length:job.MAX_RECREATE_SLIDES},(_,index)=>({...base[0],key:`f${index}`}));
-  assert.equal(job.placePost(full,"303",{maxPosts:3,page,slide}),null,"no room for another slide");
 });
 
 test("photos also come from the pages the facts cite: public, full-size images only",async()=>{

@@ -107,7 +107,7 @@ test("importInstagramPost calls apify/instagram-scraper with a Bearer header and
     inputUrl:"https://www.instagram.com/p/DfUR7MxoA62/",id:"3924506097334912938",type:"Sidecar",shortCode:"DfUR7MxoA62",
     caption:"Claude can now use your computer.\n\n#ai",url:"https://www.instagram.com/p/DfUR7MxoA62/",
     displayUrl:CDN+"cover.jpg",images:[CDN+"a.jpg",CDN+"b.jpg"],timestamp:"2026-11-01T15:30:00.000Z",
-    ownerUsername:"evolving.ai",dimensionsWidth:1080,dimensionsHeight:1350,
+    ownerUsername:"evolving.ai",ownerFullName:" Evolving AI ",likesCount:48210,commentsCount:-1,dimensionsWidth:1080,dimensionsHeight:1350,
     childPosts:[
       {type:"Image",displayUrl:CDN+"1.jpg",dimensionsWidth:1080,dimensionsHeight:1350},
       {type:"Video",displayUrl:CDN+"2.jpg",videoUrl:CDN+"2.mp4",dimensionsWidth:1080,dimensionsHeight:1920},
@@ -128,8 +128,8 @@ test("importInstagramPost calls apify/instagram-scraper with a Bearer header and
   assert.ok(init.signal instanceof AbortSignal);
   assert.deepEqual(JSON.parse(init.body),{directUrls:["https://www.instagram.com/p/DfUR7MxoA62/"],resultsType:"posts",resultsLimit:1,addParentData:false});
   assert.deepEqual(JSON.parse(JSON.stringify(post)),{
-    shortcode:"DfUR7MxoA62",url:"https://www.instagram.com/p/DfUR7MxoA62/",ownerUsername:"evolving.ai",
-    caption:"Claude can now use your computer.\n\n#ai",takenAt:"2026-11-01T15:30:00.000Z",type:"Sidecar",source:"instagram",
+    shortcode:"DfUR7MxoA62",url:"https://www.instagram.com/p/DfUR7MxoA62/",ownerUsername:"evolving.ai",ownerFullName:"Evolving AI",
+    caption:"Claude can now use your computer.\n\n#ai",traction:{likes:48210,comments:null,views:null},takenAt:"2026-11-01T15:30:00.000Z",type:"Sidecar",source:"instagram",
     slides:[
       {index:0,imageUrl:CDN+"1.jpg",isVideo:false,width:1080,height:1350},
       {index:1,imageUrl:CDN+"2.jpg",isVideo:true,videoUrl:CDN+"2.mp4",width:1080,height:1920},
@@ -147,7 +147,7 @@ test("Sidecar posts without childPosts fall back to the images list, and single 
   assert.deepEqual(mentions.slides.map(slide=>slide.imageUrl),[CDN+"x.jpg",CDN+"y.jpg"]);
 
   const single=normalizeApifyPost({type:"Image",shortCode:"ABCDE12345",displayUrl:CDN+"only.jpg",images:[],childPosts:[],dimensionsWidth:1080,dimensionsHeight:1080,caption:null,timestamp:"nope"});
-  assert.deepEqual(JSON.parse(JSON.stringify(single)),{shortcode:"ABCDE12345",url:"https://www.instagram.com/p/ABCDE12345/",ownerUsername:"",caption:"",takenAt:null,type:"Image",source:"instagram",slides:[{index:0,imageUrl:CDN+"only.jpg",isVideo:false,width:1080,height:1080}]});
+  assert.deepEqual(JSON.parse(JSON.stringify(single)),{shortcode:"ABCDE12345",url:"https://www.instagram.com/p/ABCDE12345/",ownerUsername:"",ownerFullName:"",caption:"",traction:{likes:null,comments:null,views:null},takenAt:null,type:"Image",source:"instagram",slides:[{index:0,imageUrl:CDN+"only.jpg",isVideo:false,width:1080,height:1080}]});
   const reel=normalizeApifyPost({type:"Video",shortCode:"REEL12345",productType:"clips",displayUrl:CDN+"cover.jpg",videoUrl:CDN+"reel.mp4",url:"https://www.instagram.com/reel/REEL12345/"});
   assert.equal(reel.type,"Video");
   assert.deepEqual({...reel.slides[0]},{index:0,imageUrl:CDN+"cover.jpg",isVideo:true,videoUrl:CDN+"reel.mp4"});
@@ -276,7 +276,7 @@ test("normalizeUploadedSlides turns screenshots and a pasted caption into the im
   ];
   const {post,images}=await normalizeUploadedSlides(files,{caption:"  Pasted caption  ",url:"https://www.instagram.com/p/DfUR7MxoA62/?img_index=1",ownerUsername:"@evolving.ai"});
   assert.deepEqual(JSON.parse(JSON.stringify(post)),{
-    shortcode:"DfUR7MxoA62",url:"https://www.instagram.com/p/DfUR7MxoA62/",ownerUsername:"evolving.ai",caption:"Pasted caption",takenAt:null,type:"Sidecar",source:"upload",
+    shortcode:"DfUR7MxoA62",url:"https://www.instagram.com/p/DfUR7MxoA62/",ownerUsername:"evolving.ai",ownerFullName:"",caption:"Pasted caption",traction:{likes:null,comments:null,views:null},takenAt:null,type:"Sidecar",source:"upload",
     slides:[0,1,2,3].map(index=>({index,imageUrl:`upload:${index}`,isVideo:false})),
   });
   assert.deepEqual(images.map(entry=>[entry.index,entry.mediaType]),[[0,"image/png"],[1,"image/jpeg"],[2,"image/webp"],[3,"image/jpeg"]]);

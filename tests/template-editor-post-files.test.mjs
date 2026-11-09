@@ -55,11 +55,11 @@ test("a post file is created, read back, and kept per owner",async t=>{
 test("parallel stages both land: each write retries on a newer revision",async t=>{
   const {posts}=fixture(t);
   const file=await posts.createPostFile("owner-a",{profileId:"chatgptricks",mode:"autopilot",source});
-  await Promise.all(["facts","data","reactions","visuals"].map(stage=>posts.updatePostFile("owner-a",file.id,next=>{
+  await Promise.all(["source","research","brief","headline"].map(stage=>posts.updatePostFile("owner-a",file.id,next=>{
     posts.setStage(next,stage,{status:"done",output:{stage}});
   })));
   const saved=await posts.getPostFile("owner-a",file.id);
-  assert.deepEqual(Object.keys(saved.stages).sort(),["data","facts","reactions","visuals"]);
+  assert.deepEqual(Object.keys(saved.stages).sort(),["brief","headline","research","source"]);
   assert.ok(Object.values(saved.stages).every(record=>record.status==="done"&&record.finishedAt&&record.by==="engine"));
   assert.equal(saved.history.filter(entry=>entry.stage!=="run").length,4);
   assert.notEqual(saved.revision,file.revision);
@@ -69,13 +69,13 @@ test("parallel stages both land: each write retries on a newer revision",async t
 test("a rerun clears the old error and timing, and oversized files are refused",async t=>{
   const {posts}=fixture(t);
   const file=await posts.createPostFile("owner-a",{profileId:"chatgptricks",mode:"checkpoint",source});
-  await posts.updatePostFile("owner-a",file.id,next=>posts.setStage(next,"copy",{status:"error",error:"Claude declined"}));
-  const rerun=await posts.updatePostFile("owner-a",file.id,next=>posts.setStage(next,"copy",{status:"running",instructions:"Shorter hook"},"human","rerun"));
-  assert.equal(rerun.stages.copy.error,undefined);
-  assert.equal(rerun.stages.copy.instructions,"Shorter hook");
-  assert.equal(rerun.stages.copy.by,"human");
-  await assert.rejects(posts.updatePostFile("owner-a",file.id,next=>posts.setStage(next,"facts",{status:"done",output:"x".repeat(1_600_000)})),/too large/);
-  assert.equal((await posts.getPostFile("owner-a",file.id)).stages.facts,undefined,"a refused write changes nothing");
+  await posts.updatePostFile("owner-a",file.id,next=>posts.setStage(next,"design",{status:"error",error:"Claude declined"}));
+  const rerun=await posts.updatePostFile("owner-a",file.id,next=>posts.setStage(next,"design",{status:"running",instructions:"Shorter headline"},"human","rerun"));
+  assert.equal(rerun.stages.design.error,undefined);
+  assert.equal(rerun.stages.design.instructions,"Shorter headline");
+  assert.equal(rerun.stages.design.by,"human");
+  await assert.rejects(posts.updatePostFile("owner-a",file.id,next=>posts.setStage(next,"research",{status:"done",output:"x".repeat(1_600_000)})),/too large/);
+  assert.equal((await posts.getPostFile("owner-a",file.id)).stages.research,undefined,"a refused write changes nothing");
 });
 
 test("an expired post file reads as missing",async t=>{
@@ -88,13 +88,23 @@ test("an expired post file reads as missing",async t=>{
   assert.equal(await posts.getPostFile("owner-a",file.id),null);
 });
 
-test("changing a stage reruns exactly the stages that read it",t=>{
+test("changing a stage reruns exactly the stages that read it, in each mode",t=>{
   const {posts}=fixture(t);
-  assert.deepEqual(posts.downstreamOf("copy"),["deck","review"]);
-  assert.deepEqual(posts.downstreamOf("data"),["outline","approval","copy","charts","images","deck","review"],"new data changes the outline, so everything after it reruns");
-  assert.deepEqual(posts.downstreamOf("visuals"),["images","deck","review"]);
+  assert.deepEqual(posts.downstreamOf("design"),["review"]);
+  assert.deepEqual(posts.downstreamOf("approval"),["design","review"]);
+  assert.deepEqual(posts.downstreamOf("brief"),["headline","approval","design","review"],"a new plan needs new headlines and a new approval");
+  assert.deepEqual(posts.downstreamOf("research"),["verdict","brief","headline","approval","design","review"],"new research is checked again");
   assert.deepEqual(posts.downstreamOf("review"),[]);
-  for(const stage of posts.POST_STAGES)for(const input of posts.STAGE_INPUTS[stage])assert.ok(posts.POST_STAGES.indexOf(input)<posts.POST_STAGES.indexOf(stage),`${stage} only reads earlier stages`);
+  assert.deepEqual(posts.stagesFor("exact"),["source","research","verdict","design","review"]);
+  assert.deepEqual(posts.downstreamOf("research","exact"),["verdict","design","review"]);
+  assert.deepEqual(posts.downstreamOf("verdict","exact"),["design","review"]);
+  assert.deepEqual(posts.inputsOf("brief","exact"),[],"an exact copy has no brief");
+  for(const mode of ["checkpoint","autopilot","exact"]) {
+    const stages=posts.stagesFor(mode);
+    for(const stage of stages)for(const input of posts.inputsOf(stage,mode))assert.ok(stages.includes(input)&&stages.indexOf(input)<stages.indexOf(stage),`${stage} only reads earlier stages of a ${mode} run`);
+  }
+  assert.deepEqual(posts.legacyStagesFor("exact"),["transcript","data","deck","review"],"a version-1 exact copy keeps its own stages for showing");
+  assert.equal(posts.legacyStagesFor("checkpoint").length,13);
 });
 
 test("production without cloud storage refuses to save",async t=>{
