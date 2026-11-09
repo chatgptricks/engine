@@ -320,7 +320,7 @@ const openPost: ChatTool = {
 // ── The open post ────────────────────────────────────────────────────────────
 const saveLayoutTool: ChatTool = {
   name: "save_layout",
-  description: "Save one slide of the open post as a new layout in its page's template, so the designer can use it again. Only when the person asks to save a slide as a layout.",
+  description: "Save one slide of the open post as a new layout in the template the post was made from, so Recreate's designer can start slides from it. Its HTML layers keep their design; its text and photos become slots to fill. Saving with the name of an earlier saved layout replaces it. Only when the person asks to save a slide as a layout.",
   input: z.object({
     slide: z.number().int().min(1).max(40).describe("The slide's number, from 1, as read_post shows it"),
     name: z.string().min(1).max(80).describe("The layout's name, e.g. \"Two charts side by side\""),
@@ -330,8 +330,9 @@ const saveLayoutTool: ChatTool = {
   async run(input, context) {
     const document = await liveDeck(context), page = document.pages[Number(input.slide) - 1];
     if (!page) throw new ChatToolError(`This post has ${plural(document.pages.length, "slide")}; there's no slide ${String(input.slide)}.`);
-    const saved = await recreating(() => saveLayout(context.ownerKey, {deckId: document.id, pageId: page.id, name: String(input.name), useWhen: String(input.useWhen)}));
-    return {content: `Saved ${quoted(saved.name)} as page ${saved.pageIndex + 1} of the template ${saved.templateId}. The designer can use it from now on.`, detail: short(saved.name, 60)};
+    // The live deck, so the layout is the slide as everyone sees it now, edits not yet saved included.
+    const saved = await recreating(() => saveLayout(context.ownerKey, {deckId: document.id, pageId: page.id, name: String(input.name), useWhen: String(input.useWhen), document}));
+    return {content: `${saved.replaced ? "Replaced the saved layout" : "Saved slide " + String(input.slide) + " as the layout"} ${quoted(saved.name)}: page ${saved.pageIndex + 1} of ${saved.pageCount} in the template ${quoted(saved.templateName)}. Recreate's designer can start slides from it from now on.`, detail: short(saved.name, 60)};
   },
 };
 

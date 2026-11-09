@@ -9,14 +9,17 @@ import { randomUUID } from "node:crypto";
 import { AgentDeckValidationError, createAgentDeck } from "../../template-editor/agent-decks";
 import { applyGuideToDeck } from "../../template-editor/guide-template";
 import { checkLibrarySaveBudget } from "../../template-editor/library-budget";
-import { formatDimensions, parseLibrary, X_BADGES, X_CARD, type CanvasElement, type DesignComment, type DesignDocument, type DesignTemplate, type ImageElement } from "../../template-editor/model";
+import { xCardHtml } from "../../template-editor/chatgptricks-template";
+import { isHtmlLayerImageSource } from "../../template-editor/html-layer";
+import { formatDimensions, parseLibrary, X_BADGES, X_CARD, type CanvasElement, type DesignComment, type DesignDocument, type DesignPage, type DesignTemplate, type HtmlElement, type ImageElement } from "../../template-editor/model";
 import { getEditorLibrary, LibraryConflictError, saveEditorLibrary } from "../../template-editor/persistence";
+import { platformOfLayer } from "../../template-editor/platform-cards";
 import { storeNewImages } from "../../template-editor/stored-images";
 import { imageSize } from "../image-size";
 import type { PageProfile } from "../page-profiles";
 import { chartAltText, chartPngDataUrl } from "../recreate-chart";
 import type { ChartData } from "../recreate-data";
-import { formatReactionMeta, mediaBadge, packReactions, reactionBadge, reactionPhotoSizes, reactionSlots, type XReaction } from "../x-reactions";
+import { formatReactionMeta, mediaBadge, packReactions, reactionBadge, reactionCardHeight, reactionPhotoSizes, reactionSlots, reactionTextLines, type XReaction } from "../x-reactions";
 import { RecreateError } from "./claude";
 import { chartSources, resolveChart } from "./charts";
 import { need, outputOf, type StageRunner } from "./context";
@@ -128,6 +131,59 @@ function styleMediaBadges(find: (part: string) => CanvasElement | undefined, med
     Object.assign(layer, { x: media.x + inset / pixels, width: badge.width / pixels, height: height / pixels, smartFlow: { after: media.slot!, edge: "top", gap: media.height - (inset + height) / pixels, bottom: layer.smartFlow?.bottom ?? 480 } });
     if (layer.type === "text") { layer.text = badge.label; delete layer.richText; }
   }
+}
+
+/**
+ * The simpler Recreate's Reaction pages: each post as an HTML platform card
+ * (platform-cards.ts, drawn by xCardHtml in chatgptricks-template.ts), one layer
+ * per post, in place of the page's native card layers or of the X cards a saved
+ * layout or an earlier build drew. The first card takes the first card's place
+ * and flow (64 px after the title), each next one follows the card before it by
+ * 40 px, so the title and the cards stay centred together. A layer is as tall as
+ * the native card starts out (reactionCardHeight), and the card hugs its post in
+ * it. Photos get reactionPhotoSizes. Avatars and photos must already be
+ * workspace files, because an HTML layer loads nothing from outside Engine: an
+ * outside photo is left out, an outside avatar becomes the grey one.
+ * It takes the place of styleCards and styleMediaBadges for the designer (stage
+ * design); the first team's exact copy keeps those until the cleanup.
+ * Returns the cards' layers.
+ */
+export function htmlReactionCards(page: DesignPage, posts: XReaction[], pixels: number): HtmlElement[] {
+  const canvas = page.canvas;
+  if (!canvas || !posts.length) return [];
+  const isCard = (element: CanvasElement) => Boolean(element.slot?.startsWith("reaction-") || element.smartFlow?.after.startsWith("reaction-") || element.type === "html" && platformOfLayer(element.html) === "x");
+  const old = canvas.elements.filter(isCard);
+  const first = old.find(element => element.slot === "reaction-card") ?? old.filter(element => element.type === "html").sort((a, b) => a.y - b.y)[0];
+  if (!first) return [];
+  const sizes = reactionPhotoSizes(posts), bottom = first.smartFlow?.bottom ?? X_CARD.bottom / pixels;
+  let y = first.y;
+  const cards = posts.map((post, index): HtmlElement => {
+    const suffix = index ? `-${index + 1}` : "", values = reactionSlots(post, { card: index + 1 }), size = sizes[index];
+    const media = post.media && size && isHtmlLayerImageSource(post.media.url) ? post.media : null;
+    const avatar = post.author.avatarUrl && isHtmlLayerImageSource(post.author.avatarUrl) ? post.author.avatarUrl : null;
+    const height = reactionCardHeight(reactionTextLines(post), media ? size!.height : 0) / pixels;
+    const { html, css } = xCardHtml({
+      name: values[`reaction-name${suffix}`], handle: values[`reaction-handle${suffix}`], text: values[`reaction-text${suffix}`],
+      badge: reactionBadge(post), square: post.author.square, avatar,
+      media: media ? { src: media.url, width: size!.width, height: size!.height, kind: media.kind ?? "photo", badge: mediaBadge(media)?.label ?? null, alt: `${media.kind === "video" ? "Video" : media.kind === "gif" ? "GIF" : "Photo"} in @${post.author.handle}'s post` } : null,
+    });
+    const flow = index ? { after: `reaction-card${index === 1 ? "" : `-${index}`}`, gap: X_CARD.between / pixels, bottom } : { after: first.smartFlow?.after ?? "title", gap: first.smartFlow?.gap ?? 64 / pixels, bottom };
+    const card: HtmlElement = {
+      type: "html", id: randomUUID(), name: `Post card: @${post.author.handle}`.slice(0, 100), x: first.x, y, width: X_CARD.width / pixels, height, rotation: 0, opacity: 1, locked: false,
+      html, css, designWidth: X_CARD.width, slot: `reaction-card${suffix}`, smartFlow: flow,
+    };
+    y += height + X_CARD.between / pixels;
+    return card;
+  });
+  // The cards go where the old ones were in paint order and in the reading order.
+  const gone = new Set(old.map(element => element.id)), at = canvas.elements.findIndex(isCard);
+  const kept = canvas.elements.filter(element => !gone.has(element.id));
+  canvas.elements = [...kept.slice(0, at), ...cards, ...kept.slice(at)];
+  if (page.readingOrder) {
+    const start = page.readingOrder.findIndex(id => gone.has(id)), order = page.readingOrder.filter(id => !gone.has(id));
+    page.readingOrder = start < 0 ? [...order, ...cards.map(card => card.id)] : [...order.slice(0, start), ...cards.map(card => card.id), ...order.slice(start)];
+  }
+  return cards;
 }
 
 export async function assembleDeck(input: AssembleInput): Promise<{ document: DesignDocument; notes: string[]; pages: AssembledPage[] }> {
