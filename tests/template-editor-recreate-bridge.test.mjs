@@ -1,12 +1,13 @@
 /* Run: node --test tests/template-editor-recreate-bridge.test.mjs
  * The early test path (lib/engine/agents/stages/bridge.ts): Engine's own stages
- * run an exact copy end to end on the first team's copier, chart rebuilder,
- * exact deck and fidelity critic. Uploaded slides go in, the check proceeds
- * unchecked, the deck is built and reviewed, and a must-fix goes back once:
- * to the copier for words, to the chart rebuilder for a chart. A full
- * recreation still stops at the source stage. Claude and Chromium are
- * stand-ins; the deck is built and saved for real. Local development storage
- * only. Each build step's merge retires part of this file with the bridge. */
+ * run an exact copy end to end, step A's source reader first, then the first
+ * team's copier, chart rebuilder, exact deck and fidelity critic. Uploaded
+ * slides go in, the check proceeds unchecked, the deck is built and reviewed,
+ * and a must-fix goes back once: to the copier for words, to the chart
+ * rebuilder for a chart. A full recreation stops at research. Claude and
+ * Chromium are stand-ins; the deck is built and saved for real. Local
+ * development storage only. Each build step's merge retires part of this file
+ * with the bridge. */
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -79,6 +80,17 @@ const transcriptOf=(second="photo")=>({
   caption:"Stocks up, jobs down.\n\nSource: BLS",notes:[],
 });
 const words=call=>call.content.filter(block=>block.type==="text").map(block=>block.text).join("\n");
+/** What the source reader (step A) hands in for `count` slides; its clean-up fills in the post's details. */
+const notesFor=count=>({
+  post:{author:{handle:"",name:""},format:count>1?"carousel":"photo",date:null,caption:"",url:null,traction:{likes:null,comments:null,views:null}},
+  originalLanguage:"en",shows:"A trader at a screen",claims:"Stocks nearly doubled since ChatGPT came out",mismatch:"",
+  template:{
+    cover:{layout:"Picture above, headline below",headline:{text:"SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED",casing:"upper",lines:["SINCE CHATGPT CAME OUT,","STOCKS NEARLY DOUBLED"],weight:"black",highlighted:["DOUBLED"]},subject:{kind:"photo",what:"A trader",position:"top",size:"half"},background:"dark",insets:[]},
+    branding:[],slides:Array.from({length:count},(_,index)=>({index:index+1,role:index?"chart":"cover",layout:"Picture, then words"})),avoid:[],
+  },
+  slides:Array.from({length:count},(_,index)=>({index:index+1,role:index?"chart":"cover",texts:[{role:"headline",text:index?"Stocks vs job openings":"SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED"}],parts:[]})),
+  notes:[],
+});
 
 /** Claude, Chromium and the deck save watched: the copier and the critic answer from `answers`, every slide renders dark. */
 async function stand(answers,run) {
@@ -107,6 +119,7 @@ async function stand(answers,run) {
 
 test("an exact copy runs end to end on the early test path, and the critic's word fix goes back to the copier once",async()=>{
   await stand({
+    source:()=>notesFor(2),
     transcript:()=>transcriptOf(),
     designCritic:count=>count===1
       ?{verdict:"fix",summary:"A word is wrong",issues:[{slide:2,problem:"The body says 96%; the original says 97%",fix:"Write 97%",severity:"must_fix",route:"copy"}]}
@@ -119,10 +132,11 @@ test("an exact copy runs end to end on the early test path, and the critic's wor
     assert.equal(finished.status,"done",finished.message);
     assert.deepEqual(Object.keys(finished.stages).sort(),["design","research","review","source","verdict"],"only the new stages are on the file");
 
-    // Source: the uploads kept as workspace images; the notes say they are empty.
+    // Source: step A's reader keeps the uploads as workspace images and reads them once; the copier reuses them.
     assert.equal(finished.source.imageIds.length,2);
+    assert.equal(of("source").length,1);
     assert.equal(finished.stages.source.output.slides.length,2);
-    assert.match(finished.stages.source.output.notes[0],/build step A/);
+    assert.equal(finished.stages.source.output.post.caption,"Stocks up, jobs down.","the post's own caption wins over the reading");
     // Research: a quick check that looked nothing up, and says so; the gate proceeds.
     const check=finished.stages.research.output;
     assert.equal(check.quick,true);
@@ -163,6 +177,7 @@ test("an exact copy runs end to end on the early test path, and the critic's wor
     // The run card says the origin wasn't checked rather than that none was found.
     const view=jobs.postView(finished,false);
     assert.deepEqual(view.stages.map(stage=>stage.stage),["source","research","verdict","design","review"]);
+    assert.equal(view.stages.find(stage=>stage.stage==="source").summary,"Read 2 slides");
     assert.equal(view.stages.find(stage=>stage.stage==="research").summary,"Origin not checked yet");
     assert.match(view.stages.find(stage=>stage.stage==="verdict").summary,/^Passed: Nothing checked yet/);
     assert.equal(view.stages.find(stage=>stage.stage==="design").summary,"2 slides designed");
@@ -171,6 +186,7 @@ test("an exact copy runs end to end on the early test path, and the critic's wor
 
 test("a chart fix goes back to the chart rebuilder alone: the copy stands",async()=>{
   await stand({
+    source:()=>notesFor(2),
     transcript:()=>transcriptOf("chart"),
     data:()=>({charts:[],missing:[{slide:2,why:"no real series in this test"}],notes:[]}),
     designCritic:count=>count===1
@@ -193,15 +209,16 @@ test("a chart fix goes back to the chart rebuilder alone: the copy stands",async
   });
 });
 
-test("a full recreation still stops at the source stage until step A lands",async()=>{
-  await stand({},async({calls})=>{
+test("a full recreation reads the post, then stops at research until step B lands",async()=>{
+  await stand({source:()=>notesFor(1)},async({calls})=>{
     const ownerKey=owner();
-    const {file,done}=await orchestrator.startRecreate(ownerKey,{profileId:"chatgptricks",mode:"autopilot",url:"https://www.instagram.com/p/full/"},options);
+    const {file,done}=await orchestrator.startRecreate(ownerKey,{profileId:"chatgptricks",mode:"autopilot",uploads:[await upload("1.png")]},options);
     await done;
     const finished=await posts.getPostFile(ownerKey,file.id);
     assert.equal(finished.status,"error");
-    assert.equal(finished.stages.source.status,"error");
-    assert.match(finished.stages.source.error,/isn't built yet \(build step A\)/);
-    assert.equal(calls.length,0,"Claude is never asked");
+    assert.equal(finished.stages.source.status,"done");
+    assert.equal(finished.stages.research.status,"error");
+    assert.match(finished.stages.research.error,/isn't built yet \(build step B\)/);
+    assert.deepEqual(calls.map(call=>call.role),["source"],"only the source reader asks Claude");
   });
 });

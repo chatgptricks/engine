@@ -1,9 +1,9 @@
 /**
- * The early test path (2026-11-08): until build steps A, B, D and F land, an
+ * The early test path (2026-11-08): until build steps B, D and F land, an
  * exact copy runs end to end on the first team's copier, chart rebuilder,
- * exact deck and fidelity critic, under the new stage names.
+ * exact deck and fidelity critic, under the new stage names. The source stage
+ * is step A's own (merged).
  *
- * - source: imports the post and keeps its slides. Its notes stay empty.
  * - research: an unchecked quick check that proceeds. Nothing is looked up.
  * - design: the first team's transcript, chart data and exact deck, in one
  *   stage. What they wrote is kept under `bridge`, so a fix round or a rerun
@@ -12,21 +12,19 @@
  *   data, images) become `design`, and the critics' report is kept under
  *   `bridge` so the fix round tells each part only its own issues.
  *
- * A full recreation goes straight to the step stubs, so it still stops at the
- * source stage. Each build step switches its stage off this file when it
+ * A full recreation goes straight to the step stubs, so it stops at the
+ * research stage. Each build step switches its stage off this file when it
  * merges; the Last step deletes the file.
  */
 import { outputOf, type StageContext, type StageResult, type StageRunner } from "../context";
 import { exactDeck, transcript as copyOriginal } from "../exact";
 import { exactData } from "../exact-data";
 import { templatePages } from "../pages";
-import { originalPost } from "../research";
 import { fixInstructions as legacyFix, review as legacyReview } from "../review";
-import type { CheckIssue, CriticOutput, CriticReport, DeckOutput, DesignOutput, Issue, Research, ReviewOutput, ReviewReport, SourceNotes, TranscriptOutput } from "../schemas";
+import type { CheckIssue, CriticOutput, CriticReport, DeckOutput, DesignOutput, Issue, Research, ReviewOutput, ReviewReport, TranscriptOutput } from "../schemas";
 import { design } from "./design";
 import { research } from "./research";
 import { review } from "./review";
-import { source } from "./source";
 
 /** How an unchecked origin starts; the run card shows it as "Origin not checked yet". */
 export const UNCHECKED = "Not checked yet";
@@ -51,26 +49,6 @@ const withStages = (context: StageContext, made: Partial<Made>): StageContext =>
     },
   },
 });
-
-const bridgeSource: StageRunner = async context => {
-  if (!exact(context)) return source(context);
-  const { images, source: imported } = await originalPost(context);
-  const post = imported ?? context.file.source;
-  const notes: SourceNotes = {
-    post: {
-      author: { handle: post.owner ?? "", name: "" }, format: images.length > 1 ? "carousel" : "photo", date: null,
-      caption: post.caption, url: post.url ?? null, traction: { likes: null, comments: null, views: null },
-    },
-    originalLanguage: "", shows: "", claims: "", mismatch: "",
-    template: {
-      cover: { layout: "", headline: { text: "", casing: "mixed", lines: [], weight: "", highlighted: [] }, subject: { kind: "none", what: "", position: "", size: "" }, background: "", insets: [] },
-      branding: [], slides: [], avoid: [],
-    },
-    slides: images.map((_, index) => ({ index: index + 1, role: "other" as const, texts: [], parts: [] })),
-    notes: ["The early test path imports the slides only. The designer reads them; the source reader (build step A) isn't built yet."],
-  };
-  return { output: notes, ...(imported ? { source: imported } : {}) };
-};
 
 const bridgeResearch: StageRunner = async context => {
   if (!exact(context)) return research(context);
@@ -152,4 +130,4 @@ const bridgeReview: StageRunner = async context => {
   return { output };
 };
 
-export const bridge = { source: bridgeSource, research: bridgeResearch, design: bridgeDesign, review: bridgeReview };
+export const bridge = { research: bridgeResearch, design: bridgeDesign, review: bridgeReview };
