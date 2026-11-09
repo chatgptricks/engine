@@ -35,22 +35,17 @@ import { outputOf, verdictOf, type RunCache, type StageContext, type StageResult
 import { stageCard } from "./playbook";
 import { HANDED_IN, PlanSchema, type DesignOutput, type Headlines, type PlanApproval, type Research, type ReviewReport, type StoryBrief, type Verdict } from "./schemas";
 import { brief } from "./stages/brief";
-import { bridge } from "./stages/bridge";
+import { design } from "./stages/design";
 import { autoApprove, chooseHeadline, headline, normalizePlan, pickPayload } from "./stages/headline";
 import { research } from "./stages/research";
-import { fixInstructions, MAX_EXACT_FIX_ROUNDS, MAX_FIX_ROUNDS } from "./stages/review";
+import { fixInstructions, MAX_EXACT_FIX_ROUNDS, MAX_FIX_ROUNDS, review } from "./stages/review";
 import { source } from "./stages/source";
 import { verdict } from "./stages/verdict";
 
 export { pickPayload } from "./stages/headline";
 
-/**
- * Design and review run on the early test path (stages/bridge.ts): an exact
- * copy goes end to end on the first team's copier, and a full recreation
- * reaches the step stubs. Each build step puts its own runner back here when
- * it merges.
- */
-export const RUNNERS: Record<PostStage, StageRunner> = { source, research, verdict, brief, headline, approval: autoApprove, design: bridge.design, review: bridge.review };
+/** Every stage runs its build step's own runner (steps A to F, merged 2026-11-09). */
+export const RUNNERS: Record<PostStage, StageRunner> = { source, research, verdict, brief, headline, approval: autoApprove, design, review };
 /** Stages the post can do without: when one fails, the run goes on and the post notes what's missing. */
 const OPTIONAL = new Set<PostStage>(["review"]);
 const MAX_ACTIVE_PER_OWNER = 4;

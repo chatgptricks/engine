@@ -37,12 +37,12 @@ import { alignedTicks, finiteAt, formatValue, niceTicks, ticksWithin, validateCh
 import { resolveChartData, type ChartData } from "../recreate-data";
 import { renderSlides } from "../slide-render";
 import type { StoryImage } from "../types";
-import { fetchXPost, reactionSlots, type XReaction } from "../x-reactions";
+import { fetchXPost, type XReaction } from "../x-reactions";
 import { isPlatformColor, PLATFORM_CARD_CLASS, PLATFORM_COLORS, PLATFORMS, platformCardClass, platformOfLayer, type Platform } from "../../template-editor/platform-cards";
 import { ToolError, type ClientTool, type SourceImage } from "./claude";
 import { chartSources, chartSpecFrom, dataTools, oneScale } from "./charts";
 import { cleanBox, cropOriginal, cutLogo, snapBox } from "./cut";
-import { cleanSlideText, emphasis, styleCards } from "./deck";
+import { cleanSlideText, emphasis, htmlReactionCards } from "./deck";
 import { cardsFor, MAX_POST_SEARCHES } from "./exact-posts";
 import { templatePages } from "./pages";
 import { photoSize, photosFromPages } from "./research";
@@ -239,6 +239,8 @@ const COLOR_ATTRIBUTE = /\s(fill|stroke|stop-color|flood-color|lighting-color|co
 const STYLE_ATTRIBUTE = /\sstyle\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
 const STYLE_BLOCK = /<style\b[^>]*>([\s\S]*?)(?:<\/style\s*>|$)/gi;
 const VARIABLE = /var\(\s*(--[\w-]+)/g;
+/** Engine's font variables, as the HTML sanitizer writes a named font (html-layer.ts HTML_FONT_STACKS). */
+const ENGINE_FONT_VARIABLE = /^--gf-f-[a-z]+$/;
 const CARD_MARK = new RegExp(`\\sclass\\s*=\\s*["']?[^"'>]*(?<![\\w-])${PLATFORM_CARD_CLASS}(?![\\w-])`, "i");
 /** A mask (mask-image: linear-gradient(90deg, transparent, black 40px…)) reads only its colors' opacity and paints nothing. */
 const MASK = /^(?:-webkit-)?mask(?:-|$)/;
@@ -280,6 +282,10 @@ export function offBrand(html: string, css: string | undefined, tokens: Record<s
   }
   for (const match of markup.matchAll(COLOR_ATTRIBUTE)) declarations.push({ property: match[1].toLowerCase(), value: match[2] ?? match[3] ?? match[4] ?? "" });
   const own = new Set(declarations.filter(item => item.property.startsWith("--")).map(item => item.property));
+  // The variables the brand's own are made of (var(--body-font) is var(--gf-f-sfpro), …): the HTML sanitizer writes a named
+  // font as its Engine variable. A platform card may also keep its platform's own font, as it keeps its colors.
+  const underlying = new Set(Object.values(tokens).flatMap(value => [...value.matchAll(VARIABLE)].map(match => match[1])));
+  const allowed = (name: string) => name in tokens || own.has(name) || underlying.has(name) || Boolean(platform && ENGINE_FONT_VARIABLE.test(name));
   let written = false;
   for (const { property, value } of declarations) {
     const literal = MASK.test(property) ? undefined : colorLiterals(value).find(color => !platform || !isPlatformColor(platform, color));
@@ -287,7 +293,7 @@ export function offBrand(html: string, css: string | undefined, tokens: Record<s
     else if (literal) problems.add(`${property}: ${value.trim().slice(0, 60)} writes the color ${literal} itself. Use the brand's variables (var(--color-accent), var(--color-text)…); for a tint, color-mix(in srgb, var(--color-text) 20%, transparent) or opacity.`);
     written ||= Boolean(literal);
     for (const [, name] of value.matchAll(VARIABLE)) {
-      if (!(name in tokens) && !own.has(name)) problems.add(`var(${name}) isn't one of the brand's variables.`);
+      if (!allowed(name)) problems.add(`var(${name}) isn't one of the brand's variables.`);
     }
   }
   const list = [...problems].slice(0, 6);
@@ -321,6 +327,98 @@ export function unstoredImages(document: DesignDocument, template: DesignTemplat
     else if (value && typeof value === "object") for (const [key, child] of Object.entries(value)) visit(child, key);
   };
   visit(document.pages);
+  return found;
+}
+
+type Box = { left: number; top: number; right: number; bottom: number };
+type Size = { width: number; height: number };
+
+/**
+ * Where a photo's drawn edges land in its frame, in the frame's own units:
+ * object-fit and object-position at the crop point, then the zoom around that
+ * same point (canvas.tsx draws it so; photo-crop-geometry.ts moves it so).
+ */
+export function photoBox(element: Pick<ImageElement, "width" | "height" | "fit" | "cropX" | "cropY" | "cropScale" | "flipX" | "flipY">, size: Size): Box {
+  const { width, height } = element, zoom = element.cropScale ?? 1;
+  const scale = element.fit === "cover" ? Math.max(width / size.width, height / size.height) : Math.min(width / size.width, height / size.height);
+  const axis = (frame: number, drawn: number, crop: number, flip: boolean | undefined) => {
+    const at = crop / 100, start = (frame - drawn) * at, [from, to] = flip ? [frame - start - drawn, frame - start] : [start, start + drawn];
+    // The zoom keeps the crop point where it is.
+    return [frame * at + (from - frame * at) * zoom, frame * at + (to - frame * at) * zoom];
+  };
+  const [left, right] = axis(width, size.width * scale, element.cropX, element.flipX);
+  const [top, bottom] = axis(height, size.height * scale, element.cropY, element.flipY);
+  return { left, top, right, bottom };
+}
+
+/** A color's opacity: #rgba and #rrggbbaa carry it, rgba() and hsla() too; transparent is none. */
+function alphaOf(color: string): number {
+  const value = color.trim().toLowerCase();
+  if (value === "transparent") return 0;
+  const hex = value.match(/^#([0-9a-f]{3,8})$/)?.[1];
+  if (hex?.length === 4) return parseInt(hex[3] + hex[3], 16) / 255;
+  if (hex?.length === 8) return parseInt(hex.slice(6), 16) / 255;
+  const fn = value.match(/^(?:rgba?|hsla?)\((.*)\)$/)?.[1];
+  const last = fn?.split(/[\s,/]+/).filter(Boolean)[3];
+  if (last) return last.endsWith("%") ? parseFloat(last) / 100 : parseFloat(last);
+  return 1;
+}
+
+/** How much a layer above a photo hides of it at one point of the page: a band (an HTML layer) all of it, a shape by its fill or its fade there. */
+function coverAt(element: CanvasElement, x: number, y: number): number {
+  if (element.hidden || element.rotation || x < element.x || x > element.x + element.width || y < element.y || y > element.y + element.height) return 0;
+  if (element.type === "html") return 1;
+  if (element.type !== "shape" || element.shape !== "rectangle") return 0;
+  const gradient = element.gradient, opacity = element.opacity ?? 1;
+  if (!gradient) return alphaOf(element.fill) * opacity;
+  const angle = ((gradient.angle % 360) + 360) % 360, stops = [...gradient.stops].sort((a, b) => a.position - b.position);
+  if (gradient.type !== "linear" || ![0, 90, 180, 270].includes(angle) || !stops.length) return 0;
+  // CSS angles: 180 runs top to bottom, 0 bottom to top, 90 left to right, 270 right to left.
+  const along = angle === 180 ? (y - element.y) / element.height : angle === 0 ? 1 - (y - element.y) / element.height
+    : angle === 90 ? (x - element.x) / element.width : 1 - (x - element.x) / element.width;
+  const at = along * 100, after = stops.findIndex(stop => stop.position >= at);
+  if (after <= 0) return alphaOf(stops[after < 0 ? stops.length - 1 : 0].color) * opacity;
+  const [a, b] = [stops[after - 1], stops[after]], share = b.position === a.position ? 1 : (at - a.position) / (b.position - a.position);
+  return (alphaOf(a.color) + (alphaOf(b.color) - alphaOf(a.color)) * share) * opacity;
+}
+
+/**
+ * Photos under the template's fades (the Cover's and the Follow page's) whose
+ * drawn edge stops inside the frame where nothing covers it: that edge shows
+ * as a hard line across the slide. A layer above the photo covers an edge where
+ * it hides nearly all of it along the photo's visible length: the template's
+ * fade where it is dark enough, or a band in HTML. `sizeOf` gives the photo's
+ * own size, or null when it isn't known.
+ */
+export function shownPhotoEdges(document: DesignDocument, sizeOf: (element: ImageElement) => Size | null): string[] {
+  const pixels = formatDimensions(document).width / 360, slack = 1, dark = .9, found: string[] = [];
+  const out = (value: number) => Math.round(value * pixels);
+  document.pages.forEach((page, number) => {
+    const elements = page.canvas?.elements ?? [];
+    elements.forEach((element, index) => {
+      if (element.type !== "image" || element.hidden || element.rotation || !element.src || (element.opacity ?? 1) <= 0) return;
+      const above = elements.slice(index + 1), overlaps = (other: CanvasElement) => other.x < element.x + element.width && other.x + other.width > element.x && other.y < element.y + element.height && other.y + other.height > element.y;
+      if (!above.some(other => other.type === "shape" && other.gradient && !other.hidden && overlaps(other))) return;
+      const size = sizeOf(element);
+      if (!size || size.width <= 0 || size.height <= 0) return;
+      const box = photoBox(element, size), { width, height } = element;
+      const shown = { left: Math.max(0, box.left), right: Math.min(width, box.right), top: Math.max(0, box.top), bottom: Math.min(height, box.bottom) };
+      if (shown.right <= shown.left || shown.bottom <= shown.top) return;
+      // An edge is covered when every point along its visible length is hidden by some layer above.
+      const covered = (points: [number, number][]) => points.every(([x, y]) => above.some(other => coverAt(other, element.x + x, element.y + y) >= dark));
+      const along = (from: number, to: number) => Array.from({ length: 9 }, (_, step) => from + (to - from) * (step + .5) / 9);
+      const name = `“${element.name || element.slot || "Photo"}”`, problems: string[] = [];
+      if (box.bottom < height - slack && !covered(along(shown.left, shown.right).map(x => [x, box.bottom])))
+        problems.push(`ends ${out(height - box.bottom)} px above its frame's bottom: place it low in the frame (cropY 100), so its bottom edge sits on the frame's bottom under the template's fade, as close to filling the frame as the faces allow (cropScale)`);
+      if (box.top > slack && !covered(along(shown.left, shown.right).map(x => [x, box.top])))
+        problems.push(`starts ${out(box.top)} px below its frame's top with nothing over that edge: cover it with a band of the background (Layout), or place the photo so it reaches the frame's top`);
+      for (const [side, gap, x] of [["left", box.left, box.left], ["right", width - box.right, box.right]] as const) {
+        if (gap > slack && !covered(along(shown.top, shown.bottom).map(y => [x, y])))
+          problems.push(`stops ${out(gap)} px short of its frame's ${side} side: bring it closer (cropScale) or fill the frame, so no edge runs down the slide`);
+      }
+      if (problems.length) found.push(`Slide ${number + 1}: the photo in ${name} ${problems.join("; it ")}, or that edge shows as a hard line.`);
+    });
+  });
   return found;
 }
 
@@ -414,7 +512,6 @@ async function createDeck(session: DesignSession, input: { name: string; caption
     });
     if (posts.length && page.cards !== posts.length) throw new ToolError(`Slide ${index + 1}: the ${page.label} page has ${page.cards || "no"} post card${page.cards === 1 ? "" : "s"}, for ${posts.length} post${posts.length === 1 ? "" : "s"}.`);
     const cards = await Promise.all(posts.map(post => storedPost(session, post)));
-    cards.forEach((post, n) => Object.assign(slots, reactionSlots(post, { card: n + 1 })));
     return { slide, page, slots, rich, placed, cards };
   }));
   let document: DesignDocument;
@@ -443,7 +540,7 @@ async function createDeck(session: DesignSession, input: { name: string; caption
       frame.publicAlt = asset.what.slice(0, 2000);
       if (asset.width && asset.height) { frame.intrinsicWidth = asset.width; frame.intrinsicHeight = asset.height; }
     }
-    if (item.cards.length) styleCards(elements, item.cards, scale);
+    if (item.cards.length) htmlReactionCards(document.pages[index], item.cards, scale);
   });
   ownLines(document, session.profile);
   // Decks from a guide's template get its cover touches: gradient words, the remark, topic logos.

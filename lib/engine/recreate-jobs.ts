@@ -129,9 +129,10 @@ type OpenIssue = { slide: number; problem: string; fix: string; severity: "must_
 /** The critics' report in a few lines: what is still open, without who it was routed to. */
 function reviewView(report: Report | null | undefined) {
   if (!report) return null;
-  const open = [...report.checks, ...(report.facts?.issues ?? []), ...(report.design?.issues ?? [])].filter(issue => issue.severity !== "note")
+  // A review the early test path skipped (2026-11-08) has a note and no checks.
+  const open = [...(report.checks ?? []), ...(report.facts?.issues ?? []), ...(report.design?.issues ?? [])].filter(issue => issue.severity !== "note")
     .map(({ slide, problem, fix, severity }): OpenIssue => ({ slide, problem, fix, severity }));
-  return { round: report.round, rendered: report.rendered, facts: report.facts?.summary ?? null, design: report.design?.summary ?? null, sentBack: [...report.sentBack], open };
+  return { round: report.round, rendered: report.rendered, facts: report.facts?.summary ?? null, design: report.design?.summary ?? null, sentBack: [...(report.sentBack ?? [])], open };
 }
 
 function resultView(file: PostFile) {

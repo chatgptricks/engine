@@ -54,7 +54,7 @@ export const TemplateNotesSchema = z.object({
     role: z.string().describe("What the slide does in the post"),
     layout: z.string().describe("How it is laid out, in reading order"),
   })),
-  avoid: z.array(z.string()).describe("Not to copy: the original's errors and branding. Claims that fail the check are added after research"),
+  avoid: z.array(z.string()).describe("Not to copy: the original's errors and its own branding, never another platform's posts or comments it shows (we redraw those as our cards). Claims that fail the check are added after research"),
 });
 export type TemplateNotes = z.infer<typeof TemplateNotesSchema>;
 export const SOURCE_PARTS = ["photo", "chart", "x_post", "logo", "screenshot", "graphic"] as const;

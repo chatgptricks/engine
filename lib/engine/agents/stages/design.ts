@@ -23,7 +23,7 @@ import { imageBlock, RecreateError, work } from "../claude";
 import { CHART_FIELDS, EXACT_CHART_FIELDS } from "../charts";
 import { need, rerunNote, type StageContext, type StageRunner } from "../context";
 import { loadDeck, MAX_DECK_SLIDES, saveDeck } from "../deck";
-import { creditsFor, deckOffBrand, deckView, designSession, designTools, unstoredImages, type DesignSession } from "../design-tools";
+import { creditsFor, deckOffBrand, deckView, designSession, designTools, shownPhotoEdges, unstoredImages, type DesignSession } from "../design-tools";
 import { coverPage, describePages, followPage, templatePages, type PageCatalog } from "../pages";
 import { stagePrompt } from "../playbook";
 import { originalSlides } from "../research";
@@ -41,7 +41,7 @@ const WORKFLOW = [
 const LAYOUT_RULES = [
   "Keep each template page's branding layers (logo, hairlines, handle, page number, swipe line) where they are: never cover or redraw them",
   "The cover is the template's Cover page, exactly: the photo fills its photo frame under the template's fades, and the headline sits in its headline slot at the template's size and casing, its key phrase in [[ ]] for the accent, as the template's own cover sets one apart: the words the original sets apart, or else the phrase that carries the story, without a leading article. An exact copy's too: the accent is our template's look, not a change to the words",
-  "A photo keeps every face whole and clear of the template's fades: no face is cut by the frame's edges (each is whole inside the frame, or out of it). Cut it at about its frame's proportions, then place it in the frame with cropX and cropY (0-100: the point of the photo the frame centers on) and cropScale (above 1 to come closer). When filling the frame would cut a face, fit: contain keeps them all; then cropScale brings it as close to filling the frame as the faces allow (often about 1.1), and an overlay at its top puts it low in the frame (cropY 100), its people clear of the card above",
+  "A photo keeps every face whole and clear of the template's fades: no face is cut by the frame's edges (each is whole inside the frame, or out of it). Cut it at about its frame's proportions, then place it in the frame with cropX and cropY (0-100: the point of the photo the frame centers on) and cropScale (above 1 to come closer). When filling the frame would cut a face, fit: contain keeps them all; then cropScale brings it as close to filling the frame as the faces allow (often about 1.1), and it always sits low in the frame (cropY 100), overlay or not: its bottom edge on the frame's bottom, where the template's fade takes it, and its people clear of any card above. A photo's edge that stops inside its frame shows as a hard line",
   "A photo we reuse never shows the original's overlays (its cards, captions, stickers, logos, text). Engine can't paint them out: cut the photo's box clear of them, or cover them with the layer we rebuild in their place",
   "Where an overlay reaches past the layer we rebuild over it (or there is none, as on the Follow page), our layer keeps its usual size and place, never stretched to cover it: the rest goes under a band of var(--color-background), an HTML layer right above the photo in the stack (add_html index), under the template's fades and our layers. It is solid to about 40 px past the overlay's lowest edge, its border and shadow too (a thin line left showing is easy to miss at look_at_slides' size), then fades out into the photo over 100 px or more (linear-gradient to transparent) the way the template's fades do, clear of the faces. A photo that doesn't fill its frame (fit: contain, to keep every face whole) gets the same band over its top edge, so no hard line shows in the margins",
   "Every part that isn't a photo is rebuilt, never pasted from a screenshot: words as text, a post or comment as our card (Cards), a chart from its data, a logo from find_logos",
@@ -115,7 +115,7 @@ function cardRules(template: StageContext["template"], tokens: Record<string, st
     "A post from X is our X card: x_post, on the template's Reaction page",
     `A post or comment from another platform (Reddit, Threads, Instagram, TikTok, YouTube…) is our card, one HTML layer: ${frame}`,
     `${named} cards keep their platform's own colors, outside the brand on purpose, the way our X card copies X's dark mode. Mark the card: the outermost element of the layer's markup carries class="${platformCardClass("reddit")}" (an X post drawn in HTML: "${platformCardClass("x")}"). In a marked card a color may be written out, as hex, when it's one of the platform's own; every other color still comes from the brand's variables. A card from a platform without colors of its own (Threads, TikTok, YouTube…) is drawn on the same frame in the brand's colors, unmarked`,
-    `Reddit's colors: the card ${REDDIT_CARD.card}, its border ${REDDIT_CARD.border}, the name ${REDDIT_CARD.name}, the time ${REDDIT_CARD.time}, the words ${REDDIT_CARD.text}. Its default avatar is this SVG, with COLOR the avatar's color in the original: ${Object.entries(REDDIT_CARD.avatars).map(([name, color]) => `${name} ${color}`).join(", ")}: ${REDDIT_AVATAR}`,
+    `Reddit's colors: the card ${REDDIT_CARD.card}, its border ${REDDIT_CARD.border}, the name ${REDDIT_CARD.name}, the time ${REDDIT_CARD.time}, the words ${REDDIT_CARD.text}. Its default avatar is this SVG, with COLOR picked by the color the source notes name for the avatar, as the page's approved design does (never matched to the screenshot's pixels): ${Object.entries(REDDIT_CARD.avatars).map(([name, color]) => `${name} ${color}`).join(", ")}; a shade between two (orange-yellow, red-orange) takes the first of its words that is one of these: ${REDDIT_AVATAR}`,
     "These cards are how the page draws other platforms' posts, approved by the page: they stand where the source notes say to avoid a platform's avatars or look",
     `Inside the card, the avatar, round; beside it the name in bold, then · and the time in grey at the same size, on one line; then the words, word for word, in the page's text style: ${noFinalPeriods ? "no period at the end of the last sentence, and " : ""}curly quotes and apostrophes (“ ” ’). No vote row, buttons, counts or menus, as on our X card: their words in the source notes (Reply, ••• and the vote count) stay out`,
     `Its sizes are the page's approved design, not a guess. A card alone on its slide: ${sized(CARD_SIZES.lone)}. A card on a photo, compact so the photo shows: ${sized(CARD_SIZES.compact)}. The words are in the brand's body font (var(--body-font)), with text-wrap: pretty. Only a comment too long to fit the content area at those sizes takes smaller words: never below var(--body-size) alone on its slide, nor below var(--min-text-size) on a photo`,
@@ -185,6 +185,13 @@ async function problemWith(session: DesignSession, value: Submitted, slides: num
   if (sample && headline?.type === "text" && headline.text.trim() && !accented(headline)) {
     return `The cover's headline sets its key phrase apart in the accent, as the template's cover does: give the ${sample.slot} slot its words again with [[ ]] around that phrase (edit_deck update_element text), then look at it again.`;
   }
+  // A photo under the template's fades shows no hard edge: its bottom on the frame's bottom, its top under a band.
+  const edges = shownPhotoEdges(document, element => {
+    const asset = session.assets.get(element.src);
+    if (asset?.width && asset.height) return asset;
+    return element.intrinsicWidth && element.intrinsicHeight ? { width: element.intrinsicWidth, height: element.intrinsicHeight } : null;
+  });
+  if (edges.length) return `${edges.join(" ")} Fix it with edit_deck, then look at it again.`;
   if (Object.keys(session.tokens).length) {
     const off = deckOffBrand(document, session.tokens);
     if (off.length) return `These HTML layers leave the brand: ${off.join(" ")}`;

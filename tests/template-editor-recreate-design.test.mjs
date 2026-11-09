@@ -273,9 +273,12 @@ test("an exact copy rebuilds every slide in the template, with stored images and
     const [,id]=photo.src.match(ASSET);
     assert.ok(await media.hasOriginalAsset(context.ownerKey,id),"the cut is a stored media file");
     assert.equal(elements(1).find(item=>item.slot==="title").text,"AI vs Jobs");
-    const card=elements(2);
-    assert.equal(card.find(item=>item.slot==="reaction-handle").text,"@sama");
-    assert.match(card.find(item=>item.slot==="reaction-avatar").src,ASSET);
+    const card=elements(2),post=card.find(item=>item.slot==="reaction-card");
+    assert.equal(post.type,"html","the post is E's HTML X card (htmlReactionCards)");
+    assert.equal(cards.platformOfLayer(post.html),"x");
+    assert.match(post.html,/@sama/);
+    assert.match(post.html,/src="\/api\/template-editor\/assets\/[a-f0-9]{64}"/,"its avatar is a stored file");
+    assert.ok(!card.some(item=>item.slot?.startsWith("reaction-")&&item.slot!=="reaction-card"),"the native card's layers are gone");
     assert.equal(card.find(item=>item.slot==="title").text,"","a slot the copy leaves out is emptied");
     assert.equal(elements(3).find(item=>item.slot==="cta").text,"FOR MORE");
     assert.equal(deck.caption,sourceNotes.post.caption);
@@ -595,6 +598,32 @@ test("a photo link that redirects to a private address, or keeps redirecting, is
   await assert.rejects(()=>place(loop),/redirects too many times/);
   assert.equal(requests.length,1+6);
   assert.match(session.document.pages[0].canvas.elements.find(item=>item.slot==="media").src,/^data:/,"the frame keeps the template's placeholder");
+});
+
+test("a photo under the template's fades shows no hard edge: run 8's cover is sent back, the proof's placement passes",()=>{
+  const document={...structuredClone(template),pages:[structuredClone(template.pages[COVER]),structuredClone(template.pages[MEDIA])]};
+  const photo=document.pages[0].canvas.elements.find(item=>item.slot==="photo"),strip={width:1254,height:455};
+  Object.assign(photo,{src:`/api/template-editor/assets/${"a".repeat(64)}`,fit:"contain",cropX:50,cropY:77,cropScale:1});
+  const edges=()=>tools.shownPhotoEdges(document,item=>item.src.startsWith("/api/")?strip:null);
+  // Run 8: a strip cut below the card, contained at cropY 77, its bottom edge a line at y 804.
+  const box=tools.photoBox(photo,strip);
+  assert.equal(Math.round(box.bottom*3),803);
+  const [found]=edges();
+  assert.match(found,/^Slide 1: the photo in “[^”]+” ends 123 px above its frame's bottom: place it low in the frame \(cropY 100\)/);
+  assert.match(found,/starts 411 px below its frame's top with nothing over that edge/);
+  // Low in the frame and a little closer, as the proof: the bottom edge on the frame's bottom, under the fade; a band over the top edge.
+  Object.assign(photo,{cropY:100,cropScale:1.1});
+  const low=tools.photoBox(photo,strip);
+  assert.ok(Math.abs(low.bottom-photo.height)<1e-9&&low.left<0&&low.right>photo.width,"it fills the frame's width and sits on its bottom");
+  assert.match(edges()[0],/starts 495 px below its frame's top/,"the top edge still needs its band");
+  const at=document.pages[0].canvas.elements.indexOf(photo);
+  document.pages[0].canvas.elements.splice(at+1,0,{type:"html",id:"band",name:"Band",x:0,y:0,width:360,height:200,rotation:0,opacity:1,locked:false,html:"<div></div>",css:""});
+  assert.deepEqual(edges(),[]);
+  // A photo filling its frame has no edge inside it; nor is a photo off the fades checked (an inset on Text + Media).
+  Object.assign(photo,{fit:"cover",cropY:50,cropScale:1});
+  const media=document.pages[1].canvas.elements.find(item=>item.slot==="media");
+  Object.assign(media,{src:`/api/template-editor/assets/${"b".repeat(64)}`,fit:"contain",cropX:50,cropY:50,cropScale:1});
+  assert.deepEqual(tools.shownPhotoEdges(document,()=>({width:400,height:1200})),[]);
 });
 
 test("a deck with an outside link or a data: image isn't handed in",()=>{
