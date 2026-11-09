@@ -22,11 +22,38 @@ import {createRenderToken, revokeRenderToken} from "./render-tokens";
  * call. When Chromium cannot launch (not installed, no sandbox), renderSlides
  * returns null and logs the reason once, so callers can fall back to geometry
  * checks.
+ *
+ * Each page is also measured in the render page, as drawn (`measures`): every
+ * layer's box after smart layout, and inside HTML layers each run of words
+ * (its font size on the slide, its box, whether something cuts it off) and
+ * each picture. Recreate's review checks them (agents/review-checks.ts).
  */
+/** A box in scene px (the 360-wide canvas the frame is laid out on, so output px × 360 / the slide's width), from the page's top-left corner. */
+export type MeasuredBox = {x: number; y: number; width: number; height: number};
+/** Words inside an HTML layer, as the render page laid them out: one text node. */
+export type MeasuredText = {
+  layerId: string;
+  /** The words, up to 120 characters. */
+  text: string;
+  /** Their font size on the slide, in scene px: the CSS size times every scale above it (the layer's, an SVG's viewBox, transforms). */
+  size: number;
+  box: MeasuredBox;
+  /** Part of the words is cut off: by the layer's own edge, a box inside it that hides what overflows (an SVG's too), or the page's edge. */
+  clipped: boolean;
+};
+/** A picture inside an HTML layer: an <img>, an SVG <image> or a CSS background image, with the part of it the layer shows. */
+export type MeasuredImage = {layerId: string; src: string; box: MeasuredBox};
+export type SlideMeasures = {
+  /** Every layer drawn on the page, by element id, where smart layout put it (a rotated layer's box is the box around it). */
+  layers: {id: string; box: MeasuredBox}[];
+  texts: MeasuredText[];
+  images: MeasuredImage[];
+};
 /** `exportError` is set when the editor's Export would refuse this page (for
  * example "Shorten “Post text” before exporting…"); the PNG then shows the
- * page as the editor's canvas draws it. */
-export type SlideRender = {pageId: string; png: Buffer; exportError?: string};
+ * page as the editor's canvas draws it. `measures` is missing when the page
+ * couldn't be measured. */
+export type SlideRender = {pageId: string; png: Buffer; exportError?: string; measures?: SlideMeasures};
 export type SlideBrowserLauncher = () => Promise<Browser>;
 export type RenderSlidesOptions = {
   pageIds?: string[];
@@ -41,6 +68,8 @@ export type RenderSlidesOptions = {
 
 const FRAME_WIDTH = 360; // components/template-editor/preview.tsx
 const BUDGET_MS = 60_000;
+/** Enough for a chart's every label; past these a page's measures stop. */
+const MAX_MEASURED_TEXTS = 400, MAX_MEASURED_IMAGES = 120;
 const LAUNCH_RETRY_MS = 5 * 60_000;
 const PRIVATE_ASSET = /^\/api\/template-editor\/assets\/([a-f0-9]{64})$/;
 // The dev-mode indicator and error overlay are fixed over the page; keep them out of the shot.
@@ -247,6 +276,126 @@ async function settleFrame({pageId, timeout}: {pageId: string; timeout: number})
   } finally { observer.disconnect(); }
 }
 
+/**
+ * Runs in the render page once it has settled (so it can't use anything from
+ * this module): measures the page as drawn. Exported for tests, which run it
+ * in Chromium on a page of their own.
+ *   - layers: every layer's box, as smart layout placed it;
+ *   - texts: each text node in an HTML layer that shows, with its font size on
+ *     the slide. An SVG element's size comes from getScreenCTM (its viewBox,
+ *     nested SVGs and every CSS transform above it); an HTML element's from the
+ *     transform, scale and zoom of each box up to the frame. It is clipped when
+ *     the layer's edge, a box that hides its overflow (an SVG's viewport too)
+ *     or the page's edge cuts part of it;
+ *   - images: each <img>, SVG <image> and CSS background image, cut to its layer.
+ * Hidden words and pictures (display none, visibility hidden, an opacity
+ * under 5%) are left out.
+ */
+export function measureFrame({pageId, maxTexts, maxImages}: {pageId: string; maxTexts: number; maxImages: number}): SlideMeasures | null {
+  const frame = document.querySelector<HTMLElement>("[data-engine-render] > .te-frame");
+  if (!frame || frame.dataset.pageId !== pageId) return null;
+  type Edges = {left: number; top: number; right: number; bottom: number};
+  const page = frame.getBoundingClientRect();
+  // CSS px of the viewport per scene px: 1, unless the page scales the frame.
+  const unit = frame.offsetWidth ? page.width / frame.offsetWidth : 1, slack = 0.5 * unit;
+  const round = (value: number) => Math.round(value * 100) / 100;
+  const box = (edges: Edges): MeasuredBox => ({x: round((edges.left - page.left) / unit), y: round((edges.top - page.top) / unit), width: round((edges.right - edges.left) / unit), height: round((edges.bottom - edges.top) / unit)});
+  const union = (rects: Edges[]): Edges => rects.reduce((all, rect) => ({left: Math.min(all.left, rect.left), top: Math.min(all.top, rect.top), right: Math.max(all.right, rect.right), bottom: Math.max(all.bottom, rect.bottom)}));
+  const meet = (a: Edges, b: Edges): Edges => ({left: Math.max(a.left, b.left), top: Math.max(a.top, b.top), right: Math.min(a.right, b.right), bottom: Math.min(a.bottom, b.bottom)});
+  const outside = (inner: Edges, outer: Edges) => inner.left < outer.left - slack || inner.top < outer.top - slack || inner.right > outer.right + slack || inner.bottom > outer.bottom + slack;
+  const matrixScale = (value: string) => {
+    if (!value || value === "none") return 1;
+    const numbers = value.slice(value.indexOf("(") + 1, -1).split(",").map(Number);
+    const scale = value.startsWith("matrix3d") ? Math.hypot(numbers[0], numbers[1], numbers[2]) : Math.hypot(numbers[0], numbers[1]);
+    return Number.isFinite(scale) ? scale : 1;
+  };
+  const factor = (value: string) => {
+    const number = parseFloat(value);
+    return value && value !== "none" && Number.isFinite(number) ? Math.abs(number) : 1;
+  };
+  /** Scene px per CSS px of the element's own font size. */
+  const scaleOf = (element: Element): number => {
+    if (element instanceof SVGGraphicsElement) {
+      const matrix = element.getScreenCTM();
+      if (matrix) return Math.hypot(matrix.a, matrix.b) / unit;
+    }
+    let scale = 1;
+    for (let node: Element | null = element; node && node !== frame; node = node.parentElement) {
+      const style = getComputedStyle(node);
+      scale *= matrixScale(style.transform) * factor(style.scale) * factor(style.zoom);
+    }
+    return scale;
+  };
+  /** Hidden, or nearly transparent, from the element up to its layer. */
+  const unseen = (element: Element, layer: Element): boolean => {
+    let opacity = 1;
+    for (let node: Element | null = element; node; node = node === layer ? null : node.parentElement) {
+      const style = getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden" || style.visibility === "collapse") return true;
+      opacity *= Number(style.opacity);
+    }
+    return !(opacity >= 0.05);
+  };
+  /** Cut off by a box between the element and its layer that hides what overflows, or by the page. */
+  const clipped = (edges: Edges, element: Element, layer: Element): boolean => {
+    if (outside(edges, page)) return true;
+    for (let node: Element | null = element; node; node = node === layer ? null : node.parentElement) {
+      const style = getComputedStyle(node);
+      if ((style.overflowX !== "visible" || style.overflowY !== "visible") && outside(edges, node.getBoundingClientRect())) return true;
+    }
+    return false;
+  };
+  const sourceOf = (element: Element): string => {
+    const tag = element.tagName.toLowerCase();
+    const raw = tag === "img" ? (element as HTMLImageElement).currentSrc || element.getAttribute("src") || ""
+      : tag === "image" ? element.getAttribute("href") || element.getAttribute("xlink:href") || ""
+      : getComputedStyle(element).backgroundImage.match(/url\(\s*["']?([^"')]*)/)?.[1] ?? "";
+    return raw.startsWith("data:") ? `${raw.slice(0, Math.max(5, raw.indexOf(",") + 1))}…` : raw.slice(0, 300);
+  };
+  const layers: SlideMeasures["layers"] = [], texts: MeasuredText[] = [], images: MeasuredImage[] = [];
+  const elements = Array.from(frame.querySelectorAll<HTMLElement>(".te-canvas-element[data-element-id]"));
+  for (const element of elements) layers.push({id: element.dataset.elementId ?? "", box: box(element.getBoundingClientRect())});
+  for (const layer of elements) {
+    const root = layer.classList.contains("te-canvas-element-html") ? layer.querySelector(".te-canvas-html-root") : null;
+    if (!root) continue;
+    const layerId = layer.dataset.elementId ?? "", edges = layer.getBoundingClientRect();
+    const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+    for (let node = walker.nextNode(); node && texts.length < maxTexts; node = walker.nextNode()) {
+      const words = (node.textContent ?? "").replace(/\s+/g, " ").trim(), parent = node.parentElement;
+      if (!words || !parent || unseen(parent, layer)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(node);
+      const rects = Array.from(range.getClientRects()).filter(rect => rect.width > 0.01 && rect.height > 0.01);
+      const style = getComputedStyle(parent), scale = scaleOf(parent), size = parseFloat(style.fontSize) * scale;
+      if (!rects.length || !(size > 0)) continue;
+      // Each rect is the letters' full box; a tight line height (the brand's covers set 0.836) lets it stick out of
+      // its line, letters untouched. Words count as cut off only past their lines.
+      const line = parent instanceof SVGElement ? NaN : parseFloat(style.lineHeight) * scale * unit;
+      const area = union(rects.map(rect => {
+        const inset = line > 0 && rect.height > line ? (rect.height - line) / 2 : 0;
+        return {left: rect.left, top: rect.top + inset, right: rect.right, bottom: rect.bottom - inset};
+      }));
+      texts.push({layerId, text: words.slice(0, 120), size: round(size), box: box(area), clipped: clipped(area, parent, layer)});
+    }
+    for (const element of Array.from(root.querySelectorAll("*"))) {
+      if (images.length >= maxImages) break;
+      const tag = element.tagName.toLowerCase();
+      if (tag !== "img" && tag !== "image" && !/url\(/.test(getComputedStyle(element).backgroundImage)) continue;
+      if (unseen(element, layer)) continue;
+      const shown = meet(element.getBoundingClientRect(), edges);
+      if (shown.right - shown.left < slack || shown.bottom - shown.top < slack) continue;
+      images.push({layerId, src: sourceOf(element), box: box(shown)});
+    }
+  }
+  return {layers, texts, images};
+}
+
+/** What measureFrame sent back, if it is measures at all (a stand-in browser may answer anything). */
+function readMeasures(value: unknown): SlideMeasures | undefined {
+  const measures = value as SlideMeasures | null | undefined;
+  return measures && Array.isArray(measures.layers) && Array.isArray(measures.texts) && Array.isArray(measures.images) ? measures : undefined;
+}
+
 async function renderPages(browser: Browser, document: DesignDocument, pageIds: string[], ownerKey: string | undefined, signal: AbortSignal, deadline: number): Promise<SlideRender[]> {
   const format = formatDimensions(document), origin = renderOrigin();
   const scale = format.width / FRAME_WIDTH, height = FRAME_WIDTH * format.height / format.width;
@@ -277,11 +426,13 @@ async function renderPages(browser: Browser, document: DesignDocument, pageIds: 
           try {
             await frame.waitFor({state: "visible", timeout: remaining()});
             const {failed, exportError, missingFonts} = await tab.evaluate(settleFrame, {pageId, timeout: remaining()});
+            // Measuring is extra: a page that can't be measured still renders.
+            const measures = await tab.evaluate(measureFrame, {pageId, maxTexts: MAX_MEASURED_TEXTS, maxImages: MAX_MEASURED_IMAGES}).then(readMeasures, () => undefined);
             const png = await frame.screenshot({type: "png", scale: "device", animations: "disabled", caret: "hide", style: HIDE_OVERLAYS, timeout: remaining()});
             if (navigations === before) {
               if (missingFonts) logOnce(`Font files failed to load on ${origin}, so slides use fallback fonts (the licensed fonts are probably not installed there).`);
               if (failed.length) console.warn(`[slide-render] Page ${pageId}: ${failed.length} image(s) did not load: ${failed.slice(0, 3).join(", ")}`);
-              results.push(exportError ? {pageId, png, exportError} : {pageId, png});
+              results.push({pageId, png, ...(exportError ? {exportError} : {}), ...(measures ? {measures} : {})});
               break;
             }
           } catch (error) {
