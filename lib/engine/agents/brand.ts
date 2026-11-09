@@ -1,15 +1,17 @@
 /**
  * The page's brand guide, for Recreate's team: the brief every role reads, the
- * checks code runs on the finished deck, and the approved example posts the
- * design critic compares our slides with.
+ * checks code runs on the finished deck, the limits the review holds HTML
+ * layers to, and the approved example posts the design critic compares our
+ * slides with.
  */
 import type Anthropic from "@anthropic-ai/sdk";
-import { guideBrief, runGuideChecks, type BrandGuide, type GuideCheckKind } from "../../template-editor/brand-guide";
-import type { DesignDocument } from "../../template-editor/model";
+import { GUIDE_CHECKS, guideBrief, guidePalette, guideTextStyle, runGuideChecks, type BrandGuide, type GuideCheckKind } from "../../template-editor/brand-guide";
+import { formatDimensions, type DesignDocument, type HtmlElement } from "../../template-editor/model";
+import { hexColor } from "../../template-editor/platform-cards";
 import { getBrandGuide, guideExampleImages } from "../brand-guides";
 import type { PageProfile } from "../page-profiles";
 import { imageBlock } from "./claude";
-import type { Issue } from "./schemas";
+import type { CheckIssue, Issue } from "./schemas";
 
 /** The guide a page follows, or null when it names none (or it can't be read: a run never fails over its guide). */
 export async function loadGuide(ownerKey: string, profile: PageProfile): Promise<BrandGuide | null> {
@@ -42,6 +44,51 @@ export function guideDeckChecks(document: DesignDocument, profile: PageProfile, 
   const skip: GuideCheckKind[] = ["body-length", "upper-cover", ...(profile.format?.noFinalPeriods ?? true ? ["no-final-period" as const] : [])];
   return runGuideChecks(document, guide, { scope: "deck", language: profile.language, skip })
     .map(({ slide, problem, fix, severity, route }) => ({ slide, problem, fix, severity, route }));
+}
+
+/**
+ * The guide's code checks on a finished deck, for the simpler Recreate's
+ * review. The designer built every layer and wrote every word, so every issue
+ * goes back to design. In an exact copy the words are the original's: the
+ * guide's copy checks become notes nobody acts on. The house checks
+ * (review-checks.ts) already cover final periods, two-line bodies and the
+ * cover's capitals.
+ */
+export function reviewGuideChecks(document: DesignDocument, profile: PageProfile, guide: BrandGuide | null | undefined, options: { exact?: boolean } = {}): CheckIssue[] {
+  if (!guide) return [];
+  const skip: GuideCheckKind[] = ["body-length", "upper-cover", ...(profile.format?.noFinalPeriods ?? true ? ["no-final-period" as const] : [])];
+  return runGuideChecks(document, guide, { scope: "deck", language: profile.language, skip }).map(({ slide, problem, fix, severity, check }): CheckIssue =>
+    options.exact && GUIDE_CHECKS[check].scope === "copy"
+      ? { slide, problem, fix: "Nothing, if the original says it this way: an exact copy keeps the original's words", severity: "note", route: "none" }
+      : { slide, problem, fix, severity, route: "design" });
+}
+
+/**
+ * What the review holds an HTML layer to, in the deck's output pixels: the
+ * colors it may draw with, its smallest text and the size of a title. The
+ * colors are the guide's and those in the layer's brand variables (Engine
+ * sets them from the guide the deck was made with). A platform card's own
+ * colors are allowed on top, by the palette check (review-checks.ts). Without
+ * a guide, sizes come from the layer's variables, else a 1080-wide page's
+ * 24 px and 56 px; with no colors known, there's no palette to check.
+ */
+export type ReviewBrand = { name: string; palette: string[]; minText: number; titleSize: number };
+const DEFAULT_LIMITS = { width: 1080, minText: 24, title: 56 };
+const HEX_IN_VALUE = /#(?:[0-9a-f]{8}|[0-9a-f]{6}|[0-9a-f]{3,4})(?![\w-])/gi;
+const COLOR_TOKEN = /^--(?:color-[\w-]+|gradient-[\w-]+|[\w-]+-(?:color|fill))$/;
+const hexes = (colors: Iterable<string>) => [...new Set([...colors].map(color => hexColor(color)).filter((color): color is string => Boolean(color)))];
+
+export function reviewBrand(document: Pick<DesignDocument, "format" | "customSize">, guide: BrandGuide | null | undefined, element?: Pick<HtmlElement, "tokens"> | null): ReviewBrand {
+  const width = formatDimensions(document).width, tokens = element?.tokens ?? {};
+  const number = (name: string) => { const value = parseFloat(tokens[name] ?? ""); return Number.isFinite(value) && value > 0 ? value : undefined; };
+  const tokenColors = Object.entries(tokens).flatMap(([name, value]) => COLOR_TOKEN.test(name) ? value.match(HEX_IN_VALUE) ?? [] : []);
+  const palette = hexes([...(guide ? guidePalette(guide) : []), ...tokenColors]);
+  if (guide) {
+    const scale = width / guide.layout.width;
+    return { name: guide.name, palette, minText: guide.layout.minTextSize * scale, titleSize: (guideTextStyle(guide, "title")?.size ?? DEFAULT_LIMITS.title) * scale };
+  }
+  const scale = width / (number("--page-width") ?? DEFAULT_LIMITS.width);
+  return { name: "brand", palette, minText: (number("--min-text-size") ?? DEFAULT_LIMITS.minText) * scale, titleSize: (number("--title-size") ?? DEFAULT_LIMITS.title) * scale };
 }
 
 /** The guide's approved posts as images with their notes, ahead of the critic's own slides. */
