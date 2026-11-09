@@ -19,7 +19,7 @@ export const jobIdFor = (postId: string) => postId.replace(/^post-/, "");
 export const postIdFor = (jobId: string) => `post-${jobId}`;
 
 const PHASE: Record<PostStage, RecreateStatus> = {
-  source: "researching", research: "researching", verdict: "researching",
+  source: "importing", research: "researching", verdict: "researching",
   brief: "planning", headline: "planning", approval: "planning",
   design: "building", review: "reviewing",
 };
@@ -34,7 +34,6 @@ function statusOf(file: PostFile, active: boolean): RecreateStatus {
   if (file.status === "error" || !active && file.status === "running") return "error";
   if (file.status === "paused") return "paused";
   const running = POST_STAGES.filter(stage => file.stages[stage]?.status === "running");
-  if (running.includes("source") && !file.source.imageIds.length) return "importing";
   if (running.length) return PHASE[running.at(-1)!];
   if (!Object.keys(file.stages).length) return "queued";
   const next = stagesFor(file.mode).find(stage => !["done", "skipped"].includes(file.stages[stage]?.status ?? ""));
@@ -62,8 +61,7 @@ function summary(file: PostFile, stage: PostStage): string {
     }
     case "research": {
       const found = record.output as Research;
-      // The early test path (agents/stages/bridge.ts) hands in a quick check that looked nothing up.
-      const origin = found.origin.found ? `Origin: ${found.origin.who || found.origin.url || "found"}` : found.origin.note.startsWith("Not checked yet") ? "Origin not checked yet" : "No original found";
+      const origin = found.origin.found ? `Origin: ${found.origin.who || found.origin.url || "found"}` : "No original found";
       if (found.quick) return [origin, found.fabrication.length ? plural(found.fabrication.length, "sign") + " of fabrication" : ""].filter(Boolean).join("; ");
       const confirmed = found.facts.filter(fact => fact.label === "confirmed").length;
       return [origin, `${plural(found.facts.length, "fact")} checked${confirmed ? `, ${confirmed} confirmed` : ""}`, found.reactions.length ? plural(found.reactions.length, "reaction") + " from X" : ""].filter(Boolean).join("; ");

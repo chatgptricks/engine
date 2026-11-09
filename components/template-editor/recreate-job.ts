@@ -162,7 +162,7 @@ export function lanesOf(job: Pick<RecreateJob, "version" | "stages"> | null, mod
   return lanesFor(mode);
 }
 export const RECREATE_STATUS_LABELS: Record<RecreateStatus, string> = {
-  queued: "Starting", importing: "Importing the post", researching: "Researching", planning: "Planning the slides",
+  queued: "Starting", importing: "Reading the post", researching: "Researching", planning: "Planning the slides",
   paused: "Waiting for you", writing: "Writing the slides", building: "Designing the slides", reviewing: "Reviewing the slides",
   done: "Done", error: "Stopped", stopped: "Stopped at the check",
 };

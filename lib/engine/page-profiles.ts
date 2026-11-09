@@ -8,7 +8,8 @@ import {developmentDirectory} from "@/lib/template-editor/development-storage";
  * Page profiles: one per Instagram page a workspace runs. "Recreate post"
  * hands the chosen profile to the writer, so it carries the page's language,
  * template, voice brief and house rules, plus the deterministic `format`
- * checks code enforces after the writer is done.
+ * checks code enforces after the writer is done, and the `check` limits
+ * Recreate's check stops a stale or saturated story by.
  *
  * Built-in profiles ship in code. Saved profiles (new pages and overrides of
  * built-ins) live per workspace owner in gf_client_state under their own
@@ -26,6 +27,14 @@ export interface PageProfileFormat {
   bodyMaxLines: number;
 }
 
+/** The check's limits: when Recreate's check stops a story as too old, or as already posted too widely, to make. */
+export interface PageProfileCheck {
+  /** A story that first appeared more than this many days ago is stale. Timeless posts (a meme, a tip) have no age. */
+  staleAfterDays: number;
+  /** A story at least this many other Instagram pages already posted is saturated. */
+  saturatedAfterPages: number;
+}
+
 export interface PageProfile {
   id: string;
   name: string;
@@ -39,6 +48,8 @@ export interface PageProfile {
   /** House rules the writer must follow. */
   rules: string[];
   format: PageProfileFormat;
+  /** When the check stops a story as stale or saturated. */
+  check: PageProfileCheck;
   /** `line1` is the fixed first line; the writer fills the second, topic line up to `maxChars`. */
   followCta: {line1: string; maxChars: number};
   swipeText: string;
@@ -68,6 +79,8 @@ export const PAGE_PROFILE_LIMITS = {
   rules: 30,
   rule: 400,
   bodyMaxLines: {min: 1, max: 6},
+  staleAfterDays: {min: 1, max: 365},
+  saturatedAfterPages: {min: 1, max: 100},
   ctaLine: 40,
   ctaMaxChars: {min: 8, max: 60},
   swipeText: 40,
@@ -76,6 +89,14 @@ export const PAGE_PROFILE_LIMITS = {
 
 const BUILT_IN_UPDATED_AT = "2026-11-07T00:00:00.000Z";
 const DEFAULT_FORMAT: PageProfileFormat = {noFinalPeriods: true, bodyMaxLines: 2};
+/**
+ * The check's defaults: news older than two weeks is stale, and a story ten other
+ * Instagram pages already posted is saturated. Research sees only some of the
+ * pages that posted a story, so its count is a floor.
+ */
+export const DEFAULT_CHECK: Readonly<PageProfileCheck> = Object.freeze({staleAfterDays: 14, saturatedAfterPages: 10});
+/** A profile's check limits; profiles made before the limits existed get the defaults. */
+export const checkLimits = (profile: Pick<PageProfile, "check"> | {check?: Partial<PageProfileCheck>}): PageProfileCheck => ({...DEFAULT_CHECK, ...profile.check});
 const LANGUAGE_DEFAULTS: Record<PageLanguage, Pick<PageProfile, "followCta" | "swipeText">> = {
   en: {followCta: {line1: "FOLLOW THIS PAGE", maxChars: 21}, swipeText: "SWIPE FOR MORE"},
   es: {followCta: {line1: "SIGUE ESTA PÁGINA", maxChars: 21}, swipeText: "DESLIZA PARA VER MÁS"},
@@ -99,6 +120,7 @@ const BUILT_INS: readonly PageProfile[] = [
       "The Follow CTA's second line is written for this post's topic (about 21 characters), in plain words, with no fear-bait",
     ],
     format: {...DEFAULT_FORMAT},
+    check: {...DEFAULT_CHECK},
     followCta: {...LANGUAGE_DEFAULTS.en.followCta},
     swipeText: LANGUAGE_DEFAULTS.en.swipeText,
     updatedAt: BUILT_IN_UPDATED_AT,
@@ -123,6 +145,7 @@ const BUILT_INS: readonly PageProfile[] = [
       "Keep proper accents and punctuation: á é í ó ú ñ, and opening ¿ and ¡",
     ],
     format: {...DEFAULT_FORMAT},
+    check: {...DEFAULT_CHECK},
     followCta: {...LANGUAGE_DEFAULTS.es.followCta},
     swipeText: LANGUAGE_DEFAULTS.es.swipeText,
     updatedAt: BUILT_IN_UPDATED_AT,
@@ -208,6 +231,10 @@ function validate(candidate: Record<string, unknown>, updatedAt: string): PagePr
   if (!isRecord(candidate.format)) issues.push("format must be an object.");
   if (typeof format.noFinalPeriods !== "boolean") issues.push("format.noFinalPeriods must be true or false.");
   const bodyMaxLines = integer("format.bodyMaxLines", format.bodyMaxLines, PAGE_PROFILE_LIMITS.bodyMaxLines.min, PAGE_PROFILE_LIMITS.bodyMaxLines.max);
+  const check = isRecord(candidate.check) ? candidate.check : {};
+  if (!isRecord(candidate.check)) issues.push("check must be an object.");
+  const staleAfterDays = integer("check.staleAfterDays", check.staleAfterDays, PAGE_PROFILE_LIMITS.staleAfterDays.min, PAGE_PROFILE_LIMITS.staleAfterDays.max);
+  const saturatedAfterPages = integer("check.saturatedAfterPages", check.saturatedAfterPages, PAGE_PROFILE_LIMITS.saturatedAfterPages.min, PAGE_PROFILE_LIMITS.saturatedAfterPages.max);
   const followCta = isRecord(candidate.followCta) ? candidate.followCta : {};
   if (!isRecord(candidate.followCta)) issues.push("followCta must be an object.");
   const line1 = line("followCta.line1", followCta.line1, PAGE_PROFILE_LIMITS.ctaLine);
@@ -221,6 +248,7 @@ function validate(candidate: Record<string, unknown>, updatedAt: string): PagePr
     ...(brandId ? {brandId} : {}),
     voice, rules,
     format: {noFinalPeriods: format.noFinalPeriods as boolean, bodyMaxLines},
+    check: {staleAfterDays, saturatedAfterPages},
     followCta: {line1, maxChars},
     swipeText, updatedAt,
   };
@@ -237,18 +265,19 @@ function merged(base: PageProfile | undefined, input: Record<string, unknown>): 
     ...base,
     ...input,
     format: {...DEFAULT_FORMAT, ...base?.format, ...(isRecord(input.format) ? input.format : {})},
+    check: {...DEFAULT_CHECK, ...base?.check, ...(isRecord(input.check) ? input.check : {})},
     followCta: {...defaults.followCta, ...base?.followCta, ...(isRecord(input.followCta) ? input.followCta : {})},
   };
 }
 
-const KNOWN_FIELDS = ["id", "name", "handle", "language", "templateId", "brandId", "voice", "rules", "format", "followCta", "swipeText"] as const;
+const KNOWN_FIELDS = ["id", "name", "handle", "language", "templateId", "brandId", "voice", "rules", "format", "check", "followCta", "swipeText"] as const;
 function pickInput(input: Record<string, unknown>): Record<string, unknown> {
   const picked: Record<string, unknown> = {};
   for (const field of KNOWN_FIELDS) if (input[field] !== undefined) picked[field] = input[field];
   return picked;
 }
 
-/** Read a stored profile leniently: missing fields (e.g. `format` from older saves) come from defaults. */
+/** Read a stored profile leniently: missing fields (e.g. `format` or `check` from older saves) come from defaults. */
 function decodeSaved(id: string, raw: unknown): PageProfile | null {
   if (!isRecord(raw) || !ID.test(id)) return null;
   const updatedAt = typeof raw.updatedAt === "string" && Number.isFinite(Date.parse(raw.updatedAt)) ? raw.updatedAt : BUILT_IN_UPDATED_AT;
