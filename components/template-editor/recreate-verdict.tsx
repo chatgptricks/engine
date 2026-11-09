@@ -4,33 +4,40 @@ import {safeSourceUrl, type FabricationSign, type RecreateJob, type RecreateVerd
 
 /**
  * The check, when it needs a person or has stopped a post: the story couldn't be
- * traced, looks made up, is stale, or was already covered. While it asks, a person
- * goes ahead, doesn't make it, or adds the story's original so research starts
- * from it. A post it stopped can still be built anyway (its warnings go into the
- * brief) or researched again.
+ * traced, looks made up, is stale or saturated, or our page already covered it.
+ * While it asks, a person goes ahead, doesn't make it, or adds the story's
+ * original so research starts from it. A post it stopped can still be built
+ * anyway (its warnings go into the brief) or researched again.
  */
 const SIGN_LABELS: Record<FabricationSign, string> = {
   no_original: "No original found", lone_quote: "One quote with no source", shifting_numbers: "The numbers change between versions",
   satire_account: "From a satire account", debunked: "Already debunked", other: "Something else looks off",
 };
 type Busy = "" | "proceed" | "stop" | "link" | "rerun";
+type Line = {text: string; links?: SourceLink[]};
+const plural = (count: number, word: string) => `${count} ${word}${count === 1 ? "" : "s"}`;
 
 /** What research found that the check went by, one line each. */
-function findings(verdict: Verdict): {text: string; link?: SourceLink}[] {
-  const lines: {text: string; link?: SourceLink}[] = [];
-  const origin = verdict.origin;
-  if (origin?.found) lines.push({text: `Original: ${[origin.who || "found", origin.date].filter(Boolean).join(", ")}`, ...(origin.url ? {link: {title: "Open the original", url: origin.url}} : {})});
-  else if (origin) lines.push({text: `No original found${origin.note ? `: ${origin.note}` : ""}`});
+function findings(verdict: Verdict): Line[] {
+  const lines: Line[] = [];
+  const {origin, covered, fresh, saturation, traction} = verdict;
+  // A missing original that research flagged as a sign shows once, as that sign.
+  const flagged = verdict.fabrication.some(sign => sign.sign === "no_original");
+  if (origin?.found) lines.push({text: `Original: ${[origin.who || "found", origin.date].filter(Boolean).join(", ")}`, ...(origin.url ? {links: [{title: "Open the original", url: origin.url}]} : {})});
+  else if (origin && !flagged) lines.push({text: `No original found${origin.note ? `: ${origin.note}` : ""}`});
   for (const sign of verdict.fabrication) lines.push({text: `${SIGN_LABELS[sign.sign]}${sign.detail ? `: ${sign.detail}` : ""}`});
-  if (verdict.covered?.already) lines.push({text: `Already covered${verdict.covered.by.length ? ` by ${verdict.covered.by.map(page => page.title).join(", ")}` : ""}${verdict.covered.note ? `. ${verdict.covered.note}` : ""}`});
-  if (verdict.fresh?.stale) lines.push({text: `Old news: first seen ${verdict.fresh.firstSeen ?? "a while ago"}${verdict.fresh.ageDays !== null ? `, ${verdict.fresh.ageDays} days ago` : ""}`});
-  if (verdict.saturation?.saturated) lines.push({text: `Everyone has posted it${verdict.saturation.note ? `: ${verdict.saturation.note}` : ""}`});
-  if (verdict.traction?.performing) lines.push({text: `The original is performing${verdict.traction.ratio ? `, ${verdict.traction.ratio.toFixed(1)}× its page's usual` : ""}`});
-  if (verdict.originUrl) lines.push({text: "You added the story's original", link: {title: "Open it", url: verdict.originUrl}});
+  // The links say what covered it. Research's note mostly says the same, so it shows only when there are none.
+  if (covered?.already) lines.push(covered.by.length ? {text: "Our page already covered it", links: covered.by.slice(0, 4)} : {text: `Our page already covered it${covered.note ? `: ${covered.note}` : ""}`});
+  if (fresh?.stale) lines.push({text: `Old news: ${fresh.ageDays !== null ? `it first broke ${plural(fresh.ageDays, "day")} ago` : "it broke a while ago"}${fresh.firstSeen ? `, on ${fresh.firstSeen}` : ""}`});
+  if (saturation?.saturated) lines.push({text: `Already widely posted${saturation.note ? `: ${saturation.note}` : ""}`});
+  if (traction && traction.ratio !== null) lines.push({text: `The original ${traction.performing ? "is" : "isn't"} performing: ${traction.ratio}× its page's usual`});
+  if (verdict.originUrl) lines.push({text: "You added the story's original", links: [{title: "Open it", url: verdict.originUrl}]});
   return lines;
 }
 
+/** A web link opens in a new tab; a link to one of our decks opens in Engine's editor. */
 function Link({link}: {link: SourceLink}) {
+  if (/^\/(?![/\\])\S*$/.test(link.url)) return <a href={link.url}>{link.title}</a>;
   const href = safeSourceUrl(link.url);
   return href ? <a href={href} target="_blank" rel="noopener noreferrer">{link.title}</a> : <>{link.title}</>;
 }
@@ -81,7 +88,7 @@ export function RecreateVerdict({summary, job, verdict, onAnswer, onRerun, onClo
       </div>
       {lines.length > 0 && <div className="te-recreate-section" role="group" aria-labelledby={`${id}-found`}>
         <div className="te-recreate-section-head"><h3 id={`${id}-found`}>What research found</h3></div>
-        <ul className="te-recreate-notes">{lines.map((line, index) => <li key={index}>{line.text}{line.link && <> · <Link link={line.link}/></>}</li>)}</ul>
+        <ul className="te-recreate-notes">{lines.map((line, index) => <li key={index}>{line.text}{line.links?.map((link, at) => <span key={at}>{at ? ", " : " · "}<Link link={link}/></span>)}</li>)}</ul>
       </div>}
       {verdict.evidence.length > 0 && <div className="te-recreate-section" role="group" aria-labelledby={`${id}-evidence`}>
         <div className="te-recreate-section-head"><h3 id={`${id}-evidence`}>Evidence</h3></div>
