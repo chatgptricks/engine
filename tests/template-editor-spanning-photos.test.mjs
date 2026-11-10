@@ -24,7 +24,7 @@ const carousel = loadModule("lib/template-editor/continuous-carousel.ts", { "./m
 const htmlLayer = loadModule("lib/template-editor/html-layer.ts", { "./model": model });
 const agent = loadModule("lib/template-editor/agent-decks.ts", { "./model": model, "./spanning-photos": spans, "./html-layer": htmlLayer, "./frames": loadModule("lib/template-editor/frames.ts", { "./model": model }) });
 const commands = loadModule("lib/template-editor/commands.ts", { "./model": model });
-const smartTemplate = loadModule("lib/template-editor/smart-template.ts", { "./model": model });
+const smartTemplate = loadModule("lib/template-editor/smart-template.ts", { "./model": model, "./commands": commands });
 const { spanPhoto, setSeam, unlinkSpan, syncSpans, reconcileSpans, spanPairs, findSpan, seamOf, spanBlocker, withoutSpans, widePhotoGeometry } = spans;
 
 const near = (actual, expected, message = "", tolerance = 1e-6) => assert.ok(Math.abs(actual - expected) < tolerance, `${message} ${actual} != ${expected}`);
@@ -161,13 +161,13 @@ test("dragging the photo fully onto one slide stops it spanning", () => {
   assert.deepEqual(reconcileSpans(agentMove).onePage, []);
 });
 
-test("template photos stay in their frames, except a spanning photo, whose seam moves", () => {
+test("template photos stay in their frames, except a spanning photo, whose seam moves, and can be deleted", () => {
   const design = model.createDesign(model.BUILT_IN_TEMPLATES.find(item => item.id === "chatgptricks-3x4"));
   const { start, end } = checkPair(design, WIDE);
   const scene = design.pages[WIDE].canvas;
   assert.equal(commands.canEditElement(scene, start, "position"), true, "the Wide photo can move its seam");
-  assert.equal(commands.canEditElement(scene, start, "delete"), false, "but stays in the template");
-  assert.equal(commands.canEditElement(design.pages[WIDE_END].canvas, end, "delete"), false);
+  assert.equal(commands.canEditElement(scene, start, "delete"), true, "a template photo can be deleted");
+  assert.equal(commands.canEditElement(design.pages[WIDE_END].canvas, end, "delete"), true);
   const media = design.pages[3].canvas.elements.find(element => element.templateRole === "media");
   assert.equal(commands.canEditElement(design.pages[3].canvas, media, "position"), false, "other template photos stay put");
   // The template constraint keeps a dragged half where it was dropped, and still restores other media.
