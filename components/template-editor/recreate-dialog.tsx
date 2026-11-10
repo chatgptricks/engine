@@ -7,7 +7,7 @@ import {
   MAX_HOOK_CHARACTERS, MAX_POSTS_PER_SLIDE, MAX_RECREATE_SLIDES, MAX_RECREATE_UPLOADS, RECREATE_IMAGE_TYPES, RECREATE_STATUS_LABELS,
   fetchPageProfiles, lanesOf, instagramLabel, normalizeInstagramUrl, placePost, prepareRecreateUpload, recreateSetupIssue, recreateTimestamp, safeSourceUrl, useRecreateJob,
   type ApproveRequest, type Checkpoint, type CheckpointReaction, type FactCheck, type OutlineKind, type OutlineSlide, type PageProfile,
-  type PreparedUpload, type RecreateAction, type RecreateJob, type RecreateKind, type RecreateMode, type RecreateRequest, type RecreateResult, type RecreateReview,
+  type PreparedUpload, type RecreateAction, type RecreateImage, type RecreateJob, type RecreateKind, type RecreateMode, type RecreateRequest, type RecreateResult, type RecreateReview,
   type StageName, type StageStatus, type TrackedRecreate,
 } from "./recreate-job";
 import {MAX_ADDED_POSTS, parseXPostLinks, xPostId, xPostLink} from "@/lib/engine/x-links";
@@ -470,6 +470,7 @@ function RecreateProgress({tracked, job, reconnecting, onAct, onClose}: {tracked
       <RecreateSummary tracked={tracked} mode={runMode(tracked, job)}/>
       <p className="te-recreate-message" role="status" aria-live="polite">{message}</p>
       <RecreateLanes job={job} mode={runMode(tracked, job)}/>
+      {job?.images?.length ? <RecreateImages images={job.images}/> : null}
       {reconnecting && <p className="te-dialog-status">Connection lost. Retrying…</p>}
       {stopError && <p className="te-dialog-error te-recreate-alert" role="alert">{stopError}</p>}
       <p className="te-recreate-time"><span>{elapsed}</span> since it started · usually {runMode(tracked, job) === "exact" ? "1–4" : "5–10"} minutes · it keeps going if you close this</p>
@@ -816,6 +817,7 @@ function RecreateDone({tracked, job, result, isOpen, onOpen, onClose, onAnother}
           </li>)}
         </ul> : <p>No claims needed checking.</p>}
       </RecreateSection>}
+      {job.images?.length ? <RecreateImages images={job.images}/> : null}
       {result.notes.length > 0 && <RecreateSection title="Notes">
         <ul className="te-recreate-notes">{result.notes.map((note, index) => <li key={index}>{note}</li>)}</ul>
       </RecreateSection>}
@@ -830,6 +832,18 @@ function RecreateDone({tracked, job, result, isOpen, onOpen, onClose, onAnother}
         : <button ref={primary} type="button" className="te-button te-primary" onClick={onOpen}>Open post</button>}
     </div>
   </>;
+}
+
+const IMAGE_COUNTS: [RecreateImage["treatment"], string][] = [["keep", "kept"], ["source", "from source"], ["rebuild", "rebuilt"]];
+/** Each image's decision: rebuild it, keep it as it is, or find its source, with the reason and what was used. */
+function RecreateImages({images}: {images: RecreateImage[]}) {
+  const aside = IMAGE_COUNTS.map(([treatment, word]) => [images.filter(image => image.treatment === treatment).length, word] as const).filter(([count]) => count).map(([count, word]) => `${count} ${word}`).join(" · ");
+  return <RecreateSection title="Images" aside={aside}>
+    <ul className="te-recreate-notes te-recreate-images">{images.map((image, index) => <li key={index} className={`is-${image.treatment}`}>
+      {image.line}
+      {image.used && image.used !== image.line && <small>{image.used}</small>}
+    </li>)}</ul>
+  </RecreateSection>;
 }
 
 function RecreateSection({title, aside, children}: {title: string; aside?: string; children: ReactNode}) {

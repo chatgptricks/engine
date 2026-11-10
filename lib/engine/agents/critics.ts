@@ -18,12 +18,13 @@ import { formatDimensions, htmlLayerText, type DesignDocument } from "../../temp
 import { seamOf, spanPairs } from "../../template-editor/spanning-photos";
 import type { SlideRender } from "../slide-render";
 import { guideExampleBlocks } from "./brand";
-import { DESIGN_CRITIC_GUIDE_RULE, DESIGN_CRITIC_RULES, DESIGN_CRITIC_SPAN_RULE, FACT_CRITIC_RULES, FIDELITY_CRITIC_RULES } from "./cards/review";
+import { KEPT_PICTURE_RULE, DESIGN_CRITIC_GUIDE_RULE, DESIGN_CRITIC_RULES, DESIGN_CRITIC_SPAN_RULE, FACT_CRITIC_RULES, FIDELITY_CRITIC_RULES } from "./cards/review";
 import { ask, imageBlock, type SourceImage } from "./claude";
 import type { StageContext } from "./context";
 import { stagePrompt } from "./playbook";
 import { CriticReportSchema, type CheckIssue, type CriticReport, type DesignOutput, type PlanApproval, type SourceNotes, type StoryBrief } from "./schemas";
 import { loadSourceImages } from "./source";
+import { decisionOf, imageDecisions } from "./source-notes";
 
 type Block = Anthropic.Beta.BetaContentBlockParam;
 type TemplateNotes = SourceNotes["template"];
@@ -87,8 +88,20 @@ function transcript(notes: SourceNotes): string {
   return notes.slides.map(slide => [
     `Original slide ${slide.index} (${slide.role})`,
     ...slide.texts.map(text => `  ${text.role}: ${oneLine(text.text)}`),
-    ...slide.parts.map(part => `  ${part.kind}: ${oneLine(part.what)}${part.post ? ` (${oneLine(part.post.name)} @${part.post.handle})` : ""}${part.text.trim() ? `; its words: ${oneLine(part.text)}` : ""}`),
+    ...slide.parts.map(part => `  ${part.kind}: ${oneLine(part.what)}${part.post ? ` (${oneLine(part.post.name)} @${part.post.handle})` : ""}${part.text.trim() ? `; its words: ${oneLine(part.text)}` : ""}; ${decisionText(part)}`),
   ].join("\n")).join("\n\n");
+}
+
+const DECIDED = { rebuild: "rebuild in our style", keep: "keep as it is", source: "keep, from its original online or else the cut" } as const;
+/** A part's decision, as the critics read it. */
+function decisionText(part: SourceNotes["slides"][number]["parts"][number]): string {
+  const { treatment, why } = decisionOf(part);
+  return `decision: ${DECIDED[treatment]} (${oneLine(why)})`;
+}
+/** Each image's decision, for the design critic, which doesn't read the whole transcript. */
+function decisionsText(notes: SourceNotes | null): string {
+  const lines = imageDecisions(notes).map(item => `- Original slide ${item.slide}, ${item.kind} (${oneLine(item.what).slice(0, 120)}): ${DECIDED[item.treatment]} (${oneLine(item.why)})`);
+  return lines.length ? `EACH IMAGE'S DECISION (the source notes)\n${lines.join("\n")}` : "";
 }
 
 const listIssues = (issues: CheckIssue[]) => issues.map(issue => `- ${issue.slide ? `Slide ${issue.slide}` : "Whole post"}: ${issue.problem}`).join("\n");
@@ -192,6 +205,7 @@ export async function designCritic(context: StageContext, renders: SlideRender[]
   const notes = brief?.template ?? source?.template;
   const extra = [
     ...DESIGN_CRITIC_RULES,
+    KEPT_PICTURE_RULE,
     ...(context.guide ? [DESIGN_CRITIC_GUIDE_RULE.replace("{name}", context.guide.name).replace("{examples}", examples.length ? " and the approved example posts shown first" : "")] : []),
     ...(pictures.pairs ? [DESIGN_CRITIC_SPAN_RULE] : []),
   ];
@@ -204,6 +218,8 @@ export async function designCritic(context: StageContext, renders: SlideRender[]
       `OUR SLIDES AS TEXT\n${deckText(document, design)}`,
       approval ? `THE APPROVED HEADLINE\n${oneLine(approval.headline.text)}` : "",
       notes ? `THE TEMPLATE NOTES (from the original)\n${templateText(notes, true)}` : "",
+      decisionsText(source),
+      design?.notes.length ? `THE DECK'S NOTES\n${bullets(design.notes)}` : "",
       found.length ? `CODE ALREADY FOUND THESE (don't repeat them)\n${listIssues(found)}` : "",
     ].filter(Boolean).join("\n\n") },
   ];
@@ -218,7 +234,7 @@ export async function designCritic(context: StageContext, renders: SlideRender[]
 export async function fidelityCritic(context: StageContext, renders: SlideRender[], input: CriticInput): Promise<CriticReport> {
   const { document, design, source, found } = input, { width, height } = formatDimensions(document);
   const pictures = await slidePictures(context, document, renders, design);
-  const extra = [...FIDELITY_CRITIC_RULES, ...(pictures.pairs ? [DESIGN_CRITIC_SPAN_RULE] : [])];
+  const extra = [...FIDELITY_CRITIC_RULES, KEPT_PICTURE_RULE, ...(pictures.pairs ? [DESIGN_CRITIC_SPAN_RULE] : [])];
   const content: Block[] = [
     ...pictures.blocks,
     { type: "text", text: [

@@ -110,6 +110,8 @@
 .te-recreate-sources a { color:#cfb4ff; text-decoration:underline; text-underline-offset:2px; overflow-wrap:anywhere; }
 .te-recreate-notes { display:grid; gap:6px; margin:0; padding-left:18px; color:#ffffffc7; font-size:13px; line-height:1.55; list-style:disc; }
 .te-recreate-notes li::marker { color:#b28bf8; }
+.te-recreate-images small { display:block; color:#ffffff8c; font-size:12px; }
+.te-recreate-images li.is-keep::marker, .te-recreate-images li.is-source::marker { color:#32ffbb; }
 
 /* Autopilot switch: a native checkbox with role=switch. */
 .te-tool-dialog.te-recreate label.te-recreate-switch { position:relative; display:flex; align-items:flex-start; gap:12px; padding:12px 14px; border:1px solid #ffffff12; border-radius:10px; background:#ffffff05; cursor:pointer; }

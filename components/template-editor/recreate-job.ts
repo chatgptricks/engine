@@ -115,10 +115,13 @@ export type RecreateJob = {
   verdict?: RecreateVerdict;
   checkpoint?: Checkpoint;
   result?: RecreateResult;
+  /** Each image's decision once the source reader made it: rebuild it, keep it as it is, or find its source; `used` says what the designer used. */
+  images?: RecreateImage[];
   error?: string;
   /** The run stopped part way and can pick up from its last finished stage. */
   resumable: boolean;
 };
+export type RecreateImage = {slide: number; kind: string; treatment: "rebuild" | "keep" | "source"; why: string; line: string; used?: string};
 export type RecreateUpload = {name: string; dataUrl: string};
 export type RecreateRequest = {url?: string; uploads?: RecreateUpload[]; caption?: string; profileId: string; notes?: string; mode: RecreateMode; xPosts?: string[]};
 /** A person's go-ahead at the checkpoint. The plan is sent only when they changed it. */
@@ -390,11 +393,20 @@ function parseVerdict(value: unknown): RecreateVerdict | undefined {
   };
 }
 
+const TREATMENTS = ["rebuild", "keep", "source"] as const;
+function parseImage(value: unknown): RecreateImage | null {
+  if (!isRecord(value) || !TREATMENTS.includes(value.treatment as RecreateImage["treatment"])) return null;
+  const slide = Number(value.slide), line = text(value.line, 300), used = text(value.used, 400);
+  if (!Number.isInteger(slide) || slide < 1 || !line) return null;
+  return {slide, kind: text(value.kind, 40), treatment: value.treatment as RecreateImage["treatment"], why: text(value.why, 240), line, ...(used ? {used} : {})};
+}
+
 function parseJob(body: unknown, fallbackJobId = ""): RecreateJob {
   if (!isRecord(body) || !STATUSES.includes(body.status as RecreateStatus)) throw new RecreateRequestError("Progress came back in an unexpected format.", 200);
   const jobId = text(body.jobId, 200) || fallbackJobId;
   if (!jobId) throw new RecreateRequestError("The server accepted the request but didn't return a job. Try again.", 200);
   const result = parseResult(body.result), checkpoint = parseCheckpoint(body.checkpoint), verdict = parseVerdict(body.verdict), error = text(body.error, 1000);
+  const images = list(body.images).map(parseImage).filter((image): image is RecreateImage => image !== null).slice(0, 60);
   return {
     jobId,
     ...(text(body.postId, 200) ? {postId: text(body.postId, 200)} : {}),
@@ -409,6 +421,7 @@ function parseJob(body: unknown, fallbackJobId = ""): RecreateJob {
     ...(verdict ? {verdict} : {}),
     ...(checkpoint ? {checkpoint} : {}),
     ...(result ? {result} : {}),
+    ...(images.length ? {images} : {}),
     ...(error ? {error} : {}),
     resumable: body.resumable === true,
   };

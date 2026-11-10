@@ -15,7 +15,7 @@
  */
 import { parseInstagramUrl, type ImportedInstagramPost } from "../instagram-import";
 import { xPostId, xPostLink } from "../x-links";
-import { SourceNotesSchema, type MediaBox, type SourceNotes, type SourcePart, type SourceSlide, type TemplateNotes, type Traction } from "./schemas";
+import { IMAGE_TREATMENTS, SourceNotesSchema, type ImageTreatment, type MediaBox, type SourceNotes, type SourcePart, type SourceSlide, type TemplateNotes, type Traction } from "./schemas";
 
 export type PostFormat = SourceNotes["post"]["format"];
 type XPost = NonNullable<SourcePart["post"]>;
@@ -229,6 +229,66 @@ function cleanPost(post: SourcePart["post"]): XPost | null {
   };
 }
 
+// ── Each image's decision: rebuild it, keep it as it is, or find its source ──
+
+/** Parts our post always rebuilds: a post becomes our card, a chart is redrawn, a logo is found by name. */
+const ALWAYS_REBUILT: ReadonlySet<SourcePart["kind"]> = new Set(["x_post", "chart", "logo"]);
+const DEFAULT_WHY: Record<SourcePart["kind"], Record<ImageTreatment, string>> = {
+  photo: { rebuild: "", keep: "A real photo: cut from the post as it is", source: "A real photo: the original is worth finding at better quality" },
+  chart: { rebuild: "A chart: redrawn in our chart style from its real numbers", keep: "", source: "" },
+  x_post: { rebuild: "A post from X: rebuilt as our post card", keep: "", source: "" },
+  logo: { rebuild: "A logo: placed as a clean file found by name", keep: "", source: "" },
+  screenshot: { rebuild: "A screenshot of words and parts we can draw (a post, a comment, an article): rebuilt in our style", keep: "An official screenshot: kept as it is", source: "An official screenshot: the original is worth finding at better quality" },
+  graphic: { rebuild: "A graphic made of parts: rebuilt from them in our style", keep: "A graphic kept as it is", source: "A graphic whose original is worth finding" },
+};
+const ONE_LINE = 200;
+
+/**
+ * A part's decision, settled: what the reader chose where it is a judgment
+ * call, and what code knows otherwise. A post from X, a chart and a logo are
+ * always rebuilt, and so is a screenshot of a post or comment (our
+ * cards draw those); a photo is never rebuilt (there is nothing to draw it
+ * from). A part read before decisions existed, or handed in without one, is
+ * rebuilt as before, unless it is a photo, which is kept.
+ */
+/** A part that is a post or comment, by what the reader says it is (a Reddit comment, a tweet): our cards draw those, so it is never kept as a picture. */
+const POST_OR_COMMENT = /\b(reddit|comments?|tweets?|u\/\w+|r\/\w+)\b/i;
+const postOrComment = (what: unknown) => POST_OR_COMMENT.test(line(what, 1500));
+
+export function decisionOf(part: Pick<SourcePart, "kind"> & Partial<Pick<SourcePart, "what" | "treatment" | "why" | "origin">>): { treatment: ImageTreatment; why: string; origin: string | null } {
+  const chosen = IMAGE_TREATMENTS.includes(part.treatment as ImageTreatment) ? part.treatment as ImageTreatment : null;
+  const treatment: ImageTreatment = ALWAYS_REBUILT.has(part.kind) || chosen !== "rebuild" && part.kind !== "photo" && postOrComment(part.what) ? "rebuild"
+    : part.kind === "photo" ? chosen === "source" ? "source" : "keep"
+    : chosen ?? "rebuild";
+  const said = line(part.why, ONE_LINE).replace(/\s*\n\s*/g, " ");
+  // A reason written for another decision (code overrode it) gives way to the kind's own.
+  const why = said && treatment === chosen ? said : DEFAULT_WHY[part.kind]?.[treatment] || said || "Settled by its kind";
+  const origin = treatment === "rebuild" ? null : line(part.origin, 300) || null;
+  return { treatment, why, origin };
+}
+
+/** Every part's decision, filled in where notes (an older file, a handed-in stage) have none. */
+export function withDecisions(notes: SourceNotes): SourceNotes {
+  return { ...notes, slides: notes.slides.map(slide => ({ ...slide, parts: slide.parts.map(part => ({ ...part, ...decisionOf(part) })) })) };
+}
+
+/** One image's decision, for the run view, the deck's notes and the critics. */
+export type ImageDecision = { slide: number; part: number; kind: SourcePart["kind"]; what: string; box: MediaBox; treatment: ImageTreatment; why: string; origin: string | null };
+/** Each part's decision, slide by slide, in reading order. */
+export function imageDecisions(notes: Pick<SourceNotes, "slides"> | null | undefined): ImageDecision[] {
+  return (notes?.slides ?? []).flatMap(slide => slide.parts.map((part, index) => ({ slide: slide.index, part: index + 1, kind: part.kind, what: part.what, box: part.box, ...decisionOf(part) })));
+}
+const TREATMENT_WORDS: Record<ImageTreatment, string> = { rebuild: "rebuilt", keep: "kept", source: "from its source" };
+/** "images: 2 kept, 1 from its source, 3 rebuilt", or "" without images. */
+export function decisionsSummary(decisions: Pick<ImageDecision, "treatment">[]): string {
+  if (!decisions.length) return "";
+  const counts = (["keep", "source", "rebuild"] as const).map(treatment => [treatment, decisions.filter(item => item.treatment === treatment).length] as const).filter(([, count]) => count);
+  return `${decisions.length === 1 ? "image" : "images"}: ${counts.map(([treatment, count]) => `${count} ${TREATMENT_WORDS[treatment]}`).join(", ")}`;
+}
+/** "Slide 3 · screenshot · kept: OpenAI's own announcement page" */
+export const decisionLine = (item: Pick<ImageDecision, "slide" | "kind" | "treatment" | "why">) =>
+  `Slide ${item.slide} · ${PART_NAMES[item.kind] ?? item.kind} · ${TREATMENT_WORDS[item.treatment]}: ${item.why}`;
+
 /** A part kept when its box is on the slide; a post from X keeps its details, any other part has none. */
 function cleanPart(part: SourcePart, slide: number, notes: string[]): SourcePart[] {
   const box = gridBox(part.box), what = line(part.what, 1500), name = PART_NAMES[part.kind] ?? "part";
@@ -238,7 +298,7 @@ function cleanPart(part: SourcePart, slide: number, notes: string[]): SourcePart
   }
   const post = part.kind === "x_post" ? cleanPost(part.post) : null;
   if (part.kind === "x_post" && !post) notes.push(`Slide ${slide}: a post from X${what ? ` (${what})` : ""} came without its name and handle.`);
-  return [{ kind: part.kind, box, what, text: line(part.text, 4000), post }];
+  return [{ kind: part.kind, box, what, text: line(part.text, 4000), post, ...decisionOf(part) }];
 }
 
 const COUNTER = /^\d{1,2}\s*(?:\/|of|de)\s*\d{1,2}$/i;
