@@ -25,20 +25,21 @@ export function SmartLayoutPanel({design, pageId, selectedIds, templates, disabl
     {texts.length > 0 && <p className="te-help">Choose the line count for the selected text. Size and spacing adjust automatically.</p>}
     {!active && texts.length > 0 && <p className="te-smart-layout-note">Choose a line count or edit the text to apply smart layout to this slide.</p>}
     {texts.map((element, index) => {
-      const label = element.smartText?.role === "body" ? `Content${texts.length > 1 ? ` ${index + 1}` : ""}` : `Title${texts.length > 1 ? ` ${index + 1}` : ""}`;
+      const list = element.smartText?.role === "list";
+      const label = `${list ? "List" : element.smartText?.role === "body" ? "Content" : "Title"}${texts.length > 1 ? ` ${index + 1}` : ""}`;
       const fit = measured.texts.get(element.id);
       const active = isActive(element.id);
       const editable = !disabled && Boolean(scene && canEditElement(scene, element, "content"));
       return <section className="te-smart-layout-card" key={element.id} aria-label={`${label} smart layout`}>
         <h3>{label}</h3>
-        <div className="te-smart-line-control" role="group" aria-label={`${label} lines`}>
+        {!list && <div className="te-smart-line-control" role="group" aria-label={`${label} lines`}>
           <span>Lines</span>
           {([0, 2, 3, 4] as const).map(lines => <button key={lines} type="button" disabled={!editable} aria-label={`${label}: ${lines ? `${lines} lines` : "Auto"}`} aria-pressed={Boolean(active && element.smartText?.lines === lines)} onClick={() => onUpdate(element.id, {lines})}>{lines ? `${lines} lines` : "Auto"}</button>)}
-        </div>
+        </div>}
         <label className="te-field">{label} text
           <textarea aria-label={`${label} text`} rows={index === 0 ? 4 : 3} maxLength={20000} disabled={!editable} value={element.text} onChange={event => onUpdate(element.id, {text: event.target.value})}/>
         </label>
-        <p className="te-element-hint">{element.smartText?.role === "cover" ? "Centered title · balanced lines" : "Left aligned · automatic spacing"}{active && fit ? ` · ${Math.round(fit.fontSize * outputScale)} px` : ""}</p>
+        <p className="te-element-hint">{list ? "One item per line · fills its column" : element.smartText?.role === "cover" ? "Centered title · balanced lines" : "Left aligned · automatic spacing"}{active && fit ? ` · ${Math.round(fit.fontSize * outputScale)} px` : ""}</p>
         {active && fit?.warning && <p className="te-smart-warning" role="status">{fit.warning}</p>}
       </section>;
     })}

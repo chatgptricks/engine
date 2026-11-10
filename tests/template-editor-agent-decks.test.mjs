@@ -10,13 +10,15 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const requireModule = createRequire(import.meta.url);
 function loadModule(relative, dependencies = {}) {
   const filename = path.join(root, relative);
-  const source = ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022 }, fileName: filename }).outputText;
+  const source = ts.transpileModule(fs.readFileSync(filename, "utf8"), { compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true }, fileName: filename }).outputText;
   const unit = { exports: {} };
   vm.runInThisContext(`(function(require,module,exports){${source}\n})`, { filename })(name => Object.hasOwn(dependencies, name) ? dependencies[name] : requireModule(name), unit, unit.exports);
   return unit.exports;
 }
 const model = loadModule("lib/template-editor/model.ts");
-const agent = loadModule("lib/template-editor/agent-decks.ts", { "./model": model });
+const spans = loadModule("lib/template-editor/spanning-photos.ts", { "./model": model });
+const htmlLayer = loadModule("lib/template-editor/html-layer.ts", { "./model": model });
+const agent = loadModule("lib/template-editor/agent-decks.ts", { "./model": model, "./spanning-photos": spans, "./html-layer": htmlLayer, "./frames": loadModule("lib/template-editor/frames.ts", { "./model": model }) });
 const { createAgentDeck, updateAgentDeck, agentCapabilities, editableDeckPackage, agentDeckView, AgentDeckValidationError } = agent;
 const text = (id = "heading", extra = {}) => ({ id, type: "text", text: "Editable text", x: 192, y: 108, width: 1536, height: 180, fontSize: 96, ...extra });
 const shape = (id = "accent", extra = {}) => ({ id, type: "shape", shape: "rectangle", x: 192, y: 350, width: 1000, height: 30, fill: "#00d98a", ...extra });
@@ -197,4 +199,216 @@ test("explicit template catalog respects deleted and unavailable templates", () 
   assert.ok(createAgentDeck({ name: "Default catalog", templateId: template.id }));
   invalid(() => createAgentDeck({ name: "Unavailable", templateId: template.id }, []), "templateId");
   invalid(() => createAgentDeck({ name: "Other catalog", templateId: template.id }, [model.BUILT_IN_TEMPLATES[1]]), "templateId");
+});
+
+// Template composition: `templatePage` builds any carousel length from a template's page types.
+const PNG = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==";
+const layer = (type, id, patch = {}) => ({ ...model.createCanvasElement(type, patch), ...patch, id });
+const photoFill = (src = "https://example.com/texture.png") => ({ src, objectFit: "cover", cropX: 50, cropY: 50 });
+/** A brand carousel template: Cover, Text + Media, List, Follow (as imported, before smart preparation). */
+function brandTemplate() {
+  const design = model.createBlankDesign("@chatgptricks", "portrait");
+  design.customSize = { width: 1080, height: 1440 };
+  const furniture = page => [
+    layer("image", `${page}-logo`, { name: "Logo", src: "https://example.com/logo.png", x: 20, y: 15, width: 24, height: 24 }),
+    layer("text", `${page}-handle`, { text: "@chatgptricks", x: 50, y: 18, width: 120, height: 14, fontSize: 10, color: "#ffffff" }),
+  ];
+  const base = design.pages[0];
+  const make = (id, label, elements) => ({ ...structuredClone(base), id, label, image: { ...base.image, id: `${id}-image` }, canvas: { background: "#0b1014", elements: [...elements, ...furniture(id)] } });
+  design.pages = [
+    make("cover", "Cover", [layer("text", "cover-title", { text: "A creative way to build your next great project", x: 20, y: 340, width: 320, height: 99, font: "bebascanva", fontSize: 39, lineHeight: .85, color: "#ffffff", align: "center" })]),
+    make("text-media", "Text + Media", [
+      layer("text", "tm-title", { text: "Your Title text", x: 18, y: 60, width: 324, height: 25, font: "sfpro", fontSize: 18, lineHeight: 1.3, color: "#ffffff" }),
+      layer("image", "tm-photo", { name: "Photo", src: "https://example.com/photo.png", x: 18, y: 160, width: 324, height: 270 }),
+    ]),
+    make("list", "List", [
+      layer("text", "list-title", { text: "Three things to try", x: 18, y: 60, width: 324, height: 25, font: "sfpro", fontSize: 18, color: "#ffffff" }),
+      layer("text", "list-body", { text: "1. First idea\n2. Second idea\n3. Third idea", x: 18, y: 110, width: 324, height: 80, font: "sfpro", fontSize: 14, color: "#ffffff" }),
+    ]),
+    make("follow", "Follow", [layer("text", "follow-button", { text: "Follow", x: 130, y: 300, width: 100, height: 20, fontSize: 16, color: "#ffffff" })]),
+  ];
+  const template = model.designAsTemplate(design, "@chatgptricks"); template.id = "brand-carousel";
+  return template;
+}
+/** An already-smart template whose detail page carries every kind of layer reference. */
+function richTemplate() {
+  const base = model.createBlankDesign("Rich", "portrait").pages[0];
+  const page = (id, label, canvas, extra = {}) => ({ ...structuredClone(base), id, label, image: { ...base.image, id: `${id}-image` }, canvas, ...extra });
+  const smart = { role: "heading", lines: 0, minFontSize: 12, maxFontSize: 40, maxHeight: 80 };
+  return {
+    id: "rich-template", name: "Rich", description: "", category: "My templates", format: "portrait",
+    pages: [
+      page("intro", "Intro", { background: "#111111", elements: [layer("text", "intro-title", { slot: "headline", text: "Intro", x: 20, y: 40, width: 320, height: 40, fontSize: 24, smartText: smart })] }),
+      page("detail", "Detail", {
+        background: "#111111",
+        groups: [{ id: "g-parent", name: "Brand" }, { id: "g-child", name: "Lockup", parentId: "g-parent" }],
+        elements: [
+          layer("image", "logo", { name: "Logo", src: "https://example.com/logo.png", x: 20, y: 10, width: 20, height: 20, groupId: "g-child", templateRole: "brand", protected: ["content", "position", "style", "delete"] }),
+          layer("text", "handle", { text: "@brand", x: 45, y: 12, width: 80, height: 14, fontSize: 10, groupId: "g-parent", templateRole: "brand", protected: ["content", "position", "style", "delete"] }),
+          layer("text", "detail-title", { text: "Detail", x: 20, y: 40, width: 320, height: 40, fontSize: 24, smartText: smart }),
+          layer("text", "rich", { text: "Bold word here", richText: 'Bold <span data-texture-id="tex-1">word</span> here', wordTextures: [{ ...photoFill(), id: "tex-1" }], componentId: "comp-1", componentInstanceId: "inst-1", x: 20, y: 90, width: 320, height: 30, fontSize: 14 }),
+          layer("image", "detail-photo", { name: "Photo", src: "https://example.com/photo.png", templateRole: "media", smartFlow: { after: "detail-title", gap: 8, bottom: 420, resize: true }, x: 20, y: 130, width: 320, height: 290 }),
+        ],
+      }, { readingOrder: ["detail-title", "rich", "detail-photo"] }),
+      page("outro", "Outro", { background: "#111111", elements: [layer("text", "outro-cta", { slot: "cta", text: "Follow for more", x: 20, y: 200, width: 320, height: 40, fontSize: 24, smartText: smart })] }),
+    ],
+  };
+}
+const deckIds = deck => deck.pages.flatMap(page => [page.id, page.image.id, ...page.canvas.elements.map(element => element.id), ...(page.canvas.groups ?? []).map(group => group.id)]);
+const templateIds = template => new Set(template.pages.flatMap(page => [page.id, page.image.id, ...(page.canvas?.elements ?? []).map(element => element.id), ...(page.canvas?.groups ?? []).map(group => group.id)]));
+/** Everything a copy must share with its template page, without identities. */
+function constraints(scene) {
+  return scene.elements.map(element => {
+    const copy = structuredClone(element);
+    for (const key of ["id", "groupId", "componentInstanceId"]) delete copy[key];
+    if (copy.wordTextures) copy.wordTextures = copy.wordTextures.map(texture => ({ ...texture, id: undefined }));
+    if (copy.richText) copy.richText = copy.richText.replace(/data-texture-id="[^"]+"/g, "data-texture-id");
+    return copy;
+  });
+}
+
+test("templatePage composes subsets, reorders and repeats of template pages into a valid deck", () => {
+  const template = brandTemplate();
+  const carousel = createAgentDeck({ name: "Recreated post", templateId: template.id, slides: [
+    { templatePage: 0, title: "OpenAI just shipped memory for everyone" },
+    { templatePage: 1, title: "It remembers your projects", slots: { "smart-media": PNG } },
+    { templatePage: 1, title: "You can turn it off" },
+    { templatePage: 1, title: "Or delete single memories", image: { src: "https://example.com/settings.png", alt: "Memory settings" } },
+    { templatePage: 2, title: "Try these prompts", body: "1. Summarise my week\n2. Plan my trip" },
+    { templatePage: 3 },
+  ] }, [template]);
+  assert.deepEqual(carousel.pages.map(page => page.label), ["Cover", "Text + Media", "Text + Media", "Text + Media", "List", "Follow"]);
+  assert.equal(carousel.templateId, template.id);
+  const ids = deckIds(carousel);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.ok(ids.every(id => !templateIds(template).has(id)));
+  const title = page => page.canvas.elements.find(element => element.slot === "smart-text-0").text;
+  assert.deepEqual(carousel.pages.slice(0, 5).map(title), ["OpenAI just shipped memory for everyone", "It remembers your projects", "You can turn it off", "Or delete single memories", "Try these prompts"]);
+  const photos = carousel.pages.slice(1, 4).map(page => page.canvas.elements.find(element => element.slot === "smart-media"));
+  assert.deepEqual(photos.map(photo => photo.src), [PNG, "https://example.com/photo.png", "https://example.com/settings.png"]);
+  assert.equal(photos[2].publicAlt, "Memory settings");
+  assert.ok(model.parseLibrary(editableDeckPackage(carousel)));
+  // Subset in a new order, and a single slide.
+  const subset = createAgentDeck({ name: "Short", templateId: template.id, slides: [{ templatePage: 3 }, { templatePage: 0 }] }, [template]);
+  assert.deepEqual(subset.pages.map(page => page.label), ["Follow", "Cover"]);
+  assert.deepEqual(createAgentDeck({ name: "One", templateId: template.id, slides: [{ templatePage: 2 }] }, [template]).pages.map(page => page.label), ["List"]);
+  // The maximum length is still 20 slides, all from one page type.
+  assert.equal(createAgentDeck({ name: "Long", templateId: template.id, slides: Array.from({ length: 20 }, () => ({ templatePage: 1 })) }, [template]).pages.length, 20);
+  invalid(() => createAgentDeck({ name: "Too long", templateId: template.id, slides: Array.from({ length: 21 }, () => ({ templatePage: 1 })) }, [template]), "slides");
+});
+
+test("repeated template pages get fresh identities with every layer reference remapped", () => {
+  const template = richTemplate(), snapshot = structuredClone(template);
+  const deck = createAgentDeck({ name: "Repeats", templateId: template.id, slides: [
+    { id: "first", templatePage: 1 }, { templatePage: 1, label: "Second detail" }, { templatePage: 1, slots: { "detail-photo": PNG } },
+  ] }, [template]);
+  assert.deepEqual(template, snapshot);
+  assert.equal(deck.pages[0].id, "first");
+  assert.equal(deck.pages[1].label, "Second detail");
+  const ids = deckIds(deck), original = templateIds(template);
+  assert.equal(new Set(ids).size, ids.length);
+  assert.ok(ids.every(id => !original.has(id)));
+  const instances = new Set(), textures = new Set();
+  for (const page of deck.pages) {
+    const scene = page.canvas, byName = name => scene.elements.find(element => element.name === name || element.text === name);
+    const [parent, child] = scene.groups;
+    assert.equal(child.parentId, parent.id);
+    const logo = byName("Logo"), handle = byName("@brand"), heading = byName("Detail"), rich = byName("Bold word here"), photo = byName("Photo");
+    assert.equal(logo.groupId, child.id); assert.equal(handle.groupId, parent.id);
+    assert.deepEqual(page.readingOrder, [heading.id, rich.id, photo.id]);
+    assert.equal(photo.smartFlow.after, heading.id);
+    assert.equal(rich.wordTextures.length, 1);
+    assert.equal(rich.richText, `Bold <span data-texture-id="${rich.wordTextures[0].id}">word</span> here`);
+    assert.equal(rich.componentId, "comp-1");
+    instances.add(rich.componentInstanceId); textures.add(rich.wordTextures[0].id);
+    assert.deepEqual(logo.protected, ["content", "position", "style", "delete"]);
+  }
+  assert.equal(instances.size, 3); assert.equal(textures.size, 3);
+  // A listed slot without a slot name (its template layer id) still targets the copy's layer.
+  assert.deepEqual(deck.pages.map(page => page.canvas.elements.find(element => element.name === "Photo").src), ["https://example.com/photo.png", "https://example.com/photo.png", PNG]);
+  // Copies are independent: editing one leaves the others alone.
+  const edited = updateAgentDeck(deck, changes({ op: "update_element", pageId: "first", elementId: deck.pages[0].canvas.elements[2].id, properties: { text: "Only here" } }));
+  assert.deepEqual(edited.pages.map(page => page.canvas.elements[2].text), ["Only here", "Detail", "Detail"]);
+  // Brand layers stay protected in every copy.
+  invalid(() => updateAgentDeck(deck, changes({ op: "update_element", pageId: deck.pages[1].id, elementId: deck.pages[1].canvas.elements[0].id, properties: { x: 100 } })), "properties");
+  assert.ok(model.parseLibrary(editableDeckPackage(deck)));
+});
+
+test("composed decks keep the same smart-template constraints as a full template copy", () => {
+  const template = brandTemplate();
+  const full = createAgentDeck({ name: "Full copy", templateId: template.id }, [template]);
+  const order = [3, 1, 0, 1, 2];
+  const composed = createAgentDeck({ name: "Composed", templateId: template.id, slides: order.map(templatePage => ({ templatePage })) }, [template]);
+  order.forEach((source, index) => {
+    assert.deepEqual(constraints(composed.pages[index].canvas), constraints(full.pages[source].canvas), `slide ${index} differs from template page ${source}`);
+    assert.equal(composed.pages[index].canvas.layout?.margins?.enabled, full.pages[source].canvas.layout?.margins?.enabled);
+  });
+  // The cover keeps its cover role on slide 3, and interior pages never become covers on slide 1.
+  const role = page => page.canvas.elements.find(element => element.smartText)?.smartText.role;
+  assert.equal(role(composed.pages[2]), "cover"); assert.equal(role(composed.pages[1]), "heading");
+  const media = composed.pages[1].canvas.elements.find(element => element.slot === "smart-media");
+  assert.equal(media.templateRole, "media"); assert.deepEqual(media.smartFlow, { after: "smart-text-0", gap: 8, bottom: 430, resize: true });
+  assert.ok(composed.pages[1].canvas.elements.filter(element => element.templateRole === "brand").every(element => element.protected.includes("content")));
+  // Per-page summary for composition, including pages without slots.
+  const pages = agent.agentTemplatePages(template);
+  assert.deepEqual(pages.map(page => [page.index, page.label, page.slots.map(slot => slot.slot)]), [[0, "Cover", ["smart-text-0"]], [1, "Text + Media", ["smart-text-0", "smart-media"]], [2, "List", ["smart-text-0", "smart-text-1"]], [3, "Follow", []]]);
+  assert.equal(pages[1].slots[0].role, "heading"); assert.equal(pages[1].slots[1].type, "photo");
+  assert.ok(pages.every(page => page.slots.every(slot => !("pageIndex" in slot) && !("pageId" in slot))));
+});
+
+test("templatePage is all-or-none, in range, and only available with templateId", () => {
+  const template = brandTemplate(), create = (slides, extra = {}) => createAgentDeck({ name: "Checked", templateId: template.id, slides, ...extra }, [template]);
+  invalid(() => create([{ templatePage: 0 }, {}, { templatePage: 3 }]), "$.slides[1].templatePage");
+  invalid(() => create([{}, {}, {}, { templatePage: 3 }]), "$.slides[0].templatePage");
+  assert.throws(() => create([{ templatePage: 0 }, { templatePage: 4 }]), error => error instanceof AgentDeckValidationError && error.issues[0].path === "$.slides[1].templatePage" && /0 to 3/.test(error.issues[0].message));
+  for (const value of [-1, 1.5, "1", 20, null]) invalid(() => create([{ templatePage: value }]), "templatePage");
+  invalid(() => createAgentDeck({ name: "No template", slides: [{ templatePage: 0, title: "Hello" }] }), "templatePage");
+  invalid(() => updateAgentDeck(create([{ templatePage: 0 }]), changes({ op: "add_slide", slide: { templatePage: 1 } })), "templatePage");
+  invalid(() => create([{ templatePage: 1, layout: "content" }]), "slides[0]");
+  invalid(() => create([{ templatePage: 1, slots: { missing: "Text" } }]), "slots");
+  const continuous = { ...structuredClone(template), id: "continuous", continuousCanvas: { background: "#000000", elements: [] } };
+  invalid(() => createAgentDeck({ name: "Continuous", templateId: continuous.id, slides: [{ templatePage: 0 }] }, [continuous]), "slides");
+});
+
+test("without templatePage, template decks keep the exact page-count contract", () => {
+  const template = brandTemplate();
+  assert.throws(() => createAgentDeck({ name: "Short", templateId: template.id, slides: [{}, {}, {}] }, [template]), error => error instanceof AgentDeckValidationError && error.issues[0].path === "$.slides" && /exactly 4 slides/.test(error.issues[0].message));
+  const copy = createAgentDeck({ name: "Copy", templateId: template.id }, [template]);
+  assert.deepEqual(copy.pages.map(page => page.label), ["Cover", "Text + Media", "List", "Follow"]);
+  const filled = createAgentDeck({ name: "Filled", templateId: template.id, slides: [{ title: "Cover copy" }, { slots: { "smart-media": PNG } }, {}, {}] }, [template]);
+  assert.equal(filled.pages[0].canvas.elements.find(element => element.slot === "smart-text-0").text, "Cover copy");
+  assert.equal(filled.pages[1].canvas.elements.find(element => element.slot === "smart-media").src, PNG);
+  // Full copies also accept a listed slot that only has its template layer id.
+  const rich = richTemplate();
+  const richCopy = createAgentDeck({ name: "Rich copy", templateId: rich.id, slides: [{}, { slots: { "detail-photo": PNG } }, {}] }, [rich]);
+  assert.equal(richCopy.pages[1].canvas.elements.find(element => element.name === "Photo").src, PNG);
+  for (const builtIn of model.BUILT_IN_TEMPLATES) assert.equal(createAgentDeck({ name: "Built in", templateId: builtIn.id }).pages.length, builtIn.pages.length);
+});
+
+test("photo slots accept PNG data URLs, including chart-sized ones; base64 SVG is rejected", () => {
+  const template = brandTemplate(), media = slot => [{ templatePage: 1, slots: { "smart-media": slot } }];
+  const chart = `data:image/png;base64,${Buffer.concat([Buffer.from(PNG.split(",")[1], "base64"), Buffer.alloc(150_000)]).toString("base64")}`;
+  assert.ok(chart.length > 200_000);
+  const deck = createAgentDeck({ name: "Chart", templateId: template.id, slides: media(chart) }, [template]);
+  assert.equal(deck.pages[0].canvas.elements.find(element => element.slot === "smart-media").src, chart);
+  assert.ok(createAgentDeck({ name: "Chart image", templateId: template.id, slides: [{ templatePage: 1, image: { src: chart } }] }, [template]));
+  const vector = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><path d="M0 10L5 4L10 6" stroke="#00d98a" stroke-width="1"/></svg>';
+  assert.ok(createAgentDeck({ name: "Passive SVG", templateId: template.id, slides: media(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(vector)}`) }, [template]));
+  invalid(() => createAgentDeck({ name: "Base64 SVG", templateId: template.id, slides: media(`data:image/svg+xml;base64,${Buffer.from(vector).toString("base64")}`) }, [template]), "slots");
+  invalid(() => createAgentDeck({ name: "SVG text", templateId: template.id, slides: media(`data:image/svg+xml;charset=utf-8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><text>1</text></svg>')}`) }, [template]), "slots");
+  invalid(() => createAgentDeck({ name: "Fake PNG", templateId: template.id, slides: media(`data:image/png;base64,${Buffer.from("not really a png").toString("base64")}`) }, [template]), "slots");
+  invalid(() => createAgentDeck({ name: "Long text", templateId: template.id, slides: [{ templatePage: 1, slots: { "smart-text-0": "x".repeat(20_001) } }] }, [template]), "slots");
+});
+
+test("capabilities document composition with an executable example and per-page template types", () => {
+  const capabilities = agentCapabilities();
+  assert.deepEqual(capabilities.deckSchema.properties.slides.items.properties.templatePage, { type: "integer", minimum: 0, maximum: 19, description: capabilities.deckSchema.properties.slides.items.properties.templatePage.description });
+  assert.equal(capabilities.updateSchema.properties.operations.items.oneOf.find(variant => variant.properties.op.const === "add_slide").properties.slide.properties.templatePage.type, "integer");
+  const example = capabilities.templateExample;
+  assert.ok(example.slides.every(slide => Number.isInteger(slide.templatePage)));
+  const deck = createAgentDeck(example);
+  assert.equal(deck.pages.length, example.slides.length);
+  assert.ok(capabilities.templates.every(template => template.pageTypes.length === template.pages && template.pageTypes.every((page, index) => page.index === index)));
+  assert.ok(capabilities.notes.some(note => note.includes("templatePage")));
+  assert.ok(capabilities.imageSources.some(source => source.includes("png")));
 });

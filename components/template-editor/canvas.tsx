@@ -1,7 +1,7 @@
 "use client";
 import { VectorNodeEditor } from "./vector-node-editor";
 import { layersAtPoint,cycleLayerAtPoint } from "@/lib/template-editor/canvas-hit-testing";
-import { textDisplayFontSize,measureFittedText,measureTextHeight,resizeTextHeight,scaleEditableText } from "@/lib/template-editor/text-fit";
+import { textDisplayFontSize,glyphOverhang,measureFittedText,measureTextHeight,resizeTextHeight,scaleEditableText,shouldRefitFontSize } from "@/lib/template-editor/text-fit";
 import { keyboardTransform } from "@/lib/template-editor/editing-actions";
 import { viewGestureDelta,type ViewPoint } from "@/lib/template-editor/view-gestures";
 import {elementEffectiveOpacity} from "@/lib/template-editor/group-opacity";
@@ -29,6 +29,8 @@ import { createPortal } from "react-dom";
 import type {
   CanvasElement,
   CanvasScene,
+  HtmlElement,
+  ImageElement,
   TextElement,
   ShapeElement,
 } from "@/lib/template-editor/model";
@@ -37,8 +39,13 @@ import { snapMove, snapPoint, translateElements, type SnapGuide } from "@/lib/te
 import { gradientCss, gradientEndpoints, maskCss, shapePath } from "@/lib/template-editor/appearance";
 import { editorRichHtml, formatTextRange, textRangeTogglePatch, splitRichLines, resolveRichDecorations, scaleRichTextFonts, captureTextFormattingTarget, sameTextFormattingTarget, textEditingFingerprint, captureTextSelection, restoreTextSelection, type TextFormattingPatch, type TextFormattingTarget, type TextFormatter } from "@/lib/template-editor/rich-text-editing";
 import { duplicateSelection, expandGroupSelection, isElementHidden, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
+import { canFormatWords, takesWordColorsOnly, type WordColor } from "@/lib/template-editor/word-colors";
+import { WordColorControls } from "./word-color-controls";
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
-import { richTextToPlain } from "@/lib/template-editor/model";
+import { MAX_HTML_DESIGN_WIDTH, richTextToPlain } from "@/lib/template-editor/model";
+import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-layer";
+import { setHtmlNodeContent, setHtmlNodeText, withHtmlLayerMarkup, type HtmlNodeSelection } from "@/lib/template-editor/html-edit";
+import { HtmlLayerEditor, firstHtmlTextPart, htmlTextPartAt } from "./html-layer-editor";
 import { parseColor } from "@/lib/template-editor/color-utils";
 import { photoContent, updatePhotoContent, shapeViewBox, findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { textureBackgroundStyle, activeTextTextures, textTextureVariables, textTextureCss } from "@/lib/template-editor/text-textures";
@@ -52,7 +59,9 @@ import "./canvas.css";
 import "./text-editing.css";
 
 type Point = { x: number; y: number };
+type HtmlEditing = { id: string; node: number; caret?: Point; serial: number };
 type Box = Point & { width: number; height: number; rotation: number };
+export type AreaBox = Point & { width: number; height: number };
 type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type Gesture = {
   kind: "move" | "resize" | "rotate";
@@ -83,6 +92,9 @@ type Marquee = {
   moved: boolean;
 };
 const HANDLES: Handle[] = ["nw", "n", "ne", "e", "se", "s", "sw", "w"];
+
+/** One half of a photo that spans two slides: it resizes from its corners, keeping its proportions. */
+const isSpanningHalf = (element: CanvasElement | undefined) => element?.type === "image" && Boolean(element.span);
 
 /** Keep constant-size controls from covering each other on thin artwork. */
 export function resizeHandlePolicy(box: Pick<Box,"width"|"height">, scale = 1, shape = false, grouped = false): Handle[] {
@@ -144,6 +156,8 @@ function bounded(element: CanvasElement): CanvasElement {
   };
 }
 
+const hasRadius = (element: CanvasElement): element is ImageElement | ShapeElement => element.type === "image" || element.type === "shape";
+
 /** Uploads can complete during a gesture. Preserve the latest layer list and
  * content, and apply only fields that this gesture actually transformed. */
 export function mergeGesture(scene: CanvasScene, active: Gesture): CanvasScene {
@@ -174,8 +188,13 @@ export function mergeGesture(scene: CanvasScene, active: Gesture): CanvasScene {
         }
       }
     }
-    if (canEditElement(scene,element,"style") && replacement.type !== "text" && original.type !== "text" && next.type !== "text" && next.radius !== original.radius && next.radius !== replacement.radius) {
+    if (canEditElement(scene,element,"style") && hasRadius(replacement) && hasRadius(original) && hasRadius(next) && next.radius !== original.radius && next.radius !== replacement.radius) {
       replacement.radius = next.radius;
+      modified = true;
+    }
+    // A side drag reflows an HTML layer: its design width follows the box.
+    if (replacement.type === "html" && original.type === "html" && next.type === "html" && next.designWidth !== original.designWidth && next.designWidth !== replacement.designWidth) {
+      replacement.designWidth = next.designWidth;
       modified = true;
     }
     if (canEditElement(scene,element,"style") && replacement.type === "shape" && original.type === "shape" && next.type === "shape" && next.strokeWidth !== original.strokeWidth && next.strokeWidth !== replacement.strokeWidth) {
@@ -201,6 +220,25 @@ export function commitCanvasGesture(scene: CanvasScene, active: Gesture, cancel 
   const added=active.originalScene?active.source.elements.filter(element=>!active.originalScene!.elements.some(original=>original.id===element.id)):[];
   const target=added.length?{...scene,groups:[...(scene.groups??[]),...(active.source.groups??[]).filter(group=>!(scene.groups??[]).some(existing=>existing.id===group.id))],elements:[...scene.elements,...added]}:scene;
   return mergeGesture(target,active);
+}
+
+/** A picture that takes its own shape (smartFlow.media) needs that shape on file:
+ * once its image has loaded, a size that disagrees with the image is replaced
+ * by the image's own. */
+function withPictureSizes(scene: CanvasScene, node: HTMLElement | null): CanvasScene {
+  if (!node) return scene;
+  let changed = false;
+  const elements = scene.elements.map(element => {
+    if (element.type !== "image" || !element.smartFlow?.media) return element;
+    const image = node.querySelector<HTMLImageElement>(`[data-element-id="${CSS.escape(element.id)}"] img[data-media-shape]`);
+    // currentSrc is the picture on show, which lags `src` while a new one loads.
+    if (!image?.complete || !image.naturalWidth || !image.naturalHeight || image.currentSrc !== image.src) return element;
+    const known = element.intrinsicWidth && element.intrinsicHeight ? element.intrinsicWidth / element.intrinsicHeight : 0;
+    if (known && Math.abs(image.naturalWidth / image.naturalHeight / known - 1) < .005) return element;
+    changed = true;
+    return { ...element, intrinsicWidth: image.naturalWidth, intrinsicHeight: image.naturalHeight };
+  });
+  return changed ? { ...scene, elements } : scene;
 }
 
 function rotate(point: Point, degrees: number): Point {
@@ -255,10 +293,51 @@ function TextureResources({ element }: { element: TextElement }) {
   return <span ref={holder} style={{display:"none"}} aria-hidden="true"><style>{textTextureCss(element)}</style>{textures.map(texture=><img key={texture.id} src={proxied(texture.src)} alt="" data-engine-texture-preload="true" data-engine-texture-id={texture.id} data-engine-image-fit={texture.objectFit} data-engine-image-crop-scale={texture.cropScale??1} onLoad={measure} />)}</span>;
 }
 
+/** An HTML layer: markup laid out designWidth px wide and scaled to its box.
+ * The markup is cleaned again here (html-layer.ts) and its CSS is scoped to
+ * this one drawing, so a thumbnail and the canvas never share ids or rules. */
+function HtmlLayerContent({ element }: { element: HtmlElement }) {
+  const instance = useId().replace(/[^a-zA-Z0-9]/g, "");
+  const { html, css, tokens, designWidth, width, height } = element;
+  const prepared = useMemo(() => prepareHtmlLayer({ html, css, tokens }), [html, css, tokens]);
+  const scope = `teh-${prepared.key}-${instance}`;
+  const markup = useMemo(() => ({ __html: scopeHtmlLayer(prepared.html, scope) }), [prepared, scope]);
+  const scale = width / designWidth;
+  return <div className="te-canvas-html" style={{ position: "absolute", inset: 0, overflow: "hidden", contain: "layout paint style", isolation: "isolate" }}>
+    <style>{scopeHtmlLayer(prepared.css, scope)}</style>
+    <div style={{ position: "absolute", left: 0, top: 0, width: designWidth, height: height / scale, transform: `scale(${scale})`, transformOrigin: "0 0" }}>
+      <div className={`te-canvas-html-root ${scope}`} dangerouslySetInnerHTML={markup} />
+    </div>
+  </div>;
+}
+
 /** A world-space viewport stays fixed while its editable object moves/rotates. */
 function WorldClip({ bounds, children }: { bounds?: CanvasElement["clipBounds"]; children: ReactNode }) {
   if (!bounds) return <>{children}</>;
   return <div className="te-canvas-source-clip" style={{left:bounds.x,top:bounds.y,width:bounds.width,height:bounds.height}}><div style={{left:-bounds.x,top:-bounds.y}}>{children}</div></div>;
+}
+
+/** A fixed or auto-fit box cuts the text that doesn't fit it, but not the accents and
+ * descenders of the lines it holds, which reach past it at tight line heights: its clip
+ * (canvas.css) reaches past the box by their overhang, sized to the largest font in the layer.
+ * While the text overflows the box, the frame is marked data-overflow and the box cuts it exactly. */
+function TextFrame({ element, lines }: { element: TextElement; lines: string[] }) {
+  const frame = useRef<HTMLDivElement>(null);
+  const fixed = (element.textMode ?? "fixed") !== "auto-height";
+  useLayoutEffect(() => {
+    const box = frame.current, text = box?.firstElementChild;
+    if (!fixed || !box || !(text instanceof HTMLElement)) return;
+    const check = () => box.toggleAttribute("data-overflow", text.offsetHeight > box.offsetHeight + 1);
+    check();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(check);
+    observer?.observe(box); observer?.observe(text);
+    return () => { observer?.disconnect(); box.removeAttribute("data-overflow"); };
+  }, [fixed]);
+  const runSizes = lines.flatMap(line => Array.from(line.matchAll(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi), match => Number(match[1])));
+  const overhang = glyphOverhang(Math.max(textDisplayFontSize(element), ...runSizes), element.lineHeight);
+  return <div ref={frame} className={`te-canvas-text-frame${fixed ? " is-fixed" : ""}`} style={{ justifyContent: element.verticalAlign === "middle" ? "center" : element.verticalAlign === "bottom" ? "flex-end" : "flex-start", "--te-paragraph-spacing": `${element.paragraphSpacing ?? 0}px`, "--te-glyph-overhang": `${overhang}px` } as CSSProperties}>
+    <div className={`te-canvas-text gf-font-${element.font}${element.hangingIndent ? " is-hanging" : ""}`} style={textStyle(element)}>{lines.map((line, index) => <div className="te-canvas-text-line" key={index}>{element.listStyle && element.listStyle !== "none" && <span className="te-canvas-list-prefix" aria-hidden="true">{element.listStyle === "number" ? `${index + 1}. ` : "• "}</span>}<span dangerouslySetInnerHTML={{ __html: line || "<br>" }} /></div>)}</div>
+  </div>;
 }
 
 function SceneElement({ element, smartLayout }: { element: CanvasElement; smartLayout?: SmartTextLayout }) {
@@ -289,12 +368,10 @@ function SceneElement({ element, smartLayout }: { element: CanvasElement; smartL
       <feComposite in="color" in2="offset" operator="in" result="shadow" />
       <feMerge><feMergeNode in="shadow" /><feMergeNode in="SourceGraphic" /></feMerge>
     </filter></defs></svg>}
-    {element.type === "text" ? <div className={`te-canvas-text-frame${(element.textMode ?? "fixed") !== "auto-height" ? " is-fixed" : ""}`} style={{ justifyContent: element.verticalAlign === "middle" ? "center" : element.verticalAlign === "bottom" ? "flex-end" : "flex-start", "--te-paragraph-spacing": `${element.paragraphSpacing ?? 0}px` } as CSSProperties}>
-      <div className={`te-canvas-text gf-font-${element.font}`} style={textStyle(element)}>{lines.map((line, index) => <div className="te-canvas-text-line" key={index}>{element.listStyle && element.listStyle !== "none" && <span className="te-canvas-list-prefix" aria-hidden="true">{element.listStyle === "number" ? `${index + 1}. ` : "• "}</span>}<span dangerouslySetInnerHTML={{ __html: line || "<br>" }} /></div>)}</div>
-    </div> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
+    {element.type === "text" ? <TextFrame element={element} lines={lines} /> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
-    </div></div> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
+      <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
+    </div></div> : element.type === "html" ? <HtmlLayerContent element={element} /> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
       <clipPath id={photoClipId} clipPathUnits="userSpaceOnUse">{geometry({fillRule,clipRule:fillRule})}</clipPath>
       {strokeAlign === "outside" && <mask id={outsideMaskId} maskUnits="userSpaceOnUse" x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} style={{maskType:"luminance"}}><rect x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} fill="white" />{geometry({fill:"black",fillRule})}</mask>}
       {gradient && (gradient.type === "radial" ? <radialGradient id={gradientId} cx=".5" cy=".5" r="1" gradientTransform={`translate(.5 .5) scale(${radialRadius/element.width} ${radialRadius/element.height}) translate(-.5 -.5)`}>{gradient.stops.map((stop, index) => <stop key={index} offset={`${stop.position}%`} stopColor={stop.color} />)}</radialGradient> : <linearGradient id={gradientId} x1={`${endpoints.x1}%`} y1={`${endpoints.y1}%`} x2={`${endpoints.x2}%`} y2={`${endpoints.y2}%`}>{gradient.stops.map((stop, index) => <stop key={index} offset={`${stop.position}%`} stopColor={stop.color} />)}</linearGradient>)}
@@ -371,8 +448,8 @@ export function resizeSingle(
   let width = sx ? clamp(element.width + sx * local.x, 1, 10_000) : element.width;
   let height = sy ? clamp(element.height + sy * local.y, 1, 10_000) : element.height;
   const isCorner = Boolean(sx && sy);
-  // Text corners scale the type; side handles reflow the text within its box.
-  if ((isCorner && element.type === "text") || preserveAspect) {
+  // Text corners scale the type and HTML corners scale the design; side handles reflow either within its box.
+  if ((isCorner && (element.type === "text" || element.type === "html")) || preserveAspect) {
     const dw = (width - element.width) / element.width;
     const dh = (height - element.height) / element.height;
     const maximum = Math.min(10_000 / element.width, 10_000 / element.height);
@@ -399,6 +476,9 @@ export function resizeSingle(
     width: round(width),
     height: round(height),
   };
+  if (element.type === "html") return sx && !isCorner && !preserveAspect
+    ? ({ ...result, designWidth: round(clamp(element.designWidth * width / element.width, 1, MAX_HTML_DESIGN_WIDTH)) } as CanvasElement)
+    : result;
   return element.type === "text" && isCorner
     ? ({
         ...result,
@@ -472,6 +552,7 @@ export function resizeGroup(
         radius: round(clamp(element.radius * scale, 0, 5000)),
         strokeWidth: round(clamp(element.strokeWidth * scale, 0, 200)),
       } as CanvasElement;
+    if (element.type === "html") return resized;
     return {
       ...resized,
       radius: round(clamp(element.radius * scale, 0, 5000)),
@@ -510,12 +591,16 @@ type CanvasEditorProps = {
   historyRevision?: number;
   onContextMenu?: (event: ReactMouseEvent<HTMLDivElement>, targetId: string | null) => void;
   editingRequest?: { id: string; serial: number };
+  /** The part of an HTML layer being typed in, and its selected words (for the style panel); null when none is. */
+  onHtmlSelection?: (selection: HtmlNodeSelection | null) => void;
   /** Editor-only view setting; thumbnails and exports always clip to the page. */
   clipToCanvas?: boolean;
   /** Blank workspace available for marquee selection, in page coordinates. */
   pasteboardBounds?: { x: number; y: number; width: number; height: number };
   /** Show editor-only boundaries for a continuous carousel. */
   slideWidth?: number;
+  /** Extra words for a layer's selection label, such as "across slides 2–3". */
+  layerNotes?: ReadonlyMap<string, string>;
   /** Previous-slide guide; never part of the design or export renderer. */
   onionScene?: CanvasScene;
   onionOpacity?: number;
@@ -536,6 +621,8 @@ type CanvasEditorProps = {
   nodeToolbarHost?: HTMLElement|null;
   /** Host outside the transformed canvas, keeping formatting clear of the typing area. */
   textToolbarHost?: HTMLElement|null;
+  /** The deck's highlight colors, offered for selected words of template text whose style is fixed. */
+  wordColors?: WordColor[];
   onRequestCrop?: (id:string)=>void;
   onPan?: (delta:ViewPoint)=>void;
   onZoom?: (gesture:{factor:number;clientX:number;clientY:number})=>void;
@@ -546,6 +633,11 @@ type CanvasEditorProps = {
   penColor?:string;
   drawingMode?: 'pen';
   onDrawPath?: (element: ShapeElement) => void;
+  /** Frames: marking an area of the slide (scene units). While on, the canvas
+   * only draws the area; layers can't be picked or moved. */
+  areaMode?: boolean;
+  area?: AreaBox | null;
+  onAreaChange?: (area: AreaBox | null) => void;
 };
 
 export function CanvasEditor({
@@ -565,6 +657,7 @@ export function CanvasEditor({
   historyRevision=0,
   onContextMenu,
   editingRequest,
+  onHtmlSelection,
   clipToCanvas = true,
   pasteboardBounds,
   slideWidth,
@@ -580,10 +673,14 @@ export function CanvasEditor({
   imageDropTargetId,
   masterScene,
   masterPageVisibility,
-  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,nodeToolbarHost,textToolbarHost,
+  navigationMode="select",onPan,onZoom,onExitNodeEditing,onRequestCrop,nodeToolbarHost,textToolbarHost,wordColors,
   penClosed=false,penColor="#222222",onCancelDrawing,onRegisterDrawingControls,onDrawingPointCount,
   drawingMode,
   onDrawPath,
+  layerNotes,
+  areaMode = false,
+  area = null,
+  onAreaChange,
 }: CanvasEditorProps) {
   const root = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -598,6 +695,12 @@ export function CanvasEditor({
   const formatSerial = useRef(0);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingSeed, setEditingSeed] = useState("");
+  // Typing in an HTML layer (html-layer-editor.tsx): the layer, the part of it, and where a click put the caret.
+  const [htmlEditing, setHtmlEditing] = useState<HtmlEditing | null>(null);
+  const htmlEditingRef = useRef<HtmlEditing | null>(null);
+  /** The layer's markup when this part opened (or last changed some other way): Escape goes back to it. */
+  const htmlOriginal = useRef<string | null>(null);
+  const htmlSerial = useRef(0);
   const [live, setLive] = useState<CanvasScene | null>(null);
   const awarenessCallbacks = useRef({onScenePreview,onCursorChange});
   useLayoutEffect(() => { awarenessCallbacks.current = {onScenePreview,onCursorChange}; });
@@ -612,6 +715,12 @@ export function CanvasEditor({
   const viewPrevious=useRef<ViewPoint[]>([]);
   const touchNavigating=useRef(false);
   const [pathPoints,setPathPoints]=useState<Point[]>([]);
+  const areaStart=useRef<{pointer:number;start:Point}|null>(null);
+  function areaBox(from:Point,to:Point):AreaBox{
+    const clampX=(value:number)=>Math.max(0,Math.min(width,value)),clampY=(value:number)=>Math.max(0,Math.min(height,value));
+    const x1=clampX(from.x),x2=clampX(to.x),y1=clampY(from.y),y2=clampY(to.y);
+    return {x:Math.min(x1,x2),y:Math.min(y1,y2),width:Math.abs(x2-x1),height:Math.abs(y2-y1)};
+  }
   useEffect(()=>{onDrawingPointCount?.(drawingMode?pathPoints.length:0);},[drawingMode,pathPoints.length,onDrawingPointCount]);
   useEffect(()=>{onRegisterDrawingControls?.(drawingMode?{finish:finishPath,removeLast:()=>setPathPoints(points=>points.slice(0,-1)),cancel:()=>{setPathPoints([]);onCancelDrawing?.();}}:null);return()=>onRegisterDrawingControls?.(null);});
   const [keyboardHandle,setKeyboardHandle]=useState<string|null>(null);
@@ -624,6 +733,9 @@ export function CanvasEditor({
   });
   const [fontRevision,setFontRevision]=useState(0);
   useEffect(()=>{const loaded=()=>{clearSmartTextMeasurements();setFontRevision(revision=>revision+1);};document.fonts?.addEventListener("loadingdone",loaded);return()=>document.fonts?.removeEventListener("loadingdone",loaded);},[]);
+  // A picture that takes its own shape (smartFlow.media) lays the page out again once it has loaded.
+  const [pictureRevision,setPictureRevision]=useState(0);
+  useEffect(()=>{const node=root.current;if(!node)return;const loaded=(event:Event)=>{if(event.target instanceof HTMLImageElement&&event.target.dataset.mediaShape)setPictureRevision(revision=>revision+1);};node.addEventListener("load",loaded,true);return()=>node.removeEventListener("load",loaded,true);},[]);
   const [dragFrameId,setDragFrameId]=useState<string|null>(null);
   const currentScene = live ?? scene;
   const smartView = useSmartScene(currentScene);
@@ -695,7 +807,8 @@ export function CanvasEditor({
   function formatRange(patch:TextFormattingPatch,expected?:TextFormattingTarget) {
     const node=editingNode.current; const range=richRange.current;
     if(expected&&!sameTextFormattingTarget(captureFormatting(),expected))throw new Error("The word selection changed while the photo was loading. Select the words and try again.");
-    if(!node||!range||disabled||!editingElement||!canEditElement(scene,editingElement,"content")||!canEditElement(scene,editingElement,"style"))return false;
+    // Template text with a fixed style takes word colors only, as in the chat's style_words.
+    if(!node||!range||disabled||!editingElement||!canFormatWords(scene,editingElement,patch))return false;
     if(patch.textureFill && (editingElement.wordTextures?.length??0)>=30)throw new Error("A text layer supports up to 30 word textures. Remove a texture before adding another.");
     const textureId=patch.textureFill?crypto.randomUUID():null;
     const displayPatch=patch.fontSize!==undefined?{...patch,fontSize:patch.fontSize*textDisplayFontSize(editingElement)/editingElement.fontSize}:patch;
@@ -715,8 +828,8 @@ export function CanvasEditor({
   useEffect(()=>{onRegisterTextFormatter?.(editingId?Object.assign(formatRange,{capture:captureFormatting}):null);return()=>onRegisterTextFormatter?.(null);});
   useEffect(()=>{onRegisterHistoryBridge?.({flush:()=>{updateEditing();return editingAccepted.current;}});return()=>onRegisterHistoryBridge?.(null);});
   useLayoutEffect(()=>{
-    if(disabled||live||editingId)return;
-    const smart = layoutSmartScene(scene);
+    if(disabled||live||editingId||htmlEditing)return;
+    const smart = layoutSmartScene(withPictureSizes(scene,root.current));
     let changed=smart.scene!==scene;
     const elements=smart.scene.elements.map(element=>{
       if(element.type === "text" && element.smartText)return element;
@@ -731,11 +844,11 @@ export function CanvasEditor({
       }
       if(!canEditElement(scene,element,"style"))return element;
       const size=measureFittedText(text,element);
-      if(Math.abs(size-textDisplayFontSize(element))<.01)return element;
+      if(!shouldRefitFontSize(textDisplayFontSize(element),size))return element;
       changed=true;return {...element,autoFitFontSize:size};
     });
     if(changed)onChange({...scene,elements},"text-fit");
-  },[scene,disabled,live,editingId,onChange,isolatedGroupId,inScope,fontRevision]);
+  },[scene,disabled,live,editingId,htmlEditing,onChange,isolatedGroupId,inScope,fontRevision,pictureRevision]);
 
   useLayoutEffect(() => {
     if (!editingId || !editingNode.current) return;
@@ -803,13 +916,14 @@ export function CanvasEditor({
     const request = `${editingRequest.id}:${editingRequest.serial}`;
     if (lastEditingRequest.current === request) return;
     const element = scene.elements.find((item) => item.id === editingRequest.id);
-    if (element?.type !== "text" || !canEditElement(scene,element,'content') || isElementHidden(scene,element) || !inScope(element)) return;
+    if ((element?.type !== "text" && element?.type !== "html") || !canEditElement(scene,element,'content') || isElementHidden(scene,element) || !inScope(element)) return;
     let cancelled = false;
     // Defer until a context menu has released its focus and restored the
     // canvas. Repeated scene changes during typing do not restart editing.
     queueMicrotask(() => {
       if (cancelled) return;
       lastEditingRequest.current = request;
+      if (element.type === "html") { startHtml.current(element); return; }
       onHistoryBoundary?.();
       onSelect([element.id]);
       editingActive.current = element.id;
@@ -835,6 +949,7 @@ export function CanvasEditor({
   }
 
   function finishEditing(cancel = false): CanvasScene {
+    finishHtmlEditing();
     const next = updateEditing(cancel);
     if(!editingAccepted.current)return next;
     editingActive.current = null;
@@ -847,6 +962,7 @@ export function CanvasEditor({
   }
 
   function startEditing(element: CanvasElement) {
+    if (element.type === "html") { startHtmlEditing(element); return; }
     if (disabled || !canEditElement(scene,element,'content') || isElementHidden(scene,element) || !inScope(element) || element.type !== "text") return;
     if (editingActive.current && editingActive.current !== element.id)
       finishEditing();
@@ -859,6 +975,70 @@ export function CanvasEditor({
     setEditingSeed(element.text);
     setEditingId(element.id);
   }
+
+  function showHtmlEditing(next: HtmlEditing | null) {
+    htmlEditingRef.current = next;
+    setHtmlEditing(next);
+  }
+  /** Opens the words of an HTML layer for typing: the part under `point` (screen
+   * pixels), or its first words. False when there are no words there. */
+  function startHtmlEditing(element: CanvasElement, point?: Point): boolean {
+    if (element.type !== "html" || disabled || !canEditElement(scene, element, "content") || isElementHidden(scene, element) || !inScope(element)) return false;
+    // The page's drawing of the layer has the same numbered parts as the one typed in.
+    const drawing = [...root.current?.querySelectorAll<HTMLElement>(".te-canvas-editor-scene [data-element-id] .te-canvas-html-root") ?? []].find(node => node.closest<HTMLElement>("[data-element-id]")?.dataset.elementId === element.id);
+    const node = drawing ? point ? htmlTextPartAt(drawing, point.x, point.y) : firstHtmlTextPart(drawing) : null;
+    if (node === null) return false;
+    finishEditing();
+    onHistoryBoundary?.();
+    onSelect([element.id]);
+    htmlOriginal.current = element.html;
+    showHtmlEditing({ id: element.id, node, serial: ++htmlSerial.current });
+    onHtmlSelection?.({ elementId: element.id, node });
+    return true;
+  }
+  const startHtml = useRef(startHtmlEditing);
+  useLayoutEffect(() => { startHtml.current = startHtmlEditing; });
+  /** Another part of the same layer, where it was clicked. */
+  function pickHtmlPart(node: number, caret: Point) {
+    const editing = htmlEditingRef.current;
+    if (!editing) return;
+    onHistoryBoundary?.();
+    const element = scene.elements.find(item => item.id === editing.id);
+    htmlOriginal.current = element?.type === "html" ? element.html : null;
+    showHtmlEditing({ id: editing.id, node, caret, serial: ++htmlSerial.current });
+    onHtmlSelection?.({ elementId: editing.id, node });
+  }
+  /** Saves what was typed into the part: one undo step per run of typing in it. */
+  function commitHtmlPart(value: string, kind: "content" | "text"): string | null {
+    const editing = htmlEditingRef.current;
+    if (!editing || disabled) return null;
+    const element = scene.elements.find((item): item is HtmlElement => item.id === editing.id && item.type === "html");
+    if (!element || !canEditElement(scene, element, "content")) return null;
+    let next: HtmlElement;
+    try { next = withHtmlLayerMarkup(element, kind === "text" ? setHtmlNodeText(element.html, editing.node, value) : setHtmlNodeContent(element.html, editing.node, value)); }
+    catch { return null; }
+    if (next === element) return element.html;
+    if (onChange({ ...scene, elements: scene.elements.map(item => item.id === element.id ? next : item) }, `html-text:${element.id}:${editing.node}`) === false) return null;
+    return next.html;
+  }
+  /** Ends typing in an HTML layer; Escape (cancel) puts back the part's words from when it opened. */
+  function finishHtmlEditing(cancel = false) {
+    const editing = htmlEditingRef.current;
+    if (!editing) return;
+    showHtmlEditing(null);
+    const original = htmlOriginal.current;
+    htmlOriginal.current = null;
+    const element = scene.elements.find((item): item is HtmlElement => item.id === editing.id && item.type === "html");
+    if (cancel && original !== null && element && element.html !== original && !disabled) onChange({ ...scene, elements: scene.elements.map(item => item.id === element.id ? { ...element, html: original } : item) }, `html-text:${element.id}:${editing.node}`);
+    onHtmlSelection?.(null);
+    onHistoryBoundary?.();
+  }
+  // Typing ends when the layer goes away, is deselected, hidden or locked, or the editor turns read-only.
+  useEffect(() => {
+    if (!htmlEditing) return;
+    const element = scene.elements.find(item => item.id === htmlEditing.id);
+    if (disabled || element?.type !== "html" || !selectedIds.includes(element.id) || isElementHidden(scene, element) || !inScope(element) || !canEditElement(scene, element, "content")) finishHtmlEditing();
+  });
 
   function begin(
     event: ReactPointerEvent,
@@ -1051,7 +1231,7 @@ export function CanvasEditor({
     active.moved = true;
     active.dropPoint=point; active.bypassFrame=event.altKey || Boolean(active.originalScene);
     const sourceImage=active.ids.length===1?scene.elements.find(element=>element.id===active.ids[0]):undefined;
-    const frame=active.kind === "move" && !active.bypassFrame && sourceImage?.type === "image" && canEditElement(scene,sourceImage,"content") && canEditElement(scene,sourceImage,"delete") ? findPhotoFrameAtPoint(scene,point,{excludedIds:active.ids,isolationGroupId:isolatedGroupId}) : null;
+    const frame=active.kind === "move" && !active.bypassFrame && sourceImage?.type === "image" && !sourceImage.span && canEditElement(scene,sourceImage,"content") && canEditElement(scene,sourceImage,"delete") ? findPhotoFrameAtPoint(scene,point,{excludedIds:active.ids,isolationGroupId:isolatedGroupId}) : null;
     active.dropTargetId=frame?.id;setDragFrameId(frame?.id??null);
     const sourceElements = active.source.elements.filter((element) =>
       active.ids.includes(element.id),
@@ -1071,7 +1251,7 @@ export function CanvasEditor({
                 sourceElements[0],
                 active.handle!,
                 delta,
-                event.shiftKey,
+                event.shiftKey || isSpanningHalf(sourceElements[0]),
                 event.altKey,
               ),
             ]
@@ -1105,7 +1285,7 @@ export function CanvasEditor({
     elements = elements.map(element => {
       const original=sourceElements.find(source=>source.id===element.id);
       if(!original||canEditElement(active.source,original,"style"))return element;
-      return {...element,...(original.type==="text"?{fontSize:original.fontSize,letterSpacing:original.letterSpacing,richText:original.richText,padding:original.padding,paragraphSpacing:original.paragraphSpacing}:original.type==="shape"?{radius:original.radius,strokeWidth:original.strokeWidth}:{radius:original.radius})} as CanvasElement;
+      return {...element,...(original.type==="text"?{fontSize:original.fontSize,letterSpacing:original.letterSpacing,richText:original.richText,padding:original.padding,paragraphSpacing:original.paragraphSpacing}:original.type==="shape"?{radius:original.radius,strokeWidth:original.strokeWidth}:original.type==="image"?{radius:original.radius}:{})} as CanvasElement;
     });
     const replacements = new Map(
       elements.map((element) => [element.id, bounded(element)]),
@@ -1149,14 +1329,16 @@ export function CanvasEditor({
     const preview = remoteGeometry.get(element.id);
     return preview ? { ...element, ...preview } : element;
   }) } as CanvasScene : currentScene;
-  const displayScene = editingId
+  const typingId = editingId ?? htmlEditing?.id ?? null;
+  const displayScene = typingId
     ? {
         ...presentedScene,
         elements: presentedScene.elements.map((element) =>
-          element.id === editingId ? { ...element, opacity: 0 } : element,
+          element.id === typingId ? { ...element, opacity: 0 } : element,
         ),
       }
     : presentedScene;
+  const htmlEditingElement = htmlEditing ? currentScene.elements.find((element): element is HtmlElement => element.id === htmlEditing.id && element.type === "html" && !isElementHidden(currentScene, element) && inScope(element)) : undefined;
 
   return (
     <div
@@ -1218,7 +1400,7 @@ export function CanvasEditor({
           event.key === "Enter" &&
           event.target === event.currentTarget &&
           selected.length === 1 &&
-          selected[0].type === "text"
+          (selected[0].type === "text" || selected[0].type === "html")
         ) {
           event.preventDefault();
           event.stopPropagation();
@@ -1251,7 +1433,7 @@ export function CanvasEditor({
             aria-disabled={disabled}
             className={`te-canvas-hit${isElementLocked(currentScene,element) ? " is-locked" : ""}${previewSelection.includes(element.id) ? " is-selected" : ""}`}
             data-layer-id={element.id}
-            title={isElementLocked(currentScene,element) ? `${element.name || element.type} · Locked` : `${element.name || element.type} · Drag to move${element.type === "text" ? " · Double-click to edit" : ""} · Right-click for actions`}
+            title={isElementLocked(currentScene,element) ? `${element.name || element.type} · Locked` : `${element.name || element.type} · Drag to move${element.type === "text" ? " · Double-click to edit" : element.type === "html" ? " · Double-click text to edit" : ""} · Right-click for actions`}
             style={{...boxStyle(element),"--te-hit-pad-x":`${Math.max(minimumHitPadding(element,viewScale).x,shapeStrokeOutset(element))}px`,"--te-hit-pad-y":`${Math.max(minimumHitPadding(element,viewScale).y,shapeStrokeOutset(element))}px`} as CSSProperties}
             onPointerDown={(event) => selectElement(event, element)}
             onDoubleClick={(event) => {
@@ -1262,6 +1444,7 @@ export function CanvasEditor({
               if(!hit)return;
               if(hit.groupId&&hit.groupId!==isolatedGroupId){onEnterGroup?.(hit.groupId);return;}
               if(photoContent(hit)&&canEditElement(scene,hit,"content")&&canEditElement(scene,hit,"style")){onRequestCrop?.(hit.id);return;}
+              if(hit.type==="html"){startHtmlEditing(hit,{x:event.clientX,y:event.clientY});return;}
               startEditing(hit);
             }}
             onKeyDown={(event) => {
@@ -1387,6 +1570,27 @@ export function CanvasEditor({
         </div></WorldClip>
         </div>
       )}
+      {htmlEditing && htmlEditingElement && (
+        <div className={`te-canvas-page-layer is-editing${clippedIds.has(htmlEditingElement.id) ? " is-clipped" : ""}`}>
+          <WorldClip bounds={htmlEditingElement.clipBounds}>
+            <HtmlLayerEditor
+              key={htmlEditingElement.id}
+              element={htmlEditingElement}
+              node={htmlEditing.node}
+              caret={htmlEditing.caret}
+              serial={htmlEditing.serial}
+              opacity={elementEffectiveOpacity(currentScene, htmlEditingElement)}
+              viewScale={viewScale}
+              onCommit={commitHtmlPart}
+              onSelection={range => onHtmlSelection?.({ elementId: htmlEditing.id, node: htmlEditing.node, ...(range ? { range } : {}) })}
+              onPick={pickHtmlPart}
+              onRedraw={() => { htmlOriginal.current = htmlEditingElement.html; }}
+              onFinish={(cancel, refocus) => { finishHtmlEditing(cancel); if (refocus) root.current?.focus({ preventScroll: true }); }}
+              onHistory={onHistory ? direction => { onHistory(direction); } : undefined}
+            />
+          </WorldClip>
+        </div>
+      )}
       {navigationMode==="nodes"&&selected.length===1&&selected[0].type==="shape"&&canEditElement(scene,selected[0],"style")&&canEditElement(scene,selected[0],"position")&&<VectorNodeEditor toolbarHost={nodeToolbarHost} shape={selected[0]} scale={viewScale} outputScale={outputScale} onChange={(shape,group)=>onChange({...scene,elements:scene.elements.map(element=>element.id===shape.id?shape:element)},group)} onClose={()=>onExitNodeEditing?.()}/>}
       {selected.length > 1 &&
         selected.map((element) => (
@@ -1402,17 +1606,17 @@ export function CanvasEditor({
           data-canvas-selection="true"
           style={boxStyle(selectionBox)}
         >
-          {!selectionArea && !editingId && (
+          {!selectionArea && !typingId && (
             <span className="te-canvas-layer-label">
-              {selected.length === 1 ? `${isElementLocked(currentScene,selected[0]) ? "Locked · " : ""}${selected[0].name || selected[0].type}` : `${selected.length} layers selected`}
+              {selected.length === 1 ? `${isElementLocked(currentScene,selected[0]) ? "Locked · " : ""}${selected[0].name || selected[0].type}${layerNotes?.has(selected[0].id) ? ` · ${layerNotes.get(selected[0].id)}` : ""}` : `${selected.length} layers selected`}
             </span>
           )}
           {!disabled &&
-            !editingId && !drawingMode && navigationMode==="select" &&
+            !typingId && !drawingMode && navigationMode==="select" &&
             !selectionArea &&
             selected.every((element) => canEditElement(currentScene,element,"position")) && (
               <>
-                {resizeHandlePolicy(selectionBox,viewScale,selected.length===1&&selected[0].type==="shape",selected.length>1).map((handle) => (
+                {resizeHandlePolicy(selectionBox,viewScale,selected.length===1&&selected[0].type==="shape",selected.length>1||isSpanningHalf(selected[0])).map((handle) => (
                   <button
                     key={handle}
                     type="button"
@@ -1425,7 +1629,8 @@ export function CanvasEditor({
                     onKeyDown={event=>{if(event.key.startsWith("Arrow")){event.preventDefault();event.stopPropagation();onChange(keyboardCanvasTransform(scene,selectedIds,event.key,(event.shiftKey?10:1)/outputScale,handle),"keyboard-resize");}}}
                   />
                 ))}
-                <span className="te-canvas-rotate-line" />
+                {/* A spanning photo stays upright, so neither slide crops a corner. */}
+                {!selected.some(isSpanningHalf)&&<><span className="te-canvas-rotate-line" />
                 <button
                   type="button"
                   className="te-canvas-rotate"
@@ -1451,12 +1656,30 @@ export function CanvasEditor({
                       strokeLinejoin="round"
                     />
                   </svg>
-                </button>
+                </button></>}
               </>
             )}
         </div>
       )}
       {keyboardHandle&&selectionBox&&!drawingMode&&navigationMode==="select"&&<div className="te-canvas-keyboard-transform" role="status" aria-live="polite">{keyboardHandle==="rotate"?"Use arrows to rotate · Shift for 15°":"Use arrows to resize · Shift for larger steps"} · {Math.round(selectionBox.width*outputScale)} × {Math.round(selectionBox.height*outputScale)} px{keyboardHandle==="rotate"&&selected.length===1?` · ${Math.round(selected[0].rotation)}°`:""}<button type="button" onClick={()=>{setKeyboardHandle(null);root.current?.focus();}}>Done</button></div>}
+      {areaMode&&<div className="te-frames-area-layer" aria-label="Mark an area of the slide"
+        onPointerDown={event=>{
+          if(disabled||event.button!==0)return;
+          event.preventDefault();event.stopPropagation();root.current?.focus({preventScroll:true});
+          event.currentTarget.setPointerCapture(event.pointerId);
+          const start=position(event);areaStart.current={pointer:event.pointerId,start};onAreaChange?.(null);
+        }}
+        onPointerMove={event=>{const active=areaStart.current;if(!active||active.pointer!==event.pointerId)return;event.stopPropagation();onAreaChange?.(areaBox(active.start,position(event)));}}
+        onPointerUp={event=>{
+          const active=areaStart.current;if(!active||active.pointer!==event.pointerId)return;
+          event.stopPropagation();areaStart.current=null;
+          const box=areaBox(active.start,position(event));
+          // A click without a drag clears the area; tiny areas are a slip.
+          onAreaChange?.(box.width*outputScale>=4&&box.height*outputScale>=4?box:null);
+        }}
+        onPointerCancel={()=>{areaStart.current=null;}}>
+        {area&&<div className="te-frames-area" style={{left:area.x,top:area.y,width:area.width,height:area.height}}><span>{Math.round(area.width*outputScale)} × {Math.round(area.height*outputScale)} px</span></div>}
+      </div>}
       {selectionArea && <div className="te-canvas-marquee" style={boxStyle(selectionArea)} aria-hidden>
         <span>{selected.length} selected</span>
       </div>}
@@ -1470,8 +1693,13 @@ export function CanvasEditor({
         <button type="button" aria-label="Italic selected text" title="Italic · ⌘/Ctrl I" onClick={()=>toggleRange("italic")}><i>I</i></button>
         <button type="button" aria-label="Underline selected text" title="Underline · ⌘/Ctrl U" onClick={()=>toggleRange("underline")}><u>U</u></button>
         <button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button>
+        {wordColors?.length&&takesWordColorsOnly(scene,editingElement)?<WordColorControls colors={wordColors} disabled={disabled} onColor={color=>formatRange({color})}/>:null}
         <button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button>
         <button type="button" className="te-rich-controls-done" onClick={()=>{finishEditing();if(!editingActive.current)root.current?.focus({preventScroll:true});}}>Done</button>
+      </div>,textToolbarHost)}
+      {htmlEditing&&htmlEditingElement&&textToolbarHost&&createPortal(<div className="te-rich-controls te-rich-controls-docked" role="toolbar" aria-label="HTML text" onPointerDown={event=>{event.preventDefault();event.stopPropagation();}}>
+        <span className="te-rich-controls-label">Editing text in {htmlEditingElement.name || "HTML layer"}</span>
+        <button type="button" className="te-rich-controls-done" onClick={()=>{finishHtmlEditing();root.current?.focus({preventScroll:true});}}>Done</button>
       </div>,textToolbarHost)}
       <span className="te-canvas-screen-reader">
         Drag layers to move them. Drag empty canvas to select layers. Hold Shift

@@ -14,6 +14,7 @@ import type {
 import type { TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
 import { FontSelect, NumberField } from "./controls";
 import { SmartTextControls } from "./smart-text-controls";
+import { inferLayoutRoles, LAYOUT_ROLE_LABELS, type LayoutRole } from "@/lib/template-editor/model";
 import { PaintPicker } from "./paint-picker";
 import { applyElementPaint, commonElementPaint, paintTextFormattingPatch } from "@/lib/template-editor/paint";
 import { AdvancedProperties, ColorRolesPanel, type ColorRoleOption } from "./advanced-properties";
@@ -21,9 +22,11 @@ import { updatePhotoContent } from "@/lib/template-editor/photo-frames";
 import { boldState, booleanState } from "@/lib/template-editor/property-utils";
 import { historyShortcut } from "@/lib/template-editor/history";
 import { alignSelectionTo, distributeSelection, matchSelectionSize, copyAppearance, pasteAppearance, applyTextTexture, duplicateSelection, removeSelection, reorderSelection, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
+import type { HtmlNodeSelection } from "@/lib/template-editor/html-edit";
 import "./element-inspector.css";
+import { HtmlStylePanel } from "./html-style-panel";
 
-export type InspectorSection = "edit"|"outline"|"photo"|"position"|"effects"|"advanced";
+export type InspectorSection = "html"|"edit"|"outline"|"photo"|"position"|"effects"|"advanced";
 
 type Props = {
   scene: CanvasScene;
@@ -48,7 +51,51 @@ type Props = {
   onTextTexture?: () => void;
   onUploadTextTexture?: (file:File)=>Promise<void>;
   onUploadFramePhoto?: (file:File,shapeId:string)=>Promise<void>;
+  /** Template drafts show how each layer behaves in copies of the template. */
+  templateDraft?: boolean;
+  /** The part of an HTML layer being edited on the canvas, with any selected words. */
+  htmlSelection?: HtmlNodeSelection | null;
+  /** Starts editing an HTML layer's words on the canvas. */
+  onEditHtmlLayer?: (id: string) => void;
+  /** Turns an HTML layer into text, image and shape layers. */
+  onBreakHtmlLayer?: (id: string) => void;
 };
+
+const ROLE_HINTS: Record<LayoutRole, string> = {
+  fixed: "Stays exactly as designed in every post.",
+  text: "Copy can change. Font and position follow the template; size adapts and nearby content makes room.",
+  media: "The photo can be replaced and cropped; the frame stays in place.",
+  free: "Anyone can move, restyle or delete it in a post.",
+};
+
+/** How the selected layers behave in posts made from this template. */
+export function TemplateRoleSelect({ scene, elements, height, disabled, onChange, compact = false }: { scene: CanvasScene; elements: CanvasElement[]; height: number; disabled: boolean; onChange: (scene: CanvasScene, group?: string) => void; compact?: boolean }) {
+  if (!elements.length) return null;
+  const inferred = inferLayoutRoles({ ...scene, elements: scene.elements.map(element => ({ ...element, layoutRole: undefined })) }, { height });
+  const explicit = new Set(elements.map(element => element.layoutRole ?? ""));
+  const value = explicit.size === 1 ? [...explicit][0] : "mixed";
+  const autoRoles = new Set(elements.map(element => inferred.get(element.id) ?? "free"));
+  const autoLabel = autoRoles.size === 1 ? LAYOUT_ROLE_LABELS[[...autoRoles][0]] : "mixed";
+  const options = (Object.keys(LAYOUT_ROLE_LABELS) as LayoutRole[]).filter(role => role !== "text" || elements.every(element => element.type === "text")).filter(role => role !== "media" || elements.every(element => element.type !== "text"));
+  const ids = new Set(elements.map(element => element.id));
+  return <select aria-label={compact ? "Quick template behaviour" : "Template behaviour"} title="How this layer behaves in posts made from this template" disabled={disabled} value={value} onChange={event => {
+    const role = event.target.value as LayoutRole | "";
+    onChange({ ...scene, elements: scene.elements.map(element => ids.has(element.id) ? ({ ...element, layoutRole: role || undefined } as CanvasElement) : element) }, `template-role:${[...ids].join(",")}`);
+  }}>
+    {value === "mixed" && <option value="mixed" disabled>Mixed</option>}
+    <option value="">{compact ? "In posts: " : "Automatic · "}{autoLabel}{compact ? " (auto)" : ""}</option>
+    {options.map(role => <option key={role} value={role}>{compact ? "In posts: " : ""}{LAYOUT_ROLE_LABELS[role]}</option>)}
+  </select>;
+}
+
+function TemplateRoleSection({ scene, elements, height, disabled, onChange }: { scene: CanvasScene; elements: CanvasElement[]; height: number; disabled: boolean; onChange: (scene: CanvasScene, group?: string) => void }) {
+  const inferred = inferLayoutRoles({ ...scene, elements: scene.elements.map(element => ({ ...element, layoutRole: undefined })) }, { height });
+  const effective = new Set(elements.map(element => element.layoutRole ?? inferred.get(element.id) ?? "free"));
+  return <Section title="In posts from this template">
+    <label className="te-field">Behaviour<TemplateRoleSelect scene={scene} elements={elements} height={height} disabled={disabled} onChange={onChange}/></label>
+    {effective.size === 1 && <p className="te-element-hint">{ROLE_HINTS[[...effective][0]]}</p>}
+  </Section>;
+}
 
 const MAX_ELEMENTS = 100;
 
@@ -167,7 +214,8 @@ export function ElementInspector({
   width,
   height,
   disabled = false, outputScale = 3, initialSection = "edit",onSectionChange,
-  slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onTextTexture, onUploadTextTexture, onUploadFramePhoto,
+  slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onTextTexture, onUploadTextTexture, onUploadFramePhoto, templateDraft = false,
+  htmlSelection, onEditHtmlLayer, onBreakHtmlLayer,
 }: Props) {
   const [section,setSection]=useState<InspectorSection>(initialSection);
   const [sectionRequest,setSectionRequest]=useState(initialSection);
@@ -194,6 +242,13 @@ export function ElementInspector({
   const shapes = displayed.filter(
     (element): element is ShapeElement => element.type === "shape",
   );
+  const [onlyElement] = elements.length === 1 ? elements : [];
+  const htmlLayer = onlyElement?.type === "html" ? onlyElement : undefined;
+  // Starting to edit another part of the HTML layer on the canvas brings up its style controls.
+  const htmlPart = htmlLayer && htmlSelection?.elementId === htmlLayer.id ? `${htmlLayer.id}:${htmlSelection.node}` : "";
+  const [shownHtmlPart, setShownHtmlPart] = useState("");
+  if (htmlPart !== shownHtmlPart) { setShownHtmlPart(htmlPart); if (htmlPart && !onSectionChange) setSection("html"); }
+  useEffect(() => { if (htmlPart) onSectionChange?.("html"); }, [htmlPart, onSectionChange]);
   const editableIds = new Set(editable.map((element) => element.id));
   const groupPrefix = `inspector:${editable.map((element) => element.id).join(",")}`;
   const allLocked = elements.length > 0 && editable.length === 0;
@@ -312,6 +367,7 @@ export function ElementInspector({
   const photoStyleDisabled=noEdits||images.every(element=>!canEditElement(scene,element,"style"));
   const photoContentDisabled=noEdits||images.every(element=>!canEditElement(scene,element,"content"));
   const categories:{id:InspectorSection;label:string}[]=[
+    ...(htmlLayer?[{id:"html" as const,label:"HTML"}]:[]),
     ...(texts.length||shapes.length?[{id:"edit" as const,label:texts.length&&!shapes.length?"Text":shapes.length&&!texts.length?"Fill":"Edit"}]:[]),
     ...(shapes.length?[{id:"outline" as const,label:"Outline"}]:[]),
     ...(images.length?[{id:"photo" as const,label:"Photo"}]:[]),
@@ -448,10 +504,12 @@ export function ElementInspector({
       </>:<>
         <div className="te-inspector-tabs" role="group" aria-label="Property categories">{categories.map(category=><button type="button" key={category.id} data-section={category.id} aria-pressed={effectiveSection===category.id} onClick={()=>{if(onSectionChange)onSectionChange(category.id);else setSection(category.id);}}>{category.label}</button>)}</div>
         {hasLocked&&<p className="te-element-lock-note"><LockIcon locked/>{allLocked?inheritedLock?"Unlock the parent group in Layers to edit this selection.":"Unlock to edit this selection.":"Locked elements stay unchanged."}</p>}
-        {displayed.some(element=>element.protected?.length)&&<p className="te-element-hint">{displayed.some(element=>element.templateRole||element.type==="text"&&element.smartText)?"ChatGPTricks fonts and layout stay fixed. Edit the content or choose a line count.":"Protected properties stay unchanged. Manage protection in Advanced."}</p>}
+        {displayed.some(element=>element.protected?.length)&&<p className="te-element-hint">{displayed.some(element=>element.templateRole||element.type==="text"&&element.smartText)?"Template fonts and layout stay fixed. Edit the content or choose a line count.":"Protected properties stay unchanged. Manage protection in Advanced."}</p>}
         <div className="te-inspector-content" data-section={effectiveSection}>
           <fieldset disabled={noEdits}>
+            {effectiveSection==="html"&&htmlLayer&&<HtmlStylePanel scene={scene} element={htmlLayer} selection={htmlSelection} disabled={noEdits} onChange={onChange} onEditHtmlLayer={onEditHtmlLayer} onBreakHtmlLayer={onBreakHtmlLayer}/>}
             {effectiveSection==="edit"&&<>
+              {templateDraft&&<TemplateRoleSection scene={scene} elements={displayed} height={height} disabled={disabled} onChange={onChange}/>}
               {texts.length>0&&<>
                 <SmartTextControls scene={scene} selectedIds={selectedIds} disabled={disabled} outputScale={outputScale} onChange={onChange}/>
                 {!texts.every(element=>element.smartText)&&<><Section title={texts.length===elements.length?"Text":`Text · ${texts.length}`}>

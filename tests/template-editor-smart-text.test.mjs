@@ -11,7 +11,7 @@ function load(relative) {
   const file = path.resolve(relative);
   if (cache.has(file)) return cache.get(file).exports;
   const unit = {exports: {}}; cache.set(file, unit);
-  const source = ts.transpileModule(fs.readFileSync(file, "utf8"), {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022}}).outputText;
+  const source = ts.transpileModule(fs.readFileSync(file, "utf8"), {compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022, esModuleInterop: true}}).outputText;
   vm.runInThisContext(`(function(require,module,exports){${source}\n})`, {filename: file})(name => name.startsWith(".") ? load(path.resolve(path.dirname(file), `${name}.ts`)) : require(name), unit, unit.exports);
   return unit.exports;
 }
@@ -98,7 +98,11 @@ test("new ChatGPTricks copies merge imported title runs; source and unrelated te
   assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "style"), false);
   const library = {...model.EMPTY_LIBRARY, designs: [design]};
   assert.deepEqual(model.parseLibrary(library).designs[0].pages[0].canvas.elements[0].smartText, headings[0].smartText);
-  const other = {...source, name: "Other"}; assert.equal(template.prepareSmartTemplate(other), other);
+  const other = {...source, name: "Other"}, otherBefore = JSON.stringify(other), prepared = template.prepareSmartTemplate(other);
+  assert.equal(JSON.stringify(other), otherBefore);
+  const otherText = prepared.pages[0].canvas.elements.find(element => element.type === "text");
+  assert.ok(otherText.smartText, "every template gets smart text slots");
+  assert.equal(otherText.align, first.align, "only the brand template re-aligns copy");
   assert.deepEqual(template.prepareSmartTemplate(template.prepareSmartTemplate(source)), template.prepareSmartTemplate(source));
 });
 
@@ -146,4 +150,233 @@ test("blank paragraph lines remain visible in automatic body layout", () => {
   const element = text({text:"First paragraph\n\nSecond paragraph",smartText:{role:"body",lines:0,minFontSize:12,maxFontSize:24,maxHeight:150}});
   const layout=fit(element);
   assert.deepEqual(layout.lines.map(line=>line.text),["First paragraph","","Second paragraph"]);
+});
+
+test("Export bakes one blank line between paragraphs, not two", async () => {
+  const saved = {document: globalThis.document, getComputedStyle: globalThis.getComputedStyle};
+  const node = () => ({className: "", style: {}, textContent: "", innerHTML: "", append() {}, remove() {}, getBoundingClientRect() { return {width: (this.textContent || this.innerHTML.replace(/<[^>]+>/g, "")).length * 10}; }});
+  globalThis.document = {createElement: node, querySelector: () => null, body: node(), fonts: {load: async () => [], ready: Promise.resolve()}};
+  globalThis.getComputedStyle = () => ({fontFamily: "system-ui"});
+  try {
+    const design = model.createBlankDesign("Export", "portrait");
+    design.pages[0].canvas = {background: "#111111", elements: [text({text: "First paragraph\n\nSecond paragraph", smartText: {role: "body", lines: 0, minFontSize: 12, maxFontSize: 24, maxHeight: 150}})]};
+    const exported = (await smart.prepareSmartTextExport(design)).pages[0].canvas.elements[0];
+    assert.equal(exported.text, "First paragraph\n\nSecond paragraph");
+    assert.deepEqual(load("lib/template-editor/rich-text-editing.ts").splitRichLines(exported.richText, exported.text), ["First paragraph", "", "Second paragraph"]);
+  } finally {
+    smart.clearSmartTextMeasurements();
+    for (const [key, value] of Object.entries(saved)) if (value === undefined) delete globalThis[key]; else globalThis[key] = value;
+  }
+});
+
+const page = (elements, extra = {}) => {
+  const source = model.designAsTemplate(model.createBlankDesign("Any template", "portrait"), "Any template");
+  source.name = "Any template";
+  source.pages[0].canvas = {background: "#111111", elements, ...extra};
+  return source;
+};
+const prepared = source => template.prepareSmartTemplate(source).pages[0].canvas;
+const byName = (scene, name) => scene.elements.find(element => element.name === name);
+
+test("any template infers fixed branding, text slots and photo slots, and honours explicit roles", () => {
+  const heading = text({name: "Heading", text: "A headline for this post", y: 40, height: 60, smartText: undefined});
+  const photo = model.createCanvasElement("image", {name: "Hero", x: 20, y: 120, width: 320, height: 260});
+  const logo = model.createCanvasElement("image", {name: "Logo", x: 20, y: 420, width: 40, height: 20});
+  const handle = text({name: "Handle", text: "@studio", y: 430, height: 14, smartText: undefined});
+  const sticker = model.createCanvasElement("shape", {name: "Sticker", x: 280, y: 400, width: 60, height: 40, layoutRole: "free"});
+  const scene = prepared(page([heading, photo, logo, handle, sticker]));
+  assert.ok(byName(scene, "Heading").smartText);
+  assert.equal(byName(scene, "Hero").templateRole, "media");
+  assert.equal(byName(scene, "Logo").templateRole, "brand");
+  assert.equal(byName(scene, "Handle").templateRole, "brand");
+  assert.equal(byName(scene, "Handle").smartText, undefined);
+  assert.equal(byName(scene, "Sticker").templateRole, undefined);
+  assert.equal(commands.canEditElement(scene, byName(scene, "Sticker"), "position"), true);
+  assert.equal(commands.canEditElement(scene, byName(scene, "Hero"), "content"), true);
+  assert.equal(commands.canEditElement(scene, byName(scene, "Hero"), "position"), false);
+  assert.ok(model.parseCanvas(scene), "prepared scenes persist");
+  const forced = prepared(page([{...photo, layoutRole: "fixed"}, {...heading, layoutRole: "free"}, {...handle, layoutRole: "text"}]));
+  assert.equal(forced.elements[0].templateRole, "brand");
+  assert.equal(forced.elements[1].smartText, undefined);
+  assert.ok(forced.elements[2].smartText, "an explicit text slot overrides the handle heuristic");
+});
+
+test("copy that grows pushes the photo below it, which keeps its bottom edge", () => {
+  const heading = text({name: "Heading", text: "Short", y: 40, height: 30, width: 300, fontSize: 24, smartText: undefined});
+  const photo = model.createCanvasElement("image", {name: "Hero", x: 30, y: 82, width: 300, height: 300});
+  const scene = prepared(page([heading, photo]));
+  const media = byName(scene, "Hero");
+  assert.equal(media.smartFlow.after, byName(scene, "Heading").slot);
+  assert.equal(media.smartFlow.resize, true);
+  const long = {...scene, elements: scene.elements.map(element => element.name === "Heading" ? {...element, text: "A much longer headline that needs several lines of space"} : element)};
+  const fitted = smart.layoutSmartScene(long, metrics).scene, grown = byName(fitted, "Heading"), moved = byName(fitted, "Hero");
+  assert.ok(grown.height > 30);
+  assert.equal(Math.round((moved.y - grown.y - grown.height) * 100) / 100, 12);
+  assert.equal(moved.y + moved.height, 382);
+  assert.ok(moved.height >= 300 * .65 - .01, "a photo never gives up more than about a third of its height");
+  assert.equal(smart.layoutSmartScene(fitted, metrics).scene, fitted);
+});
+
+test("automatic fit shrinks type a little inside the authored box before moving anything", () => {
+  const element = text({text: "One two three four five six", width: 230, height: 22, fontSize: 20, lineHeight: 1.1, smartText: {role: "body", lines: 0, minFontSize: 9, maxFontSize: 33, maxHeight: 80, baseHeight: 22, softMinFontSize: 17}});
+  const layout = fit(element);
+  assert.ok(layout.fontSize < 20 && layout.fontSize >= 17, `shrinks first (got ${layout.fontSize})`);
+  assert.ok(layout.height <= 22.01);
+  const longer = fit({...element, text: "One two three four five six seven eight nine ten eleven twelve"});
+  assert.equal(longer.fontSize, 17, "then grows the box at the soft minimum");
+  assert.ok(longer.height > 22);
+});
+
+test("copy at the foot of the page grows upwards and lifts the heading above it", () => {
+  const height = 450;
+  const heading = text({name: "Heading", text: "Big title", y: 370, height: 34, width: 300, fontSize: 30, smartText: undefined});
+  const body = text({name: "Body", text: "Small line", y: 412, height: 16, width: 300, fontSize: 14, smartText: undefined});
+  const scene = prepared(page([heading, body]));
+  const last = byName(scene, "Body"), above = byName(scene, "Heading");
+  assert.equal(last.smartText.anchorBottom, 428);
+  assert.equal(above.smartFlow.direction, "up");
+  assert.ok(above.smartText.maxHeight > 34);
+  const long = {...scene, elements: scene.elements.map(element => element.name === "Body" ? {...element, text: "A longer supporting line that wraps onto a few more lines below the title"} : element)};
+  const fitted = smart.layoutSmartScene(long, metrics).scene, b = byName(fitted, "Body"), h = byName(fitted, "Heading");
+  assert.equal(Math.round((b.y + b.height) * 100) / 100, 428, "bottom edge stays put");
+  assert.ok(b.y < 412, "body grew upwards");
+  assert.equal(Math.round((b.y - h.y - h.height) * 100) / 100, 8, "heading keeps its gap");
+  assert.ok(h.y >= 20 && h.y + h.height <= height);
+  assert.equal(smart.layoutSmartScene(fitted, metrics).scene, fitted);
+});
+
+test("editing a template releases its smart rules but keeps author choices and protection", () => {
+  const heading = text({name: "Heading", text: "Title", y: 40, height: 40, smartText: undefined});
+  const photo = model.createCanvasElement("image", {name: "Hero", x: 30, y: 92, width: 300, height: 260, protected: ["content"]});
+  const sticker = model.createCanvasElement("shape", {name: "Sticker", layoutRole: "free"});
+  const source = page([heading, photo, sticker]);
+  const saved = {...source, pages: template.prepareSmartTemplate(source).pages};
+  const draft = model.editTemplateDesign(saved).pages[0].canvas;
+  for (const element of draft.elements) { assert.equal(element.templateRole, undefined); assert.equal(element.smartFlow, undefined); }
+  assert.equal(byName(draft, "Heading").smartText, undefined);
+  assert.equal(commands.canEditElement(draft, byName(draft, "Heading"), "position"), true);
+  assert.deepEqual(byName(draft, "Hero").protected, ["content"]);
+  assert.equal(byName(draft, "Sticker").layoutRole, "free");
+  assert.ok(model.createDesign(model.designAsTemplate(model.editTemplateDesign(saved), "Again")).pages[0].canvas.elements.some(element => element.smartText), "the next copy is smart again");
+});
+
+test("agents see the same slots a person does and fill them without breaking the template style", () => {
+  const agent = load("lib/template-editor/agent-decks.ts");
+  const heading = text({name: "Heading", text: "Sample headline", y: 40, height: 40, smartText: undefined});
+  const photo = model.createCanvasElement("image", {name: "Hero", x: 30, y: 92, width: 300, height: 260});
+  const handle = text({name: "Handle", text: "@studio", y: 400, height: 14, smartText: undefined});
+  const source = {...page([handle, heading, photo]), id: "agent-template"};
+  const slots = agent.agentTemplateSlots(source);
+  assert.deepEqual(slots.map(slot => slot.type).sort(), ["photo", "text"]);
+  const textSlot = slots.find(slot => slot.type === "text");
+  assert.equal(textSlot.sample, "Sample headline");
+  assert.ok(textSlot.maxCharacters > 8 && textSlot.fixedStyle);
+  const deck = agent.createAgentDeck({name: "Post", templateId: "agent-template", slides: [{title: "Agent copy", slots: {[slots.find(slot => slot.type === "photo").slot]: "https://example.com/photo.jpg"}}]}, [source]);
+  const scene = deck.pages[0].canvas;
+  assert.equal(byName(scene, "Heading").text, "Agent copy");
+  assert.equal(byName(scene, "Handle").text, "@studio", "brand text is never used as the title");
+  assert.equal(byName(scene, "Hero").src, "https://example.com/photo.jpg");
+  assert.equal(byName(scene, "Heading").font, heading.font);
+});
+
+test("real template patterns: repeated sample headlines stay copy, gradient overlays are not frames, titles span the photo below", () => {
+  const fade = model.createCanvasElement("shape", {name: "Image fade", x: -4, y: 200, width: 368, height: 170, gradient: {type: "linear", angle: 180, stops: [{color: "#000000", position: 0}, {color: "#000000", position: 100}]}});
+  const photo = model.createCanvasElement("image", {name: "Hero", x: 0, y: 0, width: 360, height: 350});
+  const title = text({name: "Title", text: "Your Title text", x: 36, y: 300, width: 280, height: 24, fontSize: 17, smartText: undefined});
+  const body = text({name: "Body", text: "Your Content text", x: 36, y: 326, width: 280, height: 20, fontSize: 14, smartText: undefined});
+  const source = page([photo, fade, title, body]);
+  const heading = text({name: "Title", text: "Your Title text", x: 18, y: 60, width: 110, height: 25, fontSize: 18, smartText: undefined});
+  const frame = model.createCanvasElement("shape", {name: "Shape", x: 18, y: 93, width: 324, height: 320});
+  source.pages.push({...source.pages[0], id: "second", canvas: {background: "#111111", elements: [heading, frame]}});
+  const prepared = template.prepareSmartTemplate(source);
+  const first = prepared.pages[0].canvas, second = prepared.pages[1].canvas;
+  assert.ok(byName(first, "Title").smartText, "a headline repeated across pages is still copy");
+  assert.ok(byName(first, "Body").smartText.maxHeight > 60, "a gradient overlay does not box the copy in");
+  assert.equal(byName(second, "Title").width, 324, "the title spans the photo frame it heads");
+  assert.equal(byName(second, "Photo frame").smartFlow.resize, true);
+});
+
+test("template drafts join imported title fragments into one readable block", () => {
+  const runs = ["Your", "Title", "text"].map((word, index) => ({...text({text: word, x: 17 + index * 40, y: 61, width: 40, height: 25, fontSize: 18, smartText: undefined}), groupId: "title"}));
+  const source = page(runs, {groups: [{id: "title", name: "Title"}]});
+  const draft = model.editTemplateDesign(source).pages[0].canvas;
+  const texts = draft.elements.filter(element => element.type === "text");
+  assert.equal(texts.length, 1);
+  assert.equal(texts[0].text, "Your Title text");
+  assert.equal(texts[0].textMode, "auto-height");
+  assert.ok(texts[0].width > 120);
+});
+
+test("a layer that follows hidden copy takes its place, so a title-only page keeps its title above the picture", () => {
+  const copy = {role: "body", lines: 0, minFontSize: 12, maxFontSize: 20, maxHeight: 110, anchorTop: 30};
+  const title = text({slot: "title", text: "AI vs Jobs", y: 30, height: 24, smartText: {...copy, role: "heading", maxHeight: 40}});
+  const body = text({slot: "body", text: "", y: 62, height: 30, hidden: true, smartText: copy, smartFlow: {after: "title", gap: 8, bottom: 196}});
+  const media = model.createCanvasElement("image", {slot: "media", x: 24, y: 111, width: 312, height: 306, intrinsicWidth: 1000, intrinsicHeight: 500,
+    smartFlow: {after: "body", gap: 20, bottom: 417, resize: true, media: {x: 0, width: 360}}});
+  const list = text({slot: "list-left-heading", text: "Risk", y: 100, height: 20, smartText: copy, smartFlow: {after: "body", gap: 10, bottom: 417}});
+  const rider = model.createCanvasElement("shape", {slot: "badge", y: 300, width: 10, height: 10, smartFlow: {after: "body", edge: "top", gap: 2, bottom: 417}});
+  const laid = smart.layoutSmartScene({background: "#111111", elements: [title, body, media, list, rider]}, metrics).scene.elements;
+  const [heading, , picture, heading2, badge] = laid;
+  assert.ok(heading.y + heading.height <= picture.y, "the title stays above the picture, not centred behind it");
+  assert.equal(picture.y - (heading.y + heading.height), 20, "the picture flows under the title with its own gap");
+  assert.ok(Math.abs(picture.width / picture.height - 2) < 1e-9 && picture.width === 360, "and keeps its shape across the span");
+  assert.equal(heading2.y, heading.y + heading.height + 10, "a list heading after hidden copy moves up too");
+  assert.equal(badge.y, 300, "a layer riding on hidden copy's edge keeps its place");
+  // Shown again, the copy is back between them.
+  const shown = smart.layoutSmartScene({background: "#111111", elements: [title, {...body, hidden: false, text: "Stocks went up"}, media, list, rider]}, metrics).scene.elements;
+  assert.equal(shown[2].y, shown[1].y + shown[1].height + 20);
+});
+
+test("a layer that leads its group carries the group as far as the layout moves it", () => {
+  const title = text({slot: "title", text: "AI vs Jobs", y: 30, height: 24, smartText: {role: "heading", lines: 0, minFontSize: 12, maxFontSize: 20, maxHeight: 40, anchorTop: 30}});
+  const layer = (type, id, options) => ({...model.createCanvasElement(type, options), id});
+  const space = layer("shape", "space", {y: 200, width: 312, height: 200, groupId: "chart", leadsGroup: true, smartFlow: {after: "title", gap: 20, bottom: 417, resize: true}});
+  const tile = layer("shape", "tile", {x: 40, y: 220, width: 30, height: 30, groupId: "chart", clipBounds: {x: 30, y: 210, width: 100, height: 100}});
+  const label = layer("text", "label", {text: "OpenAI", x: 40, y: 255, width: 60, height: 12, groupId: "inner"});
+  const rider = layer("shape", "rider", {y: 300, width: 10, height: 10, groupId: "chart", smartFlow: {after: "title", edge: "top", gap: 4, bottom: 417}});
+  const outside = layer("shape", "outside", {y: 260, width: 10, height: 10});
+  const scene = {background: "#111111", groups: [{id: "chart", name: "Chart"}, {id: "inner", name: "Labels", parentId: "chart"}], elements: [title, space, tile, label, rider, outside]};
+  const laid = smart.layoutSmartScene(scene, metrics).scene, at = id => laid.elements.find(element => element.id === id);
+  const move = at("space").y - 200;
+  assert.ok(move < -100, "the space flows up under the title");
+  assert.equal(at("tile").y, 220 + move);
+  assert.equal(at("tile").x, 40, "as far as the space moved, and no further");
+  assert.deepEqual(at("tile").clipBounds, {x: 30, y: 210 + move, width: 100, height: 100}, "its crop moves with it");
+  assert.equal(at("label").y, 255 + move, "a subgroup's layers move too");
+  assert.equal(at("rider").y, at(title.id).y + 4, "a layer with its own flow keeps the place its flow gives it");
+  assert.equal(at("outside").y, 260, "layers outside the group stay put");
+  // Laid out again, nothing moves: the group already sits with its space.
+  const again = smart.layoutSmartScene(laid, metrics).scene;
+  assert.deepEqual(again.elements.map(element => [element.id, element.x, element.y]), laid.elements.map(element => [element.id, element.x, element.y]));
+  // Without the mark, a group's layers don't follow.
+  const plain = smart.layoutSmartScene({...scene, elements: scene.elements.map(element => element === space ? {...element, leadsGroup: undefined} : element)}, metrics).scene;
+  assert.equal(plain.elements.find(element => element.id === "tile").y, 220);
+});
+
+test("a check mark follows a name's last line, a card hugs its copy past a hidden photo, and a centred flow moves as one", () => {
+  const copy = {role: "body", lines: 0, minFontSize: 12, maxFontSize: 20, maxHeight: 110};
+  const title = text({slot: "title", text: "Title", y: 0, height: 24, smartText: {...copy, maxHeight: 24}, smartCenter: {top: 50, bottom: 450}});
+  const card = model.createCanvasElement("shape", {y: 40, width: 320, height: 50, slot: "card", smartFlow: {after: "title", gap: 10, bottom: 450, hug: {after: "photo", gap: 6}}});
+  const body = text({slot: "body", text: "Two short words", x: 10, y: 48, align: "left", padding: 0, smartText: copy, smartFlow: {after: "card", edge: "top", gap: 8, bottom: 450}});
+  const badge = model.createCanvasElement("shape", {width: 12, height: 12, smartFlow: {after: "body", gap: 4, bottom: 450, direction: "right"}});
+  const photo = model.createCanvasElement("shape", {slot: "photo", height: 80, hidden: true, smartFlow: {after: "body", gap: 5, bottom: 450}});
+  const scene = {background: "#111111", elements: [title, card, body, badge, photo]};
+  const laid = smart.layoutSmartScene(scene, metrics), [heading, frame, words, mark] = laid.scene.elements;
+  // A hidden photo takes no room: the card ends 6 under the copy it holds.
+  assert.equal(frame.y + frame.height, words.y + words.height + 6);
+  assert.equal(words.y, frame.y + 8, "the copy follows the card's top edge");
+  // The check mark sits 4 after the end of the copy's last line, centred on that line.
+  const layout = laid.texts.get(words.id), pitch = layout.fontSize * words.lineHeight;
+  assert.equal(mark.x, words.x + layout.lines.at(-1).width + 4);
+  assert.ok(Math.abs(mark.y + mark.height / 2 - (words.y + (layout.lines.length - 1) * pitch + pitch / 2)) < 1e-9);
+  // The title and everything that follows it sit in the middle of 50 to 450, moved together.
+  assert.ok(Math.abs((heading.y - 50) - (450 - (frame.y + frame.height))) < 1e-9);
+  assert.equal(frame.y, heading.y + heading.height + 10);
+  // Shown, the photo sits 5 under the copy and the card ends 6 under the photo.
+  const shown = smart.layoutSmartScene({...scene, elements: scene.elements.map(element => element === photo ? {...element, hidden: false} : element)}, metrics).scene.elements;
+  assert.equal(shown[4].y, shown[2].y + shown[2].height + 5);
+  assert.equal(shown[1].y + shown[1].height, shown[4].y + shown[4].height + 6);
+  // A flow too tall for its space starts at the top instead.
+  const tall = smart.layoutSmartScene({...scene, elements: scene.elements.map(element => element === photo ? {...element, hidden: false, height: 600} : element)}, metrics).scene.elements;
+  assert.equal(tall[0].y, 50);
 });

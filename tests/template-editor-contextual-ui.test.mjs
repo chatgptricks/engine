@@ -558,3 +558,20 @@ test("Inspector readonly and inherited locked selections preserve their scene", 
     assert.match(html, /<fieldset disabled=""/);
   }
 });
+
+test("a single photo offers Span, and a spanning photo shows its slides, the seam and Unlink", () => {
+  const scene = sceneWith([image(photo)]);
+  const spans = [];
+  const available = quickMarkup({ ...quickProps(scene), span: { kind: "available", onSpan: () => spans.push("span") } });
+  assert.match(available, /aria-label="Span onto the next slide"/);
+  const blocked = quickMarkup({ ...quickProps(scene), span: { kind: "available", reason: "Unlock the photo first.", onSpan() {} } });
+  assert.match(blocked, /title="Unlock the photo first\."[^>]*disabled=""|disabled=""[^>]*title="Unlock the photo first\."/);
+  const linked = quickMarkup({ ...quickProps(scene), span: { kind: "linked", slides: [2, 3], seam: .42, onMenu() {}, onSeam() {}, onSeamEnd() {} } });
+  assert.match(linked, /Spans 2–3/);
+  assert.match(linked, /aria-label="Seam position"[^>]*value="42"|value="42"[^>]*aria-label="Seam position"/);
+  assert.match(linked, /42% of the photo on slide 2/);
+  assert.doesNotMatch(linked, /Span onto the next slide/);
+  // Text and multiple selections never show it.
+  assert.doesNotMatch(quickMarkup({ ...quickProps(sceneWith([text()])), span: { kind: "available", onSpan() {} } }), /Span onto/);
+  assert.doesNotMatch(quickMarkup({ ...quickProps(sceneWith([image({ ...photo, id: "a" }), image({ ...photo, id: "b" })])), span: { kind: "available", onSpan() {} } }), /Span onto/);
+});

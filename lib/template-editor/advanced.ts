@@ -234,7 +234,7 @@ export function resizeDocument(design: DesignDocument, size: { width: number; he
     ...(element.blur !== undefined ? { blur: element.blur * scale } : {}),
     ...(element.strokeDash ? { strokeDash: element.strokeDash.map(dash => dash * scale) } : {}),
     ...(element.shadow ? { shadow: { ...element.shadow, offsetX: element.shadow.offsetX * scale, offsetY: element.shadow.offsetY * scale, blur: element.shadow.blur * scale, spread: element.shadow.spread * scale } } : {}),
-    ...(element.type === "text" ? { fontSize: element.fontSize * scale, letterSpacing: element.letterSpacing * scale, ...(element.padding !== undefined ? { padding: element.padding * scale } : {}), ...(element.paragraphSpacing !== undefined ? { paragraphSpacing: element.paragraphSpacing * scale } : {}), ...(element.richText !== undefined ? { richText: scaleRichText(element.richText) } : {}) } : { radius: element.radius * scale, ...(element.type === "shape" ? { strokeWidth: element.strokeWidth * scale } : {}) }),
+    ...(element.type === "text" ? { fontSize: element.fontSize * scale, letterSpacing: element.letterSpacing * scale, ...(element.padding !== undefined ? { padding: element.padding * scale } : {}), ...(element.paragraphSpacing !== undefined ? { paragraphSpacing: element.paragraphSpacing * scale } : {}), ...(element.richText !== undefined ? { richText: scaleRichText(element.richText) } : {}) } : element.type === "html" ? {} : { radius: element.radius * scale, ...(element.type === "shape" ? { strokeWidth: element.strokeWidth * scale } : {}) }),
   });
   const next = mapScenes(design, (scene, canvasWidth) => ({ ...scene, ...(mode === "reflow" && scene.layout ? { layout: {
     ...scene.layout,
@@ -269,6 +269,7 @@ export function resizeDesignDocument(design: DesignDocument, size: { width: numb
 export type TemplateApplicationOptions = { pageId: string; templatePageId: string; mode: "replace" | "append-page" | "append-all"; values?: Record<string, string>; preserveSlots?: boolean };
 
 export function templateSlotContent(element: CanvasElement, type?: "text" | "image" | "color"): string | undefined {
+  if (element.type === "html") return undefined;
   if (type === "image") return element.type === "image" ? element.src : element.type === "shape" ? element.imageFill?.src : element.textureFill?.src;
   if (type === "color") return element.type === "text" ? element.color : element.type === "shape" ? element.fill : undefined;
   return element.type === "text" ? element.text : element.type === "image" ? element.src : element.fill;

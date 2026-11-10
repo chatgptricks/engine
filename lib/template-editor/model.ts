@@ -50,7 +50,33 @@ export type CanvasElementBase = {
   protected?: ProtectedProperty[];
   /** Template artwork stays fixed; photo content can still be replaced/cropped. */
   templateRole?: "brand" | "media";
-  smartFlow?: { after: string; gap: number; bottom: number; edge?: "top"; resize?: boolean };
+  /** Follow another slot. Down (default): sit `gap` below it (or below its top
+   * with `edge: "top"`) and stop at `bottom`. Up: sit `gap` above it and reach
+   * no higher than `bottom`. Right: sit `gap` after the end of its last line of
+   * text, centred on that line, as a badge follows a name. `resize` keeps the
+   * far edge and changes height. `hug` moves the bottom edge to `gap` below
+   * another slot's bottom instead, so a card grows and shrinks with its copy; when
+   * that slot is hidden, it hugs the slot the hidden one follows.
+   * `media` (an image following down): the layer takes its picture's shape
+   * instead, as large as fits across `media.x` to `media.x + media.width` and
+   * down to `bottom`, centred across that span. Without the picture's size it
+   * fills the span and height like `resize`. */
+  smartFlow?: { after: string; gap: number; bottom: number; edge?: "top"; resize?: boolean; direction?: "up" | "right"; hug?: { after: string; gap: number }; media?: { x: number; width: number } };
+  /** Starts a flow that is centred between `top` and `bottom`: this layer and
+   * everything that follows it move down together when they leave room, so a
+   * short page has no empty block at its foot. A full page starts at `top`. */
+  smartCenter?: { top: number; bottom: number };
+  /** Carries the rest of this layer's group in smart layout: when the layout
+   * moves this layer, the group's other layers (its subgroups' too) move the
+   * same distance, so a broken-up HTML layer stays together behind its "Layout
+   * space". Layers with a flow of their own keep the place their flow gives them. */
+  leadsGroup?: boolean;
+  /** Frames: the part this layer plays on a slide made from a flat image.
+   * `background` is the locked image at the bottom (the working copy that fills
+   * change); `cutout` and `text` are parts lifted out of it (frames.ts). */
+  frameRole?: FrameRole;
+  /** Author's choice of how this layer behaves in copies of a template; inferred when absent. */
+  layoutRole?: "fixed" | "text" | "media" | "free";
   componentId?: string;
   componentInstanceId?: string;
   componentSourceId?: string;
@@ -58,6 +84,7 @@ export type CanvasElementBase = {
   /** Axis-aligned crop in scene coordinates, independent of layer rotation. */
   clipBounds?: { x: number; y: number; width: number; height: number };
 };
+export type SmartTextRole = "cover" | "heading" | "body" | "list";
 export type TextElement = CanvasElementBase & {
   type: "text";
   text: string;
@@ -75,12 +102,28 @@ export type TextElement = CanvasElementBase & {
   autoFitMinFontSize?: number;
   autoFitMaxFontSize?: number;
   autoFitFontSize?: number;
-  smartText?: { role: "cover" | "heading" | "body"; lines: 0 | 2 | 3 | 4; minFontSize: number; maxFontSize: number; maxHeight: number };
+  /** Copy fitting. Automatic fits first shrink type to `softMinFontSize` inside
+   * `baseHeight`, then grow towards `maxHeight` (moving what follows), then
+   * shrink to `minFontSize`. `anchorBottom` keeps the bottom edge fixed and
+   * `anchorTop` the top edge (copy that starts a page's flow).
+   *
+   * A `list` (one item per paragraph) fills its box: short lists grow their
+   * type up to `maxFontSize` (wrapping items only when single lines would
+   * leave a fifth of the box empty), then open the gaps between items from
+   * `paragraphSpacing` up to `maxParagraphSpacing`, scaled with the type; long
+   * lists shrink type and gaps together down to `minFontSize`. Layers sharing
+   * a `group` (a page's list columns, their headings) share one size, gap and
+   * height, so their rows line up.
+   * `guideHeight` is what agents' copy-length guide measures against when the
+   * box may stretch past the copy the slot is written for. */
+  smartText?: { role: SmartTextRole; lines: 0 | 2 | 3 | 4; minFontSize: number; maxFontSize: number; maxHeight: number; baseHeight?: number; softMinFontSize?: number; anchorBottom?: number; anchorTop?: number; group?: string; paragraphSpacing?: number; maxParagraphSpacing?: number; guideHeight?: number };
   verticalAlign?: "top" | "middle" | "bottom";
   padding?: number;
   paragraphSpacing?: number;
   strikethrough?: boolean;
   listStyle?: "none" | "bullet" | "number";
+  /** A wrapped list item continues under its own text instead of under its marker. */
+  hangingIndent?: boolean;
   textStyleId?: string;
   textureFill?: ShapeImageFill;
   wordTextures?: (ShapeImageFill & { id: string })[];
@@ -125,6 +168,11 @@ export type ImageElement = CanvasElementBase & PhotoMetadata & {
   mask?: "none" | "ellipse" | "triangle" | "diamond";
   intrinsicWidth?: number;
   intrinsicHeight?: number;
+  /** One photo across two neighboring slides: the "start" half on one page and
+   * the "end" half on the next share this id, the photo and its size, and the
+   * end half sits one page width (360) to the left. spanning-photos.ts keeps
+   * them in step; each page frame clips its own half. */
+  span?: { id: string; part: "start" | "end" };
 };
 export type ShapeElement = CanvasElementBase & {
   type: "shape";
@@ -142,7 +190,34 @@ export type ShapeElement = CanvasElementBase & {
   imageFill?: ShapeImageFill;
   strokeAlign?: "inside" | "center" | "outside";
 };
-export type CanvasElement = TextElement | ImageElement | ShapeElement;
+/** Part of a slide, or a whole slide, drawn from HTML and CSS: charts, tables,
+ * logo grids, post cards. The markup is laid out `designWidth` CSS pixels wide
+ * and scaled to the box, so it's designed at the export's pixel size (a full
+ * 1080 px slide has designWidth 1080). Corner drags scale it; side drags change
+ * `designWidth` so it reflows. html-layer.ts cleans the markup and CSS when a
+ * layer is saved and again before it's drawn. */
+export type HtmlElement = CanvasElementBase & {
+  type: "html";
+  html: string;
+  /** The layer's own CSS. `:root`, `html` and `body` mean the layer's box. */
+  css?: string;
+  designWidth: number;
+  /** Brand values the markup reads as CSS variables, such as --color-accent.
+   * Copied from the deck's brand guide when the layer is made. */
+  tokens?: Record<string, string>;
+};
+export type CanvasElement = TextElement | ImageElement | ShapeElement | HtmlElement;
+export const MAX_HTML_CHARS = 600_000;
+export const MAX_HTML_CSS_CHARS = 120_000;
+export const MAX_HTML_TOKENS = 120;
+export const MAX_HTML_DESIGN_WIDTH = 20_000;
+/** A brand value an HTML layer reads: a custom property name and a value with no
+ * way to load anything (no url(), image-set(), escapes or declaration breaks). */
+export function isSafeHtmlToken(name: unknown, value: unknown): boolean {
+  return typeof name === "string" && /^--[a-z][a-z0-9-]{0,62}$/.test(name) &&
+    typeof value === "string" && value.length <= 300 && /^[#a-zA-Z0-9 .,%()'"/+_-]*$/.test(value) &&
+    !/(?:url|image|image-set|element|cross-fade|src|expression|attr|paint)\s*\(/i.test(value);
+}
 export type CanvasScene = { background: string; elements: CanvasElement[]; groups?: CanvasGroup[]; layout?: CanvasLayout };
 export type TextStyle = Omit<TextElement, keyof CanvasElementBase | "type" | "text" | "richText" | "textStyleId" | "textMode" | "wordTextures" | "autoFitFontSize"> & { id: string; name: string; workspaceSourceId?: string };
 export type ReusableComponent = { id: string; name: string; scene: CanvasScene; width: number; height: number; workspaceSourceId?: string };
@@ -150,6 +225,12 @@ export type TemplateParameter = { id: string; name: string; type: "text" | "imag
 export type DesignComment = { id: string; pageId?: string; elementId?: string; text: string; createdAt: string; resolved?: boolean };
 export type DesignVersion = Pick<DocumentResources, "styles" | "components" | "colorRoles" | "parameters"> & { id: string; name: string; createdAt: string; format: DesignFormat; pages: DesignPage[]; continuousCanvas?: CanvasScene; caption: string; masterScene?: CanvasScene; customSize?: { width: number; height: number } };
 export type DocumentResources = { styles?: TextStyle[]; colorRoles?: { id: string; name: string; color: string }[]; components?: ReusableComponent[]; parameters?: TemplateParameter[]; masterScene?: CanvasScene; customSize?: { width: number; height: number }; tags?: string[]; folderId?: string; favorite?: boolean; deletedAt?: string };
+export type FrameRole = "background" | "cutout" | "text";
+export const FRAME_ROLES: readonly FrameRole[] = ["background", "cutout", "text"];
+/** Frames: the image a slide was made from. It never changes, so a cut always
+ * takes the original pixels and "Reset to original" can bring them back. */
+export type PageFrame = { original: string; width: number; height: number; name: string; source: "editor" | "agent"; createdAt: string };
+export const FRAME_ASSET = /^\/api\/template-editor\/assets\/[a-f0-9]{64}$/;
 export type DesignPage = {
   id: string;
   image: StoryImage;
@@ -160,7 +241,12 @@ export type DesignPage = {
   useMaster?: boolean;
   publicDescription?: string;
   readingOrder?: string[];
+  /** A template page saved from a post's slide (saved-layouts.ts), with the line saying when Recreate's designer should start a slide from it. */
+  savedLayout?: { useWhen: string };
+  frame?: PageFrame;
 };
+/** The longest "use when" line a saved layout keeps. */
+export const MAX_SAVED_LAYOUT_USE_WHEN = 400;
 export type DesignDocument = DocumentResources & {
   id: string;
   name: string;
@@ -192,6 +278,9 @@ export type DesignTemplate = DocumentResources & {
   pages: DesignPage[];
   continuousCanvas?: CanvasScene;
   custom?: boolean;
+  /** On the workspace's copy of a built-in template: templateFingerprint of the built-in it was copied from.
+   * While the copy still matches it, libraryTemplates shows the built-in's current pages and the copy's saved layouts. */
+  builtInFingerprint?: string;
 };
 export type BrandKit = {
   name: string;
@@ -320,6 +409,52 @@ function page(key: string, artwork: string, style: SlideStyle): DesignPage {
 
 const ink = "#273f35";
 const paper = "#f4efe5";
+
+/** Colours of a post on X in dark mode, as phone screenshots show it. `border` is X's own
+ * divider grey, used for the thin line around each card. */
+export const X_POST_COLORS = { card: "#000000", text: "#E7E9EA", handle: "#71767B", border: "#2F3336" } as const;
+/** X's play button, drawn on a video post's poster frame: a blue disc in a white ring with a white
+ * triangle, as an SVG in a 100 × 100 box in the Brand SVG grammar (paths only). */
+export const X_PLAY_BUTTON = `data:image/svg+xml;charset=utf-8,${encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100" viewBox="0 0 100 100"><path d="M3 50A47 47 0 1 0 97 50A47 47 0 1 0 3 50Z" fill="#1D9BF0" stroke="#FFFFFF" stroke-width="6"/><path d="M39 29.5V70.5L73 50Z" fill="#FFFFFF"/></svg>')}`;
+/** The chatgptricks post cards in 1080-wide pixels. A card is 936 px wide with `pad` px of black
+ * padding inside on every side (Ivan's call), so its content never touches the edge; Ivan's phone
+ * screenshots of X (1206 px wide) scale by `scale` into the rest, which keeps X's line breaks.
+ * `radius` and `border` round the corners a little and outline the card, so it stands out from
+ * the page. A card is `textTop + lines × line + foot` tall, plus `mediaGap` and the photo when the
+ * post has one. Reaction pages have no source line, so `room`, the cards' space, runs from 64 px
+ * under the one-line title (90 + 56 × 1.04, the Text + Media title's line) down to the bottom
+ * margin at `bottom`. */
+export const X_CARD = (() => {
+  const width = 936, pad = 24, scale = (width - 2 * pad) / 1206, shot = (value: number) => value * scale;
+  const size = shot(57.9), line = shot(73.3), bottom = 1352, room = bottom - 90 - 56 * 1.04 - 64;
+  // SF Pro Display's baseline sits 0.95 em plus half the leading under the top of its line box.
+  const textTop = pad + shot(310.5) - ((line / size - 1.19) / 2 + .95) * size, foot = pad + shot(33.5);
+  // `maxLines` is as much text as one card can show on a page of its own. A video's poster frame
+  // carries X's `play` button in the middle and its `length` badge in the lower left corner.
+  const length = { size: shot(40), height: shot(60), pad: shot(14), inset: shot(30), radius: shot(12), fill: "#000000C4", color: "#FFFFFF" };
+  return { width, pad, scale, inset: pad + shot(27), size, line, textTop, foot, between: 40, mediaGap: shot(31), mediaRadius: shot(48), radius: 24, border: 3, maxLines: Math.floor((room - textTop - foot) / line), bottom, room, play: shot(150), length };
+})();
+
+/** The badges X shows after a verified name, drawn for Engine in a 100 × 100 box with the check
+ * cut out (fill rule evenodd), so it shows the card's black: people and government accounts get
+ * a rosette of eight round lobes (blue, grey), organizations a gold twelve-point seal. */
+export const X_BADGES = (() => {
+  const round = (value: number) => Math.round(value * 100) / 100;
+  const outline = (points: [number, number][]) => `M${points.map(([x, y]) => `${round(x)} ${round(y)}`).join("L")}Z`;
+  const around = (count: number, radius: (index: number, angle: number) => number) => Array.from({ length: count }, (_, index): [number, number] => {
+    const angle = index / count * 2 * Math.PI - Math.PI / 2, r = radius(index, angle);
+    return [50 + r * Math.cos(angle), 50 + r * Math.sin(angle)];
+  });
+  // A thick check whose arms meet at a right angle, centred in the box.
+  const check = outline([[33.36, 46.64], [43, 56.28], [66.64, 32.64], [73.36, 39.36], [43, 69.72], [26.64, 53.36]]);
+  const rosette = outline(around(160, (_, angle) => 43 + 7 * Math.abs(Math.cos(4 * (angle + Math.PI / 2))) ** .55)) + check;
+  const seal = outline(around(24, index => index % 2 ? 41.5 : 50)) + check;
+  return {
+    blue: { path: rosette, fill: "#1D9BF0" },
+    grey: { path: rosette, fill: "#829AAB" },
+    gold: { path: seal, fill: "#E2B719", gradient: { type: "linear" as const, angle: 135, stops: [{ color: "#F8DF5C", position: 0 }, { color: "#D9A21B", position: 100 }] } },
+  };
+})();
 
 export const BUILT_IN_TEMPLATES: DesignTemplate[] = [
   {
@@ -553,6 +688,8 @@ export const BUILT_IN_TEMPLATES: DesignTemplate[] = [
       }),
     ],
   },
+  // Defined at the end of this file; chatgptricks-template.ts is its entry point.
+  withWidePhotoPair(chatgptricksTemplate()),
 ];
 
 export function createCanvasElement<T extends CanvasElement["type"]>(
@@ -564,7 +701,7 @@ export function createCanvasElement(
   options: Partial<CanvasElement> = {},
 ): CanvasElement {
   const base = {
-    name: type === "text" ? "Text" : type === "image" ? "Image" : "Shape",
+    name: type === "text" ? "Text" : type === "image" ? "Image" : type === "html" ? "HTML" : "Shape",
     x: 36,
     y: 60,
     width: 288,
@@ -602,6 +739,12 @@ export function createCanvasElement(
       stroke: DEFAULT_BRAND.text,
       strokeWidth: 0,
       radius: 0,
+    },
+    // 288 scene units are 864 px on a 1080 px wide slide.
+    html: {
+      height: 216,
+      html: "",
+      designWidth: 864,
     },
   };
   return {
@@ -1018,34 +1161,237 @@ export function mergeTemplateText(scene: CanvasScene, sourceIds?: Map<string, st
   return { ...scene, elements: scene.elements.flatMap(element => replacements.has(element.id) ? [replacements.get(element.id)!] : consumed.has(element.id) ? [] : [element]) };
 }
 
-/** Prepares new copies or an explicit smart-layout edit. Opening saved artwork
- * never rewrites it, and deleted templates are never reintroduced. */
-export function prepareSmartTemplate(template: DesignTemplate): DesignTemplate {
-  if (!isChatGPTricksTemplate(template) || template.continuousCanvas) return template;
-  const height = 360 * (template.customSize?.height ?? (template.format === "story" ? 1920 : template.format === "square" ? 1080 : 1350)) / (template.customSize?.width ?? 1080);
-  return { ...template, pages: template.pages.map((page, pageIndex) => {
-    if (!page.canvas || page.canvas.elements.some(element => element.type === "text" && element.smartText)) return page;
-    // The asset sheet is a toolbox, not a publishing layout.
-    if (/^assets$/i.test(page.label ?? "")) return page;
-    const merged = mergeTemplateText(page.canvas), label = page.label?.toLowerCase() ?? "";
-    const texts = merged.elements.filter((element): element is TextElement => element.type === "text" && !isPlaceholder(element) && !isProfile(element)).sort((a, b) => a.y - b.y);
-    const media = merged.elements.filter(element => !isProfile(element) && element.name !== "Logo" && (element.type === "image" || element.type === "shape" && element.width > 180 && element.height > 100 && !element.gradient && !/fade/i.test(element.name)));
-    const textIds = new Set(texts.map(element => element.id)), mediaIds = new Set(media.map(element => element.id));
-    let elements: CanvasElement[] = merged.elements.map(element => {
-      if (element.type === "text" && textIds.has(element.id)) {
-        const index = texts.findIndex(text => text.id === element.id), cover = pageIndex === 0 || /^cta/.test(label);
-        const role = cover ? "cover" : index === 0 ? "heading" : "body";
-        const next = texts[index + 1];
-        const bottom = Math.min(height - 20, next ? next.y - 8 : height - 20);
-        const x = Math.max(18, element.x), width = Math.min(element.width, 360 - x - 18);
-        const base = { ...element, groupId: undefined, slot: `smart-text-${index}`, x, width, align: cover ? "center" as const : "left" as const, textMode: "auto-fit" as const, verticalAlign: "top" as const, protected: ["position", "style", "delete"] as const };
-        const maxHeight = Math.max(element.height, bottom - element.y);
-        const minimum = Math.min(element.fontSize, role === "cover" ? 18 : 11);
-        return { ...base, protected: [...base.protected], smartText: { role, lines: pageIndex === 0 ? 3 : 0, minFontSize: minimum, maxFontSize: Math.min(100, element.fontSize * 1.65), maxHeight } };
-      }
-      if (mediaIds.has(element.id)) return { ...element, groupId: undefined, slot: "smart-media", name: element.type === "shape" ? "Photo frame" : element.name, templateRole: "media" as const, protected: ["position", "delete"] };
-      return { ...element, templateRole: "brand" as const, ...(element.type === "text" && isPlaceholder(element) ? { hidden: true } : {}), protected: ["content", "position", "style", "delete"] };
+/** How an element behaves when a template copy is made. `layoutRole` on an
+ * element is an explicit author choice; otherwise the role is inferred. */
+export type LayoutRole = "fixed" | "text" | "media" | "free";
+export const LAYOUT_ROLE_LABELS: Record<LayoutRole, string> = { fixed: "Fixed brand element", text: "Text slot", media: "Photo slot", free: "Free element" };
+type LayoutContext = { height: number; repeatedText?: ReadonlySet<string> };
+const BRAND_NAME = /logo|icon|avatar|badge|watermark/i;
+const DECOR_NAME = /fade|shad|background|backdrop|overlay|gradient/i;
+const bottomOf = (element: CanvasElement) => element.y + element.height;
+const containsBox = (outer: CanvasElement, inner: CanvasElement) => inner.x >= outer.x - 1 && inner.y >= outer.y - 1 && inner.x + inner.width <= outer.x + outer.width + 1 && bottomOf(inner) <= bottomOf(outer) + 1;
+const overlapsX = (a: CanvasElement, b: CanvasElement) => Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x) >= .5 * Math.min(a.width, b.width);
+
+export function templateSceneHeight(template: Pick<DesignTemplate, "customSize" | "format">): number {
+  return 360 * (template.customSize?.height ?? FORMATS[template.format].height) / (template.customSize?.width ?? FORMATS[template.format].width);
+}
+
+/** Small text that repeats on several pages (handles, profile cards, page
+ * furniture) is branding, not copy. Repeated sample headlines stay copy. */
+export function repeatedTemplateText(pages: readonly { canvas?: CanvasScene }[]): Set<string> {
+  const counts = new Map<string, number>();
+  for (const page of pages) {
+    const scene = page.canvas && mergeTemplateText(page.canvas);
+    for (const text of new Set(scene?.elements.flatMap(element => element.type === "text" && element.fontSize < 14 ? [element.text.trim().toLowerCase()] : []) ?? [])) if (text) counts.set(text, (counts.get(text) ?? 0) + 1);
+  }
+  return new Set([...counts].filter(([, count]) => count > 1).map(([text]) => text));
+}
+
+function baseLayoutRole(element: CanvasElement, context: LayoutContext): LayoutRole {
+  if (element.layoutRole === "free" || element.layoutRole === "fixed") return element.layoutRole;
+  if (element.layoutRole === "text") return element.type === "text" ? "text" : "fixed";
+  if (element.layoutRole === "media") return element.type === "text" ? "fixed" : "media";
+  if (element.master || element.componentInstanceId || element.hidden) return "free";
+  if (element.locked || element.rotation % 360 !== 0) return "fixed";
+  const area = element.width * element.height / (360 * context.height);
+  if (element.type === "text") {
+    const text = element.text.trim();
+    if (!text || isPlaceholder(element) || isProfile(element) || /^@[\w.]+$/.test(text) || context.repeatedText?.has(text.toLowerCase())) return "fixed";
+    return element.fontSize < 7 && text.split(/\s+/).length <= 4 ? "fixed" : "text";
+  }
+  if (isProfile(element) || BRAND_NAME.test(element.name) || area < .06) return "fixed";
+  if (element.type === "image") return "media";
+  // An HTML layer is designed content: it keeps its place, like a fixed panel.
+  if (element.type === "html") return "fixed";
+  if (element.imageFill) return "media";
+  return element.width > 180 && element.height > 100 && area < .85 && !element.gradient && !DECOR_NAME.test(element.name) ? "media" : "fixed";
+}
+
+/** Roles for every layer of one page. A large panel that holds copy frames
+ * that copy (it stays fixed and resizes with it) rather than taking a photo. */
+export function inferLayoutRoles(scene: CanvasScene, context: LayoutContext): Map<string, LayoutRole> {
+  const groups = new Map(scene.groups?.map(group => [group.id, group]) ?? []);
+  const inherited = (element: CanvasElement, key: "hidden" | "locked") => {
+    for (let id = element.groupId, steps = 0; id && steps < 100; id = groups.get(id)?.parentId, steps++) if (groups.get(id)?.[key]) return true;
+    return false;
+  };
+  // Hidden layers stay as authored; a locked group is part of the fixed artwork.
+  const roles = new Map(scene.elements.map(element => [element.id, inherited(element, "hidden") ? "free" : inherited(element, "locked") && !element.layoutRole ? "fixed" : baseLayoutRole(element, context)] as const));
+  for (const element of scene.elements) {
+    if (element.type !== "shape" || element.layoutRole || element.imageFill || roles.get(element.id) !== "media") continue;
+    if (scene.elements.some(other => roles.get(other.id) === "text" && containsBox(element, other))) roles.set(element.id, "fixed");
+  }
+  return roles;
+}
+
+/** Connect the content of a page so copy can grow: what sits directly below a
+ * text slot follows it (photos and frames keep their bottom edge and shrink, text
+ * moves down), and copy that sits at the foot of the page grows upwards instead.
+ * Each text slot gets the extra height its neighbours can actually give up. */
+function inferSmartFlows(elements: CanvasElement[], height: number, margins: { top: number; bottom: number }): CanvasElement[] {
+  const visible = elements.filter(element => !element.hidden);
+  const isText = (element: CanvasElement): element is TextElement => element.type === "text" && Boolean(element.smartText);
+  const pageSized = (element: CanvasElement) => element.width * element.height >= .85 * 360 * height;
+  const frameOf = new Map<string, CanvasElement>();
+  for (const text of visible.filter(isText)) {
+    const frames = visible.filter(element => element.type === "shape" && element.templateRole === "brand" && !pageSized(element) && element.rotation % 360 === 0 && !element.gradient && element.opacity >= .5 && !DECOR_NAME.test(element.name) && containsBox(element, text)).sort((a, b) => a.width * a.height - b.width * b.height);
+    if (frames[0]) frameOf.set(text.id, frames[0]);
+  }
+  const frames = new Set(frameOf.values());
+  const participants = visible.filter(element => isText(element) || element.templateRole === "media" && !pageSized(element) || frames.has(element)).sort((a, b) => a.y - b.y || b.width * b.height - a.width * a.height);
+  const slots = new Map<string, string>();
+  participants.forEach((element, index) => slots.set(element.id, element.slot || `smart-${isText(element) ? "text" : frames.has(element) ? "frame" : "media"}-${index}`));
+  const flows = new Map<string, NonNullable<CanvasElementBase["smartFlow"]>>();
+  const after = new Map<string, CanvasElement>();
+  const inset = (text: CanvasElement, frame: CanvasElement) => { const padding = bottomOf(frame) - bottomOf(text); return Math.min(padding, Math.max(8, padding / 2)); };
+  for (const element of participants) {
+    let anchor: CanvasElement | undefined;
+    for (const candidate of participants) {
+      if (candidate === element || !isText(candidate) || candidate.y >= element.y || frameOf.get(candidate.id) !== frameOf.get(element.id)) continue;
+      const gap = element.y - bottomOf(candidate);
+      if (gap < -1 || gap > 48 || !overlapsX(candidate, element)) continue;
+      if (!anchor || bottomOf(candidate) > bottomOf(anchor)) anchor = candidate;
+    }
+    if (anchor) {
+      after.set(element.id, anchor);
+      flows.set(element.id, { after: slots.get(anchor.id)!, gap: Math.max(0, element.y - bottomOf(anchor)), bottom: bottomOf(element), ...(isText(element) ? {} : { resize: true }) });
+      continue;
+    }
+    const frame = frameOf.get(element.id);
+    if (frame && flows.has(frame.id)) {
+      after.set(element.id, frame);
+      flows.set(element.id, { after: slots.get(frame.id)!, edge: "top", gap: element.y - frame.y, bottom: bottomOf(frame) - inset(element, frame) });
+    }
+  }
+  const reaches = (element: CanvasElement, target: CanvasElement) => { for (let current = after.get(element.id), steps = 0; current && steps < 200; current = after.get(current.id), steps++) if (current === target) return true; return false; };
+  const lowerLimit = (element: CanvasElement) => {
+    const frame = frameOf.get(element.id);
+    let limit = frame ? bottomOf(frame) - inset(element, frame) : height - margins.bottom;
+    for (const other of visible) if (other !== element && other !== frame && !pageSized(other) && !reaches(other, element) && !containsBox(other, element) && other.y >= bottomOf(element) - 1 && overlapsX(element, other)) limit = Math.min(limit, other.y - 8);
+    return limit;
+  };
+  const upperLimit = (element: CanvasElement, chain: Set<CanvasElement>) => {
+    let limit = margins.top;
+    for (const other of visible) if (!chain.has(other) && !pageSized(other) && !containsBox(other, element) && bottomOf(other) <= element.y + 1 && overlapsX(element, other)) limit = Math.max(limit, bottomOf(other) + 8);
+    return limit;
+  };
+  const followers = (element: CanvasElement) => participants.filter(other => after.get(other.id) === element && flows.get(other.id)?.edge !== "top");
+  const growth = new Map<string, number>();
+  const room = (element: CanvasElement): number => {
+    if (growth.has(element.id)) return growth.get(element.id)!;
+    growth.set(element.id, 0);
+    let value = lowerLimit(element) - bottomOf(element);
+    for (const follower of followers(element)) value = Math.min(value, isText(follower) ? room(follower) : follower.height * (frames.has(follower) ? .25 : .35));
+    value = Math.max(0, value); growth.set(element.id, value); return value;
+  };
+  const result = new Map(elements.map(element => [element.id, element] as const));
+  for (const element of participants) {
+    const flow = flows.get(element.id);
+    const next: CanvasElement = { ...element, slot: slots.get(element.id), ...(flow ? { smartFlow: flow } : {}) };
+    if (isText(element) && next.type === "text") {
+      // Copy heading a wider photo or panel spans that column (imported title
+      // runs are often only as wide as their sample words).
+      const column = followers(element).filter(other => !isText(other) && Math.abs(other.x - element.x) <= 12 && other.x + other.width > element.x + element.width);
+      if (column.length && !element.layoutRole) next.width = Math.max(...column.map(other => other.x + other.width)) - next.x;
+      const extra = room(element);
+      next.smartText = { ...element.smartText!, maxHeight: Math.max(1, element.height + extra) };
+      if (flow && !flow.edge) next.smartFlow = { ...flow, bottom: bottomOf(element) + extra };
+    }
+    result.set(element.id, next);
+  }
+  // Copy at the foot of the page has nowhere to go but up: the lowest line
+  // keeps its baseline and the copy above it moves up with it.
+  for (const root of participants.filter(element => isText(element) && !after.has(element.id) && !frameOf.has(element.id))) {
+    const chain = [root];
+    for (let next = followers(root)[0]; next && isText(next) && followers(chain.at(-1)!).length === 1; next = followers(next)[0]) chain.push(next);
+    const last = chain.at(-1)!;
+    if (followers(last).length || chain.some(element => followers(element).some(other => !isText(other)))) continue;
+    const members = new Set<CanvasElement>(chain), down = room(root);
+    const up = Math.max(0, root.y - upperLimit(root, members));
+    const anchored = chain.some(element => element.type === "text" && element.verticalAlign === "bottom" || element.anchors?.vertical === "bottom");
+    if (!anchored && !(bottomOf(last) > height * .55 && down < (bottomOf(last) - root.y) * .25 && up > down)) continue;
+    const top = root.y - up;
+    chain.forEach((element, index) => {
+      const current = result.get(element.id)! as TextElement;
+      const below = chain[index + 1];
+      const rest: TextElement = { ...current };
+      delete rest.smartFlow;
+      result.set(element.id, {
+        ...rest,
+        ...(below ? { smartFlow: { after: slots.get(below.id)!, gap: Math.max(0, below.y - bottomOf(element)), bottom: top, direction: "up" as const } } : {}),
+        smartText: { ...current.smartText!, maxHeight: Math.max(1, element.height + up), ...(below ? {} : { anchorBottom: bottomOf(element) }) },
+      });
     });
+  }
+  return elements.map(element => result.get(element.id)!);
+}
+
+/** Older template copies predate staged fitting: keep their sample size as the
+ * box to fill before neighbours move. */
+function upgradeSmartPage(page: DesignPage): DesignPage {
+  const canvas = page.canvas;
+  if (!canvas || !canvas.elements.some(element => element.type === "text" && element.smartText && element.smartText.baseHeight === undefined)) return page;
+  return { ...page, canvas: { ...canvas, elements: canvas.elements.map(element => element.type === "text" && element.smartText && element.smartText.baseHeight === undefined ? { ...element, smartText: { ...element.smartText, baseHeight: Math.max(1, Math.min(element.height, element.smartText.maxHeight)), softMinFontSize: Math.max(element.smartText.minFontSize, Math.min(element.fontSize, element.smartText.maxFontSize) * .85) } } : element) } };
+}
+
+const ROLE_PROTECTION = { text: ["position", "style", "delete"], media: ["position", "delete"], fixed: ["content", "position", "style", "delete"] } as const satisfies Record<Exclude<LayoutRole, "free">, readonly ProtectedProperty[]>;
+/** Role protection adds to whatever the author already protected. */
+const protect = (element: CanvasElement, role: Exclude<LayoutRole, "free">): ProtectedProperty[] => [...new Set([...(element.protected ?? []), ...ROLE_PROTECTION[role]])];
+
+const BRAND_LABEL_LAYOUTS = new Set(["text + media", "full bleed + text", "prompt", "title quote"]);
+
+/** Prepares new copies or an explicit smart-layout edit. Every template gets
+ * fixed brand elements, text slots that fit their copy, and photo slots; the
+ * page's own geometry decides what follows what. Opening saved artwork never
+ * rewrites it, and deleted templates are never reintroduced. */
+export function prepareSmartTemplate(template: DesignTemplate): DesignTemplate {
+  if (template.continuousCanvas) return template;
+  const brand = isChatGPTricksTemplate(template), height = templateSceneHeight(template);
+  const repeatedText = repeatedTemplateText(template.pages);
+  let changed = false;
+  const pages = template.pages.map((page, pageIndex) => {
+    const next = prepareSmartPage(page, pageIndex, { brand, height, repeatedText });
+    if (next !== page) changed = true;
+    return next;
+  });
+  return changed ? { ...template, pages } : template;
+}
+
+function prepareSmartPage(page: DesignPage, pageIndex: number, context: LayoutContext & { brand: boolean }): DesignPage {
+  const { brand, height } = context;
+  // The asset sheet is a toolbox, not a publishing layout.
+  if (/^assets$/i.test(page.label ?? "")) return page;
+  if (page.canvas?.elements.some(element => element.templateRole || element.type === "text" && element.smartText)) return upgradeSmartPage(page);
+  // Legacy pages keep their original appearance until the editor adopts layers.
+  if (!page.canvas) return page;
+  const merged = mergeTemplateText(page.canvas), label = page.label?.toLowerCase() ?? "";
+  const roles = inferLayoutRoles(merged, context);
+  if (![...roles.values()].some(role => role === "text" || role === "media")) return page;
+  const texts = merged.elements.filter((element): element is TextElement => element.type === "text" && roles.get(element.id) === "text").sort((a, b) => a.y - b.y);
+  const media = merged.elements.filter(element => roles.get(element.id) === "media");
+  const largest = Math.max(0, ...texts.map(text => text.fontSize)), cover = pageIndex === 0 || /^cta/.test(label);
+  let elements: CanvasElement[] = merged.elements.map(element => {
+    const role = roles.get(element.id)!;
+    if (role === "free") return element;
+    if (role === "text" && element.type === "text") {
+      const index = texts.indexOf(element);
+      const textRole = brand ? cover ? "cover" : index === 0 ? "heading" : "body" : element.fontSize >= largest * .8 ? pageIndex === 0 ? "cover" : "heading" : "body";
+      const next = texts[index + 1];
+      const bottom = Math.min(height - 20, next ? next.y - 8 : height - 20);
+      const x = brand ? Math.max(18, element.x) : element.x, width = brand ? Math.min(element.width, 360 - x - 18) : element.width;
+      const minimum = brand ? Math.min(element.fontSize, textRole === "cover" ? 18 : 11) : Math.min(element.fontSize, Math.max(textRole === "body" ? 9 : 12, element.fontSize * .55));
+      return {
+        ...element, groupId: undefined, slot: brand || !element.slot ? `smart-text-${index}` : element.slot, x, width,
+        align: brand ? cover ? "center" as const : "left" as const : element.align, textMode: "auto-fit" as const,
+        verticalAlign: brand ? "top" as const : element.verticalAlign ?? "top", protected: protect(element, "text"),
+        smartText: { role: textRole, lines: brand && pageIndex === 0 ? 3 : 0, minFontSize: minimum, maxFontSize: brand ? Math.min(100, element.fontSize * 1.65) : Math.min(500, element.fontSize * 1.65), maxHeight: Math.max(element.height, bottom - element.y), baseHeight: element.height, softMinFontSize: Math.max(minimum, element.fontSize * .85) },
+      };
+    }
+    if (role === "media") return { ...element, groupId: undefined, ...(brand ? { slot: "smart-media" } : {}), name: element.type === "shape" && !element.imageFill ? "Photo frame" : element.name, templateRole: "media" as const, protected: protect(element, "media") };
+    return { ...element, templateRole: "brand" as const, ...(element.type === "text" && isPlaceholder(element) ? { hidden: true } : {}), protected: protect(element, "fixed") };
+  });
+  const margins = merged.layout?.margins?.enabled ? merged.layout.margins : { top: 20, bottom: 20 };
+  if (brand && BRAND_LABEL_LAYOUTS.has(label)) {
     const patchText = (index: number, patch: Partial<TextElement>, maxHeight?: number) => {
       elements = elements.map(element => element.type === "text" && element.slot === `smart-text-${index}` ? { ...element, ...patch, smartText: { ...element.smartText!, ...(maxHeight === undefined ? {} : { maxHeight }) } } : element);
     };
@@ -1066,14 +1412,41 @@ export function prepareSmartTemplate(template: DesignTemplate): DesignTemplate {
       patchText(0, {}, Math.max(texts[0].height, height - 65 - texts[0].y));
       patchText(1, { smartFlow: { after: "smart-text-0", gap: 8, bottom: height - 25 } }, 40);
     }
-    const canvas: CanvasScene = { ...merged, elements, layout: { ...merged.layout, showGuides: true, margins: { enabled: true, top: 20, right: 20, bottom: 20, left: 20 }, snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } } };
-    return { ...page, canvas };
+  } else elements = inferSmartFlows(elements, height, margins);
+  const layout: CanvasLayout = brand
+    ? { ...merged.layout, showGuides: true, margins: { enabled: true, top: 20, right: 20, bottom: 20, left: 20 }, snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } }
+    : { ...merged.layout, margins: merged.layout?.margins ?? { enabled: true, top: 20, right: 20, bottom: 20, left: 20 }, snapping: merged.layout?.snapping ?? { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } };
+  return { ...page, canvas: { ...merged, elements, layout } };
+}
+
+/** A template being edited is raw artwork again: the author moves and restyles
+ * freely, and roles are worked out afresh for the next copy. Explicit role
+ * choices (`layoutRole`) are kept. */
+export function releaseSmartLayout(scene: CanvasScene): CanvasScene {
+  if (!scene.elements.some(element => element.templateRole || element.smartFlow || element.smartCenter || element.type === "text" && element.smartText)) return scene;
+  return { ...scene, elements: scene.elements.map(element => {
+    if (!element.templateRole && !element.smartFlow && !element.smartCenter && !(element.type === "text" && element.smartText)) return element;
+    const released = { ...element } as CanvasElement & Record<string, unknown>;
+    const role = element.type === "text" && element.smartText ? "text" : element.templateRole === "media" ? "media" : element.templateRole === "brand" ? "fixed" : undefined;
+    const kept = element.protected?.filter(property => !role || !(ROLE_PROTECTION[role] as readonly ProtectedProperty[]).includes(property));
+    delete released.templateRole; delete released.smartFlow; delete released.smartCenter; delete released.leadsGroup; delete released.protected;
+    if (kept?.length) released.protected = kept;
+    if (released.slot?.startsWith("smart-")) delete released.slot;
+    if (released.type === "text" && released.smartText) {
+      const rule = released.smartText;
+      delete released.smartText; delete released.autoFitFontSize;
+      Object.assign(released, { textMode: "auto-fit", autoFitMinFontSize: Math.min(rule.minFontSize, released.fontSize), autoFitMaxFontSize: released.fontSize, ...(rule.paragraphSpacing !== undefined ? { paragraphSpacing: rule.paragraphSpacing } : {}) });
+    }
+    return released as CanvasElement;
   }) };
 }
 
 
 export function createDesign(template: DesignTemplate): DesignDocument {
-  template = prepareSmartTemplate(template);
+  return designFromTemplate(prepareSmartTemplate(template));
+}
+
+function designFromTemplate(template: DesignTemplate): DesignDocument {
   const now = new Date().toISOString();
   const design: DesignDocument = {
     ...copyResources(template),
@@ -1130,9 +1503,21 @@ export function createBlankTemplateDesign(
   };
 }
 
+/** Fragment boxes from imports are measured tightly; a merged block gets a
+ * little width (within the page) and grows to show all of its words. */
+function mergeForAuthoring(scene: CanvasScene): CanvasScene {
+  const sources = new Map<string, string>(), merged = mergeTemplateText(scene, sources);
+  if (merged === scene || merged.elements.length === scene.elements.length) return merged;
+  const absorbed = new Set([...sources].filter(([from, to]) => from !== to).map(([, to]) => to));
+  return { ...merged, elements: merged.elements.map(element => element.type === "text" && absorbed.has(element.id) ? { ...element, width: Math.min(element.width * 1.15 + 4, Math.max(element.width, 360 - element.x - 18)), textMode: "auto-height" as const } : element) };
+}
+
 export function editTemplateDesign(template: DesignTemplate): DesignDocument {
+  const design = designFromTemplate(template);
   return {
-    ...createDesign(template),
+    ...design,
+    // Imported title runs become one editable block, as they will in every copy.
+    pages: design.pages.map(page => page.canvas ? { ...page, canvas: releaseSmartLayout(mergeForAuthoring(page.canvas)) } : page),
     purpose: "template",
     editingTemplateId: template.id,
   };
@@ -1460,6 +1845,53 @@ export function richTextToPlain(value: string): string {
   });
 }
 
+const VOID_TAGS = new Set(["area", "br", "col", "hr", "img", "input", "source", "track", "wbr"]);
+const attributeValue = (attributes: string, name: string) => new RegExp(`\\s${name}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`, "i").exec(attributes)?.slice(1).find(value => value !== undefined);
+
+/** Markup where each element with role="img" and an aria-label is replaced by its
+ * label, as screen readers read it: a chart's description instead of its tick labels.
+ * Expects clean (well-formed) markup. */
+function withImageLabels(html: string): string {
+  const open = /<([a-zA-Z][\w:-]*)(\s[^>]*)?>/g;
+  let result = "", from = 0;
+  for (let match; (match = open.exec(html));) {
+    const [tag, name, attributes = ""] = match;
+    const label = /\srole\s*=\s*["']?img["'\s/>]/i.test(`${attributes}>`) ? attributeValue(attributes, "aria-label") : undefined;
+    if (!label?.trim()) continue;
+    let end = match.index + tag.length;
+    if (!tag.endsWith("/>") && !VOID_TAGS.has(name.toLowerCase())) {
+      const nested = new RegExp(`<(/?)${name}(?:\\s[^>]*?)?(/?)>`, "gi");
+      nested.lastIndex = end;
+      for (let depth = 1, next; depth && (next = nested.exec(html));) {
+        if (next[1]) depth--; else if (!next[2]) depth++;
+        end = next.index + next[0].length;
+      }
+    }
+    result += `${html.slice(from, match.index)} ${label} `;
+    from = open.lastIndex = end;
+  }
+  return result + html.slice(from);
+}
+
+/** The words in an HTML layer, for alt text, reading order and agents: its text, with an
+ * element marked role="img" read as its aria-label and an image as its alt text. Text
+ * only: never draw what this returns as markup. */
+export function htmlLayerText(html: string, limit = 2_000): string {
+  return withImageLabels(html)
+    .replace(/<(style|script|title|head|textarea|noscript|template|desc|metadata)\b[\s\S]*?<\/\1\s*>/gi, " ")
+    .replace(/<img(\s[^>]*)?>/gi, (_, attributes = "") => ` ${attributeValue(attributes, "alt") ?? ""} `)
+    .replace(/<[^>]*>/g, " ")
+    .replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos|nbsp);/gi, (entity, code: string) => {
+      const named: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " " };
+      if (named[code.toLowerCase()]) return named[code.toLowerCase()];
+      const point = code.toLowerCase().startsWith("#x") ? parseInt(code.slice(2), 16) : Number(code.slice(1));
+      return Number.isInteger(point) && point > 0 && point <= 0x10ffff && (point < 0xd800 || point > 0xdfff) ? String.fromCodePoint(point) : entity;
+    })
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit);
+}
+
 const BLEND_MODES = new Set(["normal", "multiply", "screen", "overlay", "darken", "lighten", "color-dodge", "color-burn", "hard-light", "soft-light", "difference", "exclusion", "hue", "saturation", "color", "luminosity"]);
 const optional = (value: Record<string, unknown>, key: string, check: (candidate: unknown) => boolean) => value[key] === undefined || check(value[key]);
 const boolean = (value: unknown): value is boolean => typeof value === "boolean";
@@ -1528,13 +1960,26 @@ function parseLayout(value: unknown): CanvasLayout | null {
 
 function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElementBase> | null {
   const result: Partial<CanvasElementBase> = {};
-  if (!optional(value, "templateRole", choice(["brand", "media"]))) return null;
+  if (!optional(value, "templateRole", choice(["brand", "media"])) || !optional(value, "layoutRole", choice(["fixed", "text", "media", "free"]))) return null;
   if (value.templateRole !== undefined) result.templateRole = value.templateRole as CanvasElementBase["templateRole"];
+  if (value.layoutRole !== undefined) result.layoutRole = value.layoutRole as CanvasElementBase["layoutRole"];
   if (value.smartFlow !== undefined) {
     const flow = value.smartFlow;
-    if (!object(flow) || !string(flow.after, 200) || !flow.after || !numberIn(flow.gap, 0, 1000) || !numberIn(flow.bottom, -10000, 10000) || !optional(flow, "edge", choice(["top"])) || !optional(flow, "resize", boolean)) return null;
-    result.smartFlow = { after: flow.after, gap: flow.gap, bottom: flow.bottom, ...(flow.edge === "top" ? { edge: "top" } : {}), ...(typeof flow.resize === "boolean" ? { resize: flow.resize } : {}) };
+    if (!object(flow) || !string(flow.after, 200) || !flow.after || !numberIn(flow.gap, 0, 1000) || !numberIn(flow.bottom, -10000, 10000) || !optional(flow, "edge", choice(["top"])) || !optional(flow, "resize", boolean) || !optional(flow, "direction", choice(["up", "right"]))) return null;
+    const hug = flow.hug, media = flow.media;
+    if (hug !== undefined && (!object(hug) || !string(hug.after, 200) || !hug.after || !numberIn(hug.gap, 0, 1000))) return null;
+    if (media !== undefined && (!object(media) || !numberIn(media.x, -10000, 10000) || !numberIn(media.width, 1, 10000))) return null;
+    result.smartFlow = { after: flow.after, gap: flow.gap, bottom: flow.bottom, ...(flow.edge === "top" ? { edge: "top" } : {}), ...(typeof flow.resize === "boolean" ? { resize: flow.resize } : {}), ...(flow.direction === "up" || flow.direction === "right" ? { direction: flow.direction } : {}), ...(object(hug) ? { hug: { after: hug.after as string, gap: hug.gap as number } } : {}), ...(object(media) ? { media: { x: media.x as number, width: media.width as number } } : {}) };
   }
+  if (value.smartCenter !== undefined) {
+    const center = value.smartCenter;
+    if (!object(center) || !numberIn(center.top, -10000, 10000) || !numberIn(center.bottom, center.top, 10000)) return null;
+    result.smartCenter = { top: center.top, bottom: center.bottom };
+  }
+  if (!optional(value, "leadsGroup", boolean)) return null;
+  if (value.leadsGroup === true) result.leadsGroup = true;
+  if (!optional(value, "frameRole", choice([...FRAME_ROLES]))) return null;
+  if (value.frameRole !== undefined) result.frameRole = value.frameRole as FrameRole;
   for (const key of ["groupId", "componentId", "componentInstanceId", "componentSourceId", "colorRoleId"] as const) {
     if (!optional(value, key, identity)) return null;
     if (value[key] !== undefined) result[key] = value[key] as string;
@@ -1579,14 +2024,14 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
 
 function parseTextExtensions(value: Record<string, unknown>): Partial<TextElement> | null {
   if (!["autoFitMinFontSize","autoFitMaxFontSize","autoFitFontSize"].every(key=>optional(value,key,candidate=>numberIn(candidate,1,500))) || value.autoFitMinFontSize!==undefined && value.autoFitMaxFontSize!==undefined && Number(value.autoFitMinFontSize)>Number(value.autoFitMaxFontSize)) return null;
-  if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "textStyleId", identity)) return null;
+  if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "hangingIndent", boolean) || !optional(value, "textStyleId", identity)) return null;
   const result: Partial<TextElement> = {};
   if (value.smartText !== undefined) {
     const smart = value.smartText;
-    if (!object(smart) || !choice(["cover", "heading", "body"])(smart.role) || ![0, 2, 3, 4].includes(Number(smart.lines)) || typeof smart.lines !== "number" || !numberIn(smart.minFontSize, 1, 500) || !numberIn(smart.maxFontSize, smart.minFontSize as number, 500) || !numberIn(smart.maxHeight, 1, 10000)) return null;
-    result.smartText = { role: smart.role as "cover" | "heading" | "body", lines: smart.lines as 0 | 2 | 3 | 4, minFontSize: smart.minFontSize, maxFontSize: smart.maxFontSize, maxHeight: smart.maxHeight };
+    if (!object(smart) || !choice(["cover", "heading", "body", "list"])(smart.role) || ![0, 2, 3, 4].includes(Number(smart.lines)) || typeof smart.lines !== "number" || !numberIn(smart.minFontSize, 1, 500) || !numberIn(smart.maxFontSize, smart.minFontSize as number, 500) || !numberIn(smart.maxHeight, 1, 10000) || !optional(smart, "baseHeight", candidate => numberIn(candidate, 1, 10000)) || !optional(smart, "softMinFontSize", candidate => numberIn(candidate, 1, 500)) || !optional(smart, "anchorBottom", candidate => numberIn(candidate, -10000, 10000)) || !optional(smart, "anchorTop", candidate => numberIn(candidate, -10000, 10000)) || !optional(smart, "group", candidate => typeof candidate === "string" && /^[\w-]{1,40}$/.test(candidate)) || !optional(smart, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(smart, "maxParagraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(smart, "guideHeight", candidate => numberIn(candidate, 1, 10000))) return null;
+    result.smartText = { role: smart.role as SmartTextRole, lines: smart.lines as 0 | 2 | 3 | 4, minFontSize: smart.minFontSize, maxFontSize: smart.maxFontSize, maxHeight: smart.maxHeight, ...(smart.baseHeight !== undefined ? { baseHeight: smart.baseHeight as number } : {}), ...(smart.softMinFontSize !== undefined ? { softMinFontSize: smart.softMinFontSize as number } : {}), ...(smart.anchorBottom !== undefined ? { anchorBottom: smart.anchorBottom as number } : {}), ...(smart.anchorTop !== undefined ? { anchorTop: smart.anchorTop as number } : {}), ...(smart.group !== undefined ? { group: smart.group as string } : {}), ...(smart.paragraphSpacing !== undefined ? { paragraphSpacing: smart.paragraphSpacing as number } : {}), ...(smart.maxParagraphSpacing !== undefined ? { maxParagraphSpacing: smart.maxParagraphSpacing as number } : {}), ...(smart.guideHeight !== undefined ? { guideHeight: smart.guideHeight as number } : {}) };
   }
-  for (const key of ["textMode", "verticalAlign", "listStyle", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  for (const key of ["textMode", "verticalAlign", "listStyle", "hangingIndent", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
   if (value.richText !== undefined) {
     const sanitized = sanitizeRichText(value.richText);
     if (sanitized !== undefined) result.richText = sanitized;
@@ -1705,6 +2150,12 @@ const NUMERIC_STYLE: Partial<Record<keyof SlideStyle, [number, number]>> = {
   mediaEnd: [0, 86_400],
 };
 
+function parsePageFrame(value: unknown): PageFrame | null {
+  if (!object(value) || typeof value.original !== "string" || !FRAME_ASSET.test(value.original)) return null;
+  if (!Number.isInteger(value.width) || !Number.isInteger(value.height) || (value.width as number) < 1 || (value.height as number) < 1 || (value.width as number) > 30_000 || (value.height as number) > 30_000) return null;
+  if (!string(value.name, 200) || !choice(["editor", "agent"])(value.source) || !string(value.createdAt, 40)) return null;
+  return { original: value.original, width: value.width as number, height: value.height as number, name: value.name as string, source: value.source as PageFrame["source"], createdAt: value.createdAt as string };
+}
 function parseStyle(value: unknown): SlideStyle | null {
   if (
     !object(value) ||
@@ -1972,10 +2423,12 @@ export function parseCanvas(value: unknown): CanvasScene | null {
       )
         return null;
       if (!optional(element, "cropScale", candidate => numberIn(candidate, 0.1, 20)) || !optional(element, "flipX", boolean) || !optional(element, "flipY", boolean) || !optional(element, "mask", choice(["none", "ellipse", "triangle", "diamond"])) || !optional(element, "intrinsicWidth", candidate => numberIn(candidate, 1, 100_000)) || !optional(element, "intrinsicHeight", candidate => numberIn(candidate, 1, 100_000))) return null;
+      if (!optional(element, "span", candidate => object(candidate) && identity(candidate.id) && choice(["start", "end"])(candidate.part))) return null;
       const imageExtensions: Partial<ImageElement> = {};
       const photoMetadata = parsePhotoMetadata(element);
       if (!photoMetadata) return null;
       for (const key of ["publicAlt", "previewSrc", "cropScale", "flipX", "flipY", "mask", "intrinsicWidth", "intrinsicHeight"] as const) if (element[key] !== undefined) Object.assign(imageExtensions, { [key]: element[key] });
+      if (object(element.span)) imageExtensions.span = { id: element.span.id as string, part: element.span.part as "start" | "end" };
       scene.elements.push({
         ...photoMetadata,
         ...imageExtensions,
@@ -2014,6 +2467,22 @@ export function parseCanvas(value: unknown): CanvasScene | null {
         stroke: element.stroke,
         strokeWidth: element.strokeWidth,
         radius: element.radius,
+      });
+    } else if (element.type === "html") {
+      if (
+        !string(element.html, MAX_HTML_CHARS) ||
+        !numberIn(element.designWidth, 1, MAX_HTML_DESIGN_WIDTH) ||
+        !optional(element, "css", candidate => string(candidate, MAX_HTML_CSS_CHARS)) ||
+        !optional(element, "tokens", candidate => object(candidate) && Object.keys(candidate).length <= MAX_HTML_TOKENS && Object.entries(candidate).every(([name, value]) => isSafeHtmlToken(name, value)))
+      )
+        return null;
+      scene.elements.push({
+        ...base,
+        type: "html",
+        html: element.html,
+        designWidth: element.designWidth,
+        ...(element.css !== undefined ? { css: element.css as string } : {}),
+        ...(object(element.tokens) ? { tokens: { ...element.tokens as Record<string, string> } } : {}),
       });
     } else return null;
     ids.add(element.id);
@@ -2063,7 +2532,10 @@ function parsePages(value: unknown): DesignPage[] | null {
     const canvas = p.canvas === undefined ? undefined : parseCanvas(p.canvas);
     if (canvas === null) return null;
     if (!optional(p, "label", candidate => string(candidate, 200)) || !optional(p, "useMaster", boolean)) return null;
+    const frame = p.frame === undefined ? undefined : parsePageFrame(p.frame);
+    if (frame === null) return null;
     if (!optional(p, "publicDescription", candidate => string(candidate, 5000)) || !optional(p, "readingOrder", candidate => Array.isArray(candidate) && candidate.length <= 200 && candidate.every(identity) && new Set(candidate).size === candidate.length)) return null;
+    if (!optional(p, "savedLayout", candidate => object(candidate) && string(candidate.useWhen, MAX_SAVED_LAYOUT_USE_WHEN) && /\S/.test(candidate.useWhen))) return null;
     const source: StoryImage["source"] = [
       "google",
       "pinterest",
@@ -2082,6 +2554,8 @@ function parsePages(value: unknown): DesignPage[] | null {
       ...(p.useMaster !== undefined ? { useMaster: p.useMaster as boolean } : {}),
       ...(p.publicDescription !== undefined ? { publicDescription: p.publicDescription as string } : {}),
       ...(p.readingOrder !== undefined ? { readingOrder: [...p.readingOrder as string[]] } : {}),
+      ...(object(p.savedLayout) ? { savedLayout: { useWhen: p.savedLayout.useWhen as string } } : {}),
+      ...(frame ? { frame } : {}),
       ...(canvas ? { canvas } : {}),
       image: {
         id: image.id,
@@ -2282,7 +2756,8 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
         !string(t.name, 200) ||
         !string(t.description, 2000) ||
         !string(t.category, 100) ||
-        !format(t.format)
+        !format(t.format) ||
+        !optional(t, "builtInFingerprint", candidate => string(candidate, 100) && /^[a-z0-9-]+$/.test(candidate))
       )
         return null;
       const pages = parsePages(t.pages);
@@ -2302,6 +2777,7 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
         pages,
         ...(continuousCanvas ? { continuousCanvas } : {}),
         custom: true,
+        ...(typeof t.builtInFingerprint === "string" ? { builtInFingerprint: t.builtInFingerprint } : {}),
       });
       templateIds.add(t.id);
     }
@@ -2309,6 +2785,37 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
   } catch {
     return null;
   }
+}
+
+/** A 64-bit hash of text (cyrb53's two halves), the same on every machine. It tells content apart; it isn't for security. */
+function textHash(text: string): string {
+  let h1 = 0xdeadbeef ^ text.length, h2 = 0x41c6ce57 ^ text.length;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * A fingerprint of a template's own content, read as storage keeps it (parsed, keys in order): its name, description,
+ * category, format, styles and other resources, and its pages other than saved layouts. Where it's filed (tags,
+ * folder, favourite, Trash) doesn't count. Two templates with the same content have the same fingerprint, so the
+ * workspace's copy of a built-in can tell whether anyone has changed the built-in's part of it since it was copied.
+ * Null for content that wouldn't parse.
+ */
+export function templateFingerprint(template: DesignTemplate): string | null {
+  const pages = parsePages(template.pages.filter(page => !page.savedLayout));
+  const resources = parseResources({ ...template, tags: undefined, folderId: undefined, favorite: undefined, deletedAt: undefined });
+  const continuousCanvas = template.continuousCanvas === undefined ? undefined : parseCanvas(template.continuousCanvas);
+  if (!pages || !resources || continuousCanvas === null) return null;
+  normalizeReadingOrders(pages, continuousCanvas, resources.masterScene);
+  const content = { name: template.name, description: template.description, category: template.category, format: template.format, pages, ...(continuousCanvas ? { continuousCanvas } : {}), ...resources };
+  const text = JSON.stringify(content, (_key, child) => child && typeof child === "object" && !Array.isArray(child) ? Object.fromEntries(Object.keys(child).sort().map(key => [key, child[key]])) : child);
+  return `v1-${text.length.toString(36)}-${textHash(text)}`;
 }
 
 /** Only the passive vector grammar produced by the Brand importer is accepted.
@@ -2361,4 +2868,293 @@ export function isSafeBrandSvg(source: string): boolean {
 export function isSafeBrandSvgUrl(value: unknown): boolean {
   if (typeof value !== "string" || !value.startsWith(BRAND_SVG_PREFIX)) return false;
   try { return isSafeBrandSvg(decodeURIComponent(value.slice(BRAND_SVG_PREFIX.length))); } catch { return false; }
+}
+
+/** Appends the @chatgptricks Wide photo pair as the template's last two pages: one photo that
+ * starts on the first page and continues on the second, as linked halves (see
+ * spanning-photos.ts, which keeps them in step and lays the pages out with the
+ * same numbers). Each page has a one-line title and a two-line body at fixed
+ * heights, so the title, body and photo form one block, balanced between 90 and
+ * 1252, and both titles sit level. The photo keeps its own proportions, as large
+ * as fits: up to 2160 wide and 916.88 tall. The placeholder is 16:9, centered on
+ * the seam. The source line is on the second page only. A function declaration
+ * that uses only locals, like chatgptricksTemplate, so BUILT_IN_TEMPLATES can call it. */
+function withWidePhotoPair(template: DesignTemplate): DesignTemplate {
+  const px = (value: number) => value / 3;
+  const night = "#0B1014", surface = "#1A242B", white = "#F9FFFE", green = "#00D98A", grey = "#D9D9D9", dim = "#7D858A";
+  const at = (id: string, name: string, x: number, y: number, width: number, height: number) => ({ id: `cgt-${id}`, name, x: px(x), y: px(y), width: px(width), height: px(height), rotation: 0, opacity: 1, locked: false });
+  const typeset = (size: number, weight: number, color: string, lineHeight: number, tracking: number) => ({ font: "sfpro", fontSize: px(size), fontWeight: weight, italic: false, underline: false, color, align: "left" as const, lineHeight, letterSpacing: px(size * tracking) });
+  const textSlot = (slot: string) => ({ slot, layoutRole: "text" as const, textMode: "auto-fit" as const, verticalAlign: "top" as const, protected: ["position", "style", "delete"] as ProtectedProperty[] });
+  // Same rule shape as chatgptricksTemplate's: heights get a hair of slack for floating-point rounding.
+  const fit = (role: "heading" | "body", size: number, min: number, height: number, anchorBottom?: number): NonNullable<TextElement["smartText"]> => ({ role, lines: 0, minFontSize: px(min), maxFontSize: px(size), maxHeight: px(height) + .01, baseHeight: px(height) + .01, softMinFontSize: px(size), ...(anchorBottom === undefined ? {} : { anchorBottom: px(anchorBottom) }) });
+  const header = (key: string, title: string, body: string): TextElement[] => [
+    { type: "text", ...at(`${key}-title`, "Title", 72, 90, 920, 62.72), text: title, ...typeset(56, 700, green, 1.12, -.022), ...textSlot("title"), smartText: fit("heading", 56, 42, 62.72) },
+    { type: "text", ...at(`${key}-body`, "Body", 72, 175.72, 920, 95.4), text: body, ...typeset(43, 400, white, 47.7 / 43, -.012), ...textSlot("body"), smartText: fit("body", 43, 36, 95.4) },
+  ];
+  // A 16:9 #1A242B placeholder with a faint picture icon in the middle of each half.
+  const icon = (cx: number, cy: number) => {
+    const [l, t, r, b] = [cx - 60, cy - 48, cx + 60, cy + 48];
+    return `<path d="M${l} ${t}H${r}V${b}H${l}ZM${l + 6} ${t + 6}V${b - 6}H${r - 6}V${t + 6}Z" fill="${grey}" fill-rule="evenodd"/><path d="M${l + 14} ${b - 14}L${cx - 16} ${cy - 4}L${cx + 6} ${cy + 18}L${cx + 22} ${cy + 4}L${r - 14} ${b - 14}Z" fill="${grey}"/><path d="M${cx + 17} ${cy - 22}a9 9 0 1 0 18 0a9 9 0 1 0 -18 0Z" fill="${grey}"/>`;
+  };
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900"><path d="M0 0H1600V900H0Z" fill="${surface}"/><g opacity="0.3">${icon(400, 450)}${icon(1200, 450)}</g></svg>`;
+  const height = 1252 - 90 - (62.72 + 23 + 95.4) - 64, width = height * 16 / 9, top = 90 + 62.72 + 23 + 95.4 + 64;
+  const photo = (key: string, name: string, x: number, part: "start" | "end"): ImageElement => ({
+    type: "image", ...at(`${key}-photo`, name, x, top, width, height), src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`, fit: "cover", cropX: 50, cropY: 50, radius: 0,
+    intrinsicWidth: 1600, intrinsicHeight: 900, directive: "A wide landscape photo for this point. It runs across both slides, so keep faces and text off the seam",
+    ...(part === "start" ? { slot: "wide-photo", templateRole: "media" as const } : {}), layoutRole: "media", protected: ["delete"], span: { id: "wide-photo", part },
+  });
+  const source: TextElement = {
+    type: "text", ...at("wide-end-source", "Source", 72, 1322, 920, 30), text: "Source: [source and photo credit]", ...typeset(24, 400, dim, 1.25, 0), ...textSlot("source"), verticalAlign: "bottom", smartText: fit("body", 24, 20, 60, 1352),
+  };
+  // The end half sits exactly one page width (360) to the left of the start half.
+  const start = photo("wide-start", "Wide photo", 1080 - width / 2, "start"), end: ImageElement = { ...photo("wide-end", "Wide photo (continued)", 0, "end"), x: start.x - 360 };
+  const sheet = (key: string, label: string, elements: CanvasElement[]): DesignPage => {
+    const base = page(`chatgptricks-3x4-${key}`, "folds", { template: "text", heading: "", body: "", bgMode: "color", bgColor: night, textColor: white, font: "sfpro", align: "top", textAlign: "left" });
+    const content = elements.filter(element => element.type === "text" || element.templateRole === "media").sort((a, b) => a.y - b.y || a.x - b.x);
+    const layout: CanvasLayout = { showGuides: true, margins: { enabled: true, top: px(90), right: px(88), bottom: px(88), left: px(72) }, snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } };
+    return { ...base, image: { ...base.image, width: 1080, height: 1440 }, label, canvas: { background: night, elements, layout }, readingOrder: content.map(element => element.id) };
+  };
+  return {
+    ...template,
+    description: `${template.description} Pages ${template.pages.length} and ${template.pages.length + 1} are the Wide photo pair: one photo runs across both slides.`,
+    pages: [
+      ...template.pages,
+      sheet("wide-start", "Wide photo · start", [start, ...header("wide-start", "Where AI gets built", "A photo can start on one slide\nand finish on the next")]),
+      sheet("wide-end", "Wide photo · end", [end, ...header("wide-end", "Swipe to see the rest", "Each slide shows its own half\nof the same photo"), source]),
+    ],
+  };
+}
+
+/** The @chatgptricks Instagram carousel at 3:4 (1080 × 1440): Cover, Text +
+ * Media, List and Follow pages, then Reaction (one post from X) and Reactions
+ * (two stacked posts), all native layers. Each layer's role (fixed
+ * brand, text slot, photo slot) and its smart flow are authored here rather
+ * than inferred. Geometry is written in output pixels and stored on the
+ * 360-wide scene. Use it through chatgptricks-template.ts; it is defined in
+ * this file because model.ts has no runtime imports, which the TypeScript test
+ * loaders rely on. Its name is deliberately not exactly "@chatgptricks": that
+ * name turns on tuned inference rules that rename slots to smart-text-N and
+ * re-flow "Text + Media" pages around a single title. This is a function
+ * declaration so BUILT_IN_TEMPLATES can call it above; it must not read
+ * module-level constants declared after that array. */
+function chatgptricksTemplate(): DesignTemplate {
+  const px = (value: number) => value / 3;
+  const night = "#0B1014", surface = "#1A242B", white = "#F9FFFE", green = "#00D98A", grey = "#D9D9D9", dim = "#7D858A";
+  type Box = [x: number, y: number, width: number, height: number];
+  type Rule = NonNullable<TextElement["smartText"]>;
+  const at = (id: string, name: string, [x, y, width, height]: Box) => ({ id: `cgt-${id}`, name, x: px(x), y: px(y), width: px(width), height: px(height), rotation: 0, opacity: 1, locked: false });
+  const fixed = () => ({ templateRole: "brand" as const, layoutRole: "fixed" as const, protected: ["content", "position", "style", "delete"] as ProtectedProperty[] });
+  const textSlot = (slot: string) => ({ slot, layoutRole: "text" as const, textMode: "auto-fit" as const, verticalAlign: "top" as const, protected: ["position", "style", "delete"] as ProtectedProperty[] });
+  const typeset = (font: string, size: number, weight: number, color: string, lineHeight: number, tracking: number, align: TextElement["align"] = "left") => ({ font, fontSize: px(size), fontWeight: weight, italic: false, underline: false, color, align, lineHeight, letterSpacing: px(size * tracking) });
+  // Heights get a hair of slack so whole lines still divide them after floating-point rounding.
+  const fit = (role: Rule["role"], lines: Rule["lines"], size: number, min: number, maxHeight: number, baseHeight: number, soft = size, anchorBottom?: number): Rule => ({ role, lines, minFontSize: px(min), maxFontSize: px(size), maxHeight: px(maxHeight) + .01, baseHeight: px(baseHeight) + .01, softMinFontSize: px(soft), ...(anchorBottom === undefined ? {} : { anchorBottom: px(anchorBottom) }) });
+  const glow = (): CanvasShadow => ({ color: "#00000099", offsetX: 0, offsetY: px(5), blur: px(37.5), spread: 0 });
+  // A #1A242B photo placeholder with a faint picture icon, as a vector the Brand SVG grammar accepts.
+  const placeholder = (width: number, height: number, cx: number, cy: number) => {
+    const [l, t, r, b] = [cx - 60, cy - 48, cx + 60, cy + 48];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}"><path d="M0 0H${width}V${height}H0Z" fill="${surface}"/><g opacity="0.3"><path d="M${l} ${t}H${r}V${b}H${l}ZM${l + 6} ${t + 6}V${b - 6}H${r - 6}V${t + 6}Z" fill="${grey}" fill-rule="evenodd"/><path d="M${l + 14} ${b - 14}L${cx - 16} ${cy - 4}L${cx + 6} ${cy + 18}L${cx + 22} ${cy + 4}L${r - 14} ${b - 14}Z" fill="${grey}"/><path d="M${cx + 17} ${cy - 22}a9 9 0 1 0 18 0a9 9 0 1 0 -18 0Z" fill="${grey}"/></g></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  };
+  const photo = (id: string, name: string, slot: string, box: Box, icon: [number, number], directive: string): ImageElement => ({
+    type: "image", ...at(id, name, box), src: placeholder(Math.round(box[2]), Math.round(box[3]), ...icon), fit: "cover", cropX: 50, cropY: 50, radius: 0,
+    intrinsicWidth: Math.round(box[2]), intrinsicHeight: Math.round(box[3]), directive, slot, templateRole: "media", layoutRole: "media", protected: ["position", "delete"],
+  });
+  const fade = (id: string, name: string, y: number, height: number, from: string, to: string): ShapeElement => ({
+    type: "shape", ...at(id, name, [0, y, 1080, height]), shape: "rectangle", fill: night, stroke: "transparent", strokeWidth: 0, radius: 0,
+    gradient: { type: "linear", angle: 180, stops: [{ color: from, position: 0 }, { color: to, position: 100 }] }, ...fixed(),
+  });
+  // Full-bleed photo from the top to y 926, fading in from the top and out into the page.
+  const hero = (key: string, directive: string): CanvasElement[] => [
+    photo(`${key}-photo`, "Photo", "photo", [0, 0, 1080, 926], [540, 333], directive),
+    fade(`${key}-top-fade`, "Top fade", 0, 220, night, "#0B101400"),
+    fade(`${key}-bottom-fade`, "Bottom fade", 506, 420, "#0B101400", night),
+  ];
+  // Hairlines are 2 px tall; a layer is at least 3 px, so each draws a 2 px bar inside a 3 px box.
+  const hairline = (id: string, name: string, x: number, from: string, to: string): ShapeElement => ({
+    type: "shape", ...at(id, name, [x, 1000.724, 461, 3]), shape: "path", path: "M0 0.5H461V2.5H0Z", viewBox: "0 0 461 3", fill: white, stroke: "transparent", strokeWidth: 0, radius: 0,
+    gradient: { type: "linear", angle: 90, stops: [{ color: from, position: 0 }, { color: to, position: 100 }] }, ...fixed(),
+    smartFlow: { after: "cover-headline", gap: px(63), bottom: px(90), direction: "up" },
+  });
+  // Content pages follow the style guide: 72 px text margins (936 px of text), the title at 90 in
+  // 56 px bold (line height 1.04), the body 26 px under it in 42.67 px (1.115), about 64 px to the
+  // media, and the source line at the bottom margin. The boxes are where copy starts, not where it
+  // must stop: the title takes up to three lines and the body as many as it needs at full size, and
+  // what follows makes room. The header ends by headerBottom, so a photo or chart under it keeps at
+  // least 600 px. Agents are still asked for two title lines and two body lines (guideHeight).
+  const titleLine = 56 * 1.04, bodyLine = 42.67 * 1.115, bodyTop = 90 + titleLine + 26, contentTop = bodyTop + 2 * bodyLine + 64;
+  const headerBottom = 1252 - 64 - 600;
+  const header = (key: string, title: string, body: string): TextElement[] => [
+    { type: "text", ...at(`${key}-title`, "Title", [72, 90, 936, titleLine]), text: title, ...typeset("sfpro", 56, 700, green, 1.04, -1.2 / 56), ...textSlot("title"), smartText: { ...fit("heading", 0, 56, 56, 3 * titleLine, titleLine), anchorTop: px(90), guideHeight: px(2 * titleLine) + .01 } },
+    { type: "text", ...at(`${key}-body`, "Body", [72, bodyTop, 936, 2 * bodyLine]), text: body, ...typeset("sfpro", 42.67, 400, white, 1.115, -.35 / 42.67), ...textSlot("body"), smartFlow: { after: "title", gap: px(26), bottom: px(headerBottom) }, smartText: { ...fit("body", 0, 42.67, 36, headerBottom - bodyTop, 2 * bodyLine), guideHeight: px(2 * bodyLine) + .01 } },
+  ];
+  // The source line is pinned to the bottom margin and grows upwards to two lines.
+  const source = (key: string, text: string, lines: 1 | 2): TextElement => ({
+    type: "text", ...at(`${key}-source`, "Source", [72, 1352 - 30 * lines, 936, 30 * lines]), text, ...typeset("sfpro", 24, 400, dim, 1.25, 0), ...textSlot("source"), verticalAlign: "bottom", smartText: fit("body", 0, 24, 20, 60, 60, 24, 1352),
+  });
+  // Two 448 px columns 40 px apart across the 936 px of text.
+  const listHeading = (side: "left" | "right", x: number, word: string): TextElement => ({
+    type: "text", ...at(`list-${side}-heading`, `${side === "left" ? "Left" : "Right"} column heading`, [x, contentTop, 448, 55.2]), text: `${word} From AI`, richText: `<span style="color:${green}; font-weight:700">${word}</span> From AI`,
+    ...typeset("sfpro", 46, 400, white, 1.2, -.02), ...textSlot(`list-${side}-heading`), smartFlow: { after: "body", gap: px(64), bottom: px(headerBottom + 64 + 110.4) }, smartText: { ...fit("heading", 0, 46, 36, 110.4, 55.2, 46 * .9), group: "list-headings" },
+  });
+  // Bullet lists, one item per line, wrapped under their own text. The two columns share one
+  // size and gap so their rows line up. A short list fills its column down to 1252: type grows
+  // to 43 px, about the body's size (wrapping items only when single lines would leave a fifth of
+  // the column empty and every line keeps two words), then gaps open to about twice the type size;
+  // whatever is still left centres the page's copy between 90 and 1252 (balanceShortCopy in
+  // smart-text.ts). A long list shrinks to 26 px.
+  const listItems = (side: "left" | "right", x: number, items: string[]): TextElement => ({
+    type: "text", ...at(`list-${side}-items`, `${side === "left" ? "Left" : "Right"} column items`, [x, contentTop + 55.2 + 36, 448, 1252 - contentTop - 55.2 - 36]), text: items.join("\n"), ...typeset("sfpro", 34, 400, white, 42 / 34, -.012),
+    ...textSlot(`list-${side}-items`), listStyle: "bullet", hangingIndent: true, paragraphSpacing: px(28),
+    smartFlow: { after: `list-${side}-heading`, gap: px(36), bottom: px(1252), resize: true },
+    smartText: { role: "list", lines: 0, minFontSize: px(26), maxFontSize: px(43), maxHeight: px(1252 - contentTop - 55.2 - 36) + .01, baseHeight: px(1252 - contentTop - 55.2 - 36) + .01, softMinFontSize: px(34), group: "list-items", paragraphSpacing: px(28), maxParagraphSpacing: px(70) },
+  });
+  // Reaction pages: real posts from X as they look in a phone screenshot of the X app in dark mode,
+  // measured on Ivan's examples (1206 px wide) and scaled into a 936 px card: a black box with
+  // slightly rounded corners, a thin grey border and black padding inside, so it stands out from
+  // the page (Ivan's call), the profile photo, the bold name and its badge, the grey @handle,
+  // the X.com mark and the post in SF Pro, and no stats. Each card hugs its post, so a page holds
+  // one long post, two medium ones or three short ones. There's no source line (the cards show
+  // whose posts they are), so the title and the cards are centred together between the margins.
+  // The Text + Media title's box and type, kept to one line.
+  const shortTitle = (key: string, title: string): TextElement => ({ type: "text", ...at(`${key}-title`, "Title", [72, 90, 936, titleLine]), text: title, ...typeset("sfpro", 56, 700, green, 1.04, -1.2 / 56), ...textSlot("title"), smartText: fit("heading", 0, 56, 42, titleLine, titleLine), smartCenter: { top: px(90), bottom: px(X_CARD.bottom) } });
+  // A grey head-and-shoulders placeholder; the avatar layer's radius makes it round.
+  const avatarPlaceholder = (size: number) => {
+    const [c, s] = [size / 2, size / 104];
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="0 0 ${size} ${size}"><path d="M0 0H${size}V${size}H0Z" fill="${dim}"/><g opacity="0.55"><path d="M${c - 20 * s} ${40 * s}a${20 * s} ${20 * s} 0 1 0 ${40 * s} 0a${20 * s} ${20 * s} 0 1 0 ${-40 * s} 0Z" fill="${grey}"/><path d="M${c - 36 * s} ${size}C${c - 36 * s} ${74 * s} ${c + 36 * s} ${74 * s} ${c + 36 * s} ${size}Z" fill="${grey}"/></g></svg>`;
+    return `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+  };
+  const xPath = "M714.163 519.284L1160.89 0H1055.03L667.137 450.887L357.328 0H0L468.492 681.821L0 1226.37H105.866L515.491 750.218L842.672 1226.37H1200L714.137 519.284H714.163ZM569.165 687.828L521.697 619.934L144.011 79.6944H306.615L611.412 515.685L658.88 583.579L1055.08 1150.3H892.476L569.165 687.854V687.828Z";
+  // A size in the screenshot, scaled into the card, and a position in it, inside the card's padding.
+  const shot = (value: number) => value * X_CARD.scale, inCard = (value: number) => X_CARD.pad + shot(value);
+  // SF Pro Display's baseline sits 0.95 em plus half the leading under the top of its line box.
+  const baselineAt = (size: number, lineHeight: number) => ((lineHeight - 1.19) / 2 + .95) * size;
+  // Type sizes match the screenshot's text widths in SF Pro; positions match its baselines.
+  const X = { name: shot(49.7), handle: shot(51.2), text: X_CARD.size, textLine: X_CARD.line, com: shot(61.5), avatar: shot(142), avatarTop: inCard(37), inset: X_CARD.inset, nameX: inCard(194), markX: inCard(969), markTop: inCard(56), mark: shot(44), badge: shot(44), badgeGap: shot(11), markGap: shot(31), foot: X_CARD.foot, between: X_CARD.between };
+  const nameTop = inCard(95) - baselineAt(X.name, 1.2), handleTop = inCard(154.5) - baselineAt(X.handle, 1.2), comTop = inCard(99) - baselineAt(X.com, 1.2), textTop = X_CARD.textTop;
+  const markWidth = X.mark * 1200 / 1227, nameWidth = X.markX - X.markGap - X.badgeGap - X.badge - X.nameX, mediaWidth = 936 - 2 * X.inset;
+  /** A card's height around `lines` lines of post text. */
+  const cardHeight = (lines: number) => textTop + lines * X.textLine + X.foot;
+  type XPost = { name: string; handle: string; text: string; lines: number };
+  /** Post card `n` of a page. Its top follows `after` by `gap`, everything in it follows its
+   * top edge, and its bottom hugs the post's photo, or its text while the photo is hidden.
+   * The text may reach no lower than `textBottom`. */
+  const xPost = (key: string, n: 1 | 2 | 3, top: number, after: string, gap: number, post: XPost, textBottom: number, maxLines: number): CanvasElement[] => {
+    const suffix = n === 1 ? "" : `-${n}`, slot = (part: string) => `reaction-${part}${suffix}`, left = 72, nameY = top + nameTop;
+    const inside = (offset: number) => ({ after: slot("card"), edge: "top" as const, gap: px(offset), bottom: px(1440) });
+    const onMedia = (offset: number) => ({ after: slot("media"), edge: "top" as const, gap: px(offset), bottom: px(1440) });
+    // The photo's place before Recreate sizes it, and the length badge sized for "0:45".
+    const mediaTop = top + textTop + post.lines * X.textLine + X_CARD.mediaGap, mediaHeight = mediaWidth * 9 / 16, badge = X_CARD.length, badgeWidth = 2.16 * badge.size + 2 * badge.pad;
+    return [
+      { type: "shape", ...at(`${key}-card${suffix}`, "Post card", [left, top, 936, cardHeight(post.lines)]), shape: "rectangle", fill: X_POST_COLORS.card, stroke: X_POST_COLORS.border, strokeWidth: px(X_CARD.border), strokeAlign: "inside", radius: px(X_CARD.radius), ...fixed(), slot: slot("card"),
+        smartFlow: { after, gap: px(gap), bottom: px(X_CARD.bottom), hug: { after: slot("media"), gap: px(X.foot) } } },
+      { type: "image", ...at(`${key}-avatar${suffix}`, "Avatar", [left + X.inset, top + X.avatarTop, X.avatar, X.avatar]), src: avatarPlaceholder(Math.round(X.avatar)), fit: "cover", cropX: 50, cropY: 50, radius: px(X.avatar / 2), intrinsicWidth: Math.round(X.avatar), intrinsicHeight: Math.round(X.avatar),
+        directive: "The post author's profile photo from X (pbs.twimg.com)", slot: slot("avatar"), templateRole: "media", layoutRole: "media", protected: ["position", "delete"], smartFlow: inside(X.avatarTop) },
+      { type: "text", ...at(`${key}-name${suffix}`, "Author name", [left + X.nameX, nameY, nameWidth, X.name * 1.2]), text: post.name, ...typeset("sfpro", X.name, 700, X_POST_COLORS.text, 1.2, 0), ...textSlot(slot("name")), smartFlow: inside(nameTop), smartText: fit("heading", 0, X.name, X.name * .75, X.name * 1.2, X.name * 1.2) },
+      // Sits after the name's last letter. Recreate recolours it per account (blue, gold for organizations, grey) or hides it.
+      { type: "shape", ...at(`${key}-badge${suffix}`, "Verified badge", [left + X.nameX + X.name * .55 * post.name.length + X.badgeGap, nameY + (X.name * 1.2 - X.badge) / 2, X.badge, X.badge]), shape: "path", path: X_BADGES.blue.path, viewBox: "0 0 100 100", fillRule: "evenodd", fill: X_BADGES.blue.fill, stroke: "transparent", strokeWidth: 0, radius: 0,
+        slot: slot("badge"), templateRole: "brand", layoutRole: "fixed", protected: ["content", "position"], smartFlow: { after: slot("name"), gap: px(X.badgeGap), bottom: px(1440), direction: "right" } },
+      { type: "text", ...at(`${key}-handle${suffix}`, "Author handle", [left + X.nameX, top + handleTop, X.markX - X.markGap - X.nameX, X.handle * 1.2]), text: post.handle, ...typeset("sfpro", X.handle, 400, X_POST_COLORS.handle, 1.2, 0), ...textSlot(slot("handle")), smartFlow: inside(handleTop), smartText: fit("body", 0, X.handle, X.handle * .75, X.handle * 1.2, X.handle * 1.2) },
+      { type: "shape", ...at(`${key}-x-mark${suffix}`, "X logo", [left + X.markX, top + X.markTop, markWidth, X.mark]), shape: "path", path: xPath, viewBox: "0 0 1200 1227", fill: X_POST_COLORS.text, stroke: "transparent", strokeWidth: 0, radius: 0, ...fixed(), smartFlow: inside(X.markTop) },
+      { type: "text", ...at(`${key}-x-com${suffix}`, "X.com", [left + X.markX + markWidth, top + comTop, 120, X.com * 1.2]), text: ".com", ...typeset("sfpro", X.com, 700, X_POST_COLORS.text, 1.2, 0), textMode: "fixed", verticalAlign: "top", ...fixed(), smartFlow: inside(comTop) },
+      // The post word for word at the screenshot's size, wrapping like X; only a post too long for its page shrinks.
+      { type: "text", ...at(`${key}-text${suffix}`, "Post text", [left + X.inset, top + textTop, 936 - 2 * X.inset, post.lines * X.textLine]), text: post.text, ...typeset("sfpro", X.text, 400, X_POST_COLORS.text, X.textLine / X.text, 0), ...textSlot(slot("text")),
+        smartFlow: { after: slot("card"), edge: "top", gap: px(textTop), bottom: px(textBottom) }, smartText: fit("body", 0, X.text, X.text * .8, maxLines * X.textLine, post.lines * X.textLine) },
+      // The post's own photo under its text, whole and with X's rounded corners. Hidden until Recreate
+      // fills it and sizes it to the photo's proportions; while hidden, the card ends under the text.
+      { type: "image", ...at(`${key}-media${suffix}`, "Post photo", [left + X.inset, mediaTop, mediaWidth, mediaHeight]),
+        src: placeholder(Math.round(mediaWidth), Math.round(mediaWidth * 9 / 16), mediaWidth / 2, mediaWidth * 9 / 32), fit: "cover", cropX: 50, cropY: 50, radius: px(X_CARD.mediaRadius), hidden: true,
+        intrinsicWidth: Math.round(mediaWidth), intrinsicHeight: Math.round(mediaWidth * 9 / 16), directive: "The post's own photo from X (pbs.twimg.com/media), whole", slot: slot("media"), templateRole: "media", layoutRole: "media",
+        protected: ["position", "delete"], smartFlow: { after: slot("text"), gap: px(X_CARD.mediaGap), bottom: px(1440) } },
+      // A video shows its poster frame with X's play button in the middle and its length in the lower
+      // left corner; a GIF shows "GIF" there. Hidden until Recreate shows them on a video or a GIF,
+      // and it moves them to the frame's size; they follow its top like the copy follows the card's.
+      { type: "image", ...at(`${key}-play${suffix}`, "Play button", [left + X.inset + (mediaWidth - X_CARD.play) / 2, mediaTop + (mediaHeight - X_CARD.play) / 2, X_CARD.play, X_CARD.play]),
+        src: X_PLAY_BUTTON, fit: "contain", cropX: 50, cropY: 50, radius: 0, hidden: true, intrinsicWidth: 100, intrinsicHeight: 100, ...fixed(), slot: slot("play"), smartFlow: onMedia((mediaHeight - X_CARD.play) / 2) },
+      { type: "shape", ...at(`${key}-length${suffix}`, "Video length", [left + X.inset + badge.inset, mediaTop + mediaHeight - badge.inset - badge.height, badgeWidth, badge.height]), shape: "rectangle", fill: badge.fill, stroke: "transparent", strokeWidth: 0, radius: px(badge.radius), hidden: true,
+        ...fixed(), slot: slot("length"), smartFlow: onMedia(mediaHeight - badge.inset - badge.height) },
+      { type: "text", ...at(`${key}-length-text${suffix}`, "Video length text", [left + X.inset + badge.inset, mediaTop + mediaHeight - badge.inset - badge.height, badgeWidth, badge.height]), text: "0:45", ...typeset("sfpro", badge.size, 600, badge.color, 1.2, 0, "center"),
+        textMode: "fixed", verticalAlign: "middle", hidden: true, ...fixed(), slot: slot("length-text"), smartFlow: onMedia(mediaHeight - badge.inset - badge.height) },
+    ];
+  };
+  /** The cards of a page with `posts.length` posts: the first 64 px under the title, the rest
+   * 40 px apart. Each post may grow while the posts after it still fit one line each: 16 lines
+   * on its own, 9 beside one more, 3 beside two more (the page holds 16, 10 or 5 in all). */
+  const xPosts = (key: string, posts: XPost[]): CanvasElement[] => {
+    let top = 216.72;
+    const pageLines = Math.floor((X_CARD.room - posts.length * cardHeight(0) - (posts.length - 1) * X.between) / X.textLine);
+    return posts.flatMap((post, index) => {
+      const n = (index + 1) as 1 | 2 | 3, after = index ? `reaction-card${index === 1 ? "" : `-${index}`}` : "title";
+      const elements = xPost(key, n, top, after, index ? X.between : 64, post, X_CARD.bottom - X.foot - (posts.length - n) * (cardHeight(1) + X.between), Math.min(X_CARD.maxLines, pageLines - posts.length + 1));
+      top += cardHeight(post.lines) + X.between;
+      return elements;
+    });
+  };
+  const samplePost = (name: string, text: string, lines: number): XPost => ({ name, handle: "@handle", text, lines });
+  const layout = (sides: number): CanvasLayout => ({ showGuides: true, margins: { enabled: true, top: px(90), right: px(sides || 88), bottom: px(88), left: px(sides || 72) }, snapping: { enabled: true, objects: true, page: true, guides: true, grid: false, spacing: true, tolerance: 6 } });
+  const sheet = (key: string, label: string, elements: CanvasElement[], sides = 0): DesignPage => {
+    const base = page(`chatgptricks-3x4-${key}`, "folds", { template: "text", heading: "", body: "", bgMode: "color", bgColor: night, textColor: white, font: "sfpro", align: "top", textAlign: "left" });
+    const content = elements.filter(element => element.type === "text" || element.templateRole === "media").sort((a, b) => a.y - b.y || a.x - b.x);
+    return { ...base, image: { ...base.image, width: 1080, height: 1440 }, label, canvas: { background: night, elements, layout: layout(sides) }, readingOrder: content.map(element => element.id) };
+  };
+  return {
+    id: "chatgptricks-3x4",
+    name: "@chatgptricks carousel",
+    category: "Carousels",
+    format: "portrait",
+    customSize: { width: 1080, height: 1440 },
+    description: "The @chatgptricks 3:4 carousel: photo cover, text with a photo or chart, a two-column list, a Follow page, and one to three real posts from X drawn like phone screenshots.",
+    colorRoles: [
+      { id: "cgt-background", name: "Background", color: night }, { id: "cgt-surface", name: "Photo placeholder", color: surface },
+      { id: "cgt-text", name: "Text", color: white }, { id: "cgt-accent", name: "Accent green", color: green },
+      { id: "cgt-light-grey", name: "Light grey", color: grey }, { id: "cgt-source", name: "Source grey", color: dim },
+    ],
+    pages: [
+      sheet("cover", "Cover", [
+        ...hero("cover", "Story photo: ChatGPT on a screen, or people job hunting"),
+        hairline("cover-hairline-left", "Left hairline", 41, "#F9FFFE00", white),
+        { type: "image", ...at("cover-logo", "ChatGPT Tricks logo", [514, 976.224, 52, 52]), opacity: .9, src: "/template-editor/chatgptricks-logo.png", fit: "contain", cropX: 50, cropY: 50, radius: 0, intrinsicWidth: 831, intrinsicHeight: 832, ...fixed(), smartFlow: { after: "cover-headline", gap: px(38.5), bottom: px(90), direction: "up" } },
+        hairline("cover-hairline-right", "Right hairline", 578, white, "#F9FFFE00"),
+        // Three balanced lines at 97 px; the box bottom stays 130 px above the page bottom.
+        { type: "text", ...at("cover-headline", "Cover headline", [68, 1066.724, 944, 243.276]), text: "SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED WHILE US JOB OPENINGS FELL ALMOST 30%", richText: `SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED WHILE US JOB OPENINGS <span style="color:${green}">FELL ALMOST 30%</span>`, ...typeset("bebas", 97, 400, white, .836, -.02, "center"), ...textSlot("cover-headline"), verticalAlign: "bottom", shadow: glow(), smartText: fit("cover", 3, 97, 54, 4 * 97 * .836, 3 * 97 * .836, 97 * .85, 1310) },
+        { type: "text", ...at("cover-swipe", "Swipe for more", [0, 1334, 1080, 32]), text: "SWIPE FOR MORE", ...typeset("sfpro", 32, 700, grey, 1, .01, "center"), textMode: "fixed", verticalAlign: "top", ...fixed() },
+      ], 68),
+      sheet("media", "Text + Media", [
+        ...header("media", "AI vs Jobs", "Since ChatGPT came out, stocks went up\nand job openings went down"),
+        // The frame takes its photo's or chart's shape (smartFlow.media): a landscape photo runs edge to
+        // edge, a portrait one is centred, and the title, body and media are centred together between
+        // 90 and 1252. The placeholder has the text column's shape, so it fills the column under sample copy.
+        { ...photo("media-media", "Photo or chart", "media", [72, contentTop, 936, 1252 - contentTop], [468, (1252 - contentTop) / 2], "Chart or photo for this point"), smartFlow: { after: "body", gap: px(64), bottom: px(1252), resize: true, media: { x: 0, width: px(1080) } } },
+        source("media", "Source: U.S. BLS job openings (JOLTS) and S&P 500 monthly average, Jan 2003 to Sep 2026. Both set to 100 in Nov 2022, when ChatGPT launched", 2),
+      ]),
+      sheet("list", "List", [
+        ...header("list", "The jobs AI can’t replace", "Anthropic looked at how people use AI at work. Office jobs are most at risk"),
+        listHeading("left", 72, "Risk"),
+        listItems("left", 72, ["Management", "Business & Finance", "Computer & Math", "Architecture & Engineering", "Life & Social Sciences", "Legal", "Education & Library", "Arts & Media", "Office & Administrative", "Sales", "Social Services"]),
+        listHeading("right", 560, "Safe"),
+        listItems("right", 560, ["Installation & Repair", "Construction", "Agriculture", "Transportation", "Production", "Protective Service", "Food & Serving", "Grounds Maintenance", "Personal Care", "Healthcare Support", "Healthcare Practitioners"]),
+        source("list", "Source: Anthropic, [study name and date]", 1),
+      ]),
+      sheet("follow", "Follow", [
+        ...hero("follow", "Screenshot of the @chatgptricks profile"),
+        // "FOLLOW THIS PAGE" sits directly above the call to action, which keeps its bottom 136 px above the page bottom.
+        { type: "text", ...at("follow-line", "Follow this page", [68, 1100.016, 944, 101.992]), text: "FOLLOW THIS PAGE", ...typeset("bebas", 122, 400, white, .836, -.02, "center"), textMode: "fixed", verticalAlign: "bottom", shadow: glow(), ...fixed(), smartFlow: { after: "cta", gap: 0, bottom: px(90), direction: "up" } },
+        { type: "text", ...at("follow-cta", "Call to action", [68, 1202.008, 944, 101.992]), text: "TO STAY ON THE SAFE SIDE", ...typeset("bebas", 122, 400, green, .836, -.02, "center"), ...textSlot("cta"), verticalAlign: "bottom", shadow: glow(), smartText: fit("cover", 0, 122, 72, 2 * 122 * .836, 122 * .836, 122 * .85, 1304) },
+      ], 68),
+      // Posts from X: one long post, two medium ones or three short ones. Each card hugs its post
+      // (a single post takes up to 16 lines). No source line: the cards show whose posts they are
+      // (Ivan's call), so the title and cards are centred between the top and bottom margins.
+      sheet("reaction", "Reaction", [
+        ...xPosts("reaction", [samplePost("Author name", "Paste a real post from X here, word for word, with the author's spelling, emoji and line breaks\n\nThe card grows with the post, like a screenshot. A post too long for the page is cut at a word boundary with …", 5)]),
+        shortTitle("reaction", "How X reacted"),
+      ]),
+      sheet("reactions", "Two reactions", [
+        ...xPosts("reactions", [samplePost("Author name", "A real post from X, word for word. Each card grows with its post", 2), samplePost("Author name 2", "Two medium posts share this page, about ten lines in all", 2)]),
+        shortTitle("reactions", "What people are saying"),
+      ]),
+      sheet("reactions3", "Three reactions", [
+        ...xPosts("reactions3", [samplePost("Author name", "Short posts share a page", 1), samplePost("Author name 2", "Up to three of them, about five lines in all", 1), samplePost("Author name 3", "Each card hugs its own text", 1)]),
+        shortTitle("reactions3", "What people are saying"),
+      ]),
+    ],
+  };
 }

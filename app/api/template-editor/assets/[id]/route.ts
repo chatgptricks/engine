@@ -14,6 +14,8 @@ export async function GET(request:Request,context:{params:Promise<{id:string}>})
     const asset=await readOriginalAsset(access.ownerKey,id);
     if(!asset) return Response.json({error:"Original image not found in this workspace."},{status:404,headers});
     const output=size===null?asset:await originalRendition(asset,size);
-    return new Response(new Uint8Array(output.data),{headers:{...headers,"Content-Type":output.mimeType,"Content-Length":String(output.bytes)}});
+    // A stored vector is passive (isSafeBrandSvg); opened on its own, it still can't run or load anything.
+    const vector:Record<string,string>=output.mimeType==="image/svg+xml"?{"Content-Security-Policy":"default-src 'none'; style-src 'unsafe-inline'; sandbox"}:{};
+    return new Response(new Uint8Array(output.data),{headers:{...headers,...vector,"Content-Type":output.mimeType,"Content-Length":String(output.bytes)}});
   }catch{return Response.json({error:"Original image storage is temporarily unavailable."},{status:503,headers});}
 }

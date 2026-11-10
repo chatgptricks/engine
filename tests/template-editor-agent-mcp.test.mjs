@@ -17,7 +17,7 @@ async function server(t, handler) {
   const instance = http.createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
-    const entry = { path: request.url, headers: request.headers, body: raw ? JSON.parse(raw) : null };
+    const entry = { method: request.method, path: request.url, headers: request.headers, body: raw ? JSON.parse(raw) : null };
     calls.push(entry);
     await handler(entry, response, calls);
   });
@@ -94,7 +94,7 @@ function client(t, url, env = {}) {
   };
 }
 
-test("MCP process negotiates, discovers live schemas, and calls all seven authenticated tools", async (t) => {
+test("MCP process negotiates, discovers live schemas, and calls all authenticated slide tools", async (t) => {
   const schemas = {
     deckSchema: { type: "object", properties: { name: { type: "string" } }, required: ["name"] },
     updateSchema: { type: "object", properties: { name: { type: "string" } } },
@@ -113,7 +113,7 @@ test("MCP process negotiates, discovers live schemas, and calls all seven authen
   assert.deepEqual(init.result.capabilities, { tools: {} });
   mcp.notify("notifications/initialized");
   const listed = await mcp.request("tools/list");
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_answer_check", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template", "engine_frame_upload", "engine_frame_view", "engine_frame_cut"]);
   assert.deepEqual(listed.result.tools[4].inputSchema.properties.spec, schemas.deckSchema);
   assert.deepEqual(listed.result.tools[5].inputSchema.properties.changes, schemas.updateSchema);
   await mcp.call("engine_capabilities");
@@ -203,7 +203,7 @@ test("discovery falls back while unavailable and refreshes live schemas after re
   const mcp = client(t, api.url);
   assert.equal((await mcp.init("future-version")).result.protocolVersion, "2025-11-25");
   const tools = await mcp.request("tools/list");
-  assert.equal(tools.result.tools.length, 7);
+  assert.equal(tools.result.tools.length, 26);
   assert.match(tools.result.tools[4].inputSchema.properties.spec.description, /engine_capabilities/);
   const failure = await mcp.call("engine_capabilities");
   assert.equal(failure.result.isError, true);
@@ -270,4 +270,142 @@ test("startup rejects insecure or credential-bearing URLs and missing tokens wit
     assert.equal((await accepted.init()).result.protocolVersion, "2025-11-25");
     assert.equal((await accepted.close()).code, 0);
   }
+});
+
+test("Recreate tools reach their own endpoints with the agent token and validate input", async (t) => {
+  const jobId = "0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f";
+  const api = await server(t, (entry, response) => {
+    if (entry.path === "/api/agent/slides") return json(response, {});
+    if (entry.path === "/api/engine/page-profiles") return json(response, { profiles: [{ id: "chatgptricks", language: "en" }] });
+    if (entry.path === "/api/engine/recreate") return json(response, { jobId }, 202);
+    if (entry.path === `/api/engine/recreate?jobId=${jobId}`) return json(response, { jobId, status: "researching", message: "Researching" });
+    return json(response, { error: "unexpected" }, 404);
+  });
+  const mcp = client(t, api.url);
+  await mcp.init();
+  const profiles = await mcp.call("engine_list_page_profiles");
+  assert.equal(profiles.result.structuredContent.profiles[0].id, "chatgptricks");
+  const started = await mcp.call("engine_recreate_post", { profileId: "chatgptricks", url: "https://www.instagram.com/p/DfUR7MxoA62/" });
+  assert.equal(started.result.isError, false);
+  assert.equal(started.result.structuredContent.jobId, jobId);
+  const status = await mcp.call("engine_recreate_status", { jobId });
+  assert.equal(status.result.structuredContent.status, "researching");
+  const recreateCalls = api.calls.filter((call) => call.path !== "/api/agent/slides");
+  assert.deepEqual(recreateCalls.map((call) => call.path), ["/api/engine/page-profiles", "/api/engine/recreate", `/api/engine/recreate?jobId=${jobId}`]);
+  assert.deepEqual(recreateCalls[1].body, { profileId: "chatgptricks", url: "https://www.instagram.com/p/DfUR7MxoA62/" });
+  assert.equal(recreateCalls[0].body, null);
+  assert.ok(recreateCalls.every((call) => call.headers.authorization === `Bearer ${token}`));
+  assert.equal((await mcp.call("engine_recreate_post", { profileId: "chatgptricks" })).error.code, -32602);
+  assert.equal((await mcp.call("engine_recreate_post", { url: "https://www.instagram.com/p/x/" })).error.code, -32602);
+  assert.equal((await mcp.call("engine_recreate_post", { profileId: "chatgptricks", uploads: [{ dataUrl: "https://example.com/a.png" }] })).error.code, -32602);
+  assert.equal((await mcp.call("engine_recreate_status", { jobId: "../deck" })).error.code, -32602);
+  assert.equal(api.calls.filter((call) => call.path !== "/api/agent/slides").length, 3, "invalid calls never reach Engine");
+});
+
+test("the Recreate team's tools answer the check, approve, add posts, rerun, hand in and resume through one endpoint", async (t) => {
+  const postId = "post-0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f";
+  const api = await server(t, (entry, response) => {
+    if (entry.path === "/api/agent/slides") return json(response, {});
+    if (entry.path === "/api/engine/recreate?playbook=1") return json(response, { shape: ["Cover"], houseRules: [], stages: [{ stage: "source" }] });
+    if (entry.path === `/api/engine/recreate?postId=${postId}`) return json(response, { postId, status: "paused", checkpoint: { hooks: { options: [{ text: "A" }] } } });
+    if (entry.path === "/api/engine/recreate") return json(response, { postId, status: "writing" }, 202);
+    return json(response, { error: "unexpected" }, 404);
+  });
+  const mcp = client(t, api.url);
+  await mcp.init();
+  assert.equal((await mcp.call("engine_playbook")).result.structuredContent.stages[0].stage, "source");
+  assert.equal((await mcp.call("engine_recreate_status", { postId })).result.structuredContent.status, "paused");
+  await mcp.call("engine_recreate_post", { profileId: "pagina-es", url: "https://www.instagram.com/p/x/", mode: "checkpoint" });
+  await mcp.call("engine_recreate_post", { profileId: "chatgptricks", url: "https://www.instagram.com/p/y/", mode: "exact" });
+  await mcp.call("engine_recreate_answer_check", { postId, choice: "link", link: "https://www.example.com/first-report", note: "This is where it started" });
+  await mcp.call("engine_recreate_answer_check", { postId, choice: "proceed" });
+  await mcp.call("engine_recreate_add_posts", { postId, xPosts: ["https://x.com/WilliamBaude/status/1985426345048617094"] });
+  await mcp.call("engine_recreate_approve", { postId, option: 0, notes: "Keep it short" });
+  await mcp.call("engine_recreate_approve", { postId, headlineText: "My own headline", plan: { slides: [], why: "Shorter" } });
+  await mcp.call("engine_recreate_rerun_stage", { postId, stage: "design", instructions: "Make the cover shorter" });
+  await mcp.call("engine_recreate_submit_stage", { postId, stage: "research", output: { facts: [] } });
+  await mcp.call("engine_recreate_resume", { postId });
+  const posted = api.calls.filter((call) => call.path === "/api/engine/recreate").map((call) => call.body);
+  assert.deepEqual(posted, [
+    { profileId: "pagina-es", url: "https://www.instagram.com/p/x/", mode: "checkpoint" },
+    { profileId: "chatgptricks", url: "https://www.instagram.com/p/y/", mode: "exact" },
+    { action: "answer_verdict", postId, choice: "link", link: "https://www.example.com/first-report", note: "This is where it started" },
+    { action: "answer_verdict", postId, choice: "proceed" },
+    { action: "add_posts", postId, xPosts: ["https://x.com/WilliamBaude/status/1985426345048617094"] },
+    { action: "approve", postId, option: 0, notes: "Keep it short" },
+    { action: "approve", postId, headlineText: "My own headline", plan: { slides: [], why: "Shorter" } },
+    { action: "rerun_stage", postId, stage: "design", instructions: "Make the cover shorter" },
+    { action: "submit_stage", postId, stage: "research", output: { facts: [] } },
+    { action: "resume", postId },
+  ]);
+  const before = api.calls.length;
+  for (const [tool, args] of [
+    ["engine_recreate_approve", { postId }],
+    ["engine_recreate_approve", { option: 0 }],
+    ["engine_recreate_approve", { postId, hookText: "The old name" }],
+    ["engine_recreate_submit_stage", { postId, stage: "design", output: {} }],
+    ["engine_recreate_submit_stage", { postId, stage: "verdict", output: {} }],
+    ["engine_recreate_submit_stage", { postId, stage: "brief", output: "text" }],
+    ["engine_recreate_rerun_stage", { postId, stage: "copy" }],
+    ["engine_recreate_answer_check", { postId, choice: "maybe" }],
+    ["engine_recreate_answer_check", { postId, choice: "link" }],
+    ["engine_recreate_answer_check", { postId, choice: "link", link: "javascript:alert(1)" }],
+    ["engine_recreate_answer_check", { choice: "stop" }],
+    ["engine_recreate_add_posts", { postId }],
+    ["engine_recreate_add_posts", { postId, xPosts: [] }],
+    ["engine_recreate_add_posts", { postId, xPosts: [42] }],
+    ["engine_recreate_add_posts", { xPosts: ["https://x.com/a/status/1"] }],
+    ["engine_recreate_status", { postId: "post-../../x" }],
+    ["engine_recreate_post", { profileId: "chatgptricks", url: "https://www.instagram.com/p/x/", mode: "fast" }],
+  ]) assert.equal((await mcp.call(tool, args)).error?.code, -32602, `${tool} ${JSON.stringify(args)} is refused`);
+  assert.equal(api.calls.length, before, "invalid calls never reach Engine");
+});
+
+test("brand tools read, save, restore, check and design through the brands endpoints", async (t) => {
+  const api = await server(t, (entry, response) => {
+    if (entry.path === "/api/agent/slides") return json(response, {});
+    if (entry.path.startsWith("/api/engine/brands")) return json(response, { ok: true, path: entry.path });
+    return json(response, { error: "unexpected" }, 404);
+  });
+  const mcp = client(t, api.url);
+  await mcp.init();
+  await mcp.call("engine_list_brands");
+  await mcp.call("engine_get_brand", { brandId: "chatgptricks" });
+  await mcp.call("engine_get_brand", { brandId: "chatgptricks", version: 2 });
+  await mcp.call("engine_save_brand", { guide: { id: "chatgptricks", bannedWords: ["BREAKING:"] }, expectedVersion: 3, note: "Ban BREAKING:" });
+  await mcp.call("engine_restore_brand", { brandId: "chatgptricks", version: 1 });
+  await mcp.call("engine_check_deck", { deckId: "deck-1" });
+  await mcp.call("engine_check_deck", { templateId: "chatgptricks-guide-es", brandId: "chatgptricks" });
+  await mcp.call("engine_design_template", { brandId: "chatgptricks", language: "es" });
+  const calls = api.calls.filter((call) => call.path !== "/api/agent/slides");
+  assert.deepEqual(calls.map((call) => [call.method, call.path]), [
+    ["GET", "/api/engine/brands"],
+    ["GET", "/api/engine/brands?id=chatgptricks"],
+    ["GET", "/api/engine/brands?id=chatgptricks&version=2"],
+    ["PUT", "/api/engine/brands"],
+    ["POST", "/api/engine/brands"],
+    ["POST", "/api/engine/brands/check"],
+    ["POST", "/api/engine/brands/check"],
+    ["POST", "/api/engine/brands/templates"],
+  ]);
+  assert.deepEqual(calls[3].body, { guide: { id: "chatgptricks", bannedWords: ["BREAKING:"] }, expectedVersion: 3, note: "Ban BREAKING:" });
+  assert.deepEqual(calls[4].body, { action: "restore", id: "chatgptricks", version: 1 });
+  assert.deepEqual(calls[5].body, { deckId: "deck-1" });
+  assert.deepEqual(calls[7].body, { brandId: "chatgptricks", language: "es" });
+  assert.ok(calls.every((call) => call.headers.authorization === `Bearer ${token}`));
+  const before = api.calls.length;
+  for (const [tool, args] of [
+    ["engine_get_brand", {}],
+    ["engine_get_brand", { brandId: "../x" }],
+    ["engine_get_brand", { brandId: "chatgptricks", version: 0 }],
+    ["engine_save_brand", { guide: "text" }],
+    ["engine_save_brand", { guide: { name: "No id" } }],
+    ["engine_save_brand", { guide: { id: "x" }, note: "n".repeat(201) }],
+    ["engine_restore_brand", { brandId: "chatgptricks" }],
+    ["engine_check_deck", {}],
+    ["engine_check_deck", { deckId: "deck-1", templateId: "t" }],
+    ["engine_design_template", { brandId: "chatgptricks", language: "fr" }],
+    ["engine_design_template", { language: "en" }],
+  ]) assert.equal((await mcp.call(tool, args)).error?.code, -32602, `${tool} ${JSON.stringify(args)} is refused`);
+  assert.equal(api.calls.length, before, "invalid calls never reach Engine");
 });

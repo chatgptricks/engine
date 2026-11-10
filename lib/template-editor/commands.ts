@@ -41,7 +41,8 @@ export function isElementHidden(scene: CanvasScene, element: CanvasElement): boo
 }
 export function canEditElement(scene: CanvasScene, element: CanvasElement, property: ProtectedProperty): boolean {
   if (element.templateRole === "brand") return false;
-  if (element.templateRole === "media" && (property === "position" || property === "delete")) return false;
+  // A template photo stays in its frame, except a spanning photo, whose seam moves.
+  if (element.templateRole === "media" && (property === "delete" || property === "position" && !(element.type === "image" && element.span))) return false;
   if (element.type === "text" && element.smartText && property !== "content") return false;
   return !isElementLocked(scene, element) && !element.protected?.includes(property);
 }
@@ -184,7 +185,11 @@ function insertCopies(
     ...element,
     name: `${element.name.slice(0, 195)} copy`,
     locked: false,
-    ...(element.templateRole || element.type === "text" && element.smartText ? { templateRole: undefined, smartText: undefined, smartFlow: undefined, slot: undefined, protected: undefined } : {}),
+    ...(element.templateRole || element.type === "text" && element.smartText ? { templateRole: undefined, smartText: undefined, smartFlow: undefined, smartCenter: undefined, slot: undefined, protected: undefined } : {}),
+    // A copy of a broken-up HTML layer is free to move: only the original keeps its place in the layout.
+    ...(element.leadsGroup ? { leadsGroup: undefined, smartFlow: undefined, smartCenter: undefined, slot: undefined } : {}),
+    // A Frames slide has one background; a copy of it is an ordinary picture.
+    ...(element.frameRole === "background" ? { frameRole: undefined } : {}),
     x: element.x + delta.x,
     y: element.y + delta.y,
     ...(element.clipBounds ? { clipBounds: { ...element.clipBounds, x: element.clipBounds.x + originDelta.x, y: element.clipBounds.y + originDelta.y } } : {}),
@@ -361,6 +366,7 @@ const APPEARANCE_TYPE = {
   text: ["font", "fontSize", "fontWeight", "italic", "underline", "color", "align", "lineHeight", "letterSpacing", "verticalAlign", "padding", "paragraphSpacing", "strikethrough", "listStyle", "textStyleId", "textureFill"],
   image: ["fit", "cropScale", "cropX", "cropY", "radius", "mask", "flipX", "flipY"],
   shape: ["fill", "stroke", "strokeWidth", "strokeAlign", "radius", "imageFill"],
+  html: [],
 };
 export function copyAppearance(element: CanvasElement): ElementAppearance {
   const properties: Record<string, unknown> = {};

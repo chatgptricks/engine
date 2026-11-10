@@ -1,4 +1,4 @@
-import {formatDimensions,richTextToPlain,type DesignDocument,type DesignPage,type CanvasScene,type CanvasElement} from "./model";
+import {formatDimensions,htmlLayerText,richTextToPlain,type DesignDocument,type DesignPage,type CanvasScene,type CanvasElement} from "./model";
 import {composeScene} from "./advanced";
 import {isElementHidden} from "./commands";
 import {elementIntersectsCanvas} from "./canvas-geometry";
@@ -14,12 +14,13 @@ function hasVisibleOpacity(scene:CanvasScene,element:CanvasElement) {
 export function pageReadingItems(design:DesignDocument,page:DesignPage):PageReadingItem[] {
   const scene=composeScene(design,page),size=formatDimensions(design),height=360*size.height/size.width,preferred=page.readingOrder??[];
   const sourceId=(element:CanvasElement)=>element.master&&element.id.startsWith("master-")?element.id.slice(7):element.id;
-  return scene.elements.filter(element=>hasVisibleOpacity(scene,element)&&elementIntersectsCanvas(element,360,height)&&(element.type==="text"||element.type==="image"||Boolean(element.imageFill))).sort((a,b)=>{
+  return scene.elements.filter(element=>hasVisibleOpacity(scene,element)&&elementIntersectsCanvas(element,360,height)&&(element.type==="text"||element.type==="image"||element.type==="html"||Boolean(element.imageFill))).sort((a,b)=>{
     const aa=preferred.indexOf(sourceId(a)),bb=preferred.indexOf(sourceId(b));
     if(aa>=0||bb>=0)return (aa<0?Infinity:aa)-(bb<0?Infinity:bb);
     return a.y-b.y||a.x-b.x;
   }).flatMap(element=>{
-    const text=element.type==="text"?(element.richText?richTextToPlain(element.richText):element.text):element.type==="image"?element.publicAlt??"":element.imageFill?.publicAlt??"";
+    // An HTML layer reads as a figure described by its own words.
+    const text=element.type==="text"?(element.richText?richTextToPlain(element.richText):element.text):element.type==="image"?element.publicAlt??"":element.type==="html"?htmlLayerText(element.html):element.imageFill?.publicAlt??"";
     if(element.type==="text"&&!text.trim())return [];
     return [{id:sourceId(element),name:element.name,text,kind:element.type==="text"?"text" as const:"image" as const,master:Boolean(element.master),missingAlt:element.type!=="text"&&!text.trim()}];
   });

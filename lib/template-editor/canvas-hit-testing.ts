@@ -33,7 +33,7 @@ export function elementContainsPoint(element:CanvasElement,point:Point,padding=0
   const clip=element.clipBounds;
   if(clip&&(point.x<clip.x||point.y<clip.y||point.x>clip.x+clip.width||point.y>clip.y+clip.height))return false;
   const local=elementLocalPoint(element,point);
-  if(element.type==="text")return local.x>=0&&local.y>=0&&local.x<=element.width&&local.y<=element.height;
+  if(element.type==="text"||element.type==="html")return local.x>=0&&local.y>=0&&local.x<=element.width&&local.y<=element.height;
   if(element.type==="image"){
     const mask=element.mask??"none";
     const shape={...element,type:"shape",shape:mask==="none"?"rectangle":mask==="ellipse"?"ellipse":mask,fill:"#000",stroke:"transparent",strokeWidth:0} as ShapeElement;

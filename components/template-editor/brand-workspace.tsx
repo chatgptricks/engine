@@ -10,6 +10,7 @@ import "./brand-workspace.css";
 import { prepareRasterAsset } from "@/lib/template-editor/client-media";
 import { prepareVectorBrandAsset } from "@/lib/template-editor/brand-assets";
 import { organizeBrandAsset } from "@/lib/template-editor/library-workflows";
+import { BrandGuidePanel } from "./brand-guide-panel";
 
 /** Preserve raster originals privately and keep supported logos as passive vectors. */
 export async function prepareBrandAsset(file: File, kind: BrandAsset["kind"]): Promise<BrandAsset> {
@@ -45,6 +46,7 @@ export function BrandWorkspace({ library, canEdit, onChange }: Props) {
   const [assetEdit, setAssetEdit] = useState<{kitId:string;assetId:string;tags:string;favorite:boolean;variant:NonNullable<BrandAsset["variant"]>;destination:string;copy:boolean}|null>(null);
   const assetResults = (allKits ? kits : [kit]).flatMap(owner => owner.assets.map(asset => ({owner,asset}))).filter(({asset}) => (assetFilter === "all" || asset.kind === assetFilter) && (variantFilter==="all"||(asset.variant??"universal")===variantFilter) && (!favoritesOnly || asset.favorite) && `${asset.name} ${(asset.tags ?? []).join(" ")}`.toLowerCase().includes(assetSearch.trim().toLowerCase()));
   const [newColor, setNewColor] = useState("#8c79e8");
+  const [tab, setTab] = useState<"kits" | "guides">("kits");
 
   function updateKit(id: string, change: (kit: SavedBrandKit) => SavedBrandKit) {
     if (!latest.current.canEdit) return false;
@@ -125,11 +127,23 @@ export function BrandWorkspace({ library, canEdit, onChange }: Props) {
     { id: "image", label: "Upload images…", disabled: !canEdit || uploading || kit.assets.length >= 40, onSelect: () => chooseUpload("image") },
   ] };
 
+  const tabs = <div className="te-brand-tabs" role="tablist" aria-label="Brand">
+    {([["kits", "Brand kits"], ["guides", "Guides"]] as const).map(([id, label]) => <button key={id} role="tab" id={`te-brand-tab-${id}`} aria-selected={tab === id} onClick={() => setTab(id)}>{label}</button>)}
+  </div>;
+  if (tab === "guides") return <div className="te-brand-workspace">
+    <div className="te-section-heading">
+      <div><span className="te-eyebrow">ONE GUIDE FOR PEOPLE AND AGENTS</span><h1>Brand guides</h1><p>How each brand looks and reads. Agents design, write and check every post against it.</p></div>
+    </div>
+    {tabs}
+    <div role="tabpanel" id="te-brand-tabpanel-guides" aria-labelledby="te-brand-tab-guides"><BrandGuidePanel library={library} canEdit={canEdit} onChange={onChange} /></div>
+  </div>;
+
   return <div className="te-brand-workspace" onContextMenu={(event) => openMenu(event, workspaceMenu)}>
     <div className="te-section-heading">
       <div><span className="te-eyebrow">EVERY BRAND, READY TO CREATE</span><h1>Your brand kits</h1><p>Keep colors, type, logos, and reusable images together.</p></div>
       <button className="te-button te-primary" disabled={!canEdit || kits.length >= 20} onClick={() => setNameDialog({ kind: "new", name: "Untitled brand" })}><PlusIcon /> New brand kit</button>
     </div>
+    {tabs}
     {notice && <div className="te-notice te-brand-notice" role="status"><span>{notice}</span><button className="te-icon" aria-label="Dismiss brand message" onClick={() => setNotice("")}>×</button></div>}
     <div className="te-brand-kit-list" aria-label="Brand kits">
       {kits.map((item) => <div key={item.id} className={`te-brand-kit-card${item.id === kit.id ? " is-active" : ""}`} onContextMenu={(event) => openMenu(event, kitMenu(item))}>

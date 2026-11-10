@@ -5,6 +5,7 @@ import {developmentDirectory,readDevelopmentRecord} from "./development-storage"
 import {getAdminSupabase} from "@/lib/supabase/admin";
 import {EMPTY_LIBRARY, parseLibrary, type EditorLibrary, type DesignDocument} from "./model";
 import {checkLibrarySaveBudget} from "./library-budget";
+import {cleanHtmlLayersIn} from "./html-layer";
 import {listReviewLinks} from './review-inventory';
 import {retainDocumentHistory} from './history-retention';
 import {applyLibraryPatch, contentHash, sameContent, LibraryPatchConflict, packAssets, unpackAssets, type LibraryPatch} from "./library-sync";
@@ -124,9 +125,11 @@ async function envelopeFor(current: LibraryEnvelope | null, library: EditorLibra
   // Schema-2 clients from before the built-in catalog controls omit this
   // collection in whole-library saves. Omission leaves current choices intact;
   // explicit catalog decisions remain available to current clients.
-  const savedLibrary = library.builtInTemplateStates === undefined && current?.library.builtInTemplateStates !== undefined
-    ? {...library,builtInTemplateStates:structuredClone(current.library.builtInTemplateStates)}
-    : library;
+  // HTML layers are cleaned on every save, whichever way they arrived (html-layer.ts).
+  const cleaned = cleanHtmlLayersIn(library);
+  const savedLibrary = cleaned.builtInTemplateStates === undefined && current?.library.builtInTemplateStates !== undefined
+    ? {...cleaned,builtInTemplateStates:structuredClone(current.library.builtInTemplateStates)}
+    : cleaned;
   const history = structuredClone(current?.history ?? {}), now = Date.now();
   for (const before of current?.library.designs ?? []) {
     const after = savedLibrary.designs.find(item => item.id === before.id);
@@ -254,8 +257,10 @@ async function collaborationOperation(owner: string, documentId: string, update?
         const contentChanged = !sameContent({...before, updatedAt: undefined}, {...raw, createdAt: before.createdAt, updatedAt: undefined});
         const canonical = {...raw, createdAt: before.createdAt, updatedAt: contentChanged ? new Date().toISOString() : before.updatedAt};
         const candidate = {...record.library, designs: record.library.designs.map(document => document.id === documentId ? canonical : document)};
-        const parsed = parseLibrary(candidate);
-        if (!parsed) throw new Error("Invalid collaboration document or workspace limit exceeded.");
+        const checked = parseLibrary(candidate);
+        if (!checked) throw new Error("Invalid collaboration document or workspace limit exceeded.");
+        // Cleaned HTML layers go back to every collaborator through the normalization below.
+        const parsed = cleanHtmlLayersIn(checked);
         const budget = checkLibrarySaveBudget(parsed);
         if (!budget.ok) throw new Error(budget.error);
         const document = parsed.designs.find(item => item.id === documentId)!;

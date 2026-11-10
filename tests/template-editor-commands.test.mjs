@@ -53,6 +53,19 @@ test("copy snapshots retain stacking order, include locked layers, and detach so
   assert.equal(source.elements[1].name, "b");
 });
 
+test("a copy of a layer that leads its group is free: only the original keeps its place in the layout", () => {
+  const space = element("space", { groupId: "g", leadsGroup: true, slot: "media", smartFlow: { after: "body", gap: 8, bottom: 400 } });
+  const piece = element("piece", { groupId: "g", x: 30 });
+  const source = { background: "#ffffff", groups: [{ id: "g", name: "Chart" }], elements: [space, piece] };
+  const duplicate = duplicateSelection(source, ["space", "piece"]);
+  const copy = duplicate.scene.elements.slice(2).find(item => item.name.startsWith("space"));
+  assert.ok(copy, "the space is copied");
+  assert.deepEqual([copy.leadsGroup, copy.smartFlow, copy.slot], [undefined, undefined, undefined]);
+  assert.deepEqual(duplicate.scene.elements[0], space, "the original still leads");
+  const pasted = pasteSelection(source, copySelection(source, ["space"]));
+  assert.equal(pasted.scene.elements.at(-1).leadsGroup, undefined);
+});
+
 test("duplicate skips locked layers, preserves selection geometry and assigns fresh IDs each time", () => {
   const source = scene(element("a", { x: 10 }), element("b", { locked: true }), element("c", { x: 100, rotation: 37 }));
   const duplicate = duplicateSelection(source, ["a", "b", "c"]);

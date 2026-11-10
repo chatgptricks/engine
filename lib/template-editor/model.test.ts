@@ -176,7 +176,7 @@ test("brand asset payloads still count toward the shared whole-library limit", (
 
 test("every built-in template can become a valid, independent persisted design", () => {
   const designs = BUILT_IN_TEMPLATES.map(createDesign);
-  assert.equal(BUILT_IN_TEMPLATES.length, 8);
+  assert.equal(BUILT_IN_TEMPLATES.length, 9);
   assert.ok(designs.some((d) => d.pages.length >= 3));
   assert.ok(designs.some((d) => d.format === "story"));
   const original: EditorLibrary = { ...EMPTY_LIBRARY, designs };
@@ -757,7 +757,8 @@ test("continuous design copies, saved templates and template drafts get independ
 });
 
 test("legacy migration is deterministic, does not rewrite pages, and preserves built-in content", () => {
-  for (const template of BUILT_IN_TEMPLATES) {
+  // Layer-based built-ins (such as chatgptricks-3x4) have no legacy pages to migrate.
+  for (const template of BUILT_IN_TEMPLATES.filter(template => template.pages.every(page => !page.canvas))) {
     const design = createDesign(template);
     const original = structuredClone(design);
     for (const page of design.pages) {

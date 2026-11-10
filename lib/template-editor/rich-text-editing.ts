@@ -2,7 +2,8 @@ import { sanitizeRichText, type TextElement, type ShapeImageFill } from "./model
 import { colorWithAlpha, parseColor } from "./color-utils";
 
 const escape = (text: string) => text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-export type TextFormattingPatch = Omit<Partial<TextElement>, "textureFill"> & { textureFill?: ShapeImageFill | null };
+/** `textureFill: null` takes the words' texture off, and `color: null` their own color: they show the text's color again. */
+export type TextFormattingPatch = Omit<Partial<TextElement>, "textureFill" | "color"> & { textureFill?: ShapeImageFill | null; color?: string | null };
 export type TextFormattingTarget = { elementId: string; html: string; start: number; end: number };
 export type TextFormatter = ((patch: TextFormattingPatch, expected?: TextFormattingTarget) => boolean) & { capture: () => TextFormattingTarget | null };
 type RunStyle = { weight?: string; italic?: string; decorations?: string[]; color?: string; size?: string; font?: string; textureId?: string };
@@ -176,7 +177,7 @@ export function formatTextRange(node: HTMLElement, range: Range, patch: TextForm
     if (patch.fontWeight !== undefined) style.weight = String(patch.fontWeight);
     if (patch.italic !== undefined) style.italic = patch.italic ? "italic" : "normal";
     for (const [key, value] of [["underline", "underline"], ["strikethrough", "line-through"]] as const) if (patch[key] !== undefined) { style.decorations = (style.decorations??[]).filter(item => item !== value); if (patch[key]) style.decorations.push(value); }
-    if (patch.color !== undefined) style.color = normalizedCssColor(patch.color);
+    if (patch.color !== undefined) style.color = patch.color === null ? undefined : normalizedCssColor(patch.color);
     if (patch.fontSize !== undefined) style.size = `${patch.fontSize}px`;
     if (patch.font !== undefined) style.font = `gf-font-${patch.font}`;
     if(patch.textureFill!==undefined)style.textureId=textureId??undefined;

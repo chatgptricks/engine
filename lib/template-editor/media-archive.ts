@@ -88,7 +88,7 @@ export async function readLibraryArchive(file:File):Promise<{library:unknown;res
   const manifest=JSON.parse(new TextDecoder().decode(await boundedEntry(manifestFile,200_000))) as {version:number;assets:MediaEntry[]};
   if(manifest.version!==1||!Array.isArray(manifest.assets)||manifest.assets.length>999)throw new Error("The backup manifest is invalid.");
   const entries=new Map<string,MediaEntry>();
-  for(const entry of manifest.assets){if(!entry||!/^[a-f0-9]{64}$/.test(entry.id)||entry.path!==`assets/${entry.id}`||entries.has(entry.id)||!Number.isInteger(entry.bytes)||entry.bytes<1||entry.bytes>MAX_ASSET||!["image/jpeg","image/png","image/webp"].includes(entry.mimeType))throw new Error("The backup image manifest is invalid.");entries.set(entry.id,entry);}
+  for(const entry of manifest.assets){if(!entry||!/^[a-f0-9]{64}$/.test(entry.id)||entry.path!==`assets/${entry.id}`||entries.has(entry.id)||!Number.isInteger(entry.bytes)||entry.bytes<1||entry.bytes>MAX_ASSET||!["image/jpeg","image/png","image/webp","image/svg+xml"].includes(entry.mimeType))throw new Error("The backup image manifest is invalid.");entries.set(entry.id,entry);}
   return {library,restoreMedia:async(selected)=>{
     for(const id of originalAssetIds(selected)) {
       const entry=entries.get(id),image=entry&&zip.file(entry.path);

@@ -14,10 +14,11 @@ import {CollaborationBar, type EditorCollaboration} from "./collaboration-bar";
 import {sameContent} from "@/lib/template-editor/library-sync";
 import {PageAccessibilitySection} from "./page-accessibility";
 import {prepareRasterAsset} from "@/lib/template-editor/client-media";
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowLeftIcon,
   CheckIcon,
+  CommentIcon,
   CopyIcon,
   DownloadIcon,
   ImageIcon,
@@ -57,6 +58,9 @@ import {WorkspaceResourcesPanel} from "./workspace-resources-panel";
 import {captureBrandImage,brandAssetPhoto} from "@/lib/template-editor/brand-assets";
 import {insertWorkspaceStyle,insertWorkspaceComponent,brandScene} from "@/lib/template-editor/library-workflows";
 import type {EditorLibrary,TextStyle,ReusableComponent} from "@/lib/template-editor/model";
+import { htmlLayerText } from "@/lib/template-editor/model";
+import type { HtmlNodeSelection } from "@/lib/template-editor/html-edit";
+import { breakHtmlLayer, htmlPiecesToLayers, measureHtmlLayer, readingOrderAfterBreak } from "@/lib/template-editor/html-break";
 import {assertDesignExportBudget} from '@/lib/template-editor/export-renditions';
 import {prepareExportDimensions} from '@/lib/template-editor/export-dimensions';
 
@@ -67,11 +71,15 @@ import { getTextWords, applyTextWordTexture } from "@/lib/template-editor/text-w
 import { activeTextTextures } from "@/lib/template-editor/text-textures";
 import { importSVG, combineShapes } from "@/lib/template-editor/vector";
 import {applyDesignPatch} from "@/lib/template-editor/document-patch";
-import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type HistoryContext} from "@/lib/template-editor/history";
+import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type DocumentChange,type HistoryContext} from "@/lib/template-editor/history";
 import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/preflight";
+import { layoutTemplateOf, MAX_LAYOUT_NAME, MAX_LAYOUT_USE_WHEN, withSavedLayout, type SavedLayoutResult } from "@/lib/template-editor/saved-layouts";
 import { ColorField, Modal } from "./controls";
-import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls } from "./canvas";
+import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls, type AreaBox } from "./canvas";
+import { borderColor, frameBackground, frameBackgroundLayer, frameCutLayer, hasFlatBorder, sceneToImage, toHex } from "@/lib/template-editor/frames";
+import type { PageFrame } from "@/lib/template-editor/model";
 import type { TextFormattingPatch, TextFormatter } from "@/lib/template-editor/rich-text-editing";
+import { wordHighlightColors } from "@/lib/template-editor/word-colors";
 import { findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { PHOTO_DRAG_TYPE, decodePhotoDrag, writePhotoDrag } from "@/lib/template-editor/photo-drag";
 import { proxied } from "@/lib/engine/util";
@@ -80,18 +88,44 @@ import { enableContinuousCarousel, splitContinuousCarousel } from "@/lib/templat
 import { elementIntersectsCanvas, elementVisualBounds, sceneVisualBounds } from "@/lib/template-editor/canvas-geometry";
 import { BrandPanel } from "./brand-panel";
 import { QuickToolbar } from "./quick-toolbar";
+import { useSpanPhotos } from "./span-photo-controls";
+import { SpanPeek } from "./span-peek";
+import { describeSpanChange, spanPairs, syncSpans, withoutSpans } from "@/lib/template-editor/spanning-photos";
 import { useContextMenu, type ContextMenuItem } from "./context-menu";
 import { copySelection, duplicateSelection, pasteSelection, removeSelection, setSelectionLocked, reorderSelection, alignSelection, groupSelection, ungroupSelection, setGroupHidden, setGroupLocked, expandGroupSelection, scopeSelection, constrainSceneToIsolation, canEditElement, isElementHidden, isElementLocked, fillShapeWithImage, type SceneCommandResult } from "@/lib/template-editor/commands";
 import {groupMemberIds} from "@/lib/template-editor/layer-tree";
 import { translateElements } from "@/lib/template-editor/snapping";
 import { ElementInspector, type InspectorSection } from "./element-inspector";
 import { EditorIcon } from "./editor-icons";
+import type { ChatEditorBridge } from "./assistant-panel";
+import { applyChatEdits } from "@/lib/engine/assistant/chat-edits";
 import "./wysiwyg.css";
 import "./pro-tools.css";
 import "./editor-shell.css";
 import "./interaction-system.css";
 import "./editor-workflow.css";
 import { DesignFrame, DesignPreview, FRAME_WIDTH } from "./preview";
+
+const BREAKING_HTML = "Breaking the HTML layer into layers…";
+/** Frames: an image's pixels, drawn at most 256 px on its long side (for quick looks, not cuts). */
+async function previewPixels(src: string): Promise<{data: Uint8ClampedArray; width: number; height: number}> {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = src;
+  await image.decode();
+  const scale = Math.min(1, 256 / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale)), height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+  const context = canvas.getContext("2d", {willReadFrequently: true});
+  if (!context) throw new Error("No canvas");
+  context.drawImage(image, 0, 0, width, height);
+  return {data: context.getImageData(0, 0, width, height).data, width, height};
+}
+/** The colour around an image's edge, for the slide behind a frame of another shape. */
+async function edgeColor(src: string): Promise<string> {
+  const pixels = await previewPixels(src);
+  return toHex(borderColor(pixels.data, pixels.width, pixels.height));
+}
 
 type Tab =
   | "smart"
@@ -122,10 +156,15 @@ type Props = {
   onManageBrand: () => void;
   saveStatus: string;
   canEdit: boolean;
-  onChange: (design: DesignDocument) => boolean | void;
+  /** `change.automatic` marks the editor's own follow-up edits, such as text
+   * fitting: a live room syncs them without making them undo steps. */
+  onChange: (design: DesignDocument, change?: DocumentChange) => boolean | void;
   onExit: () => void;
   onSaveTemplate: (template: DesignTemplate) => void;
   onAddDesigns?: (designs: DesignDocument[]) => boolean | void;
+  /** The Engine chat: a header button, and the bridge it uses to edit this post. */
+  chat?: {open: boolean; onToggle: () => void};
+  onChatBridge?: (bridge: ChatEditorBridge | null) => void;
 };
 
 const SHAPE_OPERATIONS = [
@@ -169,11 +208,15 @@ export function DesignEditor({
   onExit,
   onSaveTemplate,
   onAddDesigns,
+  chat,
+  onChatBridge,
 }: Props) {
   const { openMenu } = useContextMenu();
   const compactEditor=useSyncExternalStore(subscribeCompactEditor,compactEditorSnapshot,desktopEditorSnapshot);
   const otherEditors=useDocumentPresence(initial.id,workspaceScope,canEdit&&!collaboration);
   const [editingRequest, setEditingRequest] = useState<{id: string; serial: number}>();
+  /** The part of an HTML layer being typed in on the canvas, and its selected words. */
+  const [htmlSelection, setHtmlSelection] = useState<HtmlNodeSelection | null>(null);
   const [renameLayer, setRenameLayer] = useState<{id: string; name: string} | null>(null);
   const [design, setDesign] = useState<DesignDocument>(initial);
   const current = useRef<DesignDocument>(design);
@@ -228,7 +271,11 @@ export function DesignEditor({
   }, [smartContextEnabled]);
   const [showShortcuts, setShowShortcuts] = useState(false);
   const [notice, setNotice] = useState("");
+  /** The notice that offers Undo, while it is the one showing. */
+  const [undoNotice, setUndoNotice] = useState("");
   const [templateName, setTemplateName] = useState<string | null>(null);
+  /** "Save as layout" from the page menu: the slide, the name and "use when" line typed so far, and why the last try failed. */
+  const [layoutDraft, setLayoutDraft] = useState<{ pageId: string; name: string; useWhen: string; error?: string } | null>(null);
   const [exportDialog,setExportDialog]=useState(false);
   const [textureTarget,setTextureTarget]=useState<{element:TextElement;context:string;words?:number[];photos:ShapeImageFill[];background:string}|null>(null);
   const [preflightIssues,setPreflightIssues]=useState<PreflightIssue[]>([]);
@@ -297,6 +344,13 @@ export function DesignEditor({
   const workspaceRef = useRef<HTMLDivElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Frames: a slide made from a flat image, and the area marked on it.
+  const frameFileRef = useRef<HTMLInputElement>(null);
+  const frameAfterRef = useRef<string | null>(null);
+  const [framesTool, setFramesTool] = useState(false);
+  const [frameArea, setFrameArea] = useState<AreaBox | null>(null);
+  const [frameBusy, setFrameBusy] = useState(false);
+  const [frameRemove, setFrameRemove] = useState<"none" | "flat">("none");
   const replaceFileRef = useRef<HTMLInputElement>(null);
   const replaceTargetRef = useRef<string | null>(null);
   const onChangeRef = useRef(onChange);
@@ -322,6 +376,7 @@ export function DesignEditor({
   const canvasWidth = FRAME_WIDTH * (continuous ? design.pages.length : 1);
   const scene = editingMaster ? design.masterScene??{background:'transparent',elements:[]} : design.continuousCanvas ?? page.canvas ?? sceneForPage(page, design.format);
   const smartLayoutAvailable = supportsSmartTemplate(design, templates);
+  const colorRoles = design.colorRoles, wordColors = useMemo(() => wordHighlightColors(colorRoles), [colorRoles]);
   const collaborationPageId = editingMaster ? "@master" : continuous ? "@continuous" : page.id;
   const publishAwareness = collaboration?.setAwareness;
   const awarenessScene = useRef(scene);
@@ -344,6 +399,9 @@ export function DesignEditor({
   const previousPage = !continuous && index > 0 ? design.pages[index - 1] : undefined;
   const onionScene = onionSkin && page.canvas && previousPage ? previousPage.canvas ?? sceneForPage(previousPage, design.format) : undefined;
   const selectedPhoto = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && (element.type === "image" || (element.type === "shape" && element.imageFill))) : undefined;
+  const selectedHtml = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && element.type === "html") : undefined;
+  // The canvas reports the part being typed in; it only counts while that layer is the selection.
+  const activeHtmlSelection = htmlSelection && selectedHtml?.id === htmlSelection.elementId ? htmlSelection : null;
   const selectedImage = selected.length === 1 ? scene.elements.find((element) => element.id === selected[0] && element.type === "image") : undefined;
   const selectedElements = scene.elements.filter(element=>selected.includes(element.id));
   const textSelection = selectedElements.length>0&&selectedElements.every(element=>element.type==="text");
@@ -387,6 +445,14 @@ export function DesignEditor({
     setPageId(target);
     onCurrentPageChange?.(target,"push");
   }
+  /** Opens a page with these layers selected (a spanning photo's other half). */
+  function openPageWith(id: string, ids: string[]) {
+    if (id !== page.id) { selectPage(id); restoredNavigationPage.current = resolveDesignPageId(current.current, id); }
+    setSelected(ids);
+  }
+  const scenePreviewListeners = useRef(new Set<(preview: CanvasScene | null) => void>());
+  const subscribeScenePreview = useCallback((listener: (preview: CanvasScene | null) => void) => { scenePreviewListeners.current.add(listener); return () => { scenePreviewListeners.current.delete(listener); }; }, []);
+  const handleScenePreview = useCallback((preview: CanvasScene | null) => { publishScenePreview(preview); for (const listener of scenePreviewListeners.current) listener(preview); }, [publishScenePreview]);
   function fitPage() {
     zoomAnchor.current=null;
     setZoom(1);
@@ -426,18 +492,19 @@ export function DesignEditor({
     const previous = previousWorkspace.current;
     const anchor=zoomAnchor.current;
     if(anchor){node.scrollLeft=(anchor.x+workspaceLeft)*scale-anchor.screenX;node.scrollTop=(anchor.y+workspaceTop)*scale-anchor.screenY;zoomAnchor.current=null;}
-    else if (!previous || previous.fit !== fit || previous.pageId !== page.id || previous.height !== canvasHeight || previous.centerRequest !== centerRequest || previous.viewportWidth !== node.clientWidth || previous.viewportHeight !== node.clientHeight) {
+    else if (!previous || previous.fit !== fit || previous.pageId !== page.id || previous.height !== canvasHeight || previous.centerRequest !== centerRequest) {
       node.scrollLeft = (workspaceLeft + (continuous && previous && previous.pageId !== page.id ? index * FRAME_WIDTH + FRAME_WIDTH / 2 : canvasWidth / 2)) * scale - node.clientWidth / 2;
       node.scrollTop = (workspaceTop + canvasHeight / 2) * scale - node.clientHeight / 2;
     } else {
-      // Preserve the same world point at the center when zoom or padding changes.
+      // Preserve the same world point at the center when zoom, padding or the viewport changes
+      // (a panel opening beside the canvas keeps what you were looking at in the middle).
       const centerX = (node.scrollLeft + previous.viewportWidth / 2) / previous.scale - previous.left;
       const centerY = (node.scrollTop + previous.viewportHeight / 2) / previous.scale - previous.top;
       node.scrollLeft = (centerX + workspaceLeft) * scale - node.clientWidth / 2;
       node.scrollTop = (centerY + workspaceTop) * scale - node.clientHeight / 2;
     }
     previousWorkspace.current = {pageId: page.id, scale, fit, left: workspaceLeft, top: workspaceTop, height: canvasHeight, centerRequest, viewportWidth: node.clientWidth, viewportHeight: node.clientHeight};
-  }, [page.id, canvasHeight, canvasWidth, continuous, index, scale, fit, workspaceLeft, workspaceTop, centerRequest]);
+  }, [page.id, canvasHeight, canvasWidth, continuous, index, scale, fit, workspaceLeft, workspaceTop, centerRequest, workspaceSize.width, workspaceSize.height]);
   const isTemplateDraft = design.purpose === "template";
   const saveTemplateLabel = isTemplateDraft
     ? design.editingTemplateId
@@ -462,31 +529,68 @@ export function DesignEditor({
     (change: (d: DesignDocument) => DesignDocument, group = "") => {
       if (blocked.current) return false;
       const previous = current.current;
-      let changed:DesignDocument;
+      let changed:DesignDocument,spanned:{unlinked:number[];onePage:number[]}={unlinked:[],onePage:[]};
       try{changed=change(previous);
         changed={...changed,pages:changed.pages.map(page=>{
           const source=previous.pages.find(original=>original.id===page.id)?.canvas;
           if(!source||!page.canvas||source===page.canvas||!source.elements.some(element=>element.templateRole||element.type==="text"&&element.smartText)||!page.canvas.elements.some(element=>source.elements.some(original=>original.id===element.id)))return page;
           return {...page,canvas:layoutSmartScene(constrainSmartTemplate(source,page.canvas)).scene};
         })};
+        // Spanning photos: the twin of an edited half follows it (spanning-photos.ts).
+        const synced=syncSpans(previous,changed);changed=synced.design;spanned=synced;
       }catch(error){setNotice(error instanceof Error?error.message:'Could not apply this change.');return false;}
       if(sameDocumentContent(changed,previous))return true;
       const next = { ...changed, updatedAt: new Date().toISOString() };
       const h = history.current;
-      if(!commitHistory(h,previous,next,historyContext.current,value=>onChangeRef.current(value),{group,automatic:group==="text-fit"}))return false;
+      // Local history and the live room both leave automatic fits out of Undo.
+      const automatic = group === "text-fit";
+      if(!commitHistory(h,previous,next,historyContext.current,value=>onChangeRef.current(value,{automatic}),{group,automatic}))return false;
       setHistoryState({ undo: h.past.length > 0, redo: h.future.length>0 });
       current.current = next;
       setDesign(next);
+      const spanNotice=describeSpanChange(spanned);
+      if(spanNotice){setNotice(spanNotice);setUndoNotice(spanNotice);}
       return true;
     },
     [setNotice],
   );
+  // The chat edits this post through commit(): one undo step per reply, shared live like any edit.
+  useEffect(() => {
+    if (!onChatBridge) return;
+    const bridge: ChatEditorBridge = {
+      deckId: initial.id,
+      apply: operations => {
+        if (blocked.current) return {applied: false, error: "The editor can't take edits right now (read-only, exporting or reconnecting)."};
+        try { applyChatEdits(current.current, operations); }
+        catch (error) { return {applied: false, error: error instanceof Error ? error.message : "Those edits don't fit this post."}; }
+        return commit(document => applyChatEdits(document, operations)) ? {applied: true} : {applied: false, error: "The editor couldn't apply the edits."};
+      },
+      turn: () => {
+        const document = current.current, context = historyContext.current;
+        const index = Math.max(0, document.pages.findIndex(page => page.id === context.pageId));
+        const elements = (document.continuousCanvas ?? document.pages[index]?.canvas)?.elements ?? [];
+        return {
+          deckName: document.name, slide: index + 1, slideCount: document.pages.length,
+          selection: context.selectedIds.slice(0, 10).map(id => {
+            const element = elements.find(item => item.id === id);
+            return {id, ...(element?.name ? {name: element.name} : {}), ...(element ? {type: element.type} : {})};
+          }),
+        };
+      },
+    };
+    onChatBridge(bridge);
+    return () => onChatBridge(null);
+  }, [onChatBridge, commit, initial.id]);
   const sharedHistory = collaboration?.history;
   const travel = useCallback(
     (direction: "undo" | "redo") => {
       if (blocked.current || historyBridge.current?.flush()===false) return false;
       if (sharedHistory) {
+        // As in local history below: only an existing step is traveled, and
+        // it clears the notice, which may still offer to undo the edit.
+        if (!(direction === "undo" ? sharedHistory.canUndo : sharedHistory.canRedo)) return false;
         sharedHistory[direction]();
+        setNotice("");
         return true;
       }
       const h = history.current;
@@ -511,6 +615,10 @@ export function DesignEditor({
     },
     [setSelected,setEditingMaster,setIsolatedGroupId,setNotice,onCurrentPageChange,sharedHistory],
   );
+  const spans = useSpanPhotos({
+    design, pageId: page.id, selectedIds: selected, enabled: !editingMaster && !continuous && !isolatedGroupId, disabled,
+    commit, endGesture: closeEditingHistory, openPage: openPageWith, notify: setNotice, openMenu,
+  });
   function changeScene(next: CanvasScene, group = "") {
       return commit(
         (d) => {
@@ -545,6 +653,142 @@ export function DesignEditor({
     return result.scene!==live&&!result.limited;
   }
   function applyCommand(command: (live:CanvasScene)=>SceneCommandResult):void { applyCommandChecked(command); }
+  const breakingHtml = useRef(false);
+  /** Break into layers: draws the HTML layer offscreen and reads its pieces (a moment),
+   * then swaps in text, image and shape layers as one undo step. Like an SVG import, it
+   * lands on the slide it started from, and not when the layer changed meanwhile. */
+  async function breakHtml(id: string) {
+    const element = scene.elements.find(item => item.id === id);
+    if (blocked.current || breakingHtml.current || element?.type !== "html") return;
+    const targetId = page.id, targetMaster = editingMaster, targetContinuous = Boolean(current.current.continuousCanvas);
+    breakingHtml.current = true;
+    setNotice(BREAKING_HTML);
+    try {
+      const pieces = await measureHtmlLayer(element, {pixelsPerUnit: format.width / FRAME_WIDTH});
+      if (!mounted.current) return;
+      let made: string[] = [], spacer = false;
+      const accepted = commit(d => {
+        const target = d.pages.find(p => p.id === targetId);
+        if (!target) throw new Error("That slide was removed, so nothing changed.");
+        if (Boolean(d.continuousCanvas) !== targetContinuous) throw new Error("The canvas layout changed. Break the layer into layers again.");
+        const live = targetMaster ? d.masterScene ?? {background: "transparent", elements: []} : d.continuousCanvas ?? target.canvas ?? sceneForPage(target, d.format);
+        const now = live.elements.find(item => item.id === id);
+        if (now?.type !== "html") throw new Error("That HTML layer isn't on this slide any more.");
+        if (now.html !== element.html || now.css !== element.css || now.designWidth !== element.designWidth || now.width !== element.width || now.height !== element.height || JSON.stringify(now.tokens ?? null) !== JSON.stringify(element.tokens ?? null))
+          throw new Error("The HTML layer changed while it was being measured. Break it into layers again.");
+        const result = breakHtmlLayer(live, id, htmlPiecesToLayers(now, pieces));
+        made = result.selectedIds;
+        // A layer with a place in the template's flow leaves a clear "Layout space" box in the group too.
+        const group = result.scene.elements.find(item => item.id === made[0])?.groupId;
+        spacer = result.scene.elements.filter(item => item.groupId === group).length > made.length;
+        const placed = targetMaster ? {...d, masterScene: result.scene} : targetContinuous ? {...d, continuousCanvas: result.scene} : {...d, pages: d.pages.map(p => p.id === targetId ? {...p, canvas: result.scene} : p)};
+        // A slide with its own reading order reads the new words and pictures where the HTML layer was.
+        const ids = new Set(made), layers = result.scene.elements.filter(item => ids.has(item.id));
+        return {...placed, pages: placed.pages.map(p => {
+          const order = readingOrderAfterBreak(p.readingOrder, id, layers);
+          return order === p.readingOrder ? p : {...p, readingOrder: order};
+        })};
+      });
+      // A refused change has already said why; otherwise the progress notice just goes.
+      if (!accepted) { setNotice(value => value === BREAKING_HTML ? "" : value); return; }
+      if (activePage.current === targetId) setSelected(made);
+      const message = `“${element.name}” is now ${made.length} layer${made.length === 1 ? "" : "s"} in a group.${spacer ? " A clear “Layout space” box keeps its place in the slide’s layout." : ""}`;
+      setNotice(message);
+      setUndoNotice(message);
+    } catch (error) {
+      if (mounted.current) setNotice(error instanceof Error && error.message ? error.message : "This HTML layer couldn't be broken into layers.");
+    } finally {
+      breakingHtml.current = false;
+    }
+  }
+  /** Frames: a new slide made from a flat image, after `afterId`. The image is the
+   * slide's locked bottom layer and the page keeps the original; nothing else runs. */
+  async function newFrameSlide(file: File, afterId: string) {
+    if (disabled || uploading) return;
+    if (current.current.continuousCanvas) { setNotice("Frames slides need separate pages. Turn off the continuous canvas first."); return; }
+    if (current.current.pages.length >= 20) { setNotice("This design already has 20 pages."); return; }
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { setNotice("Choose a PNG, JPG or WebP picture."); return; }
+    setUploading(true);
+    try {
+      const {src, previewSrc, width, height} = await prepareRasterAsset(file);
+      const edge = await edgeColor(previewSrc).catch(() => "#000000");
+      if (!mounted.current) return;
+      const name = file.name.replace(/\.[^.]+$/, "").slice(0, 200) || "Image";
+      const frame: PageFrame = {original: src, width, height, name, source: "editor", createdAt: new Date().toISOString()};
+      let made = "";
+      const accepted = commit(d => {
+        if (d.continuousCanvas) throw new Error("The canvas layout changed. Make the slide again.");
+        if (d.pages.length >= 20) throw new Error("This design already has 20 pages.");
+        const after = d.pages.findIndex(p => p.id === afterId);
+        const source = d.pages[after >= 0 ? after : d.pages.length - 1];
+        const next = withoutSpans(duplicatePage(source));
+        const background = {...frameBackgroundLayer(frame, {width: FRAME_WIDTH, height: canvasHeight}), previewSrc};
+        const pageValue: DesignPage = {id: next.id, image: {...next.image, url: src, width, height, source: "upload"}, style: next.style, label: name, frame, canvas: {background: edge, elements: [background]}};
+        made = pageValue.id;
+        // Never inside a photo that spans two slides.
+        const pairs = spanPairs(d);
+        let insertAfter = after >= 0 ? after : d.pages.length - 1;
+        for (let pair = pairs.find(item => item.startPage === insertAfter); pair; pair = pairs.find(item => item.startPage === insertAfter)) insertAfter = pair.endPage;
+        return {...d, pages: [...d.pages.slice(0, insertAfter + 1), pageValue, ...d.pages.slice(insertAfter + 1)]};
+      });
+      if (!accepted) return;
+      selectPage(made); setSelected([]); setFramesTool(true); setFrameArea(null);
+      const message = `Slide made from “${name}”. Mark an area on it to cut it out. The original is kept.`;
+      setNotice(message); setUndoNotice(message);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Could not open this image.");
+    } finally {
+      if (mounted.current) setUploading(false);
+    }
+  }
+  /** Frames: cuts the marked area of the slide's original into a layer of its own, in the same place. */
+  async function cutFrameArea() {
+    const target = current.current.pages.find(p => p.id === page.id), background = target && frameBackground(target);
+    if (disabled || frameBusy || !target?.frame || !background || !frameArea) return;
+    const frame = target.frame, targetId = target.id, area = frameArea, removeBackground = frameRemove;
+    const box = sceneToImage(background, frame, area);
+    if (box.width < 4 || box.height < 4) { setNotice("Mark an area on the image."); return; }
+    setFrameBusy(true);
+    setNotice("Cutting out…");
+    try {
+      const response = await fetch("/api/template-editor/frames", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({action: "cut", original: frame.original, box, removeBackground})});
+      const value = await response.json().catch(() => ({})) as {src?: string; box?: {x: number; y: number; width: number; height: number}; error?: string};
+      if (!response.ok || !value.src || !value.box) throw new Error(value.error || "Engine couldn't cut this area out.");
+      if (!mounted.current) return;
+      let made = "";
+      const accepted = commit(d => {
+        const now = d.pages.find(p => p.id === targetId), layer = now && frameBackground(now);
+        if (!now?.frame || !layer || now.frame.original !== frame.original) throw new Error("That slide changed, so nothing was cut. Mark the area again.");
+        const live = now.canvas ?? sceneForPage(now, d.format);
+        if (live.elements.length >= 100) throw new Error("Each page supports up to 100 elements.");
+        const element = frameCutLayer(layer, now.frame, {src: value.src!, box: value.box!, name: removeBackground === "flat" ? "Cut out (no background)" : "Cut out"});
+        made = element.id;
+        return {...d, pages: d.pages.map(p => p.id === targetId ? {...p, canvas: {...live, elements: [...live.elements, element]}, ...(p.readingOrder ? {readingOrder: [...p.readingOrder, element.id]} : {})} : p)};
+      });
+      if (!accepted) { setNotice(value => value === "Cutting out…" ? "" : value); return; }
+      if (activePage.current === targetId) { setSelected([made]); setFrameArea(null); }
+      const message = removeBackground === "flat" ? "Cut out without its background. It’s a layer of its own now." : "Cut out. It’s a layer of its own now, above the image.";
+      setNotice(message); setUndoNotice(message);
+    } catch (reason) {
+      if (mounted.current) setNotice(reason instanceof Error ? reason.message : "Engine couldn't cut this area out.");
+    } finally {
+      if (mounted.current) setFrameBusy(false);
+    }
+  }
+  /** Frames: suggests removing the background when the marked area sits on one flat colour. */
+  async function suggestRemoval(area: AreaBox | null) {
+    setFrameArea(area);
+    const target = current.current.pages.find(p => p.id === page.id), background = target && frameBackground(target);
+    if (!area || !target?.frame || !background) return;
+    try {
+      const pixels = await previewPixels(background.previewSrc ?? background.src);
+      const box = sceneToImage(background, {width: pixels.width, height: pixels.height}, area);
+      if (box.width < 3 || box.height < 3) return;
+      const crop = new Uint8ClampedArray(box.width * box.height * 4);
+      for (let y = 0; y < box.height; y++) crop.set(pixels.data.subarray(((box.y + y) * pixels.width + box.x) * 4, ((box.y + y) * pixels.width + box.x + box.width) * 4), y * box.width * 4);
+      if (mounted.current) setFrameRemove(hasFlatBorder(crop, box.width, box.height) ? "flat" : "none");
+    } catch { /* The suggestion is optional; the person can still choose. */ }
+  }
   async function upload(file: File, replaceId?: string) {
     if (disabled || uploading) return;
     if(!replaceId&&(file.type==='image/svg+xml'||file.name.toLowerCase().endsWith('.svg'))){
@@ -714,7 +958,8 @@ export function DesignEditor({
     const shapeOperations = elements.length > 1 && elements.every(element => element.type === "shape") ? shapeOperationItems(ids) : [];
     return [
       ...shapeOperations,
-      ...(single?.type === "text" ? [{id: "edit-text", label: "Edit text", disabled: disabled || !canEditElement(scene, single, "content") || isElementHidden(scene,single), onSelect: () => setEditingRequest({id: single.id, serial: Date.now()})}] : []),
+      ...(single?.type === "text" || single?.type === "html" ? [{id: "edit-text", label: "Edit text", disabled: disabled || !canEditElement(scene, single, "content") || isElementHidden(scene,single) || (single.type === "html" && !htmlLayerText(single.html).trim()), onSelect: () => setEditingRequest({id: single.id, serial: Date.now()})}] : []),
+      ...(single?.type === "html" ? [{id: "break-html", label: "Break into layers", disabled: disabled || !canEditElement(scene, single, "content") || !canEditElement(scene, single, "delete"), onSelect: () => {void breakHtml(single.id);}}] : []),
       {id: "copy", label: "Copy", shortcut: "⌘/Ctrl C", separator: shapeOperations.length > 0, onSelect: () => copyElements(ids)},
       {id: "cut", label: "Cut", shortcut: "⌘/Ctrl X", disabled: disabled || !deletable.length, onSelect: () => copyElements(ids, true)},
       {id: "duplicate", label: "Duplicate", shortcut: "⌘/Ctrl D", disabled: disabled || !editable.length || scene.elements.length >= 100, onSelect: () => applyCommand((live) => duplicateSelection(live, ids,undefined,isolatedGroupId??undefined))},
@@ -752,6 +997,7 @@ export function DesignEditor({
         {id: "text", label: "Add text", shortcut: "T", disabled, onSelect: () => addText()},
         {id: "shape", label: "Add rectangle", shortcut: "R", disabled, onSelect: () => addShape("rectangle")},
         {id: "image", label: "Upload image", disabled: disabled || uploading, onSelect: () => fileRef.current?.click()},
+        {id: "frame-page", label: "New slide from image…", disabled: disabled || continuous || uploading || design.pages.length >= 20, onSelect: () => {frameAfterRef.current = page.id; frameFileRef.current?.click();}},
         {id: "select", label: "Select all unlocked elements", shortcut: "⌘/Ctrl A", separator: true, disabled: !scene.elements.some((e) => !e.locked && !e.hidden), onSelect: () => setSelected(selectable.map(e=>e.id))},
         {id: "background", label: "Page background", onSelect: () => openPanel("page")},
         {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", separator: true, disabled: disabled || !(sharedHistory?.canUndo ?? historyState.undo), onSelect: () => travel("undo")},
@@ -759,15 +1005,34 @@ export function DesignEditor({
       ],
     });
   }
+  // Save as layout puts a slide in the post's template, so it needs the workspace (the studio's editor), and a template draft's pages are its template's already.
+  const canSaveLayouts = Boolean(workspaceLibrary && onWorkspaceChange && design.purpose !== "template");
+  const layoutTemplate = canSaveLayouts && workspaceLibrary ? layoutTemplateOf(workspaceLibrary, design) : null;
+  function saveLayoutDraft() {
+    if (!layoutDraft || !workspaceLibrary || blocked.current) return;
+    const request = {pageId: layoutDraft.pageId, name: layoutDraft.name, useWhen: layoutDraft.useWhen};
+    let saved: SavedLayoutResult;
+    // Tried on the workspace as shown first, so a refusal stays in the dialog with its reason.
+    try { saved = withSavedLayout(workspaceLibrary, current.current, request).saved; }
+    catch (reason) { setLayoutDraft({...layoutDraft, error: reason instanceof Error ? reason.message : "The layout couldn't be saved."}); return; }
+    if (!updateWorkspace(library => withSavedLayout(library, current.current, request).library)) {
+      setLayoutDraft({...layoutDraft, error: "The layout couldn't be saved, so the template is unchanged. Check the workspace's save status, then try again."});
+      return;
+    }
+    setLayoutDraft(null);
+    setNotice(`${saved.replaced ? "Replaced the layout" : "Saved the layout"} “${saved.name}” in ${saved.templateName}, as its page ${saved.pageIndex + 1}. Recreate's designer can start slides from it.`);
+  }
   function pageMenu(event: React.MouseEvent, target: DesignPage) {
     const targetIndex = design.pages.findIndex((p) => p.id === target.id);
     openMenu(event, {label: `Page ${targetIndex + 1}`, items: [
       {id: "open-page", label: "Go to page", onSelect: () => {selectPage(target.id); setSelected([]);}},
       {id: "duplicate-page", label: "Duplicate page", disabled: disabled || continuous || design.pages.length >= 20, onSelect: () => addPage(true, target)},
       {id: "add-page", label: continuous ? "Add slide at end" : "Add blank page after", disabled: disabled || design.pages.length >= 20, onSelect: () => addPage(false, target)},
+      {id: "frame-page", label: "New slide from image…", disabled: disabled || continuous || uploading || design.pages.length >= 20, onSelect: () => {frameAfterRef.current = target.id; frameFileRef.current?.click();}},
       {id: "left", label: "Move page left", separator: true, disabled: disabled || continuous || targetIndex === 0, onSelect: () => movePage(targetIndex, targetIndex - 1)},
       {id: "right", label: "Move page right", disabled: disabled || continuous || targetIndex === design.pages.length - 1, onSelect: () => movePage(targetIndex, targetIndex + 1)},
       {id: "export-page", label: "Download page as PNG", separator: true, disabled: Boolean(job) || uploading, onSelect: () => {void startExport({},[target.id]);}},
+      ...(canSaveLayouts ? [{id: "save-layout", label: "Save as layout…", disabled: disabled || continuous || !layoutTemplate, onSelect: () => setLayoutDraft({pageId: target.id, name: "", useWhen: ""})}] : []),
       {id: "delete-page", label: "Delete page", danger: true, separator: true, disabled: disabled || (continuous ? design.pages.length <= 2 || targetIndex !== design.pages.length - 1 : design.pages.length <= 1), onSelect: () => setRemovePageId(target.id)},
     ]});
   }
@@ -990,20 +1255,25 @@ export function DesignEditor({
     const liveSource = current.current.pages.find((p) => p.id === source.id);
     if (!liveSource) return;
     const sourceIndex = current.current.pages.indexOf(liveSource);
-    const next = duplicatePage(liveSource);
+    // A duplicate gets ordinary photos, and a new page never splits a photo that spans two slides.
+    const next = withoutSpans(duplicatePage(liveSource));
     if (!duplicate)
       next.canvas = { background: source.canvas?.background ?? scene.background, elements: [] };
+    const pairs = spanPairs(current.current);
+    let insertAfter = sourceIndex;
+    for (let pair = pairs.find(item => item.startPage === insertAfter); pair; pair = pairs.find(item => item.startPage === insertAfter)) insertAfter = pair.endPage;
     const accepted = commit((d) => ({
       ...d,
       pages: [
-        ...d.pages.slice(0, sourceIndex + 1),
+        ...d.pages.slice(0, insertAfter + 1),
         next,
-        ...d.pages.slice(sourceIndex + 1),
+        ...d.pages.slice(insertAfter + 1),
       ],
     }));
     if (!accepted) return;
     selectPage(next.id);
     setSelected([]);
+    if (insertAfter !== sourceIndex) setNotice(`Added as slide ${insertAfter + 2}, so the photo across slides ${sourceIndex + 1} and ${sourceIndex + 2} stays whole.`);
   }
   function movePage(from: number, to: number) {
     if (continuous || from === to || from < 0 || to < 0 || to >= design.pages.length) return;
@@ -1144,8 +1414,25 @@ export function DesignEditor({
       onSectionChange={contextual ? undefined : setInspectorSection}
       onTextTexture={openTextTexture}
       onUploadFramePhoto={(file:File,id:string)=>upload(file,id)}
+      templateDraft={isTemplateDraft&&!editingMaster&&!continuous}
+      htmlSelection={activeHtmlSelection}
+      onEditHtmlLayer={id=>setEditingRequest({id,serial:Date.now()})}
+      onBreakHtmlLayer={id=>{void breakHtml(id);}}
     />
   );
+  const frameSlide = !continuous && !editingMaster && page.frame && frameBackground(page) ? page : null;
+  const framesActive = Boolean(frameSlide && framesTool && !disabled);
+  const framesBar = frameSlide && !disabled ? <div className="te-isolation-bar te-frames-bar" role="toolbar" aria-label="Frames">
+    <span>{framesActive ? frameArea ? "Area marked. Cut it into a layer of its own." : "Drag across the slide to mark an area" : `Made from “${frameSlide.frame!.name}”`}</span>
+    <div className="te-frames-actions">
+      {framesActive && frameArea && <>
+        <label className="te-frames-option"><input type="checkbox" checked={frameRemove === "flat"} onChange={event => setFrameRemove(event.target.checked ? "flat" : "none")} disabled={frameBusy}/> Remove flat background</label>
+        <button type="button" className="te-button te-primary" disabled={frameBusy} onClick={() => {void cutFrameArea();}}>{frameBusy ? "Cutting…" : "Cut out"}</button>
+        <button type="button" className="te-text-button" disabled={frameBusy} onClick={() => setFrameArea(null)}>Clear</button>
+      </>}
+      <button type="button" className="te-text-button" aria-pressed={framesActive} onClick={() => {setFramesTool(value => !value); setFrameArea(null); setSelected([]);}}>{framesActive ? "Done" : "Take apart"}</button>
+    </div>
+  </div> : null;
   const inspector = inspectorFor();
 
   return (
@@ -1159,6 +1446,17 @@ export function DesignEditor({
                     const file = e.target.files?.[0];
                     e.target.value = "";
                     if (file) void upload(file);
+                  }}
+                />
+                <input
+                  ref={frameFileRef}
+                  hidden
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (file) void newFrameSlide(file, frameAfterRef.current ?? page.id);
                   }}
                 />
       <input ref={replaceFileRef} hidden type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" onChange={event=>{
@@ -1237,6 +1535,7 @@ export function DesignEditor({
         </div>
         <div className="te-editor-header-actions">
           {collaboration&&<CollaborationBar collaboration={collaboration} />}
+          {chat&&<button type="button" className="te-button te-chat-button" aria-pressed={chat.open} aria-label="Chat" title="Ask Claude to change this post" onClick={chat.onToggle}><CommentIcon size={16}/><span>Chat</span></button>}
           {smartLayoutAvailable && <button className="te-button te-smart-layout-entry" aria-pressed={tab === "smart"} aria-controls="te-editor-panel" onClick={() => {setEditingMaster(false); openPanel("smart");}}>Smart layout</button>}
           <button className="te-button te-header-menu" aria-haspopup="menu" onClick={event=>openMenu(event,{label:"File",items:[
             {id:"save-template",label:saveTemplateLabel,disabled,onSelect:()=>setTemplateName(design.name)},
@@ -1257,6 +1556,7 @@ export function DesignEditor({
       {notice && (
         <div className="te-notice te-editor-notice" role="status">
           {notice}
+          {notice===undoNotice&&(sharedHistory?.canUndo??historyState.undo)&&<button type="button" className="te-text-button te-notice-undo" disabled={disabled} onClick={()=>{if(travel("undo")){setNotice("");setUndoNotice("");}}}>Undo</button>}
           <button
             onClick={() => setNotice("")}
             aria-label="Dismiss notification"
@@ -1304,7 +1604,7 @@ export function DesignEditor({
                 const updated = updateSmartTemplateText(d, page.id, id, patch, templates);
                 return {...updated, pages: updated.pages.map(item => item.id === page.id && item.canvas ? {...item, canvas: layoutSmartScene(item.canvas).scene} : item)};
               }, `${page.id}:smart-${patch.lines === undefined ? "copy" : "lines"}:${id}`)) {setIsolatedGroupId(null); setSelected([id]);}
-            }}>{inspectorFor(selectedPhoto ? "photo" : "position", true)}</SmartLayoutPanel></>}
+            }}>{inspectorFor(selectedHtml ? "html" : selectedPhoto ? "photo" : "position", true)}</SmartLayoutPanel></>}
             {tab === "text" && (
               <>
                 <button type="button" className="te-button te-primary te-full te-insert-text" onClick={()=>addText()}><PlusIcon size={18}/>Add a text box<span className="te-shortcut-hint">T</span></button>
@@ -1477,7 +1777,7 @@ export function DesignEditor({
               }} />}
             {tab === "layers" && <>
               {selected.length>0&&<button type="button" className="te-button te-full" onClick={()=>openInspector()}><EditorIcon name="position"/>Edit selected elements</button>}
-              <LayersPanel scene={scene} selectedIds={selected} width={canvasWidth} height={canvasHeight} disabled={disabled}
+              <LayersPanel scene={scene} selectedIds={selected} width={canvasWidth} height={canvasHeight} disabled={disabled} notes={spans.layerNotes}
               isolatedGroupId={isolatedGroupId??undefined} onEnterGroup={enterGroup} onExitGroup={()=>setIsolatedGroupId(null)}
               onGroupContextMenu={(event,id)=>openMenu(event,{label:scene.groups?.find(g=>g.id===id)?.name??'Group',items:[{id:'isolate',label:'Edit group',onSelect:()=>enterGroup(id)},{id:'group-lock',label:'Toggle lock',disabled:Boolean(isolatedGroupId)&&!groupMemberIds(scene,id).some(member=>isolatedIds?.has(member)),onSelect:()=>applyCommand(live=>setGroupLocked(live,id,!live.groups?.find(g=>g.id===id)?.locked))},{id:'group-hidden',label:'Toggle visibility',disabled:Boolean(isolatedGroupId)&&!groupMemberIds(scene,id).some(member=>isolatedIds?.has(member)),onSelect:()=>applyCommand(live=>setGroupHidden(live,id,!live.groups?.find(g=>g.id===id)?.hidden))}]})}
               onSelect={selectLayers} onChange={changeScene} onLocate={locateLayer}
@@ -1627,7 +1927,7 @@ export function DesignEditor({
             </>}
           </div>
           {navigationMode==="nodes"&&!pathTool&&<div className="te-node-toolbar-host" ref={setNodeToolbarHost}/>}
-          {!pathTool&&navigationMode==="select"&&<QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene}
+          {!pathTool&&navigationMode==="select"&&<QuickToolbar scene={scene} selectedIds={selected} disabled={disabled} onChange={changeScene} templateDraftHeight={isTemplateDraft&&!editingMaster&&!continuous?canvasHeight:undefined} span={spans.control}
             outputScale={format.width/FRAME_WIDTH}
             onFormatText={formatText}
             onTextTexture={openTextTexture}
@@ -1648,6 +1948,7 @@ export function DesignEditor({
             onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />}
           <div className="te-text-toolbar-host" ref={setTextToolbarHost}/>
           </div>
+          {framesBar}
           {(editingMaster||isolatedGroupId||cropImageId)&&<div className="te-isolation-bar"><span>{editingMaster?'Editing shared master':isolatedGroupId?`Inside ${scene.groups?.find(g=>g.id===isolatedGroupId)?.name??'group'}`:'Drag image to crop · Scroll to zoom image'}</span><button className="te-text-button" onClick={()=>{setEditingMaster(false);setIsolatedGroupId(null);setCropImageId(null);setSelected([]);}}>Done</button></div>}
           <div
             className={`te-canvas-space${spacePanning?' is-panning':''}`}
@@ -1673,6 +1974,8 @@ export function DesignEditor({
 
           >
             <div className="te-pasteboard" style={{width: pasteboardBounds.width * scale, height: pasteboardBounds.height * scale}}>
+            {spans.place&&<SpanPeek design={design} place={spans.place} scale={scale} left={workspaceLeft} top={workspaceTop} height={canvasHeight} subscribe={subscribeScenePreview}
+              onOpen={()=>{const place=spans.place!;const other=place.side==="start"?{page:design.pages[place.endPage],half:place.end}:{page:design.pages[place.startPage],half:place.start};openPageWith(other.page.id,[other.half.id]);}}/>}
             <div
               className="te-canvas-stage te-free-stage"
               style={{
@@ -1702,7 +2005,8 @@ export function DesignEditor({
                     peers={collaboration?.peers}
                     collaborationPageId={collaboration ? collaborationPageId : undefined}
                     onCursorChange={collaboration ? publishCursor : undefined}
-                    onScenePreview={collaboration ? publishScenePreview : undefined}
+                    onScenePreview={handleScenePreview}
+                    layerNotes={spans.layerNotes}
                     onHistory={travel}
                     onRegisterHistoryBridge={registerHistoryBridge}
                     onHistoryBoundary={closeEditingHistory}
@@ -1710,6 +2014,7 @@ export function DesignEditor({
                     disabled={disabled}
                     onContextMenu={canvasMenu}
                     editingRequest={editingRequest}
+                    onHtmlSelection={setHtmlSelection}
                     clipToCanvas={clipToCanvas}
                     pasteboardBounds={pasteboardBounds}
                     slideWidth={continuous ? FRAME_WIDTH : undefined}
@@ -1728,6 +2033,7 @@ export function DesignEditor({
                     onExitNodeEditing={()=>setNavigationMode("select")}
                     nodeToolbarHost={nodeToolbarHost}
                     textToolbarHost={textToolbarHost}
+                    wordColors={wordColors}
                     onRequestCrop={id=>{setSelected([id]);setCropImageId(id);}}
                     penClosed={penClosed} penColor={brand.text}
                     onCancelDrawing={()=>setPathTool(false)}
@@ -1736,6 +2042,9 @@ export function DesignEditor({
                     onPan={delta=>{const node=workspaceRef.current;if(node){node.scrollLeft-=delta.x;node.scrollTop-=delta.y;}}}
                     onZoom={gesture=>{const node=workspaceRef.current;if(!node)return;const bounds=node.getBoundingClientRect(),screenX=gesture.clientX-bounds.left,screenY=gesture.clientY-bounds.top;zoomAnchor.current={x:(node.scrollLeft+screenX)/scale-workspaceLeft,y:(node.scrollTop+screenY)/scale-workspaceTop,screenX,screenY};setZoom(value=>Math.max(.05,Math.min(32,value*gesture.factor)));}}
                     drawingMode={pathTool?'pen':undefined}
+                    areaMode={framesActive}
+                    area={framesActive?frameArea:null}
+                    onAreaChange={area=>{void suggestRemoval(area);}}
                     onDrawPath={element=>{addElement(element);setPathTool(false);}}
                   />
                 ) : (
@@ -1820,12 +2129,13 @@ export function DesignEditor({
                     selectPage(p.id);
                     setSelected([]);
                   }}
-                  aria-label={`Page ${i + 1}`}
+                  aria-label={`Page ${i + 1}${spans.links.has(i) ? `, shares a photo with page ${i + 2}` : ""}`}
                   aria-pressed={p.id === page.id}
                 >
                   <DesignPreview design={design} page={p} />
                   <span>{i + 1}</span>
                 </button>
+                {spans.links.has(i) && <span className="te-page-span-link" title={`Slides ${i + 1} and ${i + 2} share a photo`}><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1"/></svg></span>}
                 <button className="te-page-more" aria-label={`Page ${i + 1} actions`} aria-haspopup="menu" onClick={(event) => pageMenu(event, p)}>•••</button>
                 </div>
               ))}
@@ -1932,6 +2242,26 @@ export function DesignEditor({
                 <CheckIcon />
                 {design.editingTemplateId ? "Update template" : "Save template"}
               </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+      {layoutDraft && (
+        <Modal title={`Save page ${Math.max(1, design.pages.findIndex(item => item.id === layoutDraft.pageId) + 1)} as a layout`} onClose={() => setLayoutDraft(null)}>
+          <form onSubmit={(event) => {event.preventDefault(); saveLayoutDraft();}}>
+            <p>Adds this page to {layoutTemplate?.name ?? "the post's template"} as a new layout, so Recreate&apos;s designer can start slides from it. Its text and photos become slots to fill; its HTML layers keep their design. A layout saved under the same name is replaced.</p>
+            <label className="te-field">
+              Layout name
+              <input autoFocus required maxLength={MAX_LAYOUT_NAME} value={layoutDraft.name} placeholder="Two charts side by side" onChange={(event) => setLayoutDraft({...layoutDraft, name: event.target.value, error: undefined})} />
+            </label>
+            <label className="te-field">
+              Use when
+              <textarea required rows={3} maxLength={MAX_LAYOUT_USE_WHEN} value={layoutDraft.useWhen} placeholder="Two numbers compared over the same years" onChange={(event) => setLayoutDraft({...layoutDraft, useWhen: event.target.value, error: undefined})} />
+            </label>
+            {layoutDraft.error && <p className="te-dialog-error" role="alert">{layoutDraft.error}</p>}
+            <div className="te-modal-actions">
+              <button type="button" className="te-button" onClick={() => setLayoutDraft(null)}>Cancel</button>
+              <button className="te-button te-primary" disabled={disabled}><CheckIcon />Save layout</button>
             </div>
           </form>
         </Modal>

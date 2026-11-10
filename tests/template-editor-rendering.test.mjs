@@ -165,3 +165,35 @@ test("translucent page backgrounds are painted once with and without onion skin"
   const output = render(canvas.SceneRenderer, {scene});
   assert.equal((output.match(/background:#11223380/g) ?? []).length, 1);
 });
+
+test("fixed text boxes keep the accents and descenders of their lines and still cut text that overflows", () => {
+  const fit = loadModule("lib/template-editor/text-fit.ts");
+  // The Follow page's first line: Bebas Neue at line height .836 in a box one line tall, where Á rises above the box.
+  const follow = { ...model.createCanvasElement("text"), id: "follow", name: "Follow this page", text: "SIGUE ESTA PÁGINA", font: "bebas", fontSize: 40.67, lineHeight: .836, width: 315, height: 34, textMode: "fixed", verticalAlign: "bottom" };
+  const output = render(canvas.SceneRenderer, { scene: freeze({ background: "#0b0f14", elements: [
+    follow,
+    { ...follow, id: "fitted", textMode: "auto-fit", autoFitFontSize: 30 },
+    { ...follow, id: "rich", richText: 'SIGUE <span style="font-size:60px">MÁS</span>' },
+    { ...follow, id: "grows", textMode: "auto-height" },
+  ] }) });
+  const frame = id => output.match(new RegExp(`data-element-id="${id}"[^>]*>(?:<span[^>]*>.*?</span>)?<div class="([^"]+)" style="([^"]*)"`));
+  assert.equal(frame("follow")[1], "te-canvas-text-frame is-fixed");
+  assert.match(frame("follow")[2], new RegExp(`--te-glyph-overhang:${fit.glyphOverhang(40.67, .836)}px`));
+  assert.match(frame("fitted")[2], new RegExp(`--te-glyph-overhang:${fit.glyphOverhang(30, .836)}px`), "auto-fit text is sized to its fitted font");
+  assert.match(frame("rich")[2], new RegExp(`--te-glyph-overhang:${fit.glyphOverhang(60, .836)}px`), "the largest run sets the room");
+  assert.equal(frame("grows")[1], "te-canvas-text-frame", "a box that grows with its text never clips");
+  // Ink reach from the middle of a line box in em, measured in Chromium: Bebas Neue's Á .612,
+  // Inter's Á .633, Lora's descenders .637. The clip clears each at every line height.
+  for (const reach of [.612, .633, .637]) for (const lineHeight of [.5, .836, 1, 1.2, 1.5]) {
+    assert.ok(fit.glyphOverhang(100, lineHeight) >= 100 * (reach - lineHeight / 2) - .01, `reach ${reach} at line height ${lineHeight}`);
+  }
+  assert.equal(fit.glyphOverhang(40, 1.4), 0, "loose lines keep their ink inside the box");
+  // The clip reaches past the box by that room; once the text overflows, the box cuts it exactly.
+  assert.match(cssRule(".te-canvas-text-frame.is-fixed"), /clip-path:\s*inset\(calc\(-1 \* var\(--te-glyph-overhang,\s*0px\)\) 0\)/);
+  assert.doesNotMatch(cssRule(".te-canvas-text-frame.is-fixed"), /overflow/);
+  assert.match(cssRule(".te-canvas-text-frame.is-fixed[data-overflow]"), /clip-path:\s*none;\s*overflow:\s*hidden/);
+  // No other stylesheet may cut the box again.
+  for (const file of fs.readdirSync(path.join(root, "components/template-editor")).filter(name => name.endsWith(".css"))) {
+    assert.doesNotMatch(fs.readFileSync(path.join(root, "components/template-editor", file), "utf8"), /\.te-canvas-text-frame\.is-fixed\s*\{[^}]*overflow/, file);
+  }
+});

@@ -142,6 +142,27 @@ test("automatic text height keeps the top edge anchored when growing or shrinkin
  for(const height of [100,20]){const resized=fit.resizeTextHeight(source,height),after=topCenter(resized);near(after.x,before.x);near(after.y,before.y);assert.equal(resized.height,height);assert.equal(resized.width,source.width);}
  assert.equal(fit.resizeTextHeight(source,40.1),source);assert.equal(source.height,40);
 });
+test("two canvases that measure text a unit apart settle on one height instead of re-fitting each other",()=>{
+ const source=text("shared",{x:30,y:40,width:160,height:16,textMode:"auto-height"});
+ assert.equal(fit.resizeTextHeight(source,15),source,"One unit of slack is not a change");
+ assert.equal(fit.resizeTextHeight(source,14).height,14,"Shorter words still shrink their box");
+ assert.equal(fit.resizeTextHeight(source,16.6).height,16.6,"Taller words always grow it");
+ // Ana's canvas measures 15 and Bruno's 16: measured heights round up, so they can differ by one.
+ let layer={...source,height:15},writes=0;
+ for(let turn=0;turn<6;turn++){const fitted=fit.resizeTextHeight(layer,turn%2?15:16);if(fitted!==layer){writes++;layer=fitted;}}
+ assert.equal(layer.height,16);assert.equal(writes,1);
+});
+test("fitted font sizes fix overflow at once but grow back only past a small slack",()=>{
+ assert.equal(fit.shouldRefitFontSize(20,19.9),true,"Words that overflow always shrink");
+ assert.equal(fit.shouldRefitFontSize(20,20),false);
+ assert.equal(fit.shouldRefitFontSize(20,20.15),false,"Less than 1% of room keeps the size");
+ assert.equal(fit.shouldRefitFontSize(20,20.5),true,"More room grows the words back");
+ assert.equal(fit.shouldRefitFontSize(20,Number.NaN),false);
+ // Two canvases fit the same words to 23.45 and 23.47: they settle on the size that fits on both.
+ let size=23.47,writes=0;
+ for(let turn=0;turn<6;turn++){const fitted=turn%2?23.47:23.45;if(fit.shouldRefitFontSize(size,fitted)){size=fitted;writes++;}}
+ assert.equal(size,23.45);assert.equal(writes,1);
+});
 test("node parser preserves cubic, smooth, quadratic, arc and open/closed subpath semantics",()=>{
  const graph=nodes.parseVectorNodes("M0 0 C10 0 20 20 30 20 S50 0 60 0 Q70 20 80 0 T100 0 M0 50A50 50 0 0 1 100 50Z");assert.equal(graph.subpaths.length,2);assert.equal(graph.subpaths[0].closed,false);assert.equal(graph.subpaths[1].closed,true);assert.deepEqual(graph.subpaths[0].nodes[1].outgoing,{x:40,y:20});
  const path=nodes.serializeVectorNodes(graph);assert.ok(model.isSafeVectorPath(path));assert.equal((path.match(/Z/g)||[]).length,1);assert.doesNotMatch(path,/[QSTA]/);assert.ok(nodes.parseVectorNodes(path).subpaths[1].nodes.length>4);
