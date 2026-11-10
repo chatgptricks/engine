@@ -74,7 +74,9 @@ import {applyDesignPatch} from "@/lib/template-editor/document-patch";
 import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,sameDocumentContent,historyShortcut,type DocumentChange,type HistoryContext} from "@/lib/template-editor/history";
 import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/preflight";
 import { ColorField, Modal } from "./controls";
-import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls } from "./canvas";
+import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls, type AreaBox } from "./canvas";
+import { borderColor, frameBackground, frameBackgroundLayer, frameCutLayer, hasFlatBorder, sceneToImage, toHex } from "@/lib/template-editor/frames";
+import type { PageFrame } from "@/lib/template-editor/model";
 import type { TextFormattingPatch, TextFormatter } from "@/lib/template-editor/rich-text-editing";
 import { wordHighlightColors } from "@/lib/template-editor/word-colors";
 import { findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
@@ -104,6 +106,25 @@ import "./editor-workflow.css";
 import { DesignFrame, DesignPreview, FRAME_WIDTH } from "./preview";
 
 const BREAKING_HTML = "Breaking the HTML layer into layers…";
+/** Frames: an image's pixels, drawn at most 256 px on its long side (for quick looks, not cuts). */
+async function previewPixels(src: string): Promise<{data: Uint8ClampedArray; width: number; height: number}> {
+  const image = new Image();
+  image.decoding = "async";
+  image.src = src;
+  await image.decode();
+  const scale = Math.min(1, 256 / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale)), height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas"); canvas.width = width; canvas.height = height;
+  const context = canvas.getContext("2d", {willReadFrequently: true});
+  if (!context) throw new Error("No canvas");
+  context.drawImage(image, 0, 0, width, height);
+  return {data: context.getImageData(0, 0, width, height).data, width, height};
+}
+/** The colour around an image's edge, for the slide behind a frame of another shape. */
+async function edgeColor(src: string): Promise<string> {
+  const pixels = await previewPixels(src);
+  return toHex(borderColor(pixels.data, pixels.width, pixels.height));
+}
 
 type Tab =
   | "smart"
@@ -320,6 +341,13 @@ export function DesignEditor({
   const workspaceRef = useRef<HTMLDivElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  // Frames: a slide made from a flat image, and the area marked on it.
+  const frameFileRef = useRef<HTMLInputElement>(null);
+  const frameAfterRef = useRef<string | null>(null);
+  const [framesTool, setFramesTool] = useState(false);
+  const [frameArea, setFrameArea] = useState<AreaBox | null>(null);
+  const [frameBusy, setFrameBusy] = useState(false);
+  const [frameRemove, setFrameRemove] = useState<"none" | "flat">("none");
   const replaceFileRef = useRef<HTMLInputElement>(null);
   const replaceTargetRef = useRef<string | null>(null);
   const onChangeRef = useRef(onChange);
@@ -670,6 +698,94 @@ export function DesignEditor({
       breakingHtml.current = false;
     }
   }
+  /** Frames: a new slide made from a flat image, after `afterId`. The image is the
+   * slide's locked bottom layer and the page keeps the original; nothing else runs. */
+  async function newFrameSlide(file: File, afterId: string) {
+    if (disabled || uploading) return;
+    if (current.current.continuousCanvas) { setNotice("Frames slides need separate pages. Turn off the continuous canvas first."); return; }
+    if (current.current.pages.length >= 20) { setNotice("This design already has 20 pages."); return; }
+    if (!/^image\/(png|jpeg|webp)$/.test(file.type)) { setNotice("Choose a PNG, JPG or WebP picture."); return; }
+    setUploading(true);
+    try {
+      const {src, previewSrc, width, height} = await prepareRasterAsset(file);
+      const edge = await edgeColor(previewSrc).catch(() => "#000000");
+      if (!mounted.current) return;
+      const name = file.name.replace(/\.[^.]+$/, "").slice(0, 200) || "Image";
+      const frame: PageFrame = {original: src, width, height, name, source: "editor", createdAt: new Date().toISOString()};
+      let made = "";
+      const accepted = commit(d => {
+        if (d.continuousCanvas) throw new Error("The canvas layout changed. Make the slide again.");
+        if (d.pages.length >= 20) throw new Error("This design already has 20 pages.");
+        const after = d.pages.findIndex(p => p.id === afterId);
+        const source = d.pages[after >= 0 ? after : d.pages.length - 1];
+        const next = withoutSpans(duplicatePage(source));
+        const background = {...frameBackgroundLayer(frame, {width: FRAME_WIDTH, height: canvasHeight}), previewSrc};
+        const pageValue: DesignPage = {id: next.id, image: {...next.image, url: src, width, height, source: "upload"}, style: next.style, label: name, frame, canvas: {background: edge, elements: [background]}};
+        made = pageValue.id;
+        // Never inside a photo that spans two slides.
+        const pairs = spanPairs(d);
+        let insertAfter = after >= 0 ? after : d.pages.length - 1;
+        for (let pair = pairs.find(item => item.startPage === insertAfter); pair; pair = pairs.find(item => item.startPage === insertAfter)) insertAfter = pair.endPage;
+        return {...d, pages: [...d.pages.slice(0, insertAfter + 1), pageValue, ...d.pages.slice(insertAfter + 1)]};
+      });
+      if (!accepted) return;
+      selectPage(made); setSelected([]); setFramesTool(true); setFrameArea(null);
+      const message = `Slide made from “${name}”. Mark an area on it to cut it out. The original is kept.`;
+      setNotice(message); setUndoNotice(message);
+    } catch (reason) {
+      setNotice(reason instanceof Error ? reason.message : "Could not open this image.");
+    } finally {
+      if (mounted.current) setUploading(false);
+    }
+  }
+  /** Frames: cuts the marked area of the slide's original into a layer of its own, in the same place. */
+  async function cutFrameArea() {
+    const target = current.current.pages.find(p => p.id === page.id), background = target && frameBackground(target);
+    if (disabled || frameBusy || !target?.frame || !background || !frameArea) return;
+    const frame = target.frame, targetId = target.id, area = frameArea, removeBackground = frameRemove;
+    const box = sceneToImage(background, frame, area);
+    if (box.width < 4 || box.height < 4) { setNotice("Mark an area on the image."); return; }
+    setFrameBusy(true);
+    setNotice("Cutting out…");
+    try {
+      const response = await fetch("/api/template-editor/frames", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify({action: "cut", original: frame.original, box, removeBackground})});
+      const value = await response.json().catch(() => ({})) as {src?: string; box?: {x: number; y: number; width: number; height: number}; error?: string};
+      if (!response.ok || !value.src || !value.box) throw new Error(value.error || "Engine couldn't cut this area out.");
+      if (!mounted.current) return;
+      let made = "";
+      const accepted = commit(d => {
+        const now = d.pages.find(p => p.id === targetId), layer = now && frameBackground(now);
+        if (!now?.frame || !layer || now.frame.original !== frame.original) throw new Error("That slide changed, so nothing was cut. Mark the area again.");
+        const live = now.canvas ?? sceneForPage(now, d.format);
+        if (live.elements.length >= 100) throw new Error("Each page supports up to 100 elements.");
+        const element = frameCutLayer(layer, now.frame, {src: value.src!, box: value.box!, name: removeBackground === "flat" ? "Cut out (no background)" : "Cut out"});
+        made = element.id;
+        return {...d, pages: d.pages.map(p => p.id === targetId ? {...p, canvas: {...live, elements: [...live.elements, element]}, ...(p.readingOrder ? {readingOrder: [...p.readingOrder, element.id]} : {})} : p)};
+      });
+      if (!accepted) { setNotice(value => value === "Cutting out…" ? "" : value); return; }
+      if (activePage.current === targetId) { setSelected([made]); setFrameArea(null); }
+      const message = removeBackground === "flat" ? "Cut out without its background. It’s a layer of its own now." : "Cut out. It’s a layer of its own now, above the image.";
+      setNotice(message); setUndoNotice(message);
+    } catch (reason) {
+      if (mounted.current) setNotice(reason instanceof Error ? reason.message : "Engine couldn't cut this area out.");
+    } finally {
+      if (mounted.current) setFrameBusy(false);
+    }
+  }
+  /** Frames: suggests removing the background when the marked area sits on one flat colour. */
+  async function suggestRemoval(area: AreaBox | null) {
+    setFrameArea(area);
+    const target = current.current.pages.find(p => p.id === page.id), background = target && frameBackground(target);
+    if (!area || !target?.frame || !background) return;
+    try {
+      const pixels = await previewPixels(background.previewSrc ?? background.src);
+      const box = sceneToImage(background, {width: pixels.width, height: pixels.height}, area);
+      if (box.width < 3 || box.height < 3) return;
+      const crop = new Uint8ClampedArray(box.width * box.height * 4);
+      for (let y = 0; y < box.height; y++) crop.set(pixels.data.subarray(((box.y + y) * pixels.width + box.x) * 4, ((box.y + y) * pixels.width + box.x + box.width) * 4), y * box.width * 4);
+      if (mounted.current) setFrameRemove(hasFlatBorder(crop, box.width, box.height) ? "flat" : "none");
+    } catch { /* The suggestion is optional; the person can still choose. */ }
+  }
   async function upload(file: File, replaceId?: string) {
     if (disabled || uploading) return;
     if(!replaceId&&(file.type==='image/svg+xml'||file.name.toLowerCase().endsWith('.svg'))){
@@ -878,6 +994,7 @@ export function DesignEditor({
         {id: "text", label: "Add text", shortcut: "T", disabled, onSelect: () => addText()},
         {id: "shape", label: "Add rectangle", shortcut: "R", disabled, onSelect: () => addShape("rectangle")},
         {id: "image", label: "Upload image", disabled: disabled || uploading, onSelect: () => fileRef.current?.click()},
+        {id: "frame-page", label: "New slide from image…", disabled: disabled || continuous || uploading || design.pages.length >= 20, onSelect: () => {frameAfterRef.current = page.id; frameFileRef.current?.click();}},
         {id: "select", label: "Select all unlocked elements", shortcut: "⌘/Ctrl A", separator: true, disabled: !scene.elements.some((e) => !e.locked && !e.hidden), onSelect: () => setSelected(selectable.map(e=>e.id))},
         {id: "background", label: "Page background", onSelect: () => openPanel("page")},
         {id: "undo", label: "Undo", shortcut: "⌘/Ctrl Z", separator: true, disabled: disabled || !(sharedHistory?.canUndo ?? historyState.undo), onSelect: () => travel("undo")},
@@ -891,6 +1008,7 @@ export function DesignEditor({
       {id: "open-page", label: "Go to page", onSelect: () => {selectPage(target.id); setSelected([]);}},
       {id: "duplicate-page", label: "Duplicate page", disabled: disabled || continuous || design.pages.length >= 20, onSelect: () => addPage(true, target)},
       {id: "add-page", label: continuous ? "Add slide at end" : "Add blank page after", disabled: disabled || design.pages.length >= 20, onSelect: () => addPage(false, target)},
+      {id: "frame-page", label: "New slide from image…", disabled: disabled || continuous || uploading || design.pages.length >= 20, onSelect: () => {frameAfterRef.current = target.id; frameFileRef.current?.click();}},
       {id: "left", label: "Move page left", separator: true, disabled: disabled || continuous || targetIndex === 0, onSelect: () => movePage(targetIndex, targetIndex - 1)},
       {id: "right", label: "Move page right", disabled: disabled || continuous || targetIndex === design.pages.length - 1, onSelect: () => movePage(targetIndex, targetIndex + 1)},
       {id: "export-page", label: "Download page as PNG", separator: true, disabled: Boolean(job) || uploading, onSelect: () => {void startExport({},[target.id]);}},
@@ -1281,6 +1399,19 @@ export function DesignEditor({
       onBreakHtmlLayer={id=>{void breakHtml(id);}}
     />
   );
+  const frameSlide = !continuous && !editingMaster && page.frame && frameBackground(page) ? page : null;
+  const framesActive = Boolean(frameSlide && framesTool && !disabled);
+  const framesBar = frameSlide && !disabled ? <div className="te-isolation-bar te-frames-bar" role="toolbar" aria-label="Frames">
+    <span>{framesActive ? frameArea ? "Area marked. Cut it into a layer of its own." : "Drag across the slide to mark an area" : `Made from “${frameSlide.frame!.name}”`}</span>
+    <div className="te-frames-actions">
+      {framesActive && frameArea && <>
+        <label className="te-frames-option"><input type="checkbox" checked={frameRemove === "flat"} onChange={event => setFrameRemove(event.target.checked ? "flat" : "none")} disabled={frameBusy}/> Remove flat background</label>
+        <button type="button" className="te-button te-primary" disabled={frameBusy} onClick={() => {void cutFrameArea();}}>{frameBusy ? "Cutting…" : "Cut out"}</button>
+        <button type="button" className="te-text-button" disabled={frameBusy} onClick={() => setFrameArea(null)}>Clear</button>
+      </>}
+      <button type="button" className="te-text-button" aria-pressed={framesActive} onClick={() => {setFramesTool(value => !value); setFrameArea(null); setSelected([]);}}>{framesActive ? "Done" : "Take apart"}</button>
+    </div>
+  </div> : null;
   const inspector = inspectorFor();
 
   return (
@@ -1294,6 +1425,17 @@ export function DesignEditor({
                     const file = e.target.files?.[0];
                     e.target.value = "";
                     if (file) void upload(file);
+                  }}
+                />
+                <input
+                  ref={frameFileRef}
+                  hidden
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  onChange={(e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = "";
+                    if (file) void newFrameSlide(file, frameAfterRef.current ?? page.id);
                   }}
                 />
       <input ref={replaceFileRef} hidden type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" onChange={event=>{
@@ -1785,6 +1927,7 @@ export function DesignEditor({
             onAddText={() => addText()} onUpload={() => fileRef.current?.click()} />}
           <div className="te-text-toolbar-host" ref={setTextToolbarHost}/>
           </div>
+          {framesBar}
           {(editingMaster||isolatedGroupId||cropImageId)&&<div className="te-isolation-bar"><span>{editingMaster?'Editing shared master':isolatedGroupId?`Inside ${scene.groups?.find(g=>g.id===isolatedGroupId)?.name??'group'}`:'Drag image to crop · Scroll to zoom image'}</span><button className="te-text-button" onClick={()=>{setEditingMaster(false);setIsolatedGroupId(null);setCropImageId(null);setSelected([]);}}>Done</button></div>}
           <div
             className={`te-canvas-space${spacePanning?' is-panning':''}`}
@@ -1878,6 +2021,9 @@ export function DesignEditor({
                     onPan={delta=>{const node=workspaceRef.current;if(node){node.scrollLeft-=delta.x;node.scrollTop-=delta.y;}}}
                     onZoom={gesture=>{const node=workspaceRef.current;if(!node)return;const bounds=node.getBoundingClientRect(),screenX=gesture.clientX-bounds.left,screenY=gesture.clientY-bounds.top;zoomAnchor.current={x:(node.scrollLeft+screenX)/scale-workspaceLeft,y:(node.scrollTop+screenY)/scale-workspaceTop,screenX,screenY};setZoom(value=>Math.max(.05,Math.min(32,value*gesture.factor)));}}
                     drawingMode={pathTool?'pen':undefined}
+                    areaMode={framesActive}
+                    area={framesActive?frameArea:null}
+                    onAreaChange={area=>{void suggestRemoval(area);}}
                     onDrawPath={element=>{addElement(element);setPathTool(false);}}
                   />
                 ) : (

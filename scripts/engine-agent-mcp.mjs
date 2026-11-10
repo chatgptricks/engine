@@ -2,12 +2,17 @@
 /** Dependency-free MCP stdio bridge. Node 22; see docs/agent-slides.md. */
 import { randomUUID } from "node:crypto";
 import { isIP } from "node:net";
+import { open as openFile } from "node:fs/promises";
+import { extname, isAbsolute } from "node:path";
 
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18"];
 const MAX_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_HTTP_BYTES = 32 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 72 * 1024 * 1024;
 const HTTP_TIMEOUT_MS = 30_000;
+// Frames: the only files the bridge reads are pictures an agent names, and only these.
+const MAX_FRAME_BYTES = 15 * 1024 * 1024;
+const FRAME_TYPES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" };
 
 class RpcError extends Error {
   constructor(code, message) {
@@ -44,7 +49,7 @@ function configuration() {
   if (!token || token.length > 4096 || /[\r\n]/.test(token)) {
     throw new Error("Set ENGINE_AGENT_TOKEN to an agent access token from Engine's Agent access panel.");
   }
-  return { endpoint: new URL("/api/agent/slides", url), recreate: new URL("/api/engine/recreate", url), profiles: new URL("/api/engine/page-profiles", url), brands: new URL("/api/engine/brands", url), token };
+  return { assets: new URL("/api/agent/assets", url), endpoint: new URL("/api/agent/slides", url), recreate: new URL("/api/engine/recreate", url), profiles: new URL("/api/engine/page-profiles", url), brands: new URL("/api/engine/brands", url), token };
 }
 
 // An exact copy runs transcript, data (its chart rebuilder), deck and review; the rest are a full recreation's.
@@ -73,6 +78,8 @@ function toolDefinitions(capabilities) {
     offset: { type: "integer", minimum: 0, maximum: 10000, default: 0 },
     limit: { type: "integer", minimum: 1, maximum: 100, default: 20 },
   });
+  const frameBox = schema({ x: { type: "number" }, y: { type: "number" }, width: { type: "number", exclusiveMinimum: 0 }, height: { type: "number", exclusiveMinimum: 0 } }, ["x", "y", "width", "height"]);
+  frameBox.description = "A box on the slide in output pixels.";
   const uuid = { type: "string", pattern: "^[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}$" };
   // A recreation is named by its postId, or by the jobId older clients kept.
   const post = {
@@ -129,6 +136,9 @@ function toolDefinitions(capabilities) {
     { name: "engine_restore_brand", description: "Undo changes to a brand guide by bringing back an earlier version (from engine_get_brand's versions) as a new version. The version it replaces stays in the history.", inputSchema: schema({ brandId, version: { type: "integer", minimum: 1 } }, ["brandId", "version"]), annotations: write },
     { name: "engine_check_deck", description: "Check a deck (deckId) or a template (templateId) against a brand guide with code: full stops, em dashes, sentence-case titles, capitals on the cover, body length, banned words, colors, fonts, text size, margins, the source line, spacing and the accent gradient, as the guide turns them on. brandId defaults to the brand the template names or the page that uses it. Returns issues with the slide, the problem and the fix. Code can't judge the look: also read the deck's slides.", inputSchema: schema({ deckId, templateId: { type: "string", minLength: 1, maxLength: 200 }, brandId }), annotations: read },
     { name: "engine_design_template", description: "Draft a template from a brand guide: Engine restyles the page's carousel with the guide's colors, type, margins and spacing (gradient titles, a cover remark, topic logo spots, photos in their own shape; pages of real posts from X stay as they are) and saves it as \"<brand>-guide-<language>\", replacing an earlier draft. Returns the template id, the guide checks on it and which pages use it. No page switches to it until a person or agent sets the page profile's templateId. Use language es for Spanish pages: their draft leaves room for accents.", inputSchema: schema({ brandId, language: { type: "string", enum: ["en", "es"] }, baseTemplateId: { type: "string", minLength: 1, maxLength: 200, description: "The template to restyle; defaults to chatgptricks-3x4." } }, ["brandId", "language"]), annotations: write },
+    { name: "engine_frame_upload", description: "Frames: make a slide from a flat image (PNG, JPG or WebP), for a slide that only exists as a picture, such as one made in another chat or design system. The image becomes the slide's locked bottom layer and Engine keeps the original; nothing else runs. Give path (a local file, read by this bridge) or dataUrl. Without deckId, a new deck the image's size is made. Then look at it with engine_frame_view, read its words yourself, and take it apart with engine_frame_cut. Returns the deck, its new hash, slideId and editorUrl.", inputSchema: schema({ deckId, path: { type: "string", minLength: 1, maxLength: 4096, description: "Absolute path to a .png, .jpg, .jpeg or .webp file of at most 15 MB." }, dataUrl: { type: "string", minLength: 1, maxLength: 21_000_000, description: "data:image/png|jpeg|webp;base64,… instead of path." }, name: { type: "string", maxLength: 200 }, index: { type: "integer", minimum: 0, maximum: 20, description: "Where the slide goes. Default: the end." }, expectedHash: { type: "string", minLength: 1, description: "The deck's hash from engine_get_deck. Default: the current hash." }, operationId }), annotations: write },
+    { name: "engine_frame_view", description: "Frames: look at a Frames slide's original image (or a box of it) with your own eyes. Returns the image and how it sits on the slide, so you can give engine_frame_cut boxes in slide output pixels. Engine runs no model; you read the picture.", inputSchema: schema({ deckId, slideId: { type: "string", minLength: 1, maxLength: 200 }, box: frameBox }, ["deckId", "slideId"]), annotations: read },
+    { name: "engine_frame_cut", description: "Frames: cut a box of a Frames slide's original image into an image layer of its own, in the same place, above the image. removeBackground flat makes the colour around the box's edge transparent and trims the cut (logos, icons, cards on one colour); none keeps the box as it is (photos). Always cuts from the original. Mark the part with a little of its background around it.", inputSchema: schema({ deckId, expectedHash: { type: "string", minLength: 1 }, slideId: { type: "string", minLength: 1, maxLength: 200 }, box: frameBox, name: { type: "string", maxLength: 200 }, removeBackground: { type: "string", enum: ["none", "flat"] }, operationId }, ["deckId", "expectedHash", "slideId", "box"]), annotations: write },
   ];
 }
 
@@ -251,12 +261,24 @@ function validatedArguments(name, args) {
   if (Object.hasOwn(args, "limit") && (!Number.isSafeInteger(args.limit) || args.limit < 1 || args.limit > 100)) {
     throw new RpcError(-32602, "limit must be an integer from 1 through 100.");
   }
+  if (name === "engine_frame_upload") {
+    if (Object.hasOwn(args, "path") === Object.hasOwn(args, "dataUrl")) throw new RpcError(-32602, "Pass either path or dataUrl.");
+    if (Object.hasOwn(args, "path") && (typeof args.path !== "string" || !isAbsolute(args.path) || args.path.length > 4096 || /\0/.test(args.path) || !FRAME_TYPES[extname(args.path).toLowerCase()])) throw new RpcError(-32602, "path must be an absolute path to a .png, .jpg, .jpeg or .webp file.");
+    if (Object.hasOwn(args, "dataUrl") && (typeof args.dataUrl !== "string" || !/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(args.dataUrl))) throw new RpcError(-32602, "dataUrl must be a PNG, JPG or WebP data:image/...;base64 URL.");
+    if (Object.hasOwn(args, "index") && (!Number.isSafeInteger(args.index) || args.index < 0 || args.index > 20)) throw new RpcError(-32602, "index must be an integer from 0 through 20.");
+  }
+  if (name.startsWith("engine_frame_")) {
+    if (Object.hasOwn(args, "slideId") && (typeof args.slideId !== "string" || !/^[A-Za-z0-9._:-]{1,200}$/.test(args.slideId))) throw new RpcError(-32602, "slideId must be a slide id from engine_get_deck or engine_frame_upload.");
+    if (Object.hasOwn(args, "box") && (!object(args.box) || Object.keys(args.box).some((key) => !["x", "y", "width", "height"].includes(key)) || ["x", "y", "width", "height"].some((key) => typeof args.box[key] !== "number" || !Number.isFinite(args.box[key])) || args.box.width <= 0 || args.box.height <= 0)) throw new RpcError(-32602, "box needs numeric x, y, width and height (output pixels), with width and height above 0.");
+    if (Object.hasOwn(args, "name") && (typeof args.name !== "string" || args.name.length > 200)) throw new RpcError(-32602, "name must be text of at most 200 characters.");
+    if (Object.hasOwn(args, "removeBackground") && !["none", "flat"].includes(args.removeBackground)) throw new RpcError(-32602, "removeBackground must be none or flat.");
+  }
   const result = { ...args };
   if (name === "engine_list_templates" || name === "engine_list_decks") {
     result.offset ??= 0;
     result.limit ??= 20;
   }
-  if (name === "engine_create_deck" || name === "engine_update_deck") result.operationId ??= randomUUID();
+  if (name === "engine_create_deck" || name === "engine_update_deck" || name === "engine_frame_upload" || name === "engine_frame_cut") result.operationId ??= randomUUID();
   return result;
 }
 
@@ -314,6 +336,67 @@ function bridge(config) {
       clearTimeout(timer);
     }
   }
+  /** Reads a picture an agent named: a .png, .jpg, .jpeg or .webp file of at most
+   * 15 MB whose first bytes really are that kind of picture. Nothing else is read. */
+  async function readPicture(path) {
+    const handle = await openFile(path, "r").catch(() => { throw new ApiError("Could not open that file. Give an absolute path to a picture."); });
+    try {
+      const info = await handle.stat();
+      if (!info.isFile()) throw new ApiError("path must be a file.");
+      if (info.size < 12 || info.size > MAX_FRAME_BYTES) throw new ApiError("The picture must be at most 15 MB.");
+      const data = await handle.readFile();
+      const type = FRAME_TYPES[extname(path).toLowerCase()];
+      const png = data.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+      const jpeg = data[0] === 0xff && data[1] === 0xd8 && data[2] === 0xff;
+      const webp = data.subarray(0, 4).toString("latin1") === "RIFF" && data.subarray(8, 12).toString("latin1") === "WEBP";
+      if (!(type === "image/png" ? png : type === "image/jpeg" ? jpeg : webp)) throw new ApiError("That file is not the picture its name says it is.");
+      return data;
+    } finally { await handle.close(); }
+  }
+  async function upload(data, name) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+    try {
+      const response = await fetch(config.assets, { method: "POST", headers: { "content-type": "application/octet-stream", "x-image-name": encodeURIComponent(name.slice(0, 200)), authorization: `Bearer ${config.token}` }, body: data, redirect: "error", signal: controller.signal });
+      const value = await readResponse(response);
+      if (!response.ok) throw new ApiError(`Engine HTTP ${response.status}: ${redact(object(value) && typeof value.error === "string" ? value.error : "Upload failed").slice(0, 2048)}`, response.status);
+      return value;
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      throw new ApiError(controller.signal.aborted ? "Uploading the picture timed out after 30 seconds." : "Could not reach Engine. Check ENGINE_URL and that the server is running.");
+    } finally { clearTimeout(timer); }
+  }
+  const FRAMES = {
+    async engine_frame_upload(args) {
+      const name = args.name ?? (args.path ? args.path.split("/").pop().replace(/\.[^.]+$/, "") : "Image");
+      const data = args.path ? await readPicture(args.path) : Buffer.from(args.dataUrl.slice(args.dataUrl.indexOf(",") + 1), "base64");
+      if (data.length > MAX_FRAME_BYTES) throw new ApiError("The picture must be at most 15 MB.");
+      const image = await upload(data, name);
+      let deckId = args.deckId, hash = args.expectedHash, removeFirst;
+      if (!deckId) {
+        const created = await api("create_deck", { operationId: randomUUID(), spec: { name, format: "custom", size: { width: Math.min(8192, Math.max(100, image.width)), height: Math.min(8192, Math.max(100, image.height)) }, slides: [{ layout: "blank" }] } });
+        deckId = created.document.id; hash = created.hash; removeFirst = created.view.slides[0]?.id;
+      }
+      if (!hash) hash = (await api("get_deck", { deckId })).hash;
+      const slideId = `frame-${args.operationId.slice(0, 8)}`;
+      const operations = [{ op: "frame_slide", src: image.src, id: slideId, name, ...(args.index !== undefined ? { index: args.index } : {}) }, ...(removeFirst ? [{ op: "remove_slide", pageId: removeFirst }] : [])];
+      const value = await api("update_deck", { deckId, expectedHash: hash, operationId: args.operationId, changes: { operations } });
+      const slide = value.view.slides.find((item) => item.id === slideId);
+      return { deckId, slideId, hash: value.hash, editorUrl: value.editorUrl, image: { width: image.width, height: image.height }, slide: slide ? { background: slide.background, layers: slide.elements.map((element) => ({ id: element.id, name: element.name, x: element.x, y: element.y, width: element.width, height: element.height, locked: element.locked })) } : undefined, next: "Look at it with engine_frame_view, then cut parts out with engine_frame_cut." };
+    },
+    async engine_frame_view(args) {
+      const value = await api("frame_view", { deckId: args.deckId, pageId: args.slideId, ...(args.box ? { box: args.box } : {}) });
+      const { image, ...rest } = value;
+      const safe = JSON.parse(redact(JSON.stringify(rest)));
+      return { content: [{ type: "image", data: image.base64, mimeType: image.mimeType }, { type: "text", text: JSON.stringify(safe) }], structuredContent: safe, isError: false, raw: true };
+    },
+    async engine_frame_cut(args) {
+      const operation = { op: "frame_cut", pageId: args.slideId, box: args.box, ...(args.name ? { name: args.name } : {}), ...(args.removeBackground ? { removeBackground: args.removeBackground } : {}) };
+      const value = await api("update_deck", { deckId: args.deckId, expectedHash: args.expectedHash, operationId: args.operationId, changes: { operations: [operation] } });
+      const slide = value.view.slides.find((item) => item.id === args.slideId), layer = slide?.elements.at(-1);
+      return { deckId: args.deckId, slideId: args.slideId, hash: value.hash, editorUrl: value.editorUrl, layer: layer ? { id: layer.id, name: layer.name, x: layer.x, y: layer.y, width: layer.width, height: layer.height } : undefined };
+    },
+  };
   function toolResult(value, isError = false) {
     const safe = JSON.parse(redact(JSON.stringify(value)));
     return { content: [{ type: "text", text: JSON.stringify(safe) }], structuredContent: safe, isError };
@@ -354,6 +437,11 @@ function bridge(config) {
       if (typeof params.name !== "string") throw new RpcError(-32602, "tools/call requires a tool name.");
       const args = validatedArguments(params.name, params.arguments === undefined ? {} : params.arguments);
       try {
+        if (FRAMES[params.name]) {
+          const value = await FRAMES[params.name](args);
+          if (value.raw) { delete value.raw; return value; }
+          return toolResult(args.operationId ? { ...value, operationId: args.operationId } : value);
+        }
         const value = ROUTES[params.name] ? await send(ROUTES[params.name](config, args)) : await api(ACTIONS[params.name], args);
         return toolResult(args.operationId ? { ...value, operationId: args.operationId } : value);
       } catch (error) {

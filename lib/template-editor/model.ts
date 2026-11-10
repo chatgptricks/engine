@@ -71,6 +71,10 @@ export type CanvasElementBase = {
    * same distance, so a broken-up HTML layer stays together behind its "Layout
    * space". Layers with a flow of their own keep the place their flow gives them. */
   leadsGroup?: boolean;
+  /** Frames: the part this layer plays on a slide made from a flat image.
+   * `background` is the locked image at the bottom (the working copy that fills
+   * change); `cutout` and `text` are parts lifted out of it (frames.ts). */
+  frameRole?: FrameRole;
   /** Author's choice of how this layer behaves in copies of a template; inferred when absent. */
   layoutRole?: "fixed" | "text" | "media" | "free";
   componentId?: string;
@@ -221,6 +225,12 @@ export type TemplateParameter = { id: string; name: string; type: "text" | "imag
 export type DesignComment = { id: string; pageId?: string; elementId?: string; text: string; createdAt: string; resolved?: boolean };
 export type DesignVersion = Pick<DocumentResources, "styles" | "components" | "colorRoles" | "parameters"> & { id: string; name: string; createdAt: string; format: DesignFormat; pages: DesignPage[]; continuousCanvas?: CanvasScene; caption: string; masterScene?: CanvasScene; customSize?: { width: number; height: number } };
 export type DocumentResources = { styles?: TextStyle[]; colorRoles?: { id: string; name: string; color: string }[]; components?: ReusableComponent[]; parameters?: TemplateParameter[]; masterScene?: CanvasScene; customSize?: { width: number; height: number }; tags?: string[]; folderId?: string; favorite?: boolean; deletedAt?: string };
+export type FrameRole = "background" | "cutout" | "text";
+export const FRAME_ROLES: readonly FrameRole[] = ["background", "cutout", "text"];
+/** Frames: the image a slide was made from. It never changes, so a cut always
+ * takes the original pixels and "Reset to original" can bring them back. */
+export type PageFrame = { original: string; width: number; height: number; name: string; source: "editor" | "agent"; createdAt: string };
+export const FRAME_ASSET = /^\/api\/template-editor\/assets\/[a-f0-9]{64}$/;
 export type DesignPage = {
   id: string;
   image: StoryImage;
@@ -231,6 +241,7 @@ export type DesignPage = {
   useMaster?: boolean;
   publicDescription?: string;
   readingOrder?: string[];
+  frame?: PageFrame;
 };
 export type DesignDocument = DocumentResources & {
   id: string;
@@ -1960,6 +1971,8 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
   }
   if (!optional(value, "leadsGroup", boolean)) return null;
   if (value.leadsGroup === true) result.leadsGroup = true;
+  if (!optional(value, "frameRole", choice([...FRAME_ROLES]))) return null;
+  if (value.frameRole !== undefined) result.frameRole = value.frameRole as FrameRole;
   for (const key of ["groupId", "componentId", "componentInstanceId", "componentSourceId", "colorRoleId"] as const) {
     if (!optional(value, key, identity)) return null;
     if (value[key] !== undefined) result[key] = value[key] as string;
@@ -2130,6 +2143,12 @@ const NUMERIC_STYLE: Partial<Record<keyof SlideStyle, [number, number]>> = {
   mediaEnd: [0, 86_400],
 };
 
+function parsePageFrame(value: unknown): PageFrame | null {
+  if (!object(value) || typeof value.original !== "string" || !FRAME_ASSET.test(value.original)) return null;
+  if (!Number.isInteger(value.width) || !Number.isInteger(value.height) || (value.width as number) < 1 || (value.height as number) < 1 || (value.width as number) > 30_000 || (value.height as number) > 30_000) return null;
+  if (!string(value.name, 200) || !choice(["editor", "agent"])(value.source) || !string(value.createdAt, 40)) return null;
+  return { original: value.original, width: value.width as number, height: value.height as number, name: value.name as string, source: value.source as PageFrame["source"], createdAt: value.createdAt as string };
+}
 function parseStyle(value: unknown): SlideStyle | null {
   if (
     !object(value) ||
@@ -2506,6 +2525,8 @@ function parsePages(value: unknown): DesignPage[] | null {
     const canvas = p.canvas === undefined ? undefined : parseCanvas(p.canvas);
     if (canvas === null) return null;
     if (!optional(p, "label", candidate => string(candidate, 200)) || !optional(p, "useMaster", boolean)) return null;
+    const frame = p.frame === undefined ? undefined : parsePageFrame(p.frame);
+    if (frame === null) return null;
     if (!optional(p, "publicDescription", candidate => string(candidate, 5000)) || !optional(p, "readingOrder", candidate => Array.isArray(candidate) && candidate.length <= 200 && candidate.every(identity) && new Set(candidate).size === candidate.length)) return null;
     const source: StoryImage["source"] = [
       "google",
@@ -2525,6 +2546,7 @@ function parsePages(value: unknown): DesignPage[] | null {
       ...(p.useMaster !== undefined ? { useMaster: p.useMaster as boolean } : {}),
       ...(p.publicDescription !== undefined ? { publicDescription: p.publicDescription as string } : {}),
       ...(p.readingOrder !== undefined ? { readingOrder: [...p.readingOrder as string[]] } : {}),
+      ...(frame ? { frame } : {}),
       ...(canvas ? { canvas } : {}),
       image: {
         id: image.id,
