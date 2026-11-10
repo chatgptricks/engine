@@ -58,7 +58,7 @@ export const DESIGN_CRITIC_RULES = [
   "Check each of our slides as a reader on a phone would: every word readable, nothing cut off, overflowing or on top of other words, every chart clear (labels readable, ticks not crowded, each line named in words, not by its color alone), even spacing, nothing crowded against the edges",
   "Hold the post to the template notes: the cover keeps the original's composition (its subject, how the headline sits on it, what is highlighted), and the slides keep the original's story and parts, in our template. Our cover headline always sets its key phrase apart in the accent, as the template's cover does: that is right, not a change",
   "The original page's own branding (the template notes' branding list: its logo, handle, watermark or page name) never shows on our slides; one that does is must_fix",
-  "A photo frame that shows a chart, a table, a diagram, a logo grid or a screenshot of words is must_fix: charts are drawn in HTML from real data and posts from X are our cards, so a picture of either never stands in for them",
+  "A photo frame that shows a chart, a table, a diagram, a logo grid or a screenshot of words the source notes mark rebuild is must_fix: charts are drawn in HTML from real data and posts from X are our cards, so a picture of either never stands in for them",
   "A grey template placeholder in the Follow page's photo frame is right: a person adds the profile screenshot. Report it, if at all, as a note with route none",
   "Post cards are real posts: never ask to change their words",
   ROUTES,
@@ -66,6 +66,12 @@ export const DESIGN_CRITIC_RULES = [
 ];
 /** Added when the page follows a brand guide; {name} is the guide's. */
 export const DESIGN_CRITIC_GUIDE_RULE = "Hold every slide to the {name} brand guide in your instructions{examples}: colors, type, margins, spacing, the cover and how media sits on the page. Anything that breaks the guide is an issue: name the guide rule it breaks";
+/**
+ * Both look critics: a picture kept on purpose isn't pasted (Ivan,
+ * 2026-11-10: an official screenshot is often best kept as it is).
+ */
+export const KEPT_PICTURE_RULE = "Each image in the source notes has a decision with its reason: rebuild, keep, or source (the original found online, else the cut). A picture shown whole where its decision is keep or source is right, not pasted, even a screenshot of words in a photo frame: never ask to rebuild it. Check instead that it is whole (nothing cut off at its edges), sharp, at its own shape (not stretched), between the page's margins, and free of the original post's own overlays (its caption, sticker or logo on it); each failure is must_fix, except a picture past the margins, which is should_fix. A part whose decision is rebuild, shown as one picture cut from the original, is still must_fix";
+
 /** Added when a photo runs across two slides. */
 export const DESIGN_CRITIC_SPAN_RULE = "Slides shown side by side share one photo, split where the slides meet. Check that the halves read as one photo and that the split misses faces and words. A split through a face or words is must_fix: give the share of the photo the first slide should show (0.1 to 0.9)";
 
@@ -76,7 +82,7 @@ export const FIDELITY_CRITIC_RULES = [
   "An original slide that repeats an earlier one word for word (the same post, comment or story again) has no slide of its own: leaving it out is right, not missing words",
   "Nothing is cut off, overflowing or unreadable. Text that doesn't fit is must_fix: a page or layout with more room, never fewer words",
   "Each photo (a person, a place, a product, a product's own screen such as an app or a website, a video frame) is a clean cut of the original's: no stray text from the original slide, no border, bar or background around it, and nothing that matters cut off. A bad cut is must_fix, saying which part of the original slide to keep",
-  "Everything else is rebuilt in our style, never pasted: a chart, a graphic of words and logos, a screenshot of an article, a headline or a chat, or a post shown as one picture cut from the original is must_fix, saying what to rebuild. The exception is a part the deck's notes say couldn't be rebuilt (a chart whose real numbers weren't found, a graphic too big for a slide): that cut is right, so leave it",
+  "Everything else marked rebuild is rebuilt in our style, never pasted: a chart, a graphic of words and logos, a screenshot of an article, a headline or a chat, or a post shown as one picture cut from the original is must_fix, saying what to rebuild. The exception is a part the deck's notes say couldn't be rebuilt (a chart whose real numbers weren't found, a graphic too big for a slide): that cut is right, so leave it",
   "A graphic made of parts (a meme of words and photos, a row or grid of logos, a comparison, a diagram with words, an article or a chat) is rebuilt from its parts: its words as text, its logos as clean files, its photos cut one by one, its panels as our cards. Check it against the original: the same words, the same logos in the same order (the right brand for each mark), the same photos, and the same arrangement of panels, rows and grid. A missing or wrong logo is must_fix, naming the brand and its place",
   "A redrawn chart is the original's chart in our chart style: the same kind (line or bar), series, scaling, start and end, marked events, shaded period, labels and printed values. A difference in what it shows is must_fix, naming what differs and what the original shows (for example: it starts in 2022; the original starts in 2020). Our style is right, not a difference: our colors, fonts, background and gridlines, and where the labels sit",
   "A post card shows the original's post: the same name, @handle, check mark, words and photo. A difference is must_fix, naming it. Our card is right, not a difference: the platform's buttons, counts and menus left out, our card's look and size, a post's own words in its own language when the slide's words are translated. A real post found online (the deck's notes give its link) may show its whole text or its photo where the screenshot cut them off: that is right too",

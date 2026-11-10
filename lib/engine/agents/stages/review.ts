@@ -18,6 +18,8 @@ import { need, outputOf, type StageRunner } from "../context";
 import { designCritic, factCritic, fidelityCritic } from "../critics";
 import { coverPage, followPage, templatePages, type PageCatalog } from "../pages";
 import { houseChecks, htmlChecks, type WantedText } from "../review-checks";
+import { keptChecks, pageMargins } from "../kept";
+import { htmlTokensForTemplate } from "../../brand-actions";
 import type { CheckIssue, CriticReport, DesignOutput, PlanApproval, ReviewReport, SourceNotes, StoryBrief } from "../schemas";
 import { parseLibrary, type DesignComment, type DesignDocument } from "../../../template-editor/model";
 import { getEditorLibrary, LibraryConflictError, saveEditorLibrary } from "../../../template-editor/persistence";
@@ -124,6 +126,7 @@ export const review: StageRunner = async context => {
     ...houseChecks(document, catalog, profile, renders, { exact }),
     ...reviewGuideChecks(document, profile, guide, { exact }),
     ...htmlChecks(document, renders, guide, wantedTexts(document, catalog, design, { exact, source, approval })),
+    ...(design.images?.length ? keptChecks(document, new Map(design.images.map(item => [item.src, item])), pageMargins(guide, guide ? {} : await htmlTokensForTemplate(context.ownerKey, template).catch(() => null) ?? {})) : []),
     ...notes,
   ];
 

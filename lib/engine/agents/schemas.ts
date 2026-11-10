@@ -58,6 +58,14 @@ export const TemplateNotesSchema = z.object({
 });
 export type TemplateNotes = z.infer<typeof TemplateNotesSchema>;
 export const SOURCE_PARTS = ["photo", "chart", "x_post", "logo", "screenshot", "graphic"] as const;
+/**
+ * What the post does with each part of an original slide that isn't plain words:
+ * rebuild it in our style (posts, charts, memes, graphics made of parts, logos),
+ * keep it as it is (a photo, or an official screenshot such as a company's own
+ * page or app), or find the original image at better quality and keep that,
+ * falling back to the cut from the post.
+ */
+export const IMAGE_TREATMENTS = ["rebuild", "keep", "source"] as const;
 /** A part of an original slide that isn't plain words: what it is and where it sits. */
 export const SourcePartSchema = z.object({
   kind: z.enum(SOURCE_PARTS),
@@ -72,8 +80,12 @@ export const SourcePartSchema = z.object({
     link: z.string().nullable().describe("A link to the post shown on the slide or in the caption, or null"),
     avatar: MediaBoxSchema.nullable(), photo: MediaBoxSchema.nullable(),
   }).nullable().describe("x_post: the post's details; else null"),
+  treatment: z.enum(IMAGE_TREATMENTS).describe("What our post does with it: rebuild it in our style, keep it as it is, or find the original (source) and keep that"),
+  why: z.string().describe("One line on why: who made it and what it shows"),
+  origin: z.string().nullable().describe("source or keep: the page or site the picture shows or the caption links (a URL bar, a domain, a link), as written; else null"),
 });
 export type SourcePart = z.infer<typeof SourcePartSchema>;
+export type ImageTreatment = (typeof IMAGE_TREATMENTS)[number];
 export const TEXT_ROLES = ["headline", "title", "body", "list", "label", "quote", "source", "tag", "other"] as const;
 export const SourceSlideSchema = z.object({
   index: z.number().int().describe("1-based slide number in the original"),
@@ -133,6 +145,13 @@ export type PickedReaction = z.infer<typeof ReactionSchema>;
 export const VERDICT_OUTCOMES = ["proceed", "stop", "ask"] as const;
 export type VerdictOutcome = typeof VERDICT_OUTCOMES[number];
 export const FABRICATION_SIGNS = ["no_original", "lone_quote", "shifting_numbers", "satire_account", "debunked", "other"] as const;
+/** Where the original of a picture the source notes mark "source" lives: the official page, never a repost. */
+export const OriginalPageSchema = z.object({
+  slide: z.number().int().describe("The original slide, from 1"),
+  part: z.number().int().describe("The part on that slide, from 1, in the source notes' order"),
+  page: z.string().describe("The official page that shows the original picture (the announcement, the product page), as a full link"),
+});
+export type OriginalPage = z.infer<typeof OriginalPageSchema>;
 export const ResearchSchema = z.object({
   quick: z.boolean().describe("True for an exact copy's quick check: only the post, the origin and fabrication signs; the rest stays empty"),
   origin: z.object({
@@ -142,6 +161,7 @@ export const ResearchSchema = z.object({
     date: z.string().nullable().describe("YYYY-MM-DD, or null"),
     note: z.string().describe("How it was found, or why it wasn't. A screenshot of an exchange stays unverified until its original is found"),
   }),
+  originals: z.array(OriginalPageSchema).optional().describe("For each picture the source notes mark source: the page that holds the original"),
   surfaces: z.array(Link.extend({ independent: z.boolean().describe("True when it didn't just repeat the same repost") })).describe("Where else the story appears, with at least one independent source when there is one"),
   facts: z.array(ResearchFactSchema),
   worth: z.object({
@@ -266,6 +286,11 @@ export const DesignSchema = z.object({
   notes: z.array(z.string()),
   /** Why a rebuilt version wasn't saved (a person edited the deck), or "". */
   held: z.string(),
+  /** The pictures kept whole: cut from the post, or their originals found online. */
+  images: z.array(z.object({
+    slide: z.number().int(), part: z.number().int(), treatment: z.enum(["keep", "source"]), src: z.string(), width: z.number(), height: z.number(),
+    from: z.enum(["source", "post"]), page: z.string().optional(), note: z.string(),
+  })).optional(),
 });
 export type DesignOutput = z.infer<typeof DesignSchema>;
 
@@ -295,8 +320,14 @@ export type ReviewReport = z.infer<typeof ReviewReportSchema>;
  * Stages an outside agent may hand in itself. The verdict is answered (a
  * person's call), never handed in, and Engine's designer builds the deck.
  */
+/** Source notes handed in by an agent or a person may leave each part's decision out: it then takes its kind's default (source-notes.ts decisionOf). */
+export const HandedInSourceSchema = SourceNotesSchema.extend({
+  slides: z.array(SourceSlideSchema.extend({
+    parts: z.array(SourcePartSchema.extend({ treatment: SourcePartSchema.shape.treatment.optional(), why: z.string().optional(), origin: z.string().nullable().optional() })),
+  })),
+});
 export const HANDED_IN: Partial<Record<PostStage, z.ZodType>> = {
-  source: SourceNotesSchema, research: ResearchSchema, brief: StoryBriefSchema, headline: HeadlinesSchema, approval: PlanApprovalSchema, review: ReviewReportSchema,
+  source: HandedInSourceSchema, research: ResearchSchema, brief: StoryBriefSchema, headline: HeadlinesSchema, approval: PlanApprovalSchema, review: ReviewReportSchema,
 };
 
 // ── The first team's schemas: its modules and version-1 files, until the cleanup ──

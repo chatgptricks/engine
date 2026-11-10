@@ -33,7 +33,8 @@ import { loadGuide, withGuideBrief } from "./brand";
 import { RecreateError, UsageMeter } from "./claude";
 import { outputOf, verdictOf, type RunCache, type StageContext, type StageResult, type StageRunner } from "./context";
 import { stageCard } from "./playbook";
-import { HANDED_IN, PlanSchema, type DesignOutput, type Headlines, type PlanApproval, type Research, type ReviewReport, type StoryBrief, type Verdict } from "./schemas";
+import { HANDED_IN, PlanSchema, type DesignOutput, type Headlines, type PlanApproval, type Research, type ReviewReport, type SourceNotes, type StoryBrief, type Verdict } from "./schemas";
+import { withDecisions } from "./source-notes";
 import { brief } from "./stages/brief";
 import { design } from "./stages/design";
 import { autoApprove, chooseHeadline, headline, normalizePlan, pickPayload } from "./stages/headline";
@@ -475,6 +476,7 @@ export async function submitRecreateStage(ownerKey: string, postId: string, stag
     if (!plan.slides.length) throw new RecreateError("That brief's plan has no slides that can be built.");
     value = { ...handed, slides: plan.slides, why: plan.why } satisfies StoryBrief;
   }
+  if (stage === "source") value = withDecisions(parsed.data as SourceNotes);
   if (stage === "headline" && !(value as Headlines).options.length) throw new RecreateError("Hand in at least one headline option.");
   const file = await updatePostFile(ownerKey, postId, next => {
     setStage(next, stage, { status: "done", output: value, error: undefined, instructions: undefined, round: 0, model: undefined, usage: undefined }, by, `handed in by ${by === "human" ? "a person" : "an agent"}`);
