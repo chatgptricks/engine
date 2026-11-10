@@ -188,6 +188,8 @@ function insertCopies(
     ...(element.templateRole || element.type === "text" && element.smartText ? { templateRole: undefined, smartText: undefined, smartFlow: undefined, smartCenter: undefined, slot: undefined, protected: undefined } : {}),
     // A copy of a broken-up HTML layer is free to move: only the original keeps its place in the layout.
     ...(element.leadsGroup ? { leadsGroup: undefined, smartFlow: undefined, smartCenter: undefined, slot: undefined } : {}),
+    // A Frames slide has one background; a copy of it is an ordinary picture.
+    ...(element.frameRole === "background" ? { frameRole: undefined } : {}),
     x: element.x + delta.x,
     y: element.y + delta.y,
     ...(element.clipBounds ? { clipBounds: { ...element.clipBounds, x: element.clipBounds.x + originDelta.x, y: element.clipBounds.y + originDelta.y } } : {}),

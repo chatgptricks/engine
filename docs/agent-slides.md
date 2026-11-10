@@ -53,6 +53,16 @@ Tokens belong to the workspace that created them. They grant the agent the API's
 | `engine_recreate_rerun_stage` | Rerun one stage, with optional instructions, and every stage after it |
 | `engine_recreate_submit_stage` | Hand in one stage's result yourself; Engine checks it against the stage's schema |
 | `engine_recreate_resume` | Continue a recreation that stopped, keeping every finished stage |
+| `engine_recreate_add_posts` | Add posts from X by link to a paused recreation before approving it |
+| `engine_list_brands` | List the brand guides |
+| `engine_get_brand` | Read one brand guide, with its plain-words brief |
+| `engine_save_brand` | Save edits to a brand guide; every save is a version |
+| `engine_restore_brand` | Bring back an earlier version of a brand guide |
+| `engine_check_deck` | Check a deck or a template against a brand guide with code |
+| `engine_design_template` | Draft a template from a brand guide |
+| `engine_frame_upload` | Frames: make a slide from a flat image (a local `path` or a `dataUrl`); the image is its locked bottom layer and the original is kept |
+| `engine_frame_view` | Frames: look at a Frames slide's original image, or a box of it, as an image for your own model |
+| `engine_frame_cut` | Frames: cut a box of the original into an image layer of its own, in the same place (`removeBackground`: `none` or `flat`) |
 
 List tools accept `offset` (default 0, maximum 10000) and `limit` (default 20, maximum 100). MCP tool discovery fetches the live schemas from Engine. When the server is unavailable, discovery exposes generic schemas so the capabilities tool can still diagnose the connection. Call capabilities again after changing server versions or reconnecting.
 
@@ -236,6 +246,20 @@ On a template slide with a photo or chart frame, pass `replaces` with the frame'
 The layer takes the frame's box (unless you pass `x`, `y`, `width` or `height`) and its place in the template's layout: the template keeps it under the copy and fits it to the space as it would the frame, so its height can change with the copy above it, and layers that followed the frame follow the HTML layer. The frame is hidden and the layer goes just above it in the stack. Don't hide a template's frame yourself to make room: a page with an empty frame centres its copy in the space, on top of your layer.
 
 `replace_html` (`pageId`, `elementId`, `html`, optional `css`) replaces a layer's HTML and keeps its box. Without `css`, the layer keeps its CSS unless the new HTML has its own `<style>` blocks. `update_element` can also set `html`, `css` and `designWidth`, or move and resize the layer.
+
+## Frames: slides that only exist as an image
+
+Some slides arrive as one flat picture: made in another chat, with another design system, or by a tool Engine can't match. Frames takes such a picture apart into layers people can edit. Use it only when you don't have the slide's source; with the source, build native layers or HTML layers instead.
+
+1. `engine_frame_upload` with `path` (an absolute path to a `.png`, `.jpg`, `.jpeg` or `.webp` file of at most 15 MB, which the bridge reads only after checking its first bytes) or `dataUrl`. Without `deckId`, a new deck the image's size is made. The picture becomes the slide's bottom layer, locked, named "Original image", and Engine keeps the original on the page (`page.frame`). Nothing else runs.
+2. `engine_frame_view` returns the original (or a `box` of it) as an image. You read it with your own model; Engine runs none. `imageOnSlide` says where the image sits on the slide.
+3. `engine_frame_cut` cuts a `box` (slide output pixels) of the original into an image layer of its own, in the same place, above the image. `removeBackground: "flat"` makes the colour around the box's edge transparent and trims the cut to what is left: right for logos, icons and cards on one colour. `none` keeps the box as it is: right for photos. Cuts always come from the original.
+
+On the HTTP API these are the `frame_slide` and `frame_cut` operations of `update_deck` (they need the server, so they run one at a time inside the same atomic update) and the `frame_view` action. `POST /api/agent/assets` takes an image's raw bytes (up to 15 MB) and returns its `src`.
+
+In the editor: **New slide from image…** in a page's menu or the canvas menu makes a Frames slide; **Take apart** on the Frames bar lets you drag an area and **Cut out** it, with **Remove flat background** offered when the area sits on one colour. Each cut is one undo step.
+
+Coming next: turning an area's words into text layers in the brand's styles, and filling in what a cut leaves behind.
 
 ## Recreate a post for one of our pages
 

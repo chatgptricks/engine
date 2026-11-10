@@ -7,6 +7,7 @@ import {
 } from "./model";
 import { findSpan, hasSpans, isSpanHalf, reconcileSpans, seamOf, setSeam, spanPairs, spanPhoto, syncSpans, unlinkSpan } from "./spanning-photos";
 import { cleanHtmlLayer, cleanHtmlTokens } from "./html-layer";
+import { frameBackground, frameBackgroundLayer, frameCutLayer, sceneToImage, type Box } from "./frames";
 
 type RecordValue = Record<string, unknown>;
 type Schema = Record<string, unknown>;
@@ -121,6 +122,7 @@ export const AGENT_DECK_SPEC_SCHEMA: Schema = {
 const editableProperties = { ...baseProperties, ...textProperties, ...imageProperties, ...shapeProperties, ...htmlProperties };
 // Protection flags and identity cannot be changed through a property patch.
 const patchProperties = Object.fromEntries(Object.entries(editableProperties).filter(([key]) => !["id", "locked", "protected"].includes(key)));
+const frameBoxSchema = obj({ x: num(-100_000, 100_000), y: num(-100_000, 100_000), width: num(1, 100_000), height: num(1, 100_000) }, ["x", "y", "width", "height"], { description: "A box on the slide, in output pixels" });
 const operation = (op: string, properties: Record<string, Schema>, required: string[]) => obj({ op: { const: op }, ...properties }, ["op", ...required]);
 export const AGENT_UPDATE_SCHEMA: Schema = {
   $schema: "https://json-schema.org/draft/2020-12/schema", title: "Engine atomic deck edits",
@@ -144,6 +146,14 @@ export const AGENT_UPDATE_SCHEMA: Schema = {
     operation("unlink_span", { pageId: id, elementId: id }, ["pageId", "elementId"]),
     operation("rename", { name: str(200, { minLength: 1 }) }, ["name"]),
     operation("caption", { caption: str(20_000) }, ["caption"]),
+    { ...operation("frame_slide", {
+      src: str(LIMITS.imageCharacters, { minLength: 1, description: "The image: a path from engine_frame_upload (/api/template-editor/assets/<id>), or a PNG, JPG or WebP data: URL" }),
+      id, name: str(200), index: { type: "integer", minimum: 0, maximum: 20, description: "Where the slide goes. Default: the end" },
+    }, ["src"]), description: "Frames: add a slide made from a flat image. The image becomes the slide's locked bottom layer and Engine keeps the original; take it apart with frame_cut. Nothing else runs." },
+    { ...operation("frame_cut", {
+      pageId: id, id, name: str(200), box: frameBoxSchema,
+      removeBackground: { ...choice(["none", "flat"]), description: "flat: the colour around the box's edge becomes transparent and the cut is trimmed to what is left (logos, icons, cards on one colour). none (default): keep the box as it is (photos)" },
+    }, ["pageId", "box"]), description: "Frames: cut a box of a frame slide's original image into an image layer of its own, in the same place, above the image. Always cuts from the original." },
   ] } } }, ["operations"]),
 };
 const record = (value: unknown): value is RecordValue => value !== null && typeof value === "object" && !Array.isArray(value);
@@ -593,7 +603,25 @@ function spanSnapshot(document: DesignDocument): DesignDocument | undefined {
   if (!hasSpans(document)) return undefined;
   return { ...document, pages: document.pages.map(page => page.canvas ? { ...page, canvas: { ...page.canvas, elements: page.canvas.elements.filter(isSpanHalf).map(element => structuredClone(element)) } } : page) };
 }
-export function updateAgentDeck(document: DesignDocument, input: unknown): DesignDocument {
+/** What Engine's server worked out for a Frames operation before it is applied
+ * (frames-server.ts): the stored image and its size, or the stored cut. */
+export type FrameResolution = {
+  slide?: { original: string; width: number; height: number; name: string; edge: string };
+  cut?: { src: string; box: Box };
+};
+const FRAME_OPS = new Set(["frame_slide", "frame_cut"]);
+export const isFrameOperation = (operation: unknown) => record(operation) && FRAME_OPS.has(String(operation.op));
+/** For the server: the box of a frame slide's original image that a frame_cut's
+ * slide box (output pixels) covers, and the original it cuts from. */
+export function frameCutSource(document: DesignDocument, pageId: string, box: Box) {
+  const page = document.pages.find(item => item.id === pageId), background = page && frameBackground(page);
+  if (!page?.frame || !background) return null;
+  const scale = 360 / formatDimensions(document).width;
+  return { original: page.frame.original, box: sceneToImage(background, page.frame, { x: box.x * scale, y: box.y * scale, width: box.width * scale, height: box.height * scale }) };
+}
+/** Checks an update against the published schema without applying it. */
+export const validateAgentUpdate = (input: unknown) => checked(input, AGENT_UPDATE_SCHEMA);
+export function updateAgentDeck(document: DesignDocument, input: unknown, frames: FrameResolution = {}): DesignDocument {
   const spec = checked(input, AGENT_UPDATE_SCHEMA);
   let next = structuredClone(document), before: DesignDocument | undefined;
   validateDocument(next);
@@ -609,6 +637,22 @@ export function updateAgentDeck(document: DesignDocument, input: unknown): Desig
     }
     if (op === "caption") { next.caption = String(operation.caption); continue; }
     if (next.continuousCanvas) fail(path, "slide edits on a continuous canvas require the visual editor; rename and caption remain available");
+    if (op === "frame_slide") {
+      const image = frames.slide; if (!image) fail(path, "Frames operations run on Engine's server; send them to update_deck");
+      if (next.pages.length >= LIMITS.slides) fail(path, "deck already contains the maximum 20 slides");
+      const target = Number(operation.index ?? next.pages.length);
+      if (target > next.pages.length) fail(`${path}.index`, "is outside the slide list");
+      const pageId = operation.id === undefined ? crypto.randomUUID() : String(operation.id);
+      if (used.has(pageId)) fail(`${path}.id`, "is already used in this deck");
+      used.add(pageId);
+      const frame = { original: image.original, width: image.width, height: image.height, name: String(operation.name ?? image.name).slice(0, 200), source: "agent" as const, createdAt: new Date().toISOString() };
+      const base = duplicatePage(next.pages[Math.min(target, next.pages.length - 1)]);
+      const background = frameBackgroundLayer(frame, { width: 360, height: size.height * scale });
+      used.add(background.id);
+      const page: DesignPage = { id: pageId, image: { ...base.image, url: image.original, width: image.width, height: image.height, source: "upload" }, style: base.style, label: frame.name, frame, canvas: { background: image.edge, elements: [background] } };
+      next.pages.splice(target, 0, page);
+      continue;
+    }
     if (op === "add_slide") {
       if (next.pages.length >= LIMITS.slides) fail(path, "deck already contains the maximum 20 slides");
       const target = Number(operation.index ?? next.pages.length);
@@ -637,6 +681,18 @@ export function updateAgentDeck(document: DesignDocument, input: unknown): Desig
       if (operation.background === undefined && operation.label === undefined) fail(path, "requires background or label");
       if (operation.background !== undefined) canvas.background = String(operation.background);
       if (operation.label !== undefined) page.label = String(operation.label);
+      continue;
+    }
+    if (op === "frame_cut") {
+      const background = frameBackground(page), cut = frames.cut;
+      if (!page.frame || !background) fail(`${path}.pageId`, "is not a Frames slide; add one with frame_slide");
+      if (!cut) fail(path, "Frames operations run on Engine's server; send them to update_deck");
+      if (canvas.elements.length >= 100) fail(path, "slide already contains the maximum 100 elements");
+      const elementId = operation.id === undefined ? undefined : String(operation.id);
+      if (elementId && used.has(elementId)) fail(`${path}.id`, "is already used in this deck");
+      const element = frameCutLayer(background, page.frame, { src: cut.src, box: cut.box, name: String(operation.name ?? "Cut out") }, elementId);
+      used.add(element.id);
+      canvas.elements.push(checkNativeElement(element, path)); if (page.readingOrder) page.readingOrder.push(element.id);
       continue;
     }
     if (op === "add_element") {
@@ -769,6 +825,13 @@ export function agentCapabilities() {
     version: 1, coordinates: "output pixels (including fontSize); native scene width is 360",
     editable: ["text", "image", "shape", "html"], layouts: LAYOUTS, presets: PRESETS, fonts: FONTS, limits: LIMITS,
     htmlLayers: HTML_LAYER_GUIDE,
+    frames: {
+      use: "Only for a slide that exists just as a flat image (from another chat, design system or tool). With the slide's source, build native or HTML layers instead.",
+      operations: "frame_slide adds a slide made from the image (locked bottom layer, original kept on the page as frame); frame_cut cuts a box of the original into an image layer in the same place. Both need the server: send them in update_deck.",
+      boxes: "frame_cut boxes are slide output pixels. The frame_view action returns the original (or a box of it) as an image and where it sits on the slide.",
+      removeBackground: "flat clears the colour around the box's edge and trims the cut (logos, icons, cards on one colour); none keeps the box (photos).",
+      upload: "POST the image's raw bytes to /api/agent/assets (15 MB at most) for a src, or pass a PNG/JPG/WebP data: URL of up to 2,000,000 characters.",
+    },
     deckSchema: AGENT_DECK_SPEC_SCHEMA, updateSchema: AGENT_UPDATE_SCHEMA,
     templates: BUILT_IN_TEMPLATES.map(template => ({ id: template.id, name: template.name, pages: template.pages.length, size: formatDimensions(template), pageTypes: agentTemplatePages(template) })),
     imageSources: ["https:// or http:// URLs, or root-relative paths on the Engine origin","data:image/png|jpeg|webp|gif|avif;base64 (the bytes must match the declared type)", "data:image/svg+xml;charset=utf-8,<URI-encoded SVG> using only svg, g, path, defs and gradient elements (no text, rect, style or base64 SVG)"],

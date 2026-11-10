@@ -58,3 +58,8 @@
 
 .te-photo-drag-ghost { position:fixed; z-index:10000; pointer-events:none; width:84px; height:64px; padding:3px; border-radius:8px; background:#24232ddd; box-shadow:0 4px 18px #0006; }
 .te-photo-drag-ghost img { width:100%; height:100%; object-fit:cover; border-radius:5px; }
+/* Frames: taking a slide made from an image apart. */
+.te-frames-bar { justify-content: space-between; flex-wrap: wrap; }
+.te-frames-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.te-frames-option { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
+.te-frames-bar .te-button.te-primary { min-height: 28px; padding-block: 3px; }

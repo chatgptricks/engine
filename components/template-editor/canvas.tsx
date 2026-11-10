@@ -61,6 +61,7 @@ import "./text-editing.css";
 type Point = { x: number; y: number };
 type HtmlEditing = { id: string; node: number; caret?: Point; serial: number };
 type Box = Point & { width: number; height: number; rotation: number };
+export type AreaBox = Point & { width: number; height: number };
 type Handle = "nw" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w";
 type Gesture = {
   kind: "move" | "resize" | "rotate";
@@ -632,6 +633,11 @@ type CanvasEditorProps = {
   penColor?:string;
   drawingMode?: 'pen';
   onDrawPath?: (element: ShapeElement) => void;
+  /** Frames: marking an area of the slide (scene units). While on, the canvas
+   * only draws the area; layers can't be picked or moved. */
+  areaMode?: boolean;
+  area?: AreaBox | null;
+  onAreaChange?: (area: AreaBox | null) => void;
 };
 
 export function CanvasEditor({
@@ -672,6 +678,9 @@ export function CanvasEditor({
   drawingMode,
   onDrawPath,
   layerNotes,
+  areaMode = false,
+  area = null,
+  onAreaChange,
 }: CanvasEditorProps) {
   const root = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -706,6 +715,12 @@ export function CanvasEditor({
   const viewPrevious=useRef<ViewPoint[]>([]);
   const touchNavigating=useRef(false);
   const [pathPoints,setPathPoints]=useState<Point[]>([]);
+  const areaStart=useRef<{pointer:number;start:Point}|null>(null);
+  function areaBox(from:Point,to:Point):AreaBox{
+    const clampX=(value:number)=>Math.max(0,Math.min(width,value)),clampY=(value:number)=>Math.max(0,Math.min(height,value));
+    const x1=clampX(from.x),x2=clampX(to.x),y1=clampY(from.y),y2=clampY(to.y);
+    return {x:Math.min(x1,x2),y:Math.min(y1,y2),width:Math.abs(x2-x1),height:Math.abs(y2-y1)};
+  }
   useEffect(()=>{onDrawingPointCount?.(drawingMode?pathPoints.length:0);},[drawingMode,pathPoints.length,onDrawingPointCount]);
   useEffect(()=>{onRegisterDrawingControls?.(drawingMode?{finish:finishPath,removeLast:()=>setPathPoints(points=>points.slice(0,-1)),cancel:()=>{setPathPoints([]);onCancelDrawing?.();}}:null);return()=>onRegisterDrawingControls?.(null);});
   const [keyboardHandle,setKeyboardHandle]=useState<string|null>(null);
@@ -1647,6 +1662,24 @@ export function CanvasEditor({
         </div>
       )}
       {keyboardHandle&&selectionBox&&!drawingMode&&navigationMode==="select"&&<div className="te-canvas-keyboard-transform" role="status" aria-live="polite">{keyboardHandle==="rotate"?"Use arrows to rotate · Shift for 15°":"Use arrows to resize · Shift for larger steps"} · {Math.round(selectionBox.width*outputScale)} × {Math.round(selectionBox.height*outputScale)} px{keyboardHandle==="rotate"&&selected.length===1?` · ${Math.round(selected[0].rotation)}°`:""}<button type="button" onClick={()=>{setKeyboardHandle(null);root.current?.focus();}}>Done</button></div>}
+      {areaMode&&<div className="te-frames-area-layer" aria-label="Mark an area of the slide"
+        onPointerDown={event=>{
+          if(disabled||event.button!==0)return;
+          event.preventDefault();event.stopPropagation();root.current?.focus({preventScroll:true});
+          event.currentTarget.setPointerCapture(event.pointerId);
+          const start=position(event);areaStart.current={pointer:event.pointerId,start};onAreaChange?.(null);
+        }}
+        onPointerMove={event=>{const active=areaStart.current;if(!active||active.pointer!==event.pointerId)return;event.stopPropagation();onAreaChange?.(areaBox(active.start,position(event)));}}
+        onPointerUp={event=>{
+          const active=areaStart.current;if(!active||active.pointer!==event.pointerId)return;
+          event.stopPropagation();areaStart.current=null;
+          const box=areaBox(active.start,position(event));
+          // A click without a drag clears the area; tiny areas are a slip.
+          onAreaChange?.(box.width*outputScale>=4&&box.height*outputScale>=4?box:null);
+        }}
+        onPointerCancel={()=>{areaStart.current=null;}}>
+        {area&&<div className="te-frames-area" style={{left:area.x,top:area.y,width:area.width,height:area.height}}><span>{Math.round(area.width*outputScale)} × {Math.round(area.height*outputScale)} px</span></div>}
+      </div>}
       {selectionArea && <div className="te-canvas-marquee" style={boxStyle(selectionArea)} aria-hidden>
         <span>{selected.length} selected</span>
       </div>}
