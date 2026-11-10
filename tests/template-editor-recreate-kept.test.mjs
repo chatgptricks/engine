@@ -134,7 +134,11 @@ test("the original replaces the cut only when it is the same picture, its shape,
   assert.equal(found.match?.candidate.url,"same");
   assert.equal(found.match.gain,16);
   assert.match((await originals.pickOriginal(cut,[candidate(other,"other")])).why,/none of the images on its pages is the picture/);
-  assert.match((await originals.pickOriginal(cut,[candidate(wide,"wide")])).why,/shape/);
+  // A wider original the post cropped to its slide is matched by its middle, and that part is what's used.
+  const framed=await originals.pickOriginal(cut,[candidate(await meta(await sharp(await page(1600,1200)).extend({left:400,right:400,background:"#f4f4f2"}).png().toBuffer()),"framed")]);
+  assert.equal(framed.match?.candidate.cropped,true);
+  assert.deepEqual([framed.match.candidate.width,framed.match.candidate.height],[1600,1200]);
+  assert.match((await originals.pickOriginal(cut,[candidate(await meta(await page(300,100)),"tiny")])).why,/big enough/);
   assert.match((await originals.pickOriginal(cut,[candidate(smaller,"smaller")])).why,/no sharper/);
   assert.match((await originals.pickOriginal(cut,[])).why,/no images/);
   assert.equal(originals.pageLink("openai.com/index/gpt-6"),"https://openai.com/index/gpt-6");
@@ -175,7 +179,7 @@ test("kept pictures are cut from the post; a sourced one is swapped for its orig
   assert.deepEqual(asked.map(pages=>pages.join()).sort(),["https://openai.com/index/x","https://openai.com/pricing"],"each looks on its own page: the research's, or the one the screenshot names");
   assert.equal(ready[0].width,2000);
   assert.equal(ready[0].page,"https://openai.com/index/x");
-  assert.match(ready[0].note,/^Slide 1: found the original on openai\.com \(2000×1500, the post's cut was \d+×\d+\) and kept it whole/);
+  assert.match(ready[0].note,/^Slide 1: found the original on openai\.com \(2000×1500; the post's cut was \d+×\d+\) and kept it whole/);
   assert.match(ready[1].note,/^Slide 2: the original wasn't found \(none of the images on its pages is the picture the screenshot shows\), so the screenshot is cut from the post and kept whole/);
   assert.match(ready[2].note,/^Slide 3: kept the screenshot as it is: The app's own screen$/);
   assert.ok(Math.abs(ready[2].width/ready[2].height-840*1080/(504*1350))<.02,"the cut keeps the screenshot's own shape");
@@ -186,6 +190,12 @@ test("kept pictures are cut from the post; a sourced one is swapped for its orig
   assert.match(notes[3],/^Slide 3: rebuilt the chart in our style/);
   assert.match(notes[4],/^Slide 3: kept the photo, cut from the post/);
   assert.match(designStage.keptPrompt(ready),/^KEPT PICTURES[\s\S]*Original slide 1, part 1 \(screenshot, source: the original from https:\/\/openai\.com\/index\/x\): src \/api\/template-editor\/assets\//);
+});
+
+test("a kept cut's snapped edges never grow into another part, such as the post's sticker beside it", () => {
+  const first={x:46,y:311,width:907,height:381}, snapped={x:46,y:290,width:907,height:405}, sticker={x:685,y:289,width:231,height:67};
+  assert.deepEqual(tools.keepClear(first,snapped,[sticker]),{x:46,y:311,width:907,height:384},"the top stays; the bottom, clear of the sticker, keeps its snap");
+  assert.deepEqual(tools.keepClear(first,snapped,[]),snapped);
 });
 
 // ── 3. Placing it ───────────────────────────────────────────────────────────

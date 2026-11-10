@@ -256,6 +256,19 @@ const MAX_CANDIDATES = 8;
 export const preparedHere = (decision: Pick<ImageDecision, "kind" | "treatment">) =>
   decision.treatment !== "rebuild" && (decision.kind === "screenshot" || decision.kind === "graphic" || decision.kind === "photo" && decision.treatment === "source");
 
+/** A snapped box whose edges moved out into another part's box keep their first place on that side. */
+export function keepClear(first: MediaBox, snapped: MediaBox, others: MediaBox[]): MediaBox {
+  const overlaps = (a: MediaBox, b: MediaBox) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  let [left, top, right, bottom] = [snapped.x, snapped.y, snapped.x + snapped.width, snapped.y + snapped.height];
+  const [left0, top0, right0, bottom0] = [first.x, first.y, first.x + first.width, first.y + first.height];
+  const strip = (x0: number, y0: number, x1: number, y1: number) => ({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
+  if (left < left0 && others.some(box => overlaps(strip(left, top, left0, bottom), box))) left = left0;
+  if (top < top0 && others.some(box => overlaps(strip(left, top, right, top0), box))) top = top0;
+  if (right > right0 && others.some(box => overlaps(strip(right0, top, right, bottom), box))) right = right0;
+  if (bottom > bottom0 && others.some(box => overlaps(strip(left, bottom0, right, bottom), box))) bottom = bottom0;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
 export type OriginalFinder = { pages: (pages: string[], signal: AbortSignal, fetcher: typeof fetch) => Promise<StoryImage[]> };
 
 /**
@@ -273,7 +286,10 @@ export async function prepareKept(session: DesignSession, decisions: ImageDecisi
     if (!image) return null;
     const box = cleanBox(decision.box);
     if (!box) return null;
-    const cut = await cropOriginal(image, await snapBox(image, box, "photo").catch(() => box)).catch(() => null);
+    // The snap finds the picture's real edges, but never grows into another part (the post's sticker beside it).
+    const others = decisions.filter(other => other.slide === decision.slide && other.part !== decision.part).map(other => other.box);
+    const snapped = keepClear(box, await snapBox(image, box, "photo").catch(() => box), others);
+    const cut = await cropOriginal(image, snapped).catch(() => null);
     const cutBytes = cut ? embeddedImageBytes(cut.url) : null;
     if (!cut || !cutBytes) return null;
     let why = "";
@@ -300,7 +316,7 @@ export async function prepareKept(session: DesignSession, decisions: ImageDecisi
           session.assets.set(src, { width: candidate.width, height: candidate.height, what: decision.what, credit: candidate.page });
           credit(session, src, `Slide ${decision.slide}'s ${decision.kind}: the original from ${candidate.page}.`);
           return { ...base, src, width: candidate.width, height: candidate.height, from: "source", page: candidate.page,
-            note: `Slide ${decision.slide}: found the original on ${host} (${candidate.width}×${candidate.height}, the post's cut was ${cut.width}×${cut.height}) and kept it whole: ${decision.why}` };
+            note: `Slide ${decision.slide}: found the original on ${host} (${candidate.width}×${candidate.height}${candidate.cropped ? ", the part the post shows" : ""}; the post's cut was ${cut.width}×${cut.height}) and kept it whole: ${decision.why}` };
         }
         why = picked.why;
       }
