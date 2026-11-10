@@ -14,15 +14,20 @@ export function isRecreateConfigured(): boolean {
   return Boolean(process.env.ANTHROPIC_API_KEY?.trim() || process.env.ANTHROPIC_AUTH_TOKEN?.trim());
 }
 
-export type AgentRole = "transcript" | "editor" | "facts" | "data" | "reactions" | "visuals" | "story" | "hooks" | "copy" | "art" | "factCritic" | "designCritic";
+/**
+ * The current team's roles (source, research, brief, headline, designer and
+ * the two critics), then the first team's, kept for its modules until the cleanup.
+ */
+export type AgentRole = "source" | "research" | "brief" | "headline" | "designer" | "factCritic" | "designCritic"
+  | "transcript" | "editor" | "facts" | "data" | "reactions" | "visuals" | "story" | "hooks" | "copy" | "art";
 const OPUS = "claude-opus-5-5", SONNET = "claude-sonnet-5-5";
 const DEFAULT_MODEL: Record<AgentRole, string> = {
-  transcript: OPUS, editor: OPUS, facts: OPUS, data: SONNET, reactions: SONNET, visuals: SONNET, story: OPUS,
-  hooks: SONNET, copy: OPUS, art: SONNET, factCritic: OPUS, designCritic: OPUS,
+  source: OPUS, research: OPUS, brief: OPUS, headline: SONNET, designer: OPUS, factCritic: OPUS, designCritic: OPUS,
+  transcript: OPUS, editor: OPUS, facts: OPUS, data: SONNET, reactions: SONNET, visuals: SONNET, story: OPUS, hooks: SONNET, copy: OPUS, art: SONNET,
 };
 const ENV_NAME: Record<AgentRole, string> = {
-  transcript: "TRANSCRIPT", editor: "EDITOR", facts: "FACTS", data: "DATA", reactions: "REACTIONS", visuals: "VISUALS", story: "STORY",
-  hooks: "HOOKS", copy: "COPY", art: "ART", factCritic: "FACT_CRITIC", designCritic: "DESIGN_CRITIC",
+  source: "SOURCE", research: "RESEARCH", brief: "BRIEF", headline: "HEADLINE", designer: "DESIGNER", factCritic: "FACT_CRITIC", designCritic: "DESIGN_CRITIC",
+  transcript: "TRANSCRIPT", editor: "EDITOR", facts: "FACTS", data: "DATA", reactions: "REACTIONS", visuals: "VISUALS", story: "STORY", hooks: "HOOKS", copy: "COPY", art: "ART",
 };
 
 /** The role's model: ENGINE_MODEL_<ROLE>, else the older ANTHROPIC_RECREATE_MODEL for Opus roles, else the default. */
@@ -90,8 +95,11 @@ export type ClientTool = {
   name: string;
   description: string;
   schema: z.ZodObject;
-  /** Returns the text the agent reads. Throw a ToolError for a message the agent should see. */
-  run: (input: Record<string, unknown>) => Promise<string>;
+  /**
+   * Returns what the agent reads, as a tool_result's content: text, or blocks
+   * (text and images). Throw a ToolError for a message the agent should see.
+   */
+  run: (input: Record<string, unknown>) => Promise<string | Anthropic.Beta.BetaToolResultBlockParam["content"]>;
 };
 /** An error the agent may read and recover from (a bad series id, an empty window). */
 export class ToolError extends Error {}

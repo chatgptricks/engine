@@ -39,11 +39,21 @@ export interface InstagramSlide {
   height?: number;
 }
 
+export interface InstagramTraction {
+  likes: number | null;
+  comments: number | null;
+  views: number | null;
+}
+
 export interface ImportedInstagramPost {
   shortcode: string;
   url: string;
   ownerUsername: string;
+  /** The owner's display name, "" when unknown (always "" for uploads). */
+  ownerFullName: string;
   caption: string;
+  /** Likes, comments and video views as Instagram shows them; null when hidden or unknown (always null for uploads). */
+  traction: InstagramTraction;
   /** ISO 8601 publish time, or null when unknown (always null for uploads). */
   takenAt: string | null;
   type: InstagramPostType;
@@ -180,6 +190,8 @@ async function readBounded(response: Response, maxBytes: number, tooLarge: () =>
 }
 
 const text = (value: unknown): string => (typeof value === "string" ? value : "");
+/** A count Instagram shares; Apify reports hidden likes as -1, which is unknown here. */
+const count = (value: unknown): number | null => (typeof value === "number" && Number.isFinite(value) && value >= 0 ? Math.round(value) : null);
 const positive = (value: unknown): number | undefined =>
   typeof value === "number" && Number.isFinite(value) && value > 0 ? Math.round(value) : undefined;
 const httpUrl = (value: unknown): string | undefined =>
@@ -235,7 +247,9 @@ export function normalizeApifyPost(item: unknown, expected?: ParsedInstagramUrl)
     shortcode,
     url: httpUrl(post.url) ?? (shortcode ? `https://www.instagram.com/p/${shortcode}/` : expected?.canonicalUrl ?? ""),
     ownerUsername: text(post.ownerUsername),
+    ownerFullName: text(post.ownerFullName).trim().slice(0, 200),
     caption: text(post.caption).slice(0, MAX_CAPTION_CHARS),
+    traction: {likes: count(post.likesCount), comments: count(post.commentsCount), views: count(post.videoViewCount ?? post.videoPlayCount)},
     takenAt: timestamp && Number.isFinite(Date.parse(timestamp)) ? new Date(timestamp).toISOString() : null,
     type,
     slides: slides.slice(0, MAX_SLIDES),
@@ -521,7 +535,9 @@ export async function normalizeUploadedSlides(files: readonly UploadedSlideInput
       shortcode: parsed?.shortcode ?? "",
       url: parsed?.canonicalUrl ?? "",
       ownerUsername: USERNAME.test(owner) ? owner : "",
+      ownerFullName: "",
       caption,
+      traction: {likes: null, comments: null, views: null},
       takenAt: null,
       type: images.length > 1 ? "Sidecar" : "Image",
       slides: images.map(image => ({index: image.index, imageUrl: `upload:${image.index}`, isVideo: false})),

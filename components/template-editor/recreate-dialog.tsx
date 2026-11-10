@@ -4,13 +4,14 @@ import {useEffect, useId, useRef, useState, type ClipboardEvent, type DragEvent,
 import {ArrowRightIcon, CheckIcon, CloseIcon, ImageIcon, PlusIcon} from "@/components/engine/icons";
 import {Modal} from "./controls";
 import {
-  MAX_HOOK_CHARACTERS, MAX_RECREATE_SLIDES, MAX_RECREATE_UPLOADS, RECREATE_IMAGE_TYPES, RECREATE_STATUS_LABELS,
-  fetchPageProfiles, lanesFor, instagramLabel, normalizeInstagramUrl, placePost, prepareRecreateUpload, recreateSetupIssue, recreateTimestamp, safeSourceUrl, useRecreateJob,
-  type ApproveRequest, type Checkpoint, type CheckpointReaction, type FactCheck, type HookOption, type OutlineKind, type OutlineSlide, type PageProfile,
+  MAX_HOOK_CHARACTERS, MAX_POSTS_PER_SLIDE, MAX_RECREATE_SLIDES, MAX_RECREATE_UPLOADS, RECREATE_IMAGE_TYPES, RECREATE_STATUS_LABELS,
+  fetchPageProfiles, lanesOf, instagramLabel, normalizeInstagramUrl, placePost, prepareRecreateUpload, recreateSetupIssue, recreateTimestamp, safeSourceUrl, useRecreateJob,
+  type ApproveRequest, type Checkpoint, type CheckpointReaction, type FactCheck, type OutlineKind, type OutlineSlide, type PageProfile,
   type PreparedUpload, type RecreateAction, type RecreateJob, type RecreateKind, type RecreateMode, type RecreateRequest, type RecreateResult, type RecreateReview,
   type StageName, type StageStatus, type TrackedRecreate,
 } from "./recreate-job";
 import {MAX_ADDED_POSTS, parseXPostLinks, xPostId, xPostLink} from "@/lib/engine/x-links";
+import {RecreateVerdict} from "./recreate-verdict";
 import "./pro-tools.css";
 import "./dialog-tools.css";
 import "./recreate-dialog.css";
@@ -18,15 +19,18 @@ import "./recreate-dialog.css";
 /** `mode` is where the post comes from; `kind` is what to make of it. */
 type Draft = {mode: "link" | "screenshots"; kind: RecreateKind; url: string; uploads: PreparedUpload[]; caption: string; notes: string; xPosts: string; profileId: string; autopilot: boolean};
 type FieldErrors = Partial<Record<"url" | "uploads" | "profileId" | "xPosts", string>>;
-type Phase = "form" | "running" | "checkpoint" | "done" | "error";
+type Phase = "form" | "running" | "verdict" | "checkpoint" | "done" | "error" | "stopped";
 const EMPTY_DRAFT: Draft = {mode: "link", kind: "full", url: "", uploads: [], caption: "", notes: "", xPosts: "", profileId: "", autopilot: false};
 const PROFILE_MEMORY = "engine:recreate-profile";
 const AUTOPILOT_MEMORY = "engine:recreate-autopilot";
 const KIND_MEMORY = "engine:recreate-kind";
 const NOTE_IDEAS = ["Make it simpler", "Add a chart", "Use the latest stock data"];
-const VERDICT_LABELS: Record<FactCheck["verdict"], string> = {confirmed: "Confirmed", corrected: "Corrected", unverified: "Unverified"};
+const VERDICT_LABELS: Record<FactCheck["verdict"], string> = {confirmed: "Confirmed", reported: "Reported", alleged: "Alleged", unknown: "Unknown", corrected: "Corrected", unverified: "Unverified"};
+const FACT_ORDER: FactCheck["verdict"][] = ["confirmed", "reported", "alleged", "unknown", "corrected", "unverified"];
 const KIND_LABELS: Record<OutlineKind, string> = {cover: "Cover", original: "From the original", question: "Reader question", reaction: "Reaction from X", takeaway: "Takeaway", follow: "Follow"};
-const HOOK_SOURCES: Record<HookOption["by"], string> = {"headline-model": "From the headline model", copywriter: "By the copywriter", agent: "From an agent"};
+const HOOK_SOURCES: Record<Checkpoint["hookSource"], string> = {"headline-model": "From the headline model", copywriter: "By the copywriter", agent: "From an agent"};
+/** Who wrote each headline option: the list mixes the original's, the headline model's and the copywriter's. */
+const HOOK_WRITERS: Record<Checkpoint["hooks"][number]["by"], string> = {original: "The original's headline", "headline-model": "Headline model", copywriter: "Copywriter", agent: "Agent"};
 const MODE_LABELS: Record<RecreateMode, string> = {checkpoint: "You review the plan", autopilot: "Autopilot", exact: "Exact copy"};
 const KINDS: {value: RecreateKind; title: string; detail: string}[] = [
   {value: "exact", title: "Exact copy", detail: "The same slides and words, every part rebuilt in the page's style"},
@@ -64,6 +68,9 @@ function phaseOf(tracked: TrackedRecreate | null, job: RecreateJob | null): Phas
   if (!tracked) return "form";
   if (job?.status === "done" && job.result) return "done";
   if (job?.status === "error") return "error";
+  // A stop and an ask both come from the check; without its verdict there is only the message to show.
+  if (job?.status === "stopped") return job.verdict ? "stopped" : "error";
+  if (job?.status === "paused" && job.waiting === "verdict" && job.verdict) return "verdict";
   if (job?.status === "paused" && job.checkpoint) return "checkpoint";
   return "running";
 }
@@ -142,11 +149,13 @@ export function RecreatePost({scope, open, onOpenChange, blockedReason, activeDe
   }
 
   const close = () => onOpenChange(false);
-  const title = phase === "done" ? "Your post is ready" : phase === "error" ? "Recreate didn't finish" : phase === "checkpoint" ? "Check the plan" : "Recreate a post";
+  const title = phase === "done" ? "Your post is ready" : phase === "error" ? "Recreate didn't finish" : phase === "checkpoint" ? "Check the plan"
+    : phase === "verdict" ? "Check the story" : phase === "stopped" ? "Stopped at the check" : "Recreate a post";
   return <>
     {open && <Modal title={title} onClose={close}>
       {phase === "form" && <RecreateForm draft={draft} setDraft={setDraft} blockedReason={blockedReason} onStart={recreate.start} onClose={close}/>}
       {phase === "running" && tracked && <RecreateProgress tracked={tracked} job={job} reconnecting={recreate.reconnecting} onAct={recreate.act} onClose={close}/>}
+      {(phase === "verdict" || phase === "stopped") && tracked && job?.verdict && <RecreateVerdict summary={<RecreateSummary tracked={tracked} mode={job.mode}/>} job={job} verdict={job.verdict} onAnswer={answer => recreate.act({action: "answer_verdict", ...answer})} onRerun={() => recreate.act({action: "rerun_stage", stage: "research"})} onClose={close}/>}
       {phase === "checkpoint" && tracked && job?.checkpoint && <RecreateCheckpoint key={planKey(job)} tracked={tracked} job={job} checkpoint={job.checkpoint} onApprove={request => recreate.act({action: "approve", ...request})} onAddPosts={xPosts => recreate.act({action: "add_posts", xPosts})} onClose={close}/>}
       {phase === "done" && tracked && job?.result && <RecreateDone tracked={tracked} job={job} result={job.result} isOpen={Boolean(inEditor) && activeDesignId === job.result.deckId} onOpen={() => openResult(job.result!)} onClose={close} onAnother={startAnother}/>}
       {phase === "error" && tracked && <RecreateFailure tracked={tracked} job={job} error={job?.error || job?.message || "Recreate failed. Try again."} onResume={() => recreate.act({action: "resume"})} onRetry={editAndRetry} onScreenshots={() => { editAndRetry(); setDraft(current => ({...current, mode: "screenshots"})); }} onClose={close}/>}
@@ -419,9 +428,9 @@ function RecreateSummary({tracked, mode}: {tracked: TrackedRecreate; mode?: Recr
 /** Each agent's part of the run, grouped the way the stages run. */
 function RecreateLanes({job, mode}: {job: RecreateJob | null; mode?: RecreateMode}) {
   const stages = new Map(job?.stages.map(stage => [stage.stage, stage]));
-  const hint = (name: StageName, status: StageStatus) => name === "approval" && status === "pending" ? job?.mode === "autopilot" ? "Autopilot uses the first hook that fits the cover and the plan as written" : "Waits for you to check the plan" : "";
+  const hint = (name: StageName, status: StageStatus) => name === "approval" && status === "pending" && job?.version !== 1 ? job?.mode === "autopilot" ? "Autopilot uses the first headline that fits the cover and the plan as written" : "Waits for you to check the plan" : "";
   return <div className="te-recreate-lanes">
-    {lanesFor(job?.mode ?? mode).map(lane => <section key={lane.title} className="te-recreate-lane" aria-label={lane.title}>
+    {lanesOf(job, job?.mode ?? mode).map(lane => <section key={lane.title} className="te-recreate-lane" aria-label={lane.title}>
       <h3>{lane.title}</h3>
       <ol>
         {lane.stages.map(name => {
@@ -475,15 +484,19 @@ function RecreateProgress({tracked, job, reconnecting, onAct, onClose}: {tracked
 type EditableSlide = OutlineSlide & {key: string; pointsText: string};
 type CheckpointErrors = {hook?: string; slides?: string; slide: Record<string, string>};
 const toEditable = (slide: OutlineSlide, index: number): EditableSlide => ({...slide, key: `s${index}`, pointsText: slide.points.join("\n")});
+/** Back to the plan's shape, its keys in the order the server sends them, so an untouched plan compares equal. */
 function fromEditable(slide: EditableSlide): OutlineSlide {
   return {
-    kind: slide.kind, templatePage: slide.templatePage, purpose: slide.purpose.trim(),
+    kind: slide.kind, purpose: slide.purpose.trim(),
     points: slide.pointsText.split("\n").map(point => point.trim()).filter(Boolean),
-    chartId: slide.chartId, reactionIds: slide.reactionIds, photo: slide.photo.trim(),
+    original: slide.original, chart: slide.chart.trim(), reactionIds: slide.reactionIds, photo: slide.photo.trim(),
   };
 }
+const newSlide = (kind: OutlineKind, key: string, reactionIds: string[] = []): EditableSlide => ({
+  kind, purpose: kind === "reaction" ? "Show how people reacted on X" : "", points: [], original: null, chart: "", reactionIds, photo: "", key, pointsText: "",
+});
 
-/** The checkpoint: a person checks the slide plan, picks the hook and approves before anything is written. */
+/** The checkpoint: a person checks the slide plan, picks the headline and approves before anything is designed. */
 function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, onClose}: {
   tracked: TrackedRecreate;
   job: RecreateJob;
@@ -508,11 +521,8 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
   const firstHookRef = useRef<HTMLInputElement>(null);
   useInitialFocus(firstHookRef);
 
-  const textPages = checkpoint.pages.filter(page => !page.cards), reactionPages = checkpoint.pages.filter(page => page.cards > 0);
-  const maxPosts = Math.max(0, ...reactionPages.map(page => page.cards));
-  // The Reaction page with as many cards as posts (the deck still moves posts that don't fit to the next page).
-  const reactionPage = (posts: number) => reactionPages.filter(page => page.cards <= Math.max(1, posts)).sort((a, b) => b.cards - a.cards)[0]?.index;
-  const pageLabel = (index: number) => checkpoint.pages.find(page => page.index === index)?.label ?? `Page ${index + 1}`;
+  // The designer picks the Reaction page that fits each slide's posts.
+  const maxPosts = MAX_POSTS_PER_SLIDE;
   const slideOf = (postId: string, except: string) => slides.findIndex(slide => slide.key !== except && slide.reactionIds.includes(postId)) + 1;
   const ownLength = [...ownHook.trim()].length;
 
@@ -546,12 +556,8 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
     if (slides.length >= MAX_RECREATE_SLIDES) return;
     const key = `s${nextKey.current++}`;
     const unused = checkpoint.reactions.find(post => !slides.some(slide => slide.reactionIds.includes(post.id))) ?? checkpoint.reactions[0];
-    const textPage = textPages.find(page => /text/i.test(page.label)) ?? textPages.find(page => !/cover|follow/i.test(page.label)) ?? textPages[0];
-    const page = kind === "reaction" ? reactionPage(1) : textPage?.index;
-    if (page === undefined || kind === "reaction" && !unused) return;
-    const slide: EditableSlide = kind === "reaction"
-      ? {kind: "reaction", templatePage: page, purpose: "Show how people reacted on X", points: [], chartId: null, reactionIds: [unused!.id], photo: "", key, pointsText: ""}
-      : {kind: "question", templatePage: page, purpose: "", points: [], chartId: null, reactionIds: [], photo: "", key, pointsText: ""};
+    if (kind === "reaction" && !unused) return;
+    const slide = newSlide(kind, key, kind === "reaction" && unused ? [unused.id] : []);
     // New slides go before the closing Follow slide.
     const at = slides.at(-1)?.kind === "follow" ? slides.length - 1 : slides.length;
     setSlides([...slides.slice(0, at), slide, ...slides.slice(at)]);
@@ -560,7 +566,7 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
   }
   function togglePost(slide: EditableSlide, postId: string) {
     const ids = slide.reactionIds.includes(postId) ? slide.reactionIds.filter(item => item !== postId) : [...slide.reactionIds, postId].slice(0, maxPosts);
-    patch(slide.key, {reactionIds: ids, templatePage: reactionPage(Math.max(1, ids.length)) ?? slide.templatePage});
+    patch(slide.key, {reactionIds: ids});
   }
   /** Reads a post from X by its link, adds it to the posts the slides can use and puts it on a reaction slide. */
   async function addPost() {
@@ -586,10 +592,7 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
     }
     setPostLink("");
     focusLater(`${id}-xpost`);
-    const placed = placePost(slidesRef.current, postId, {
-      maxPosts, page: reactionPage,
-      slide: templatePage => ({kind: "reaction", templatePage, purpose: "Show how people reacted on X", points: [], chartId: null, reactionIds: [], photo: "", key: `s${nextKey.current++}`, pointsText: ""}),
-    });
+    const placed = placePost(slidesRef.current, postId, {maxPosts, slide: () => newSlide("reaction", `s${nextKey.current++}`)});
     if (!placed) { setPostNotice("Added. Make room on a reaction slide to show it."); return; }
     if (!placed.changed) { setPostNotice(`That post is already on slide ${placed.at + 1}.`); return; }
     setSlides(placed.slides);
@@ -602,9 +605,9 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
     event.preventDefault();
     if (busy) return;
     const next: CheckpointErrors = {slide: {}};
-    if (hook === null) next.hook = "Pick a hook, or write your own.";
-    else if (hook === -1 && !ownLength) next.hook = "Write your hook, or pick one of the options.";
-    else if (hook === -1 && ownLength > MAX_HOOK_CHARACTERS) next.hook = `Keep the hook under ${MAX_HOOK_CHARACTERS} characters.`;
+    if (hook === null) next.hook = "Pick a headline, or write your own.";
+    else if (hook === -1 && !ownLength) next.hook = "Write your headline, or pick one of the options.";
+    else if (hook === -1 && ownLength > MAX_HOOK_CHARACTERS) next.hook = `Keep the headline under ${MAX_HOOK_CHARACTERS} characters.`;
     if (!slides.length) next.slides = "Keep at least one slide.";
     for (const slide of slides) {
       if (slide.kind === "reaction" && !slide.reactionIds.length) next.slide[slide.key] = "Pick a post for this slide, or remove it.";
@@ -617,8 +620,8 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
     if (next.slides) { focusLater(`${id}-add`); return; }
     const plain = slides.map(fromEditable), edited = JSON.stringify(plain) !== JSON.stringify(checkpoint.slides);
     const request: ApproveRequest = {
-      ...(edited ? {outline: {slides: plain, why: checkpoint.why}} : {}),
-      hook: hook === -1 ? {text: ownHook.trim()} : {option: hook},
+      ...(edited ? {plan: {slides: plain, why: checkpoint.why}} : {}),
+      headline: hook === -1 ? {text: ownHook.trim()} : {option: hook},
       ...(notes.trim() ? {notes: notes.trim()} : {}),
     };
     setBusy(true);
@@ -636,21 +639,28 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
         {checkpoint.brief.originalHeadline && <small>Original headline: “{checkpoint.brief.originalHeadline}”</small>}
       </div>}
 
-      <RecreateSection title="Hook" aside={HOOK_SOURCES[checkpoint.hookSource]}>
+      <RecreateSection title="Headline" aside={HOOK_SOURCES[checkpoint.hookSource]}>
         {checkpoint.hookNote && <p className="te-recreate-note">{checkpoint.hookNote}</p>}
-        <div className="te-recreate-hooks" role="radiogroup" aria-label="Hook" aria-describedby={errors.hook ? `${id}-hook-error` : undefined}>
-          {checkpoint.hooks.map((option, index) => <label key={index} className={`te-recreate-hook${hook === index ? " is-selected" : ""}`}>
-            <input ref={index === 0 ? firstHookRef : undefined} id={`${id}-hook-${index}`} type="radio" name={`${id}-hook`} checked={hook === index} onChange={() => choose(index)}/>
-            <span className="te-recreate-hook-text">{option.text}</span>
-            {(option.framework || option.english) && <small>{option.framework}{option.framework && option.english ? " · " : ""}{option.english ? `From “${option.english}”` : ""}</small>}
-          </label>)}
+        <div className="te-recreate-hooks" role="radiogroup" aria-label="Headline" aria-describedby={errors.hook ? `${id}-hook-error` : undefined}>
+          {checkpoint.hooks.map((option, index) => {
+            // Decision 1: the original's own headline leads when the post performs and its headline passed the check.
+            const original = option.by === "original", leads = original && index === 0 && checkpoint.lead === "original";
+            const who = original ? `${HOOK_WRITERS.original}${leads ? ", first: the post is performing" : ""}` : [HOOK_WRITERS[option.by], option.framework].filter(Boolean).join(" · ");
+            // A Spanish page's lines name the English they come from; a translated original, its own words.
+            const from = option.english ? `${original ? "Translated from" : "From"} “${option.english}”` : "";
+            return <label key={index} className={`te-recreate-hook${hook === index ? " is-selected" : ""}`}>
+              <input ref={index === 0 ? firstHookRef : undefined} id={`${id}-hook-${index}`} type="radio" name={`${id}-hook`} checked={hook === index} onChange={() => choose(index)}/>
+              <span className="te-recreate-hook-text">{option.text}</span>
+              <small>{[who, from].filter(Boolean).join(" · ")}</small>
+            </label>;
+          })}
           <label className={`te-recreate-hook${hook === -1 ? " is-selected" : ""}`}>
             <input ref={checkpoint.hooks.length ? undefined : firstHookRef} id={checkpoint.hooks.length ? undefined : `${id}-hook-0`} type="radio" name={`${id}-hook`} checked={hook === -1} onChange={() => choose(-1)}/>
             <span className="te-recreate-hook-text">Write my own</span>
           </label>
         </div>
         {hook === -1 && <label className="te-recreate-field">
-          <span id={`${id}-own-label`}>Your hook</span>
+          <span id={`${id}-own-label`}>Your headline</span>
           <textarea id={`${id}-own-hook`} aria-labelledby={`${id}-own-label`} rows={2} maxLength={MAX_HOOK_CHARACTERS + 40} value={ownHook} aria-invalid={Boolean(errors.hook)} onChange={event => { setOwnHook(event.target.value); setErrors(current => current.hook ? {...current, hook: undefined} : current); }}/>
           <small className={ownLength > MAX_HOOK_CHARACTERS ? "te-recreate-invalid" : ""}>{ownLength}/{MAX_HOOK_CHARACTERS}</small>
         </label>}
@@ -662,11 +672,11 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
         <ol className="te-recreate-outline">
           {slides.map((slide, index) => {
             const error = errors.slide[slide.key], chosen = slide.reactionIds.map(postId => checkpoint.reactions.find(post => post.id === postId)).filter((post): post is CheckpointReaction => Boolean(post));
-            const facts = slide.pointsText.split("\n").filter(point => point.trim()).length, page = pageLabel(slide.templatePage);
+            const facts = slide.pointsText.split("\n").filter(point => point.trim()).length;
             return <li key={slide.key} className={`te-recreate-slide${error ? " is-invalid" : ""}`}>
               <div className="te-recreate-slide-head">
                 <span className="te-recreate-slide-number" aria-hidden>{index + 1}</span>
-                <span className="te-recreate-slide-kind">{KIND_LABELS[slide.kind]}{page.toLowerCase() !== KIND_LABELS[slide.kind].toLowerCase() && <small> · {page}</small>}</span>
+                <span className="te-recreate-slide-kind">{KIND_LABELS[slide.kind]}{slide.original ? <small> · original slide {slide.original}</small> : null}</span>
                 <span className="te-recreate-slide-tools">
                   <button id={`${id}-up-${slide.key}`} type="button" aria-label={`Move slide ${index + 1} earlier`} title="Move earlier" disabled={index === 0} onClick={() => move(index, -1)}>↑</button>
                   <button id={`${id}-down-${slide.key}`} type="button" aria-label={`Move slide ${index + 1} later`} title="Move later" disabled={index === slides.length - 1} onClick={() => move(index, 1)}>↓</button>
@@ -692,27 +702,16 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
                   </div>
                 </details>
               </> : <>
-                {(textPages.length > 1 || checkpoint.charts.length > 0) && <div className="te-recreate-slide-row">
-                  {textPages.length > 1 && <label className="te-recreate-field">
-                    <span>Page</span>
-                    <select value={slide.templatePage} onChange={event => patch(slide.key, {templatePage: Number(event.target.value)})}>
-                      {textPages.map(page => <option key={page.index} value={page.index}>{page.label}</option>)}
-                    </select>
-                  </label>}
-                  {checkpoint.charts.length > 0 && <label className="te-recreate-field">
-                    <span>Chart</span>
-                    <select value={slide.chartId ?? ""} onChange={event => patch(slide.key, {chartId: event.target.value || null})}>
-                      <option value="">No chart</option>
-                      {checkpoint.charts.map(chart => <option key={chart.id} value={chart.id}>{chart.purpose || chart.id}</option>)}
-                    </select>
-                  </label>}
-                </div>}
                 <details className="te-recreate-slide-more">
-                  <summary>Facts and photo{facts ? ` · ${plural(facts, "fact")}` : ""}{slide.photo.trim() ? " · photo" : ""}</summary>
+                  <summary>Facts, chart and photo{facts ? ` · ${plural(facts, "fact")}` : ""}{slide.chart.trim() ? " · chart" : ""}{slide.photo.trim() ? " · photo" : ""}</summary>
                   <div className="te-recreate-slide-details">
                     <label className="te-recreate-field">
                       <span>Facts it uses, one per line</span>
                       <textarea rows={3} maxLength={4000} value={slide.pointsText} onChange={event => patch(slide.key, {pointsText: event.target.value})}/>
+                    </label>
+                    <label className="te-recreate-field">
+                      <span>Chart it shows</span>
+                      <input type="text" maxLength={600} placeholder="None" value={slide.chart} onChange={event => patch(slide.key, {chart: event.target.value})}/>
                     </label>
                     <label className="te-recreate-field">
                       <span>Photo it needs</span>
@@ -728,9 +727,9 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
         {errors.slides && <small className="te-recreate-invalid" role="alert">{errors.slides}</small>}
         <div className="te-recreate-add">
           <button id={`${id}-add`} type="button" className="te-button" disabled={slides.length >= MAX_RECREATE_SLIDES} onClick={() => add("question")}><PlusIcon size={14}/>Add a slide</button>
-          {checkpoint.reactions.length > 0 && maxPosts > 0 && <button type="button" className="te-button" disabled={slides.length >= MAX_RECREATE_SLIDES} onClick={() => add("reaction")}><PlusIcon size={14}/>Add a reaction slide</button>}
+          {checkpoint.reactions.length > 0 && <button type="button" className="te-button" disabled={slides.length >= MAX_RECREATE_SLIDES} onClick={() => add("reaction")}><PlusIcon size={14}/>Add a reaction slide</button>}
         </div>
-        {maxPosts > 0 && <div className="te-recreate-field te-recreate-add-post">
+        <div className="te-recreate-field te-recreate-add-post">
           <label htmlFor={`${id}-xpost`}>Add a post from X <small className="te-recreate-optional">Optional</small></label>
           <div className="te-recreate-add-post-row">
             <input id={`${id}-xpost`} type="url" inputMode="url" autoComplete="off" spellCheck={false} maxLength={300} placeholder="https://x.com/name/status/…" value={postLink} aria-invalid={Boolean(postError)} aria-describedby={`${id}-xpost-help${postError ? ` ${id}-xpost-error` : ""}`} onChange={event => { setPostLink(event.target.value); setPostError(""); }} onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); void addPost(); } }}/>
@@ -738,19 +737,19 @@ function RecreateCheckpoint({tracked, job, checkpoint, onApprove, onAddPosts, on
           </div>
           {postError && <small id={`${id}-xpost-error`} className="te-recreate-invalid" role="alert">{postError}</small>}
           <small id={`${id}-xpost-help`} role="status">{postNotice || "It goes on a reaction slide, word for word as it looks on X."}</small>
-        </div>}
+        </div>
       </RecreateSection>
 
       <label className="te-recreate-field">
-        <span id={`${id}-notes-label`}>Notes for the writers <small className="te-recreate-optional">Optional</small></span>
-        <textarea aria-labelledby={`${id}-notes-label`} rows={2} maxLength={2000} placeholder="Anything the copywriter should know" value={notes} onChange={event => setNotes(event.target.value)}/>
+        <span id={`${id}-notes-label`}>Notes for the designer <small className="te-recreate-optional">Optional</small></span>
+        <textarea aria-labelledby={`${id}-notes-label`} rows={2} maxLength={2000} placeholder="Anything the designer should know" value={notes} onChange={event => setNotes(event.target.value)}/>
       </label>
     </fieldset>
     {submitError && <div className="te-dialog-error te-recreate-alert" role="alert"><strong>Not approved yet</strong><span>{submitError}</span></div>}
     <div className="te-dialog-footer">
-      {checkpoint.hookSource === "headline-model" && <span className="te-recreate-footnote te-recreate-learns">Your hook pick also teaches the headline model.</span>}
+      {checkpoint.hookSource === "headline-model" && <span className="te-recreate-footnote te-recreate-learns">Your headline pick also teaches the headline model.</span>}
       <button type="button" className="te-button" onClick={onClose}>Later</button>
-      <button className="te-button te-primary" disabled={busy}>{busy ? "Approving…" : "Approve and write"}</button>
+      <button className="te-button te-primary" disabled={busy}>{busy ? "Approving…" : "Approve and design"}</button>
     </div>
   </form>;
 }
@@ -789,7 +788,7 @@ function RecreateCritics({review, fallback}: {review: RecreateReview | null; fal
 function RecreateDone({tracked, job, result, isOpen, onOpen, onClose, onAnother}: {tracked: TrackedRecreate; job: RecreateJob; result: RecreateResult; isOpen: boolean; onOpen: () => void; onClose: () => void; onAnother: () => void}) {
   const primary = useRef<HTMLButtonElement>(null);
   useInitialFocus(primary);
-  const counts = (["confirmed", "corrected", "unverified"] as const).map(verdict => [verdict, result.factChecks.filter(item => item.verdict === verdict).length] as const).filter(([, count]) => count > 0);
+  const counts = FACT_ORDER.map(verdict => [verdict, result.factChecks.filter(item => item.verdict === verdict).length] as const).filter(([, count]) => count > 0);
   const reviewStage = job.stages.find(stage => stage.stage === "review");
   const criticsFallback = reviewStage && (reviewStage.status === "skipped" || reviewStage.status === "error") ? reviewStage.summary || "The critics didn't run." : "";
   return <>
@@ -886,11 +885,13 @@ function RecreateFailure({tracked, job, error, onResume, onRetry, onScreenshots,
 function RecreateIndicator({phase, job, reconnecting, compact, onOpen, onDismiss}: {phase: Phase; job: RecreateJob | null; reconnecting: boolean; compact?: boolean; onOpen: () => void; onDismiss: () => void}) {
   const [title, detail] = phase === "done" ? job?.mode === "exact" ? [compact ? "Copy ready" : "Your exact copy is ready", "Open it and check the notes"] : [compact ? "Fact-check" : "Your recreated post is ready", "Review the fact-check"]
     : phase === "error" ? [compact ? "Recreate stopped" : "Recreate didn't finish", job?.resumable ? "Resume or see what happened" : "See what happened"]
-    : phase === "checkpoint" ? [compact ? "Check the plan" : "Ready for your review", "Pick the hook and approve the plan"]
+    : phase === "checkpoint" ? [compact ? "Check the plan" : "Ready for your review", "Pick the headline and approve the plan"]
+    : phase === "verdict" ? [compact ? "Check the story" : "The check needs you", "Go ahead, stop, or add the original"]
+    : phase === "stopped" ? [compact ? "Stopped" : "Stopped at the check", "See why, or build it anyway"]
     : [compact ? "Recreating…" : "Recreating post", reconnecting ? "Reconnecting…" : job && job.status !== "queued" ? `${RECREATE_STATUS_LABELS[job.status]}…` : "Starting…"];
   return <div className={`te-recreate-toast is-${phase}${compact ? " is-compact" : ""}`}>
     <button type="button" className="te-recreate-toast-open" onClick={onOpen} aria-label={`${title}. ${detail}. Open details`}>
-      <span className="te-recreate-toast-icon" aria-hidden>{phase === "done" ? <CheckIcon size={15} strokeWidth={2.2}/> : phase === "error" ? "!" : phase === "checkpoint" ? "?" : <span className="te-recreate-spinner"/>}</span>
+      <span className="te-recreate-toast-icon" aria-hidden>{phase === "done" ? <CheckIcon size={15} strokeWidth={2.2}/> : phase === "error" || phase === "stopped" ? "!" : phase === "checkpoint" || phase === "verdict" ? "?" : <span className="te-recreate-spinner"/>}</span>
       <span className="te-recreate-toast-text"><strong>{title}</strong><small>{detail}</small></span>
     </button>
     {phase !== "running" && <button type="button" className="te-recreate-toast-close" aria-label="Dismiss" title="Dismiss" onClick={onDismiss}><CloseIcon size={15}/></button>}

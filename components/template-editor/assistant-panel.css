@@ -140,7 +140,8 @@
 .te-chat-run-done > div { display: grid; min-width: 0; flex: 1; }
 .te-chat-run-done strong { font-weight: 550; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .te-chat-run-done small { color: #9a9aa2; font-size: 11px; }
-.te-chat-run-done .te-button, .te-chat-run-error .te-button { min-height: 34px; padding: 7px 14px; }
+.te-chat-run-done .te-button, .te-chat-run-error .te-button, .te-chat-run-actions .te-button { min-height: 34px; padding: 7px 14px; }
+.te-chat-run-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .te-chat-run-error { display: flex; align-items: center; gap: 10px; color: #ffcfc7; font-size: 12px; }
 .te-chat-run-error p { flex: 1; }
 

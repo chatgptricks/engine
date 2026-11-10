@@ -5,7 +5,9 @@
  * its logos clean files found by name (cut from the original when no source
  * has one), every part its own layer. The meme is drawn by the test, every
  * logo request goes to a stand-in for the web, and Claude is never called: the
- * transcript is a stand-in that runs the transcript stage's own clean-up.
+ * transcript is a stand-in that runs the transcript stage's own clean-up. This
+ * is the first Recreate team's exact copy, kept until the cleanup: its whole
+ * run goes through the stand-in driver in helpers-legacy-recreate.
  * Local development storage only. */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -17,6 +19,7 @@ import {createRequire} from "node:module";
 import {fileURLToPath} from "node:url";
 import ts from "typescript";
 import sharp from "sharp";
+import {legacyExact} from "./helpers-legacy-recreate.mjs";
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");
 const nativeRequire=createRequire(import.meta.url);
@@ -41,10 +44,11 @@ function load(relative) {
   return unit.exports;
 }
 
-const orchestrator=load("lib/engine/agents/orchestrator.ts");
 const posts=load("lib/engine/post-files.ts");
 const jobs=load("lib/engine/recreate-jobs.ts");
 const exact=load("lib/engine/agents/exact.ts");
+const exactData=load("lib/engine/agents/exact-data.ts");
+const claude=load("lib/engine/agents/claude.ts");
 const rebuild=load("lib/engine/agents/rebuild.ts");
 const deckLib=load("lib/engine/agents/deck.ts");
 const review=load("lib/engine/agents/review.ts");
@@ -519,7 +523,8 @@ function crew(images,transcript) {
     review:async context=>({output:REVIEWED(context.round)}),
   }};
 }
-const start=(ownerKey,team)=>orchestrator.startRecreate(ownerKey,{profileId:"chatgptricks",url:"https://www.instagram.com/p/meme/",mode:"exact"},{runners:team.runners,environment:async()=>({profile:english,template,templates:model.BUILT_IN_TEMPLATES,guide})});
+const driver=legacyExact({posts,claude,exact,exactData,review},async()=>({profile:english,template,templates:model.BUILT_IN_TEMPLATES,guide}));
+const start=(ownerKey,team)=>driver.start(ownerKey,team,{url:"https://www.instagram.com/p/meme/"});
 async function withWeb(site,work) {
   const real=globalThis.fetch;
   globalThis.fetch=site.fetch;

@@ -1,6 +1,6 @@
 import { after } from "next/server";
 import { agentResponse as reply, allowedAgentOrigin, readAgentBody, resolveAgentRequest } from "@/lib/template-editor/agent-http";
-import { addRecreatePosts, approveRecreate, isRunning, resumeRecreate, rerunRecreateStage, startRecreate, stopRun, submitRecreateStage, type AddedPosts, type Started } from "@/lib/engine/agents/orchestrator";
+import { addRecreatePosts, answerRecreateVerdict, approveRecreate, isRunning, resumeRecreate, rerunRecreateStage, startRecreate, stopRun, submitRecreateStage, type AddedPosts, type Started } from "@/lib/engine/agents/orchestrator";
 import { playbook } from "@/lib/engine/agents/playbook";
 import { isRecreateConfigured, RecreateError } from "@/lib/engine/recreate";
 import { postIdFor, postView } from "@/lib/engine/recreate-jobs";
@@ -63,13 +63,20 @@ async function act(ownerKey: string, by: "human" | "agent", body: Record<string,
   const postId = postIdOf(body);
   switch (action) {
     case "approve": {
-      const hook = (body.hook && typeof body.hook === "object" ? body.hook : {}) as Record<string, unknown>;
+      // `outline` and `hook` are the names clients used before version 2; both still work.
+      const picked = body.headline ?? body.hook;
+      const chosen = (picked && typeof picked === "object" ? picked : {}) as Record<string, unknown>;
       return approveRecreate(ownerKey, postId, {
-        outline: body.outline,
-        option: typeof hook.option === "number" ? hook.option : typeof body.option === "number" ? body.option : undefined,
-        text: text(hook.text ?? body.hookText, 400),
+        plan: body.plan ?? body.outline,
+        option: typeof chosen.option === "number" ? chosen.option : typeof body.option === "number" ? body.option : undefined,
+        text: text(chosen.text ?? body.headlineText ?? body.hookText, 400),
         notes: text(body.notes, 2000),
       }, by);
+    }
+    case "answer_verdict": {
+      const choice = body.choice;
+      if (choice !== "proceed" && choice !== "stop" && choice !== "link") throw new RecreateError("choice is proceed, stop or link (with the story's original in link).");
+      return answerRecreateVerdict(ownerKey, postId, { choice, link: text(body.link, 2000), note: text(body.note, 2000) }, by);
     }
     case "rerun_stage": return rerunRecreateStage(ownerKey, postId, stageOf(body.stage), text(body.instructions, 2000), by);
     case "submit_stage": return submitRecreateStage(ownerKey, postId, stageOf(body.stage), body.output, by);
@@ -85,16 +92,18 @@ async function act(ownerKey: string, by: "human" | "agent", body: Record<string,
       stopRun(postId);
       return { file: null, postId };
     }
-    default: throw new RecreateError("action is start, approve, rerun_stage, submit_stage, add_posts, resume or stop.");
+    default: throw new RecreateError("action is start, approve, answer_verdict, rerun_stage, submit_stage, add_posts, resume or stop.");
   }
 }
 
 /**
  * Start a run: `{url?, uploads?, caption?, profileId, notes?, mode?, xPosts?}` → 202 `{jobId, postId, status}`.
  * `xPosts` are links to posts on X for the reaction slides; they need no Apify plan.
- * Act on one: `{action: "approve" | "rerun_stage" | "submit_stage" | "add_posts" | "resume" | "stop", postId, …}`.
+ * Act on one: `{action: "approve" | "answer_verdict" | "rerun_stage" | "submit_stage" | "add_posts" | "resume" | "stop", postId, …}`.
+ * `approve` takes `{plan?, headline?: {option} | {text}, notes?}` at the checkpoint.
+ * `answer_verdict` (`{choice: "proceed" | "stop" | "link", link?, note?}`) answers the check when it asks, or builds a stopped post anyway.
  * `add_posts` (`{xPosts}`) adds posts from X by link at the checkpoint; nothing reruns.
- * People and agent tokens both work; only a person's hook pick is sent to the headline model.
+ * People and agent tokens both work; only a person's headline pick is sent to the headline model.
  */
 export async function POST(request: Request) {
   const access = await resolveAgentRequest(request);

@@ -1,55 +1,53 @@
 /**
  * The orchestrator: runs the Recreate team over one post file. A stage starts
- * as soon as everything it reads is finished, so research and the makers run
- * in parallel, and each result is saved to the post file as it lands. A
- * checkpoint run pauses after the outline and hooks until a person approves.
- * A run picks up where its post file left off after a restart, reruns one
- * stage on request, and sends the critics' must-fix issues back at most twice.
- * An exact copy (mode exact) runs only its own four stages: the transcript,
- * the chart data (skipped when the original has no chart), the deck and the
- * review, which sends fixes back to the transcript or the chart data once.
+ * as soon as everything it reads is finished, and each result is saved to the
+ * post file as it lands.
  *
- * Runs live in this server process (Engine runs as one instance); the post
- * file is the record, so nothing is lost when the process stops.
+ *   source → research → verdict ─┬─ (full) brief → headline → approval → design → review
+ *                                └─ (exact) design → review
+ *
+ * The verdict is the gate: a stage that reads it starts only once it says
+ * proceed, or a person answers it so. A stop ends the run (status stopped, no
+ * deck); an ask pauses it until a person answers, in autopilot too. A
+ * checkpoint run also pauses before the approval until a person approves the
+ * plan and the headline. The critics' must-fix issues go back to the designer
+ * at most twice (once for an exact copy).
+ *
+ * A run picks up where its post file left off after a restart, and reruns one
+ * stage on request. Runs live in this server process (Engine runs as one
+ * instance); the post file is the record, so nothing is lost when the process
+ * stops. Version-1 files (the first team's) open read-only: every action here
+ * refuses them.
  */
 import { randomUUID } from "node:crypto";
 import type { BrandGuide } from "../../template-editor/brand-guide";
 import type { DesignTemplate } from "../../template-editor/model";
 import { getEditorLibrary } from "../../template-editor/persistence";
 import { libraryTemplates } from "../../template-editor/template-catalog";
-import { isHeadlineModelConfigured, savePick, type HeadlineOption, type SavePickInput } from "../headline-model";
+import { isHeadlineModelConfigured, savePick, type SavePickInput } from "../headline-model";
 import { getPageProfile, PageProfileError, type PageProfile } from "../page-profiles";
-import { createPostFile, downstreamOf, getPostFile, inputsOf, POST_STAGES, PostFileError, setStage, stagesFor, updatePostFile, type PostFile, type PostMode, type PostStage, type StageActor } from "../post-files";
+import { createPostFile, downstreamOf, getPostFile, inputsOf, isCurrentPostFile, POST_STAGES, PostFileError, setStage, stagesFor, updatePostFile, type PostFile, type PostMode, type PostStage, type StageActor } from "../post-files";
 import { MAX_ADDED_POSTS, xPostId, xPostLink } from "../x-links";
 import { fetchXPosts } from "../x-reactions";
 import { loadGuide, withGuideBrief } from "./brand";
 import { RecreateError, UsageMeter } from "./claude";
-import { outputOf, type RunCache, type StageContext, type StageResult, type StageRunner } from "./context";
-import { deck } from "./deck";
-import { exactDeck, exactPages, normalizeTranscript, transcript } from "./exact";
-import { exactData } from "./exact-data";
-import { autoApprove, charts, copy, images } from "./makers";
-import { templatePages } from "./pages";
-import { roleCardIn } from "./playbook";
-import { brief, data, facts, reactions, visuals } from "./research";
-import { fixInstructions, review } from "./review";
-import { ApprovalSchema, OutlineSchema, SUBMITTABLE, submittableFor, type Approval, type Brief, type DataOutput, type DeckOutput, type HooksOutput, type Issue, type Outline, type ReactionsOutput, type ReviewOutput, type TranscriptOutput } from "./schemas";
-import { hooks, normalizeOutline, outline } from "./story";
+import { outputOf, verdictOf, type RunCache, type StageContext, type StageResult, type StageRunner } from "./context";
+import { stageCard } from "./playbook";
+import { HANDED_IN, PlanSchema, type DesignOutput, type Headlines, type PlanApproval, type Research, type ReviewReport, type StoryBrief, type Verdict } from "./schemas";
+import { brief } from "./stages/brief";
+import { design } from "./stages/design";
+import { autoApprove, chooseHeadline, headline, normalizePlan, pickPayload } from "./stages/headline";
+import { research } from "./stages/research";
+import { fixInstructions, MAX_EXACT_FIX_ROUNDS, MAX_FIX_ROUNDS, review } from "./stages/review";
+import { source } from "./stages/source";
+import { verdict } from "./stages/verdict";
 
-export const RUNNERS: Record<PostStage, StageRunner> = {
-  transcript, brief, facts, data, reactions, visuals, outline, hooks, approval: autoApprove, copy, charts, images, deck, review,
-};
-/** An exact copy redraws its charts and builds its deck from the transcript; its review checks fidelity itself. */
-const EXACT_RUNNERS: Partial<Record<PostStage, StageRunner>> = { data: exactData, deck: exactDeck };
-/** Stages the post can do without: when one fails, the run goes on and the deck notes what's missing. An exact copy keeps a chart it can't redraw cut from the original. */
-const OPTIONAL = new Set<PostStage>(["reactions", "visuals", "images", "review"]);
-const optional = (stage: PostStage, mode: PostMode) => OPTIONAL.has(stage) || (mode === "exact" && stage === "data");
-type Route = Exclude<Issue["route"], "none">;
-/** What each critic route reruns, before the deck is rebuilt and reviewed again. In an exact copy the transcript holds both the words and the picture boxes, and the chart data its redrawn charts. */
-const FIX_STAGES: Record<"full" | "exact", Record<Route, PostStage[]>> = {
-  full: { copy: ["copy"], data: ["data", "charts"], images: ["images"] },
-  exact: { copy: ["transcript"], data: ["data"], images: ["transcript"] },
-};
+export { pickPayload } from "./stages/headline";
+
+/** Every stage runs its build step's own runner (steps A to F, merged 2026-11-09). */
+export const RUNNERS: Record<PostStage, StageRunner> = { source, research, verdict, brief, headline, approval: autoApprove, design, review };
+/** Stages the post can do without: when one fails, the run goes on and the post notes what's missing. */
+const OPTIONAL = new Set<PostStage>(["review"]);
 const MAX_ACTIVE_PER_OWNER = 4;
 const RUN_DEADLINE_MS = 45 * 60_000;
 const CACHE_TTL_MS = 3 * 60 * 60_000, MAX_CACHES = 8;
@@ -109,52 +107,52 @@ export async function loadEnvironment(ownerKey: string, profileId: string): Prom
 
 // ── The run ─────────────────────────────────────────────────────────────────
 const LABELS: Record<PostStage, string> = {
-  transcript: "copying the original word for word",
-  brief: "reading the original", facts: "checking the facts", data: "rebuilding the chart data", reactions: "finding reactions on X",
-  visuals: "finding photos", outline: "planning the slides", hooks: "gathering hook options", approval: "taking the plan",
-  copy: "writing the slides", charts: "drawing the charts", images: "choosing photos", deck: "building the deck", review: "reviewing the slides",
+  source: "reading the original post", research: "researching the story", verdict: "checking the story",
+  brief: "writing the brief", headline: "gathering headline options", approval: "taking the plan",
+  design: "designing the slides", review: "reviewing the slides",
 };
+const label = (stage: PostStage, mode: PostMode) => mode === "exact" && stage === "research" ? "checking where the post comes from" : LABELS[stage];
 const settled = (file: PostFile, stage: PostStage) => file.stages[stage]?.status === "done" || file.stages[stage]?.status === "skipped";
 function progressMessage(file: PostFile): string {
   const running = POST_STAGES.filter(stage => file.stages[stage]?.status === "running");
   // The first stage imports the post before it reads it.
-  if ((running.includes("brief") || running.includes("transcript")) && !file.source.imageIds.length) return file.source.url ? "Importing the post from Instagram" : "Reading your screenshots";
+  if (running.includes("source") && !file.source.imageIds.length) return file.source.url ? "Importing the post from Instagram" : "Reading your screenshots";
   if (!running.length) return file.message;
-  const text = running.map(stage => LABELS[stage]).join(", ");
+  const text = running.map(stage => label(stage, file.mode)).join(", ");
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
-/** Stages that can start now: in the run's mode, not finished or failed, everything they read finished, and not the checkpoint in checkpoint mode. */
+/**
+ * Stages that can start now: in the run's mode, not finished or failed, and
+ * everything they read finished. A stage that reads the verdict also waits
+ * for it to say proceed, and the checkpoint waits for a person in checkpoint mode.
+ */
 export function readyStages(file: PostFile, inFlight: ReadonlySet<PostStage> = new Set()): PostStage[] {
+  if (!isCurrentPostFile(file)) return [];
+  const gate = verdictOf(file);
   return stagesFor(file.mode).filter(stage => {
     const status = file.stages[stage]?.status;
     if (inFlight.has(stage) || status === "done" || status === "skipped" || status === "error") return false;
     if (stage === "approval" && file.mode === "checkpoint") return false;
-    return inputsOf(stage, file.mode).every(input => settled(file, input));
+    const inputs = inputsOf(stage, file.mode);
+    if (inputs.includes("verdict") && gate !== "proceed") return false;
+    return inputs.every(input => settled(file, input));
   });
 }
 
 function describeError(stage: PostStage, error: unknown, mode: PostMode): string {
   if (error instanceof RecreateError || error instanceof PostFileError) return error.message;
-  const status = (error as { status?: unknown } | null)?.status, title = roleCardIn(stage, mode).title;
+  const status = (error as { status?: unknown } | null)?.status, title = stageCard(stage, mode).title;
   if (typeof status === "number") return `${title} failed: Claude's API answered HTTP ${status}. Rerun this stage.`;
   return `${title} failed unexpectedly. Rerun this stage.`;
 }
 
-/** Sends the critics' must-fix issues back: the routed stages rerun with them, then the deck and the review. */
-function scheduleFixes(file: PostFile, output: ReviewOutput) {
-  if (!output.sentBack.length) return;
-  const round = output.round + 1, routes = FIX_STAGES[file.mode === "exact" ? "exact" : "full"];
-  // One stage may fix several routes (an exact copy's transcript holds the words and the picture boxes): it hears them all at once.
-  const wanted = new Map<PostStage, Route[]>();
-  for (const route of output.sentBack) for (const stage of routes[route]) wanted.set(stage, [...(wanted.get(stage) ?? []), route]);
-  if (!wanted.size) return;
-  for (const [stage, from] of wanted) {
-    setStage(file, stage, { status: "pending", round, instructions: stage === "charts" ? undefined : fixInstructions(output, from, file.mode === "exact") }, "engine", `sent back by the critics (round ${round})`);
-  }
-  // An exact copy's chart data reads the transcript: it checks again which slides show a chart, keeping the ones it already redrew.
-  if (file.mode === "exact" && wanted.has("transcript") && !wanted.has("data")) setStage(file, "data", { status: "pending", round, instructions: undefined }, "engine", `recheck the charts for round ${round}`);
-  setStage(file, "deck", { status: "pending", round, instructions: undefined }, "engine", `rebuild for round ${round}`);
+/** Sends the critics' must-fix issues back to the designer, then the review runs again: at most two rounds, one for an exact copy. */
+function scheduleFixes(file: PostFile, output: ReviewReport) {
+  const exact = file.mode === "exact";
+  if (!output.sentBack.includes("design") || output.round >= (exact ? MAX_EXACT_FIX_ROUNDS : MAX_FIX_ROUNDS)) return;
+  const round = output.round + 1;
+  setStage(file, "design", { status: "pending", round, instructions: fixInstructions(output, exact) }, "engine", `sent back by the critics (round ${round})`);
   setStage(file, "review", { status: "pending", round, instructions: undefined }, "engine", `review round ${round}`);
 }
 
@@ -177,11 +175,11 @@ async function runStage(run: Run, file: PostFile, stage: PostStage, attempt: str
       const status = result.status ?? "done";
       setStage(current, stage, { status, output: result.output, error: undefined, instructions: undefined, ...meta }, "engine");
       if (result.source) current.source = { ...current.source, ...result.source };
-      if (stage === "deck" && status === "done") current.deckId = (result.output as DeckOutput).deckId;
-      if (stage === "review" && status === "done") scheduleFixes(current, result.output as ReviewOutput);
+      if (stage === "design" && status === "done") current.deckId = (result.output as DesignOutput).deckId;
+      if (stage === "review" && status === "done") scheduleFixes(current, result.output as ReviewReport);
     } else {
       const text = describeError(stage, failure, current.mode);
-      if (optional(stage, current.mode)) setStage(current, stage, { status: "skipped", output: undefined, error: text, instructions: undefined, ...meta }, "engine", `skipped: ${text}`);
+      if (OPTIONAL.has(stage)) setStage(current, stage, { status: "skipped", output: undefined, error: text, instructions: undefined, ...meta }, "engine", `skipped: ${text}`);
       else setStage(current, stage, { status: "error", error: text, ...meta }, "engine", `failed: ${text}`);
     }
     current.message = progressMessage(current);
@@ -194,18 +192,27 @@ async function settle(run: Run): Promise<boolean> {
   await updatePostFile(run.ownerKey, run.postId, file => {
     ended = true;
     if (readyStages(file).length) { ended = false; return; }
-    const stages = stagesFor(file.mode);
+    const stages = stagesFor(file.mode), gate = verdictOf(file), check = outputOf<Verdict>(file, "verdict");
     const failed = stages.find(stage => file.stages[stage]?.status === "error");
-    const waiting = file.mode === "checkpoint" && file.stages.approval?.status !== "done" && inputsOf("approval", file.mode).every(stage => settled(file, stage));
+    const approving = file.mode === "checkpoint" && file.stages.approval?.status !== "done" && inputsOf("approval", file.mode).every(stage => settled(file, stage));
+    file.waiting = undefined;
     if (failed) {
       file.status = "error";
-      file.message = file.stages[failed]?.error ?? `${roleCardIn(failed, file.mode).title} failed.`;
-    } else if (waiting) {
+      file.message = file.stages[failed]?.error ?? `${stageCard(failed, file.mode).title} failed.`;
+    } else if (gate === "stop") {
+      file.status = "stopped";
+      file.message = check?.answer ? "Stopped: you chose not to make this post." : `Stopped at the check: ${check?.reason || "the story didn't pass."}`;
+    } else if (gate === "ask") {
       file.status = "paused";
-      file.message = "Ready for you: check the outline and pick the hook";
-    } else if (stages.every(stage => settled(file, stage)) && settled(file, "deck")) {
+      file.waiting = "verdict";
+      file.message = `Check the story first: ${check?.reason || "the research needs a person's call."}`;
+    } else if (approving) {
+      file.status = "paused";
+      file.waiting = "approval";
+      file.message = "Ready for you: check the plan and pick the headline";
+    } else if (stages.every(stage => settled(file, stage)) && settled(file, "design")) {
       file.status = "done";
-      const built = outputOf<DeckOutput>(file, "deck");
+      const built = outputOf<DesignOutput>(file, "design");
       file.message = built ? `Created ${built.slideCount} editable slides` : "Finished";
     } else {
       file.status = "error";
@@ -225,6 +232,7 @@ async function fail(run: Run, error: unknown) {
   await updatePostFile(run.ownerKey, run.postId, file => {
     for (const stage of POST_STAGES) if (file.stages[stage]?.status === "running") setStage(file, stage, { status: "error", error: "Stopped before it finished" }, "engine", "stopped");
     file.status = "error";
+    file.waiting = undefined;
     file.message = text;
     file.history.push({ at: new Date().toISOString(), stage: "run", event: `stopped: ${text}`, by: "engine" });
   }).catch(() => undefined);
@@ -233,9 +241,9 @@ async function fail(run: Run, error: unknown) {
 async function loop(run: Run, options: RunOptions, environment?: Environment): Promise<void> {
   const { ownerKey, postId } = run, signal = run.controller.signal;
   const first = await getPostFile(ownerKey, postId);
-  if (!first) return;
+  if (!first || !isCurrentPostFile(first)) return;
   const env = environment ?? await (options.environment ?? loadEnvironment)(ownerKey, first.profileId);
-  const runners = { ...RUNNERS, ...(first.mode === "exact" ? EXACT_RUNNERS : {}), ...options.runners };
+  const runners = { ...RUNNERS, ...options.runners };
   const inFlight = new Map<PostStage, Promise<void>>();
   const stop: { failed: boolean; error?: unknown } = { failed: false };
   for (;;) {
@@ -249,6 +257,7 @@ async function loop(run: Run, options: RunOptions, environment?: Environment): P
       const started = await updatePostFile(ownerKey, postId, current => {
         for (const stage of ready) setStage(current, stage, { status: "running", attempt: attempts.get(stage) }, "engine");
         current.status = "running";
+        current.waiting = undefined;
         current.message = progressMessage(current);
       });
       for (const stage of ready) {
@@ -286,9 +295,11 @@ function drive(ownerKey: string, postId: string, options: RunOptions, seed: { up
   });
 }
 
+/** The post file an action works on. A version-1 file only opens to be looked at. */
 async function requireFile(ownerKey: string, postId: string): Promise<PostFile> {
   const file = await getPostFile(ownerKey, postId);
   if (!file) throw new RecreateError("That post's working file doesn't exist or has expired.", 404);
+  if (!isCurrentPostFile(file)) throw new RecreateError("This run was made by the earlier Recreate. It can still be opened, but not changed: start a new recreation to remake the post.", 409);
   return file;
 }
 
@@ -314,40 +325,7 @@ export async function startRecreate(ownerKey: string, input: StartInput, options
 }
 
 const issuesOf = (error: { issues: { path: PropertyKey[]; message: string }[] }) => error.issues.slice(0, 6).map(issue => `${issue.path.map(String).join(".") || "value"}: ${issue.message}`).join("; ");
-
-function chooseHook(options: HooksOutput["options"], input: { option?: number; text?: string }): Approval["hook"] {
-  const text = typeof input.text === "string" ? input.text.trim() : "";
-  if (text) {
-    if ([...text].length > 200) throw new RecreateError("Keep the hook under 200 characters.");
-    return { text, option: options.findIndex(option => option.text.trim() === text) };
-  }
-  const index = input.option;
-  if (typeof index === "number" && Number.isInteger(index) && index >= 0 && index < options.length) return { text: options[index].text, option: index };
-  throw new RecreateError("Pick one of the hook options or write your own.");
-}
-
-/** What a person's hook choice tells the headline model; null when it shouldn't hear about it (no model lines, not a person). */
-export function pickPayload(file: PostFile, profile: PageProfile): SavePickInput | null {
-  const approval = outputOf<Approval>(file, "approval"), lines = outputOf<HooksOutput>(file, "hooks"), b = outputOf<Brief>(file, "brief");
-  if (!approval || !lines || file.stages.approval?.by !== "human" || lines.source !== "headline-model" || !lines.modelOptions.length) return null;
-  const model: HeadlineOption[] = lines.modelOptions.map(option => ({ text: option.text, ...(option.framework ? { framework: option.framework } : {}), ...(option.sources ? { sources: option.sources } : {}) }));
-  const base = { story: lines.story, originalHeadline: b?.originalHeadline ?? "", account: profile.id };
-  const same = (a: string, b: string) => a.trim() === b.trim();
-  if (profile.language !== "en") {
-    // Only the model's own English lines go back; a line it didn't write counts as none of them.
-    const chosen = approval.hook.option >= 0 ? lines.options[approval.hook.option] : undefined;
-    const english = chosen?.by === "headline-model" ? chosen.english ?? chosen.text : undefined;
-    const index = english ? model.findIndex(option => same(option.text, english)) : -1;
-    return { ...base, options: model, chosen: index, finalText: index >= 0 ? model[index].text : "" };
-  }
-  // The copywriter's and agents' lines go along, tagged, so the model sees what it was up against.
-  const others = lines.options.filter(option => option.by !== "headline-model" && !model.some(item => same(item.text, option.text)))
-    .map(option => ({ text: option.text, framework: option.framework, sources: [option.by === "agent" ? "engine-agent" : "engine-copywriter"] }));
-  const options = [...model, ...others];
-  let index = options.findIndex(option => same(option.text, approval.hook.text));
-  if (index < 0) { options.push({ text: approval.hook.text, sources: ["human"] }); index = options.length - 1; }
-  return { ...base, options, chosen: index, finalText: approval.hook.text };
-}
+const reactionIds = (file: PostFile) => outputOf<Research>(file, "research")?.reactions.map(post => post.id) ?? [];
 
 async function recordPick(ownerKey: string, postId: string, profile: PageProfile, options: RunOptions): Promise<void> {
   try {
@@ -358,44 +336,87 @@ async function recordPick(ownerKey: string, postId: string, profile: PageProfile
     let event: string;
     try {
       const saved = await save(payload);
-      event = `Sent the hook pick to the headline model (${saved.id})`;
+      event = `Sent the headline pick to the headline model (${saved.id})`;
     } catch (error) {
-      event = `Couldn't send the hook pick to the headline model: ${error instanceof Error ? error.message : "unknown error"}`;
+      event = `Couldn't send the headline pick to the headline model: ${error instanceof Error ? error.message : "unknown error"}`;
     }
     await updatePostFile(ownerKey, postId, current => { current.history.push({ at: new Date().toISOString(), stage: "approval", event, by: "engine" }); });
   } catch (error) {
-    console.error("[recreate] couldn't record the hook pick", error instanceof Error ? error.message : error);
+    console.error("[recreate] couldn't record the headline pick", error instanceof Error ? error.message : error);
   }
 }
 
-export type ApproveInput = { outline?: unknown; option?: number; text?: string; notes?: string };
-/** The checkpoint: approve (or edit) the outline and pick the hook. A person's pick goes to the headline model. */
+export type ApproveInput = { plan?: unknown; option?: number; text?: string; notes?: string };
+/** The checkpoint: approve (or edit) the plan and pick the headline. A person's pick goes to the headline model. */
 export async function approveRecreate(ownerKey: string, postId: string, input: ApproveInput, by: StageActor, options: RunOptions = {}): Promise<Started> {
   const current = await requireFile(ownerKey, postId);
   if (current.mode === "exact") throw new RecreateError("An exact copy doesn't pause for approval: it copies the original as it is.", 409);
   if (current.stages.approval?.status === "done") throw new RecreateError("This post is already approved. Rerun the approval stage to change it.", 409);
-  const planned = outputOf<Outline>(current, "outline"), lines = outputOf<HooksOutput>(current, "hooks");
-  if (!planned || !lines) throw new RecreateError("The outline and the hook options aren't ready yet.", 409);
+  const planned = outputOf<StoryBrief>(current, "brief"), lines = outputOf<Headlines>(current, "headline");
+  if (!planned || !lines) throw new RecreateError("The plan and the headline options aren't ready yet.", 409);
   const environment = await (options.environment ?? loadEnvironment)(ownerKey, current.profileId);
-  let chosen: Outline = { slides: planned.slides, why: planned.why };
-  if (input.outline !== undefined) {
-    const parsed = OutlineSchema.safeParse(input.outline);
-    if (!parsed.success) throw new RecreateError(`That outline isn't valid: ${issuesOf(parsed.error)}`);
-    chosen = normalizeOutline(parsed.data, templatePages(environment.template), {
-      charts: outputOf<DataOutput>(current, "data")?.charts.map(chart => chart.id) ?? [],
-      reactions: outputOf<ReactionsOutput>(current, "reactions")?.reactions.map(post => post.id) ?? [],
-    });
-    if (!chosen.slides.length) throw new RecreateError("The edited outline has no slides this template can show.");
+  let plan = normalizePlan({ slides: planned.slides, why: planned.why }, { reactions: reactionIds(current) });
+  if (input.plan !== undefined) {
+    const parsed = PlanSchema.safeParse(input.plan);
+    if (!parsed.success) throw new RecreateError(`That plan isn't valid: ${issuesOf(parsed.error)}`);
+    plan = normalizePlan(parsed.data, { reactions: reactionIds(current) });
+    if (!plan.slides.length) throw new RecreateError("The edited plan has no slides that can be built.");
   }
-  const approval: Approval = { outline: chosen, hook: chooseHook(lines.options, input), notes: (input.notes ?? "").trim().slice(0, 2000) };
+  const approval: PlanApproval = { plan, headline: chooseHeadline(lines.options, input), notes: (input.notes ?? "").trim().slice(0, 2000) };
   const file = await updatePostFile(ownerKey, postId, next => {
     setStage(next, "approval", { status: "done", output: approval, error: undefined, instructions: undefined, round: 0, model: undefined, usage: undefined }, by, by === "human" ? "approved by a person" : "approved by an agent");
     next.status = "running";
-    next.message = "Approved. Writing the slides";
+    next.waiting = undefined;
+    next.message = "Approved. Designing the slides";
   });
   const pick = by === "human" ? recordPick(ownerKey, postId, environment.profile, options) : Promise.resolve();
   const done = drive(ownerKey, postId, options, { environment });
   return { file, done: Promise.all([done, pick]).then(() => undefined) };
+}
+
+export type VerdictInput = { choice: "proceed" | "stop" | "link"; link?: string; note?: string };
+const ORIGIN_LINK = /^https?:\/\/[^\s]+$/i;
+/**
+ * A person's answer to the check. proceed lets the run go on (on a stop, it is
+ * Build it anyway: the warnings go into the brief's guardrails); stop ends it;
+ * link stores the story's original and reruns research with it.
+ */
+export async function answerRecreateVerdict(ownerKey: string, postId: string, input: VerdictInput, by: StageActor, options: RunOptions = {}): Promise<Started> {
+  const current = await requireFile(ownerKey, postId);
+  const check = outputOf<Verdict>(current, "verdict"), gate = verdictOf(current);
+  if (!check) throw new RecreateError("The check hasn't finished yet.", 409);
+  if (gate === "proceed") throw new RecreateError(check.answer ? "The check is already answered: the post is being made." : "The story passed the check, so there's nothing to answer.", 409);
+  const note = (input.note ?? "").trim().slice(0, 2000);
+  if (input.choice === "link") {
+    const link = (input.link ?? "").trim();
+    if (!ORIGIN_LINK.test(link) || link.length > 2000) throw new RecreateError("Add the link to the story's original: the first post or article, starting with https://.");
+    const file = await updatePostFile(ownerKey, postId, next => {
+      next.source = { ...next.source, originUrl: link };
+      setStage(next, "research", { status: "pending", round: 0, error: undefined, instructions: `A person added the story's original: ${link}. Start from it.${note ? ` Their note: ${note}` : ""}` }, by, `the original's link added: ${link.slice(0, 160)}`);
+      for (const later of downstreamOf("research", next.mode)) if (next.stages[later]) setStage(next, later, { status: "pending", round: 0, instructions: undefined, error: undefined }, "engine", "rerun after the original's link was added");
+      next.status = "running";
+      next.waiting = undefined;
+      next.message = "Researching again from the original's link";
+    });
+    return { file, done: drive(ownerKey, postId, options) };
+  }
+  if (input.choice !== "proceed" && input.choice !== "stop") throw new RecreateError("Answer the check with proceed, stop or the original's link.");
+  const answered: Verdict = { ...check, answer: { choice: input.choice, by, at: new Date().toISOString(), note } };
+  const file = await updatePostFile(ownerKey, postId, next => {
+    const record = next.stages.verdict;
+    if (!record || record.status !== "done") throw new RecreateError("The check hasn't finished yet.", 409);
+    record.output = answered;
+    next.history.push({ at: new Date().toISOString(), stage: "verdict", event: input.choice === "proceed" ? check.outcome === "stop" ? "built anyway" : "answered: proceed" : "answered: stop", by });
+    next.waiting = undefined;
+    if (input.choice === "stop") {
+      next.status = "stopped";
+      next.message = "Stopped: you chose not to make this post.";
+    } else {
+      next.status = "running";
+      next.message = check.outcome === "stop" ? "Building it anyway, with the check's warnings in the brief" : "Going ahead";
+    }
+  });
+  return { file, done: input.choice === "proceed" ? drive(ownerKey, postId, options) : Promise.resolve() };
 }
 
 /** Stages a stop, a failure or a restart left unfinished go back in line, so the run can finish. */
@@ -415,7 +436,7 @@ function requireModeStage(file: PostFile, stage: PostStage) {
 
 /** Reruns one stage (with optional instructions) and everything that read it. */
 export async function rerunRecreateStage(ownerKey: string, postId: string, stage: PostStage, instructions: string | undefined, by: StageActor, options: RunOptions = {}): Promise<Started> {
-  if (!POST_STAGES.includes(stage)) throw new RecreateError(`There is no ${String(stage)} stage.`);
+  if (!POST_STAGES.includes(stage)) throw new RecreateError(`There is no ${String(stage)} stage. The stages are ${POST_STAGES.join(", ")}.`);
   requireModeStage(await requireFile(ownerKey, postId), stage);
   const text = instructions?.trim().slice(0, 2000) || undefined;
   const file = await updatePostFile(ownerKey, postId, next => {
@@ -424,50 +445,43 @@ export async function rerunRecreateStage(ownerKey: string, postId: string, stage
     // On a stopped run, a stage that doesn't depend on this one would otherwise stop it again.
     if (!isRunning(postId)) resumeUnfinished(next, stage);
     next.status = "running";
-    next.message = `Rerunning: ${LABELS[stage]}`;
+    next.waiting = undefined;
+    next.message = `Rerunning: ${label(stage, next.mode)}`;
   });
   return { file, done: drive(ownerKey, postId, options) };
 }
 
 /** An outside agent (or a person) hands in one stage; Engine checks it against the stage's schema and reruns what depends on it. */
 export async function submitRecreateStage(ownerKey: string, postId: string, stage: PostStage, output: unknown, by: StageActor, options: RunOptions = {}): Promise<Started> {
-  const schema = SUBMITTABLE[stage];
-  if (!schema) throw new RecreateError(`Engine builds the ${String(stage)} stage itself. Stages you can hand in: ${Object.keys(SUBMITTABLE).join(", ")}.`);
+  if (stage === "verdict") throw new RecreateError("The check is answered, not handed in: a person answers it with proceed, stop or the original's link.");
+  const schema = HANDED_IN[stage];
+  if (!schema) throw new RecreateError(`Engine builds the ${String(stage)} stage itself. Stages you can hand in: ${Object.keys(HANDED_IN).join(", ")}.`);
   if (stage === "approval") {
-    const parsed = ApprovalSchema.safeParse(output);
+    const parsed = schema.safeParse(output);
     if (!parsed.success) throw new RecreateError(`That approval doesn't match its schema: ${issuesOf(parsed.error)}`);
-    const { outline: plan, hook, notes } = parsed.data;
-    return approveRecreate(ownerKey, postId, { outline: plan, ...(hook.option >= 0 ? { option: hook.option } : { text: hook.text }), notes }, by, options);
+    const { plan, headline: chosen, notes } = parsed.data as PlanApproval;
+    return approveRecreate(ownerKey, postId, { plan, ...(chosen.option >= 0 ? { option: chosen.option } : { text: chosen.text }), notes }, by, options);
   }
   const current = await requireFile(ownerKey, postId);
   requireModeStage(current, stage);
   const missing = inputsOf(stage, current.mode).filter(input => !settled(current, input));
   if (missing.length) throw new RecreateError(`The ${stage} stage needs ${missing.join(", ")} first.`, 409);
-  // An exact copy's chart data has its own shape: a chart for each boxed slide, or why it stays cut.
-  const parsed = (submittableFor(stage, current.mode) ?? schema).safeParse(output);
+  if (inputsOf(stage, current.mode).includes("verdict") && verdictOf(current) !== "proceed") throw new RecreateError(`The ${stage} stage waits for the check to say proceed.`, 409);
+  const parsed = schema.safeParse(output);
   if (!parsed.success) throw new RecreateError(`That ${stage} doesn't match its schema: ${issuesOf(parsed.error)}`);
   let value: unknown = parsed.data;
-  if (stage === "transcript") {
-    const { template } = await (options.environment ?? loadEnvironment)(ownerKey, current.profileId);
-    value = normalizeTranscript(parsed.data as TranscriptOutput, exactPages(template), current.source.slideCount);
-    if (!(value as TranscriptOutput).slides.length) throw new RecreateError("That transcript has no slides this template can show.");
+  if (stage === "brief") {
+    const handed = parsed.data as StoryBrief, plan = normalizePlan({ slides: handed.slides, why: handed.why }, { reactions: reactionIds(current) });
+    if (!plan.slides.length) throw new RecreateError("That brief's plan has no slides that can be built.");
+    value = { ...handed, slides: plan.slides, why: plan.why } satisfies StoryBrief;
   }
-  if (stage === "outline") {
-    const { template } = await (options.environment ?? loadEnvironment)(ownerKey, current.profileId);
-    const all = templatePages(template);
-    const plan = normalizeOutline(parsed.data as Outline, all, {
-      charts: outputOf<DataOutput>(current, "data")?.charts.map(chart => chart.id) ?? [],
-      reactions: outputOf<ReactionsOutput>(current, "reactions")?.reactions.map(post => post.id) ?? [],
-    });
-    if (!plan.slides.length) throw new RecreateError("That outline has no slides this template can show.");
-    value = { ...plan, pages: all.map(page => ({ index: page.index, label: page.label, cards: page.cards })) };
-  }
-  if (stage === "hooks" && !(value as HooksOutput).options.length) throw new RecreateError("Hand in at least one hook option.");
+  if (stage === "headline" && !(value as Headlines).options.length) throw new RecreateError("Hand in at least one headline option.");
   const file = await updatePostFile(ownerKey, postId, next => {
     setStage(next, stage, { status: "done", output: value, error: undefined, instructions: undefined, round: 0, model: undefined, usage: undefined }, by, `handed in by ${by === "human" ? "a person" : "an agent"}`);
     for (const later of downstreamOf(stage, next.mode)) if (next.stages[later]) setStage(next, later, { status: "pending", round: 0, instructions: undefined, error: undefined }, "engine", `rerun after ${stage} was handed in`);
     if (!isRunning(postId)) resumeUnfinished(next, stage);
     next.status = "running";
+    next.waiting = undefined;
   });
   return { file, done: drive(ownerKey, postId, options) };
 }
@@ -475,17 +489,18 @@ export async function submitRecreateStage(ownerKey: string, postId: string, stag
 export type AddedPosts = Started & { added: number; problems: string[] };
 const ADDED_TOO_LATE = "This post is already approved. Add posts from X before you approve the plan.";
 /**
- * At the checkpoint, posts from X added by link join the reactions the slides can
- * use. They're read from X's public embed data, so they need no Apify plan. Nothing
- * reruns: the plan and the hooks stay as they are, and the person puts the new
- * posts on reaction slides before approving. Posts already on the list are skipped.
+ * At the checkpoint, posts from X added by link join the research's reactions, so
+ * the plan can use them. They're read from X's public embed data, so they need no
+ * Apify plan. Nothing reruns: the plan and the headlines stay as they are, and the
+ * person puts the new posts on reaction slides before approving. Posts already on
+ * the list are skipped.
  */
 export async function addRecreatePosts(ownerKey: string, postId: string, links: string[], by: StageActor): Promise<AddedPosts> {
   const current = await requireFile(ownerKey, postId);
   if (current.mode === "exact") throw new RecreateError("An exact copy shows only the posts from X its original shows, so others can't be added to it.", 409);
   if (current.stages.approval?.status === "done") throw new RecreateError(ADDED_TOO_LATE, 409);
-  if (isRunning(postId) || current.status !== "paused" || !outputOf(current, "outline") || !outputOf(current, "hooks")) throw new RecreateError("Add posts from X once the plan is ready for you to check.", 409);
-  const known = new Set((outputOf<ReactionsOutput>(current, "reactions")?.reactions ?? []).map(post => post.id)), ids: string[] = [];
+  if (isRunning(postId) || current.status !== "paused" || current.waiting !== "approval" || !outputOf(current, "brief") || !outputOf(current, "headline")) throw new RecreateError("Add posts from X once the plan is ready for you to check.", 409);
+  const known = new Set(reactionIds(current)), ids: string[] = [];
   for (const link of links) {
     const id = xPostId(link);
     if (!id) throw new RecreateError(`"${String(link).slice(0, 60)}" isn't a link to a post on X.`);
@@ -498,16 +513,16 @@ export async function addRecreatePosts(ownerKey: string, postId: string, links: 
   let added = 0;
   const file = await updatePostFile(ownerKey, postId, next => {
     if (next.stages.approval?.status === "done") throw new RecreateError(ADDED_TOO_LATE, 409);
-    const record = next.stages.reactions;
-    const saved = record?.output as Partial<ReactionsOutput> | undefined;
-    const before: ReactionsOutput = { reactions: record?.status === "done" ? saved?.reactions ?? [] : [], note: saved?.note ?? record?.error ?? "" };
-    const mine = posts.filter(post => !before.reactions.some(item => item.id === post.id)).map(post => ({ ...post, why: "Added by you" }));
+    const record = next.stages.research, found = record?.status === "done" ? record.output as Research : undefined;
+    if (!found) throw new RecreateError("Add posts from X once the plan is ready for you to check.", 409);
+    const mine = posts.filter(post => !found.reactions.some(item => item.id === post.id)).map(post => ({ ...post, why: "Added by you" }));
     added = mine.length;
     if (!mine.length) return;
-    // A search that found nothing (or couldn't run) keeps its note; the stage is done now that it has posts.
-    setStage(next, "reactions", { status: "done", output: { reactions: [...before.reactions, ...mine], note: before.note } satisfies ReactionsOutput, error: undefined }, by, `added ${mine.length === 1 ? "a post" : `${mine.length} posts`} from X by link`);
+    // The research keeps everything else it found; the posts join its reactions, so the plan can use them. Nothing reruns.
+    record!.output = { ...found, reactions: [...found.reactions, ...mine] } satisfies Research;
+    next.history.push({ at: new Date().toISOString(), stage: "research", event: `added ${mine.length === 1 ? "a post" : `${mine.length} posts`} from X by link`, by });
     next.source = { ...next.source, xPosts: [...new Set([...(next.source.xPosts ?? []), ...mine.map(post => xPostLink(post.id))])] };
-    if (problems.length) next.history.push({ at: new Date().toISOString(), stage: "reactions", event: `couldn't add: ${problems.join(" ")}`.slice(0, 400), by });
+    if (problems.length) next.history.push({ at: new Date().toISOString(), stage: "research", event: `couldn't add: ${problems.join(" ")}`.slice(0, 400), by });
   });
   return { file, done: Promise.resolve(), added, problems };
 }
@@ -517,9 +532,11 @@ export async function resumeRecreate(ownerKey: string, postId: string, options: 
   const current = await requireFile(ownerKey, postId);
   if (isRunning(postId)) return { file: current, done: Promise.resolve() };
   if (current.status === "done") throw new RecreateError("This post is finished. Rerun a stage to change it.", 409);
+  if (current.status === "stopped") throw new RecreateError("The check stopped this post. Build it anyway, or rerun research, to go on.", 409);
   const file = await updatePostFile(ownerKey, postId, next => {
     resumeUnfinished(next);
     next.status = "running";
+    next.waiting = undefined;
     next.message = "Resuming";
   });
   return { file, done: drive(ownerKey, postId, options) };

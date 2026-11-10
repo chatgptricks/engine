@@ -1,6 +1,10 @@
-/** The template's page types as the agents see them. */
+/** The template's page types as the agents see them: its own pages, and the layouts people saved
+ * from slides ("Save as layout", lib/template-editor/saved-layouts.ts), each with the line that
+ * says when to use it. */
 import { agentTemplateSlots, type AgentTemplateSlot } from "../../template-editor/agent-decks";
-import type { DesignTemplate } from "../../template-editor/model";
+import type { DesignTemplate, HtmlElement } from "../../template-editor/model";
+import { platformOfLayer, type Platform } from "../../template-editor/platform-cards";
+import { layoutUseWhen } from "../../template-editor/saved-layouts";
 import { spanPairs } from "../../template-editor/spanning-photos";
 
 export type PageCatalog = {
@@ -13,6 +17,10 @@ export type PageCatalog = {
   photo: AgentTemplateSlot[];
   /** One photo across two slides: it starts on this page and continues on page `with` (or the reverse). The photo is filled once, on the start page. */
   pair?: { part: "start" | "end"; with: number };
+  /** A layout saved from a slide (the page's `savedLayout`), and when to use it. */
+  savedLayout?: { useWhen: string };
+  /** The page's HTML layers other than its X post cards (those count in `cards`): designs to keep, such as a chart or a Reddit comment card, filled with the new post's own data. */
+  html?: { name: string; platform?: Platform }[];
 };
 
 const isCardSlot = (slot: AgentTemplateSlot) => slot.slot.startsWith("reaction-");
@@ -21,14 +29,23 @@ export function templatePages(template: DesignTemplate): PageCatalog[] {
   const slots = agentTemplateSlots(template), pairs = spanPairs(template);
   return template.pages.map((page, index) => {
     const own = slots.filter(slot => slot.pageIndex === index);
-    const cards = own.filter(slot => slot.type === "text" && /^reaction-name(?:-\d+)?$/.test(slot.slot)).length;
-    const pair = pairs.find(item => item.startPage === index || item.endPage === index);
+    const layers = (page.canvas?.elements ?? []).filter((element): element is HtmlElement => element.type === "html" && !element.hidden);
+    // A card is a native one (its name slot) or an HTML X card (htmlReactionCards in deck.ts, or a saved layout's).
+    const xCards = layers.filter(layer => platformOfLayer(layer.html) === "x").length;
+    const cards = own.filter(slot => slot.type === "text" && /^reaction-name(?:-\d+)?$/.test(slot.slot)).length + xCards;
+    const html = layers.flatMap(layer => {
+      const platform = platformOfLayer(layer.html);
+      return platform === "x" ? [] : [{ name: layer.name?.trim() || "HTML layer", ...(platform ? { platform } : {}) }];
+    });
+    const pair = pairs.find(item => item.startPage === index || item.endPage === index), useWhen = layoutUseWhen(page);
     return {
       index, label: page.label ?? `Page ${index + 1}`,
       cards,
       text: own.filter(slot => slot.type === "text" && !isCardSlot(slot)),
       photo: own.filter(slot => slot.type === "photo" && !isCardSlot(slot)),
       ...(pair ? { pair: pair.startPage === index ? { part: "start" as const, with: pair.endPage } : { part: "end" as const, with: pair.startPage } } : {}),
+      ...(useWhen ? { savedLayout: { useWhen } } : {}),
+      ...(html.length ? { html } : {}),
     };
   });
 }
@@ -68,6 +85,8 @@ export function describePages(pages: PageCatalog[]): string {
     const pair = page.pair?.part === "start"
       ? [`    - one landscape photo runs across this page and page ${page.pair.with}, split at the slide edge as people swipe. Page ${page.pair.with} always comes right after it. The photo is chosen here, never a chart`]
       : page.pair ? [`    - the second half of page ${page.pair.with}'s photo. Only right after page ${page.pair.with}`] : [];
-    return [`  Page ${page.index} · ${page.label}`, ...(text.length || photo.length || cards.length ? [...text, ...photo, ...cards, ...pair] : ["    (no editable slots)"])].join("\n");
+    const layout = page.savedLayout ? [`    - a layout saved from a slide; use it when: ${JSON.stringify(page.savedLayout.useWhen)}`] : [];
+    const html = (page.html ?? []).map(layer => `    - HTML layer "${layer.name}": ${layer.platform === "reddit" ? "a Reddit comment card; give it the comment's own name, time and words" : "a design to keep, filled with this post's own data"}`);
+    return [`  Page ${page.index} · ${page.label}`, ...layout, ...(text.length || photo.length || cards.length || html.length ? [...text, ...photo, ...cards, ...html, ...pair] : ["    (no editable slots)"])].join("\n");
   }).join("\n");
 }

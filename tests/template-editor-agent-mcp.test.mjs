@@ -113,7 +113,7 @@ test("MCP process negotiates, discovers live schemas, and calls all authenticate
   assert.deepEqual(init.result.capabilities, { tools: {} });
   mcp.notify("notifications/initialized");
   const listed = await mcp.request("tools/list");
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_answer_check", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template"]);
   assert.deepEqual(listed.result.tools[4].inputSchema.properties.spec, schemas.deckSchema);
   assert.deepEqual(listed.result.tools[5].inputSchema.properties.changes, schemas.updateSchema);
   await mcp.call("engine_capabilities");
@@ -203,7 +203,7 @@ test("discovery falls back while unavailable and refreshes live schemas after re
   const mcp = client(t, api.url);
   assert.equal((await mcp.init("future-version")).result.protocolVersion, "2025-11-25");
   const tools = await mcp.request("tools/list");
-  assert.equal(tools.result.tools.length, 22);
+  assert.equal(tools.result.tools.length, 23);
   assert.match(tools.result.tools[4].inputSchema.properties.spec.description, /engine_capabilities/);
   const failure = await mcp.call("engine_capabilities");
   assert.equal(failure.result.isError, true);
@@ -302,43 +302,55 @@ test("Recreate tools reach their own endpoints with the agent token and validate
   assert.equal(api.calls.filter((call) => call.path !== "/api/agent/slides").length, 3, "invalid calls never reach Engine");
 });
 
-test("the Recreate team's tools approve, add posts, rerun, hand in and resume through one endpoint", async (t) => {
+test("the Recreate team's tools answer the check, approve, add posts, rerun, hand in and resume through one endpoint", async (t) => {
   const postId = "post-0b6f6a5e-8a3c-4d2b-9e1f-2a3b4c5d6e7f";
   const api = await server(t, (entry, response) => {
     if (entry.path === "/api/agent/slides") return json(response, {});
-    if (entry.path === "/api/engine/recreate?playbook=1") return json(response, { shape: ["Cover"], houseRules: [], stages: [{ stage: "copy" }] });
+    if (entry.path === "/api/engine/recreate?playbook=1") return json(response, { shape: ["Cover"], houseRules: [], stages: [{ stage: "source" }] });
     if (entry.path === `/api/engine/recreate?postId=${postId}`) return json(response, { postId, status: "paused", checkpoint: { hooks: { options: [{ text: "A" }] } } });
     if (entry.path === "/api/engine/recreate") return json(response, { postId, status: "writing" }, 202);
     return json(response, { error: "unexpected" }, 404);
   });
   const mcp = client(t, api.url);
   await mcp.init();
-  assert.equal((await mcp.call("engine_playbook")).result.structuredContent.stages[0].stage, "copy");
+  assert.equal((await mcp.call("engine_playbook")).result.structuredContent.stages[0].stage, "source");
   assert.equal((await mcp.call("engine_recreate_status", { postId })).result.structuredContent.status, "paused");
   await mcp.call("engine_recreate_post", { profileId: "pagina-es", url: "https://www.instagram.com/p/x/", mode: "checkpoint" });
   await mcp.call("engine_recreate_post", { profileId: "chatgptricks", url: "https://www.instagram.com/p/y/", mode: "exact" });
+  await mcp.call("engine_recreate_answer_check", { postId, choice: "link", link: "https://www.example.com/first-report", note: "This is where it started" });
+  await mcp.call("engine_recreate_answer_check", { postId, choice: "proceed" });
   await mcp.call("engine_recreate_add_posts", { postId, xPosts: ["https://x.com/WilliamBaude/status/1985426345048617094"] });
   await mcp.call("engine_recreate_approve", { postId, option: 0, notes: "Keep it short" });
-  await mcp.call("engine_recreate_rerun_stage", { postId, stage: "copy", instructions: "Make the cover shorter" });
-  await mcp.call("engine_recreate_submit_stage", { postId, stage: "facts", output: { claims: [] } });
+  await mcp.call("engine_recreate_approve", { postId, headlineText: "My own headline", plan: { slides: [], why: "Shorter" } });
+  await mcp.call("engine_recreate_rerun_stage", { postId, stage: "design", instructions: "Make the cover shorter" });
+  await mcp.call("engine_recreate_submit_stage", { postId, stage: "research", output: { facts: [] } });
   await mcp.call("engine_recreate_resume", { postId });
   const posted = api.calls.filter((call) => call.path === "/api/engine/recreate").map((call) => call.body);
   assert.deepEqual(posted, [
     { profileId: "pagina-es", url: "https://www.instagram.com/p/x/", mode: "checkpoint" },
     { profileId: "chatgptricks", url: "https://www.instagram.com/p/y/", mode: "exact" },
+    { action: "answer_verdict", postId, choice: "link", link: "https://www.example.com/first-report", note: "This is where it started" },
+    { action: "answer_verdict", postId, choice: "proceed" },
     { action: "add_posts", postId, xPosts: ["https://x.com/WilliamBaude/status/1985426345048617094"] },
     { action: "approve", postId, option: 0, notes: "Keep it short" },
-    { action: "rerun_stage", postId, stage: "copy", instructions: "Make the cover shorter" },
-    { action: "submit_stage", postId, stage: "facts", output: { claims: [] } },
+    { action: "approve", postId, headlineText: "My own headline", plan: { slides: [], why: "Shorter" } },
+    { action: "rerun_stage", postId, stage: "design", instructions: "Make the cover shorter" },
+    { action: "submit_stage", postId, stage: "research", output: { facts: [] } },
     { action: "resume", postId },
   ]);
   const before = api.calls.length;
   for (const [tool, args] of [
     ["engine_recreate_approve", { postId }],
     ["engine_recreate_approve", { option: 0 }],
-    ["engine_recreate_submit_stage", { postId, stage: "deck", output: {} }],
-    ["engine_recreate_submit_stage", { postId, stage: "copy", output: "text" }],
-    ["engine_recreate_rerun_stage", { postId, stage: "everything" }],
+    ["engine_recreate_approve", { postId, hookText: "The old name" }],
+    ["engine_recreate_submit_stage", { postId, stage: "design", output: {} }],
+    ["engine_recreate_submit_stage", { postId, stage: "verdict", output: {} }],
+    ["engine_recreate_submit_stage", { postId, stage: "brief", output: "text" }],
+    ["engine_recreate_rerun_stage", { postId, stage: "copy" }],
+    ["engine_recreate_answer_check", { postId, choice: "maybe" }],
+    ["engine_recreate_answer_check", { postId, choice: "link" }],
+    ["engine_recreate_answer_check", { postId, choice: "link", link: "javascript:alert(1)" }],
+    ["engine_recreate_answer_check", { choice: "stop" }],
     ["engine_recreate_add_posts", { postId }],
     ["engine_recreate_add_posts", { postId, xPosts: [] }],
     ["engine_recreate_add_posts", { postId, xPosts: [42] }],

@@ -4,7 +4,7 @@ import {Fragment, useEffect, useRef, useState, useSyncExternalStore, type Clipbo
 import {CheckIcon, CloseIcon, CommentIcon, CopyIcon, ImageIcon, PaperclipIcon, SparkleIcon, SpeakerIcon} from "@/components/engine/icons";
 import type {ChatCard, ChatMessage, ChatPerson, ChatPhoto} from "@/lib/engine/assistant/threads";
 import {activityOf, answerItems, duration, foldAnswer, readChatEvents, settleMessage, upsertMessage, withChatEvent, type AnswerItem, type ChatStepPart, type ChatStreamEvent} from "@/lib/engine/assistant/chat-stream";
-import {actOnRecreate, fetchRecreateJob, lanesFor, MAX_HOOK_CHARACTERS, prepareRecreateUpload, RECREATE_STATUS_LABELS, RecreateRequestError, type HookOption, type RecreateJob} from "./recreate-job";
+import {actOnRecreate, fetchRecreateJob, lanesOf, MAX_HOOK_CHARACTERS, prepareRecreateUpload, RECREATE_STATUS_LABELS, RecreateRequestError, type HookOption, type RecreateJob} from "./recreate-job";
 import "./assistant-panel.css";
 
 /**
@@ -177,8 +177,9 @@ function Elapsed({since}: {since: string}) {
 
 // ---- cards -----------------------------------------------------------------
 
-const HOOK_BY: Record<HookOption["by"], string> = {"headline-model": "Headline model", copywriter: "Copywriter", agent: "Agent"};
-const settled = (job: RecreateJob) => job.status === "done" || job.status === "error";
+const HOOK_BY: Record<HookOption["by"], string> = {original: "Original", "headline-model": "Headline model", copywriter: "Copywriter", agent: "Agent"};
+/** Nothing moves on its own any more: it finished, failed, or the check stopped it. */
+const settled = (job: RecreateJob) => job.status === "done" || job.status === "error" || job.status === "stopped";
 /** "Researching · Checking the facts", without saying the same thing twice ("Importing the post from Instagram"). */
 function statusLine(job: RecreateJob) {
   const label = RECREATE_STATUS_LABELS[job.status], detail = settled(job) ? "" : job.message.trim();
@@ -226,10 +227,11 @@ function RunCard({card, openDeckId, onOpenDesign}: {card: Extract<ChatCard, {typ
   }
   function ownHook(event: FormEvent) {
     event.preventDefault();
-    if (own.trim()) void act({action: "approve", hook: {text: own.trim()}});
+    if (own.trim()) void act({action: "approve", headline: {text: own.trim()}});
   }
 
-  const result = job?.result, checkpoint = job?.status === "paused" ? job.checkpoint : undefined;
+  const result = job?.result, checkpoint = job?.status === "paused" && job.waiting !== "verdict" ? job.checkpoint : undefined;
+  const asking = job?.status === "paused" && job.waiting === "verdict" ? job.verdict : undefined;
   return <div className={`te-chat-card te-chat-run is-${job?.status ?? "loading"}`}>
     <div className="te-chat-card-head">
       <SparkleIcon size={14}/><strong>Recreate</strong><span title={card.label}>{card.label}</span>
@@ -240,30 +242,41 @@ function RunCard({card, openDeckId, onOpenDesign}: {card: Extract<ChatCard, {typ
         {!settled(job) && job.status !== "paused" && <span className="te-chat-spinner" aria-hidden/>}
         {statusLine(job)}
       </p>
-      <div className="te-chat-lanes" aria-hidden>{lanesFor(job.mode).map(lane => <div key={lane.title} className="te-chat-lane">
+      <div className="te-chat-lanes" aria-hidden>{lanesOf(job, job.mode).map(lane => <div key={lane.title} className="te-chat-lane">
         <span>{lane.title}</span>
         <div>{lane.stages.map(stage => {
           const view = job.stages.find(item => item.stage === stage);
           return <i key={stage} data-status={view?.status ?? "pending"} title={`${view?.title ?? stage}: ${view?.status ?? "pending"}`}/>;
         })}</div>
       </div>)}</div>
+      {asking && <div className="te-chat-checkpoint">
+        <p>{asking.reason || "The check needs you before this post is made."} Go ahead, or tell me the story&apos;s original and I&apos;ll research from it.</p>
+        <div className="te-chat-run-actions">
+          <button type="button" className="te-button te-primary" disabled={busy} onClick={() => void act({action: "answer_verdict", choice: "proceed"})}>Go ahead</button>
+          <button type="button" className="te-button" disabled={busy} onClick={() => void act({action: "answer_verdict", choice: "stop"})}>Don&apos;t make it</button>
+        </div>
+      </div>}
       {checkpoint && <div className="te-chat-checkpoint">
-        <p>{checkpoint.slides.length} slides planned{checkpoint.brief?.angle ? `: ${checkpoint.brief.angle}` : "."} Tap a hook to approve the plan, or tell me what to change.</p>
+        <p>{checkpoint.slides.length} slides planned{checkpoint.brief?.angle ? `: ${checkpoint.brief.angle}` : "."} Tap a headline to approve the plan, or tell me what to change.</p>
         <ol className="te-chat-hooks">{checkpoint.hooks.map((hook, index) => <li key={index}>
-          <button type="button" disabled={busy} onClick={() => void act({action: "approve", hook: {option: index}})}>
+          <button type="button" disabled={busy} onClick={() => void act({action: "approve", headline: {option: index}})}>
             <span>{hook.text}</span>
             {hook.english && <small>{hook.english}</small>}
             <em>{HOOK_BY[hook.by] ?? hook.by}</em>
           </button>
         </li>)}</ol>
         <form className="te-chat-own-hook" onSubmit={ownHook}>
-          <input value={own} maxLength={MAX_HOOK_CHARACTERS} disabled={busy} aria-label="Your own hook" placeholder="Or write your own hook" onChange={event => setOwn(event.target.value)}/>
+          <input value={own} maxLength={MAX_HOOK_CHARACTERS} disabled={busy} aria-label="Your own headline" placeholder="Or write your own headline" onChange={event => setOwn(event.target.value)}/>
           <button type="submit" className="te-button" disabled={busy || !own.trim()}>Use</button>
         </form>
       </div>}
       {job.status === "done" && result && <div className="te-chat-run-done">
         <div><strong>{result.name}</strong><small>{result.slideCount === 1 ? "1 slide" : `${result.slideCount} slides`}{result.review?.open.length ? ` · ${result.review.open.length} notes from review` : ""}</small></div>
         <button type="button" className="te-button te-primary" disabled={openDeckId === result.deckId} onClick={() => onOpenDesign(result.deckId)}>{openDeckId === result.deckId ? "Open now" : "Open post"}</button>
+      </div>}
+      {job.status === "stopped" && <div className="te-chat-run-error">
+        <p>{job.message || "The check stopped this post."}</p>
+        <button type="button" className="te-button" disabled={busy} onClick={() => void act({action: "answer_verdict", choice: "proceed", note: "Build it anyway"})}>Build it anyway</button>
       </div>}
       {job.status === "error" && <div className="te-chat-run-error">
         <p>{job.error || "The run stopped."}</p>

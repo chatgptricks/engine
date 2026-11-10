@@ -1,15 +1,16 @@
 /**
  * Recreate post: an Instagram post (link or screenshots) becomes an editable
  * Engine carousel in one of our pages' templates and languages, made by a
- * team of agents (lib/engine/agents), each with one job and its own role card:
+ * small team of agents (lib/engine/agents), each with one job and its own role card:
  *
- *   brief (editor-in-chief)
- *    └─ research in parallel: facts · chart data · X reactions · photos
- *        └─ outline (story editor) + hook options (headline model)
- *            └─ checkpoint: a person approves the plan and picks the hook (autopilot skips it)
- *                └─ in parallel: copy · charts · photos
- *                    └─ deck (designer) → critics (facts, design) → at most 2 fix rounds
+ *   source (reads the post: words, parts, template)
+ *    └─ research (where the story comes from, what's true, whether it's worth making)
+ *        └─ verdict (the check: proceed, stop, or ask a person)
+ *            └─ brief (angle, guardrails, the slide plan) + headline (options, the original first when it performs)
+ *                └─ approval: a person approves the plan and picks the headline (autopilot picks the first that fits)
+ *                    └─ design (the designer builds the deck in HTML layers) → review (critics) → at most 2 fix rounds
  *
+ * An exact copy runs source → quick research → verdict → design → review, with one fix round.
  * Every stage writes into the post's working file (lib/engine/post-files.ts),
  * so a run can pause, resume after a restart, or rerun one stage. The route
  * and the MCP bridge drive it through lib/engine/agents/orchestrator.ts; this
@@ -23,7 +24,7 @@ import type { FactCheck, WrittenChart } from "./agents/schemas";
 import type { PageProfile } from "./page-profiles";
 import { getPostFile } from "./post-files";
 import type { ChartData } from "./recreate-data";
-import { postView, type RecreateStatus } from "./recreate-jobs";
+import { postView, type PostView, type RecreateStatus } from "./recreate-jobs";
 import { RecreateError } from "./agents/claude";
 
 export { isRecreateConfigured, RecreateError } from "./agents/claude";
@@ -34,7 +35,7 @@ export type { FactCheck, WrittenChart } from "./agents/schemas";
 
 export type RecreateStage = RecreateStatus;
 export type RecreateInput = { url?: string; uploads?: { name: string; dataUrl: string }[]; caption?: string; profileId: string; notes?: string };
-export type RecreateResult = { deckId: string; editorUrl: string; name: string; slideCount: number; factChecks: FactCheck[]; notes: string[] };
+export type RecreateResult = { deckId: string; editorUrl: string; name: string; slideCount: number; factChecks: NonNullable<PostView["result"]>["factChecks"]; notes: string[] };
 
 /** The one-writer carousel of the first Recreate version, still accepted by `buildRecreatedDeck`. */
 export type WrittenCarousel = {
@@ -80,6 +81,8 @@ export async function runRecreate(ownerKey: string, input: RecreateInput, report
   }
   const final = await getPostFile(ownerKey, file.id);
   const view = final ? postView(final, false) : null;
+  // The check can stop a post, or pause it to ask a person: neither is a failure, so they get their own status.
+  if (view && (view.status === "stopped" || view.status === "paused")) throw new RecreateError(view.message, 409);
   if (!view || view.status !== "done" || !view.result) throw new RecreateError(view?.message || "Recreate failed. Try again.", 502);
   const { deckId, editorUrl, name, slideCount, factChecks, notes } = view.result;
   return { deckId, editorUrl, name, slideCount, factChecks, notes };

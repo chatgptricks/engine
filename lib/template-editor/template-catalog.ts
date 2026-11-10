@@ -1,4 +1,4 @@
-import { BUILT_IN_TEMPLATES, parseBuiltInTemplateState, type BuiltInTemplateState, type DesignTemplate, type EditorLibrary } from "./model";
+import { BUILT_IN_TEMPLATES, parseBuiltInTemplateState, templateFingerprint, type BuiltInTemplateState, type DesignTemplate, type EditorLibrary } from "./model";
 
 function stateById(library: EditorLibrary): Map<string, BuiltInTemplateState> {
   return new Map(library.builtInTemplateStates?.map(state => [state.id, state]));
@@ -20,14 +20,49 @@ function withState(library: EditorLibrary, state: BuiltInTemplateState): EditorL
   return { ...library, builtInTemplateStates: [...(library.builtInTemplateStates ?? []).filter(current => current.id !== state.id), state] };
 }
 
+const builtInPrints = new WeakMap<DesignTemplate, string | null>(), followingCopies = new WeakMap<DesignTemplate, { builtIn?: DesignTemplate; view: DesignTemplate }>();
+function builtInPrint(template: DesignTemplate): string | null {
+  if (!builtInPrints.has(template)) builtInPrints.set(template, templateFingerprint(template));
+  return builtInPrints.get(template)!;
+}
+
+/**
+ * The workspace's copy of a built-in template as people see it. A copy made by
+ * Save as layout (saved-layouts.ts) carries the fingerprint of the built-in it
+ * was copied from. While its own content still matches that fingerprint and its
+ * saved layouts come after the built-in's pages, nobody has changed the
+ * built-in's part of it: it shows the built-in's current pages, then its saved
+ * layouts, so Engine's later changes to the built-in reach it. Any other copy,
+ * an edited one or one without a fingerprint, is the person's own and shows as
+ * saved.
+ */
+export function withBuiltInPages(template: DesignTemplate): DesignTemplate {
+  if (!template.builtInFingerprint) return template;
+  const builtIn = BUILT_IN_TEMPLATES.find(item => item.id === template.id), cached = followingCopies.get(template);
+  if (cached && cached.builtIn === builtIn) return cached.view;
+  const first = template.pages.findIndex(page => page.savedLayout);
+  const layouts = first < 0 ? [] : template.pages.slice(first);
+  let view = template;
+  if (builtIn && layouts.every(page => page.savedLayout) && builtIn.pages.length + layouts.length <= 20 && templateFingerprint(template) === template.builtInFingerprint) {
+    const current = builtInPrint(builtIn);
+    if (current) {
+      const filed = Object.fromEntries((["tags", "folderId", "favorite", "deletedAt"] as const).filter(key => template[key] !== undefined).map(key => [key, template[key]]));
+      view = { ...builtIn, ...filed, custom: true, builtInFingerprint: current, pages: [...builtIn.pages, ...layouts] };
+    }
+  }
+  followingCopies.set(template, { builtIn, view });
+  return view;
+}
+
 /** A custom template with a legacy bundled ID shadows the static definition. */
 export function libraryTemplates(library: EditorLibrary): DesignTemplate[] {
   const states = stateById(library), customIds = new Set(library.templates.map(template => template.id));
   return [
     ...BUILT_IN_TEMPLATES.filter(template => !customIds.has(template.id) && !states.get(template.id)?.deletedAt && !states.get(template.id)?.permanentlyDeleted),
-    ...library.templates.flatMap(template => {
-      const state = states.get(template.id);
-      if (state?.deletedAt || state?.permanentlyDeleted || (!state && template.deletedAt)) return [];
+    ...library.templates.flatMap(saved => {
+      const state = states.get(saved.id);
+      if (state?.deletedAt || state?.permanentlyDeleted || (!state && saved.deletedAt)) return [];
+      const template = withBuiltInPages(saved);
       if (!template.deletedAt) return [template];
       const active = { ...template }; delete active.deletedAt; return [active];
     }),

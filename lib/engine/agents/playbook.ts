@@ -3,6 +3,11 @@
  * agents get their card as the system prompt; outside agents read the same
  * cards through engine_playbook, so a stage done by hand meets the same bar.
  *
+ * The current team's cards live one per module in ./cards, and this module
+ * assembles them (stageCard, stagePrompt, playbook). The first team's cards
+ * (roleCardFor, rolePrompt, exactPrompt) stay below for its modules until the
+ * cleanup step deletes them.
+ *
  * The rules carry the house standards set with Ivan on 2026-11-07: recreate
  * the original faithfully, the hook from the headline model, the reader's
  * first questions next, real X reactions as post cards, Follow last; no final
@@ -10,21 +15,104 @@
  * source lines, a Follow line tied to the post. The writing and media rules
  * also follow the ChatGPTricks style guide Ivan shared on 2026-11-08.
  */
-import type { PostMode, PostStage } from "../post-files";
+import { EXACT_STAGES, POST_STAGES, type LegacyStage, type PostMode, type PostStage } from "../post-files";
 import type { PageProfile } from "../page-profiles";
-import type { AgentRole } from "./claude";
+import { APPROVAL_CARD } from "./cards/approval";
+import { BRIEF_CARD } from "./cards/brief";
+import { DATA_RULE, type RoleCard } from "./cards/card";
+import { DESIGN_CARD, EXACT_DESIGN_CARD } from "./cards/design";
+import { HEADLINE_CARD } from "./cards/headline";
+import { QUICK_RESEARCH_CARD, RESEARCH_CARD } from "./cards/research";
+import { EXACT_REVIEW_CARD, REVIEW_CARD } from "./cards/review";
+import { SOURCE_CARD } from "./cards/source";
+import { VERDICT_CARD } from "./cards/verdict";
 
-export type RoleCard = {
-  stage: PostStage;
-  title: string;
-  /** Who does it: a Claude role, Engine's own code, or a person. */
-  by: AgentRole | "code" | "human";
-  job: string;
-  rules: string[];
-  bar: string;
-  output: string;
+export type { RoleCard } from "./cards/card";
+
+// ── The current team ────────────────────────────────────────────────────────
+/** The shape every full recreation follows. */
+export const POST_SHAPE = [
+  "Cover: the headline. The original's leads when the post performs and its headline passed the check; else the headline model's",
+  "The original's slides in its order, rebuilt with checked facts in our voice and template",
+  "The 2-4 questions a reader asks right after the headline, each answered on its own slide",
+  "One or two slides of real reactions from X, drawn like the posts, links kept",
+  "Follow: the fixed first line, then a second line tied to this post's topic",
+];
+/** What an exact copy keeps. They replace the house rules for that mode. */
+export const COPY_RULES = [
+  "Exact copy: the same slides in the same order with the same words. One slide stays one slide. Nothing is added, cut, merged or reworded, even where it could be better",
+  "When the page's language differs from the original's, translate faithfully, sentence by sentence. Otherwise copy every word as it is, with its spelling, numbers and emoji",
+  "Only the look changes: the page's template, brand and fonts. The original page's own branding stays out; our template adds ours",
+  "Every part is rebuilt in our style; only photos are cut from the original. A part that can't be rebuilt from what the original shows and real sources is cut whole, and the deck's notes say why",
+];
+const CARDS_V2: Record<PostStage, RoleCard> = {
+  source: SOURCE_CARD, research: RESEARCH_CARD, verdict: VERDICT_CARD, brief: BRIEF_CARD,
+  headline: HEADLINE_CARD, approval: APPROVAL_CARD, design: DESIGN_CARD, review: REVIEW_CARD,
 };
+/** An exact copy's own cards: the quick check, the exact designer and the fidelity critic. */
+const EXACT_CARDS: Partial<Record<PostStage, RoleCard>> = { research: QUICK_RESEARCH_CARD, design: EXACT_DESIGN_CARD, review: EXACT_REVIEW_CARD };
 
+/** The card for a stage in a run of this mode (a full recreation by default). */
+export function stageCard(stage: PostStage, mode: PostMode = "autopilot"): RoleCard {
+  const card = (mode === "exact" ? EXACT_CARDS[stage] : undefined) ?? CARDS_V2[stage];
+  if (!card) throw new Error(`No role card for ${stage}.`);
+  return card;
+}
+
+/**
+ * A stage's system prompt, with the page's name and language. A full
+ * recreation's carries the page's voice and the house rules; an exact copy's
+ * carries what an exact copy keeps instead, so nothing rewords the original.
+ * `title` names one role of a shared card (the fact critic).
+ */
+export function stagePrompt(stage: PostStage, mode: PostMode, profile: PageProfile, extra = "", title?: string): string {
+  const card = stageCard(stage, mode), language = profile.language === "es" ? "Spanish" : "English", role = title ?? card.title.toLowerCase();
+  const words = profile.language === "es" ? "Keep proper accents and punctuation: á é í ó ú ñ, opening ¿ and ¡, and accents on capitals (MÁS, not MAS)." : "";
+  const rules = `Rules:\n${[...card.rules, ...(card.rules.includes(DATA_RULE) ? [] : [DATA_RULE])].map(rule => `- ${rule}`).join("\n")}`;
+  if (mode === "exact") {
+    const follow = `Our Follow page stands in for the original's follow slide. Its first line is always "${profile.followCta.line1}". Its second line keeps the original's words only as far as they fit in ${profile.followCta.maxChars} characters`;
+    return [
+      `You are the ${role} on the team that rebuilds Instagram posts for ${profile.name} (${profile.handle}), whose posts are in ${language}. This run is an exact copy: the original post, rebuilt as it is in our template.`,
+      language === "English" ? "" : `Slide text and the caption are in ${language}. Write notes, reasons and summaries for the team in English.`,
+      words,
+      `Your job: ${card.job}`,
+      rules,
+      `What an exact copy keeps:\n${[...COPY_RULES, follow].map(rule => `- ${rule}`).join("\n")}`,
+      `Quality bar: ${card.bar}`,
+      extra,
+    ].filter(Boolean).join("\n\n");
+  }
+  return [
+    `You are the ${role} on the team that recreates Instagram posts for ${profile.name} (${profile.handle}), written in ${language}. ${profile.voice}`,
+    language === "English" ? "" : `Only slide text and the caption are in ${language}. Write notes, reasons and summaries for the team in English.`,
+    words,
+    `Your job: ${card.job}`,
+    rules,
+    `House rules for this page:\n${[...HOUSE_RULES, ...profile.rules].map(rule => `- ${rule}`).join("\n")}`,
+    `Quality bar: ${card.bar}`,
+    extra,
+  ].filter(Boolean).join("\n\n");
+}
+
+const shown = (card: RoleCard) => ({ ...card, by: card.by === "code" || card.by === "human" ? card.by : "agent" as const });
+/** The whole playbook for outside agents (engine_playbook). */
+export function playbook() {
+  return {
+    shape: POST_SHAPE,
+    houseRules: HOUSE_RULES,
+    stages: POST_STAGES.map(stage => shown(stageCard(stage))),
+    exactRules: COPY_RULES,
+    exactStages: EXACT_STAGES.filter(stage => EXACT_CARDS[stage]).map(stage => shown(stageCard(stage, "exact"))),
+    notes: [
+      "A full recreation (mode checkpoint or autopilot) runs source, research, verdict, brief, headline, approval, design and review, in that order. checkpoint pauses after the brief and the headlines until a person approves; autopilot takes the plan and the first headline that fits the cover.",
+      "An exact copy (mode exact) runs source, research (a quick check of where the post comes from), verdict, design and review: the same slides and words in the page's template, every part rebuilt in its style, only photos cut.",
+      "The verdict is the gate: proceed goes on; stop ends the run with the reason and no deck; ask waits for a person. Only a person answers it, in Engine or through an agent passing on their own words.",
+      "An outside agent can hand in source, research, brief, headline, approval or review itself with engine_recreate_submit_stage; Engine checks the result against the stage's schema and reruns what depends on it. The design is always built by Engine's designer.",
+    ],
+  };
+}
+
+// ── The first team, until the cleanup ───────────────────────────────────────
 /** The shape every recreated carousel follows. */
 export const CAROUSEL_SHAPE = [
   "Cover: the hook, chosen from the headline model's options",
@@ -244,13 +332,13 @@ const CARDS: RoleCard[] = [
   },
 ];
 
-export function roleCardFor(stage: PostStage): RoleCard {
+export function roleCardFor(stage: LegacyStage): RoleCard {
   const card = CARDS.find(item => item.stage === stage);
   if (!card) throw new Error(`No role card for ${stage}.`);
   return card;
 }
 /** The card for a stage in a run of this mode: an exact copy's data stage is the chart rebuilder. */
-export const roleCardIn = (stage: PostStage, mode: PostMode): RoleCard => mode === "exact" && stage === "data" ? EXACT_DATA_CARD : roleCardFor(stage);
+export const roleCardIn = (stage: LegacyStage, mode: PostMode): RoleCard => mode === "exact" && stage === "data" ? EXACT_DATA_CARD : roleCardFor(stage);
 
 /** An exact copy's data stage: the charts the copier boxed, redrawn from real data (exact-data.ts). */
 export const EXACT_DATA_CARD: RoleCard = {
@@ -295,7 +383,7 @@ export function exactPrompt(profile: PageProfile, extra = "", card: Pick<RoleCar
 }
 
 /** The card as a system prompt, with the page's own voice and rules. `title` names one role of a shared card (the fact critic). */
-export function rolePrompt(stage: PostStage, profile: PageProfile, extra = "", title?: string): string {
+export function rolePrompt(stage: LegacyStage, profile: PageProfile, extra = "", title?: string): string {
   if (stage === "transcript") return exactPrompt(profile, extra);
   const card = roleCardFor(stage);
   const language = profile.language === "es" ? "Spanish" : "English";
@@ -310,19 +398,3 @@ export function rolePrompt(stage: PostStage, profile: PageProfile, extra = "", t
   ].filter(Boolean).join("\n\n");
 }
 
-/** The whole playbook for outside agents (engine_playbook). */
-export function playbook() {
-  return {
-    shape: CAROUSEL_SHAPE,
-    houseRules: HOUSE_RULES,
-    stages: CARDS.map(card => ({ ...card, by: card.by === "code" || card.by === "human" ? card.by : "agent" })),
-    exactRules: EXACT_RULES,
-    exactStages: [{ ...EXACT_DATA_CARD, by: "agent" as const }],
-    notes: [
-      "An exact copy (mode exact) rebuilds the post as it is, every part in the page's style: only transcript, data (its chart rebuilder, when the copier boxed a chart), deck and review run. The same slides and words go on the page's template; a graphic made of parts (a meme, a grid of logos, an article, a chat) is rebuilt from its parts, with its logos found online; a line or bar chart is redrawn in our chart style from its real numbers; a post from X becomes our post card, the real post when Engine finds it on X; only photos are cut from the original slides; and nothing is researched or added. A part that can't be rebuilt is cut whole, and the deck's notes say why. The other stages belong to a full recreation (checkpoint or autopilot).",
-      "Stages run in this order; research and the makers run in parallel. A checkpoint run pauses after the outline and hooks until a person approves.",
-      "An outside agent can do a stage itself with engine_recreate_submit_stage; Engine checks the result against the stage's schema and reruns what depends on it.",
-      "Charts and the deck are always built by Engine from the other stages.",
-    ],
-  };
-}

@@ -231,7 +231,11 @@ export type DesignPage = {
   useMaster?: boolean;
   publicDescription?: string;
   readingOrder?: string[];
+  /** A template page saved from a post's slide (saved-layouts.ts), with the line saying when Recreate's designer should start a slide from it. */
+  savedLayout?: { useWhen: string };
 };
+/** The longest "use when" line a saved layout keeps. */
+export const MAX_SAVED_LAYOUT_USE_WHEN = 400;
 export type DesignDocument = DocumentResources & {
   id: string;
   name: string;
@@ -263,6 +267,9 @@ export type DesignTemplate = DocumentResources & {
   pages: DesignPage[];
   continuousCanvas?: CanvasScene;
   custom?: boolean;
+  /** On the workspace's copy of a built-in template: templateFingerprint of the built-in it was copied from.
+   * While the copy still matches it, libraryTemplates shows the built-in's current pages and the copy's saved layouts. */
+  builtInFingerprint?: string;
 };
 export type BrandKit = {
   name: string;
@@ -2507,6 +2514,7 @@ function parsePages(value: unknown): DesignPage[] | null {
     if (canvas === null) return null;
     if (!optional(p, "label", candidate => string(candidate, 200)) || !optional(p, "useMaster", boolean)) return null;
     if (!optional(p, "publicDescription", candidate => string(candidate, 5000)) || !optional(p, "readingOrder", candidate => Array.isArray(candidate) && candidate.length <= 200 && candidate.every(identity) && new Set(candidate).size === candidate.length)) return null;
+    if (!optional(p, "savedLayout", candidate => object(candidate) && string(candidate.useWhen, MAX_SAVED_LAYOUT_USE_WHEN) && /\S/.test(candidate.useWhen))) return null;
     const source: StoryImage["source"] = [
       "google",
       "pinterest",
@@ -2525,6 +2533,7 @@ function parsePages(value: unknown): DesignPage[] | null {
       ...(p.useMaster !== undefined ? { useMaster: p.useMaster as boolean } : {}),
       ...(p.publicDescription !== undefined ? { publicDescription: p.publicDescription as string } : {}),
       ...(p.readingOrder !== undefined ? { readingOrder: [...p.readingOrder as string[]] } : {}),
+      ...(object(p.savedLayout) ? { savedLayout: { useWhen: p.savedLayout.useWhen as string } } : {}),
       ...(canvas ? { canvas } : {}),
       image: {
         id: image.id,
@@ -2725,7 +2734,8 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
         !string(t.name, 200) ||
         !string(t.description, 2000) ||
         !string(t.category, 100) ||
-        !format(t.format)
+        !format(t.format) ||
+        !optional(t, "builtInFingerprint", candidate => string(candidate, 100) && /^[a-z0-9-]+$/.test(candidate))
       )
         return null;
       const pages = parsePages(t.pages);
@@ -2745,6 +2755,7 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
         pages,
         ...(continuousCanvas ? { continuousCanvas } : {}),
         custom: true,
+        ...(typeof t.builtInFingerprint === "string" ? { builtInFingerprint: t.builtInFingerprint } : {}),
       });
       templateIds.add(t.id);
     }
@@ -2752,6 +2763,37 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
   } catch {
     return null;
   }
+}
+
+/** A 64-bit hash of text (cyrb53's two halves), the same on every machine. It tells content apart; it isn't for security. */
+function textHash(text: string): string {
+  let h1 = 0xdeadbeef ^ text.length, h2 = 0x41c6ce57 ^ text.length;
+  for (let index = 0; index < text.length; index++) {
+    const code = text.charCodeAt(index);
+    h1 = Math.imul(h1 ^ code, 2654435761);
+    h2 = Math.imul(h2 ^ code, 1597334677);
+  }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (h2 >>> 0).toString(16).padStart(8, "0") + (h1 >>> 0).toString(16).padStart(8, "0");
+}
+
+/**
+ * A fingerprint of a template's own content, read as storage keeps it (parsed, keys in order): its name, description,
+ * category, format, styles and other resources, and its pages other than saved layouts. Where it's filed (tags,
+ * folder, favourite, Trash) doesn't count. Two templates with the same content have the same fingerprint, so the
+ * workspace's copy of a built-in can tell whether anyone has changed the built-in's part of it since it was copied.
+ * Null for content that wouldn't parse.
+ */
+export function templateFingerprint(template: DesignTemplate): string | null {
+  const pages = parsePages(template.pages.filter(page => !page.savedLayout));
+  const resources = parseResources({ ...template, tags: undefined, folderId: undefined, favorite: undefined, deletedAt: undefined });
+  const continuousCanvas = template.continuousCanvas === undefined ? undefined : parseCanvas(template.continuousCanvas);
+  if (!pages || !resources || continuousCanvas === null) return null;
+  normalizeReadingOrders(pages, continuousCanvas, resources.masterScene);
+  const content = { name: template.name, description: template.description, category: template.category, format: template.format, pages, ...(continuousCanvas ? { continuousCanvas } : {}), ...resources };
+  const text = JSON.stringify(content, (_key, child) => child && typeof child === "object" && !Array.isArray(child) ? Object.fromEntries(Object.keys(child).sort().map(key => [key, child[key]])) : child);
+  return `v1-${text.length.toString(36)}-${textHash(text)}`;
 }
 
 /** Only the passive vector grammar produced by the Brand importer is accepted.

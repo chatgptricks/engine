@@ -2,9 +2,10 @@
 import type { BrandGuide } from "../../template-editor/brand-guide";
 import type { DesignTemplate } from "../../template-editor/model";
 import type { PageProfile } from "../page-profiles";
-import type { PostFile, PostSource, PostStage } from "../post-files";
+import type { PostFile, PostSource, StageName } from "../post-files";
 import type { ChartData } from "../recreate-data";
 import { RecreateError, type SourceImage, type UsageMeter } from "./claude";
+import { verdictChoice, type Verdict, type VerdictOutcome } from "./schemas";
 
 /** Held in memory for one run: the original's slides and every downloaded series. */
 export type RunCache = { images?: SourceImage[]; chartData: ChartData; uploads?: { name: string; dataUrl: string }[] };
@@ -38,14 +39,20 @@ export type StageResult = {
 export type StageRunner = (context: StageContext) => Promise<StageResult>;
 
 /** A finished stage's output, or undefined when it was skipped or hasn't run. */
-export function outputOf<T>(file: PostFile, stage: PostStage): T | undefined {
+export function outputOf<T>(file: PostFile, stage: StageName): T | undefined {
   const record = file.stages[stage];
   return record?.status === "done" ? record.output as T : undefined;
 }
-export function need<T>(file: PostFile, stage: PostStage): T {
+export function need<T>(file: PostFile, stage: StageName): T {
   const value = outputOf<T>(file, stage);
   if (value === undefined) throw new RecreateError(`The ${stage} stage hasn't finished yet.`, 409);
   return value;
+}
+
+/** What the check lets the run do: a person's answer, else the verdict's outcome; undefined until the verdict is in. */
+export function verdictOf(file: PostFile): VerdictOutcome | undefined {
+  const verdict = outputOf<Verdict>(file, "verdict");
+  return verdict ? verdictChoice(verdict) : undefined;
 }
 
 export const languageName = (profile: PageProfile) => profile.language === "es" ? "Spanish" : "English";
