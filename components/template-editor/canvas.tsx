@@ -1051,7 +1051,7 @@ export function CanvasEditor({
     event.stopPropagation();
     const source = finishEditing();
     const movable = source.elements.filter(
-      (element) => ids.includes(element.id) && inScope(element) && !isElementLocked(source,element) && !isElementHidden(source,element) && !element.protected?.includes('position'),
+      (element) => ids.includes(element.id) && inScope(element) && canEditElement(source,element,'position') && !isElementHidden(source,element),
     );
     if (!movable.length) return;
     root.current?.focus({ preventScroll: true });

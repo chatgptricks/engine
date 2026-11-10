@@ -39,7 +39,16 @@ export function isElementLocked(scene: CanvasScene, element: CanvasElement): boo
 export function isElementHidden(scene: CanvasScene, element: CanvasElement): boolean {
   return Boolean(element.hidden) || ancestorGroups(scene, element.groupId).some(group => group.hidden);
 }
+/** A picture: an image layer, or a shape filled with a photo. */
+export const isPicture = (element: CanvasElement): boolean => element.type === "image" || element.type === "shape" && Boolean(element.imageFill);
+/** A fade or shade laid over a photo: a gradient shape, or a layer named for one. */
+export const isFade = (element: CanvasElement): boolean => element.type === "shape" && !element.imageFill && (Boolean(element.gradient) || /fade|shade|shadow|overlay/i.test(element.name));
 export function canEditElement(scene: CanvasScene, element: CanvasElement, property: ProtectedProperty): boolean {
+  // Any picture can be deleted, the template's own and background pictures
+  // included (Ivan, 2026-11-10). Only a lock the person set keeps it.
+  if (property === "delete" && isPicture(element)) return !isElementLocked(scene, element);
+  // A fade over a photo (the top and bottom fades) can be moved and deleted.
+  if ((property === "delete" || property === "position") && isFade(element)) return !isElementLocked(scene, element);
   if (element.templateRole === "brand") return false;
   // A template photo stays in its frame, except a spanning photo, whose seam moves.
   if (element.templateRole === "media" && (property === "delete" || property === "position" && !(element.type === "image" && element.span))) return false;
@@ -56,7 +65,7 @@ export function fillShapeWithImage(scene: CanvasScene, shapeId: string, image: I
   const options = typeof source === "string" ? { sourceImageId: source } : source ?? {};
   if (!target || target.type !== "shape" || !canEditElement(scene, target, "content") || isElementHidden(scene, target)) return result(scene, []);
   const consumed = options.sourceImageId ? scene.elements.find(element => element.id === options.sourceImageId) : undefined;
-  if (options.sourceImageId && (!consumed || consumed.type !== "image" || isElementHidden(scene, consumed) || !canEditElement(scene, consumed, "content") || !canEditElement(scene, consumed, "delete"))) return result(scene, [shapeId]);
+  if (options.sourceImageId && (!consumed || consumed.type !== "image" || isElementHidden(scene, consumed) || !canEditElement(scene, consumed, "content") || !canEditElement(scene, consumed, "delete") || consumed.protected?.includes("delete"))) return result(scene, [shapeId]);
   const photo = consumed?.type === "image" ? consumed : "type" in image && image.type === "image" ? image : undefined;
   const candidate = photo ? {
     src: photo.src,
@@ -223,6 +232,9 @@ export function pasteSelection(scene: CanvasScene, snapshot: readonly CanvasElem
 
 export function removeSelection(scene: CanvasScene, ids: readonly string[]): SceneCommandResult {
   const removable = new Set(selectedElements(scene, ids).filter(element => canEditElement(scene, element, "delete")).map(element => element.id));
+  // A photo spanning two slides goes as a whole: both of its parts.
+  const spans = new Set(scene.elements.filter(element => removable.has(element.id) && element.type === "image" && element.span).map(element => (element as { span: { id: string } }).span.id));
+  if (spans.size) for (const element of scene.elements) if (element.type === "image" && element.span && spans.has(element.span.id) && !isElementLocked(scene, element)) removable.add(element.id);
   if (!removable.size) return result(scene, ids);
   const next = { ...scene, elements: scene.elements.filter(element => !removable.has(element.id)) };
   const usedGroups = new Set(next.elements.flatMap(element => ancestorGroups(next, element.groupId).map(group => group.id)));

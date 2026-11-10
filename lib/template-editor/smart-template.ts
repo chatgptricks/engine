@@ -1,4 +1,5 @@
 import type { CanvasScene } from "./model";
+import { canEditElement, isFade } from "./commands";
 export { isChatGPTricksTemplate, prepareSmartTemplate, mergeTemplateText } from "./model";
 
 /** Content editing cannot detach or restyle the fixed template skeleton. */
@@ -8,6 +9,8 @@ export function constrainSmartTemplate(previous: CanvasScene, next: CanvasScene)
   for (const original of previous.elements) {
     if (!original.templateRole && !(original.type === "text" && original.smartText)) continue;
     const changed = byId.get(original.id);
+    // A picture or fade the person deleted stays deleted.
+    if (!changed && canEditElement(previous, original, "delete")) continue;
     if (!changed || changed.type !== original.type) { byId.set(original.id, original); continue; }
     if (original.type === "text" && original.smartText && changed.type === "text") {
       byId.set(original.id, { ...original, text: changed.text, richText: changed.richText, wordTextures: changed.wordTextures, smartText: { ...original.smartText, lines: changed.smartText?.lines ?? original.smartText.lines } });
@@ -15,6 +18,9 @@ export function constrainSmartTemplate(previous: CanvasScene, next: CanvasScene)
       // A spanning photo moves and resizes with its seam (spanning-photos.ts keeps it in place).
       const geometry = original.type === "image" && original.span && changed.type === "image" && changed.span ? changed : original;
       byId.set(original.id, { ...changed, templateRole: original.templateRole, protected: original.protected, smartFlow: original.smartFlow, slot: original.slot, x: geometry.x, y: geometry.y, width: geometry.width, height: geometry.height, rotation: geometry.rotation, hidden: original.hidden, groupId: original.groupId });
+    } else if (isFade(original) && canEditElement(previous, original, "position")) {
+      // A fade can be moved and resized; nothing else about it changes.
+      byId.set(original.id, { ...original, x: changed.x, y: changed.y, width: changed.width, height: changed.height });
     } else byId.set(original.id, original);
   }
   const elements = next.elements.map(element => byId.get(element.id)!);

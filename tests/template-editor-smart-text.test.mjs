@@ -108,7 +108,8 @@ test("new ChatGPTricks copies merge imported title runs; source and unrelated te
 
 test("template constraints retain branding, accept text and line counts, and keep new elements editable", () => {
   const title = text(), logo = model.createCanvasElement("image", {templateRole: "brand", name: "Logo"});
-  const previous = {background: "#111111", elements: [title, logo]};
+  const rule = {...model.createCanvasElement("shape"), templateRole: "brand", name: "Hairline"};
+  const previous = {background: "#111111", elements: [title, logo, rule]};
   const added = model.createCanvasElement("shape");
   const changed = {...previous, background: "#ffffff", elements: [{...title, text: "Changed words", font: "geist", x: 999, smartText: {...title.smartText, lines: 4}}, added]};
   const next = template.constrainSmartTemplate(previous, changed);
@@ -116,9 +117,11 @@ test("template constraints retain branding, accept text and line counts, and kee
   assert.equal(next.elements[0].text, "Changed words");
   assert.equal(next.elements[0].smartText.lines, 4);
   assert.equal(next.elements[0].x, title.x);
-  assert.ok(next.elements.includes(logo));
+  assert.ok(next.elements.includes(rule), "fixed branding comes back");
+  assert.ok(!next.elements.includes(logo), "a deleted picture stays deleted");
   assert.equal(commands.canEditElement(next, added, "position"), true);
-  assert.equal(commands.removeSelection(previous, [title.id, logo.id]).scene, previous);
+  // The title stays; a picture, even the template's logo, can be deleted.
+  assert.deepEqual(commands.removeSelection(previous, [title.id, logo.id]).scene.elements.map(item => item.id), [title.id, rule.id]);
   const copied = commands.duplicateSelection(previous, [title.id]);
   const copy = copied.scene.elements.at(-1);
   assert.equal(copy.smartText, undefined);

@@ -196,3 +196,55 @@ test("empty, locked, already aligned and invalid-input commands retain scene ide
   assert.equal(pasteSelection(source, [], { x: 5, y: 5 }).scene, source);
   assert.equal(pasteSelection(source, [source.elements[0]], { x: Infinity, y: 5 }).scene, source);
 });
+
+test("template and background pictures can be deleted unless the person locked them", () => {
+  const photo = model.createCanvasElement("image");
+  const source = scene(
+    { ...photo, id: "slot", name: "Photo", templateRole: "media", protected: ["position", "delete"] },
+    { ...photo, id: "bg", name: "Background", templateRole: "brand", protected: ["content", "position", "style", "delete"] },
+    element("framed", { imageFill: { src: "data:image/png;base64,AA==", fit: "cover", x: 0, y: 0, scale: 1 }, templateRole: "media", protected: ["delete"] }),
+    { ...photo, id: "locked", name: "Locked", templateRole: "media", locked: true },
+    element("logo-card", { templateRole: "brand", protected: ["delete"] }),
+  );
+  assert.deepEqual(ids(removeSelection(source, ["slot", "bg", "framed", "locked", "logo-card"]).scene), ["locked", "logo-card"]);
+});
+
+test("a photo spanning two slides is deleted whole", () => {
+  const photo = model.createCanvasElement("image");
+  const source = scene(
+    { ...photo, id: "start", templateRole: "media", span: { id: "wide", part: "start" }, protected: ["delete"] },
+    { ...photo, id: "end", span: { id: "wide", part: "end" }, protected: ["delete"] },
+    element("keep"),
+  );
+  assert.deepEqual(ids(removeSelection(source, ["start"]).scene), ["keep"]);
+});
+
+test("the top and bottom fades can be moved and deleted, but not restyled", () => {
+  const fixed = { templateRole: "brand", protected: ["content", "position", "style", "delete"] };
+  const gradient = { type: "linear", angle: 180, stops: [{ color: "#0B1014", position: 0 }, { color: "#0B101400", position: 100 }] };
+  const top = element("top", { name: "Top fade", gradient, ...fixed }), bottom = element("bottom", { name: "Bottom fade", ...fixed });
+  const source = scene(top, bottom, element("rule", fixed));
+  for (const fade of [top, bottom]) {
+    assert.equal(commands.canEditElement(source, fade, "position"), true);
+    assert.equal(commands.canEditElement(source, fade, "delete"), true);
+    assert.equal(commands.canEditElement(source, fade, "style"), false);
+  }
+  assert.equal(commands.canEditElement(source, source.elements[2], "position"), false);
+  assert.equal(commands.canEditElement(scene({ ...top, locked: true }), { ...top, locked: true }, "delete"), false);
+  assert.deepEqual(ids(removeSelection(source, ["top"]).scene), ["bottom", "rule"]);
+});
+
+test("the template keeps a deleted picture or fade deleted and a moved fade where it was dropped", () => {
+  const smartTemplate = loadModule("lib/template-editor/smart-template.ts", { "./model": model, "./commands": commands });
+  const fixed = { templateRole: "brand", protected: ["content", "position", "style", "delete"] };
+  const photo = { ...model.createCanvasElement("image"), id: "photo", templateRole: "media", protected: ["position", "delete"] };
+  const fade = element("fade", { name: "Bottom fade", y: 300, ...fixed }), rule = element("rule", { name: "Hairline", ...fixed });
+  const previous = scene(photo, fade, rule);
+  const deleted = smartTemplate.constrainSmartTemplate(previous, scene(rule));
+  assert.deepEqual(ids(deleted), ["rule"], "the photo and the fade stay deleted; the hairline is never missing");
+  assert.deepEqual(ids(smartTemplate.constrainSmartTemplate(previous, scene(photo, fade))), ["photo", "fade", "rule"]);
+  const moved = smartTemplate.constrainSmartTemplate(previous, scene(photo, { ...fade, y: 340, height: 60, fill: "#ff0000" }, rule));
+  assert.equal(moved.elements[1].y, 340);
+  assert.equal(moved.elements[1].height, 60);
+  assert.equal(moved.elements[1].fill, fade.fill, "only its place changes");
+});
