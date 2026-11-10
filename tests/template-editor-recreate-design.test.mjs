@@ -435,7 +435,7 @@ const redditNotes={...sourceNotes,shows:"A dinner photo under a Reddit comment, 
 const redditCard=(name,words,mark="platform-card platform-reddit")=>`<div class="card ${mark}"><div class="who">${stage.REDDIT_AVATAR.replaceAll("COLOR","#FF4500")}<b>${name}</b><span class="when">· 9h</span></div><p>${words}</p></div>`;
 const REDDIT_CSS=":root{display:flex;flex-direction:column;justify-content:center}.card{background:#0E1113;border:3px solid #2F3336;border-radius:24px;padding:45px}.who svg{width:105px;height:105px}b{color:#F2F4F5}.when{color:#8BA2AD}p{color:#EEF1F3;font-family:var(--body-font);font-size:50px;line-height:1.25;text-wrap:pretty}";
 
-test("another platform's comments become our cards in its own colors, and the deck ends on a Follow page made for the post",async()=>{
+test("another platform's comments become our cards in its own colors, a repeated one is left out, and the deck ends on a Follow page made for the post",async()=>{
   const context=await contextFor("exact",{source:done(redditNotes),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null})});
   await stand(async({call,invoke,refused,json})=>{
     assert.match(call.system,/the frame of our X card: 936 px wide at x 72, 24 px corners and a 3 px border/,"cards take the template's X card frame");
@@ -484,6 +484,13 @@ test("another platform's comments become our cards in its own colors, and the de
     // The Follow page shows the post's photo again, closer.
     const followPhoto=layer(built.deck,2,"photo");
     await json("edit_deck",{operations:[{op:"update_element",pageId:follow,elementId:followPhoto.id,properties:{cropScale:1.25,cropX:50,cropY:40}}]});
+    // Built anyway, the repeat of the cover's comment (original slide 3) is sent back, to be left out.
+    const repeat=await json("edit_deck",{operations:[{op:"add_slide",index:2,slide:{label:"Story",layout:"blank",background:"#0B1014",elements:[
+      {type:"html",id:"repeat-card",name:"Reddit comment · seat12b",x:72,y:90,width:936,height:1262,html:redditCard("seat12b",COMMENT),css:REDDIT_CSS},
+    ]}}]});
+    const withRepeat={pages:[{slide:1,layout:"Cover"},{slide:2,layout:"blank, one Reddit card"},{slide:3,layout:"blank, one Reddit card"},{slide:0,layout:"Follow"}],notes:[]};
+    assert.match(await call.submit.check(withRepeat),/^Slide 3 repeats slide 1's card word for word\. A slide that repeats an earlier one is left out: remove it \(edit_deck remove_slide\)/);
+    await json("edit_deck",{operations:[{op:"remove_slide",pageId:repeat.deck.slides[0].pageId}]});
     await invoke("look_at_slides",{slides:[1,2,3]});
     // Slide 3 repeats slide 1's comment, so it's left out; the Follow page the original doesn't have is slide 0.
     const handIn={pages:[{slide:1,layout:"Cover"},{slide:2,layout:"blank, one Reddit card"},{slide:0,layout:"Follow"}],notes:["Slide 3 repeats slide 1's comment, so it's left out."]};
@@ -503,7 +510,7 @@ test("another platform's comments become our cards in its own colors, and the de
   });
 });
 
-test("a photo under the template's fades isn't handed in until it sits on the frame's bottom, a band covers its top edge and it isn't blown up",async()=>{
+test("a photo under the template's fades isn't handed in until it sits on the frame's bottom, a band covers its top edge, it isn't blown up and the Follow page's covers enough of its frame",async()=>{
   const context=await contextFor("exact",{source:done(redditNotes),verdict:done({outcome:"proceed",reason:"",evidence:[],answer:null})});
   await stand(async({call,invoke,json})=>{
     // A wide strip, like the one run 8 of the design proof cut below the original's card: 864 × 405 px, which a contain fit shows 1080 × 506 in the 1080 × 926 cover frame.
@@ -544,6 +551,14 @@ test("a photo under the template's fades isn't handed in until it sits on the fr
     const width=926*tall.width/tall.height;
     assert.ok(Math.abs(Number(sides[1])-(1080-width)/2)<=2&&Math.abs(Number(sides[2])-(1080+width)/2)<=2,`${sides[1]}–${sides[2]} for a ${tall.width} × ${tall.height} cut`);
     assert.equal(await place({src:strip.src,cropScale:1.1}),null,"the strip again, as it was");
+    // On the Follow page nothing sits on the photo: a strip left at about the cover's size covers too little of its frame
+    // (run 10's, 48% under an empty top). Said once, with the cropScale that brings it to about two-thirds.
+    const follow=built.deck.slides[1].pageId,followFrame=layer(built.deck,2,"photo");
+    const placeFollow=async properties=>{await json("edit_deck",{operations:[{op:"update_element",pageId:follow,elementId:followFrame.id,properties}]});return look();};
+    assert.match(await placeFollow({fit:"contain",cropX:50,cropY:100,cropScale:1}),/^Slide 2's photo, on the Follow page, covers only 55% of its frame's height, so the page's top is left empty\. Bring it closer with cropScale, to about 1\.22 at cropY 100, so it covers about two-thirds of the frame/);
+    assert.match(await look(),/^Slide 2's photo starts at y 420/,"said once; then its top edge wants a band");
+    await json("edit_deck",{operations:[{op:"add_html",pageId:follow,index:1,name:"Band over the photo's top edge",x:0,y:0,width:1080,height:400,html:"<div></div>",css:":root{background:linear-gradient(to bottom,var(--color-background) 0,var(--color-background) 320px,transparent 370px)}"}]});
+    assert.equal(await placeFollow({cropScale:1.22}),null,"closer, its top edge at y 309 under the band");
     return handIn;
   },async()=>{
     const {output}=await design(context);

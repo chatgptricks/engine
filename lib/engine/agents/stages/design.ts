@@ -17,7 +17,7 @@ import { z } from "zod";
 import { agentCapabilities } from "../../../template-editor/agent-decks";
 import { htmlTokensForGuide } from "../../../template-editor/html-layer";
 import { formatDimensions, type CanvasElement, type DesignComment, type DesignDocument, type ImageElement, type TextElement } from "../../../template-editor/model";
-import { platformCardClass, PLATFORMS } from "../../../template-editor/platform-cards";
+import { platformCardClass, platformOfLayer, PLATFORMS } from "../../../template-editor/platform-cards";
 import { htmlTokensForTemplate } from "../../brand-actions";
 import { imageBlock, RecreateError, work } from "../claude";
 import { CHART_FIELDS, EXACT_CHART_FIELDS } from "../charts";
@@ -51,7 +51,7 @@ const LAYOUT_RULES = [
   "The cover is the template's Cover page, exactly: the photo fills its photo frame under the template's fades, and the headline sits in its headline slot at the template's size and casing, its key phrase in [[ ]] for the accent, as the template's own cover sets one apart: the words the original sets apart, or else the phrase that carries the story, without a leading article. An exact copy's too: the accent is our template's look, not a change to the words",
   "A photo keeps every face whole and clear of the template's fades: no face is cut by the frame's edges (each is whole inside the frame, or out of it). Cut it at about its frame's proportions, then place it in the frame with cropX and cropY (0-100: the point of the photo the frame centers on) and cropScale (above 1 to come closer). When filling the frame would cut a face, fit: contain keeps them all; then cropScale brings it as close to filling the frame as the faces allow (often about 1.1), and it sits low in the frame (cropY 100), whether or not it still holds an overlay, so the template's bottom fade takes its bottom edge and its people sit clear of the card above. A fade hides a photo's edge only at the frame's own edge: any other edge left inside the frame shows as a straight line unless a band covers it (below)",
   "A photo we reuse never shows the original's overlays (its cards, captions, stickers, logos, text). Engine can't paint them out: cut the photo's box clear of them, or cover them with the layer we rebuild in their place. On the cover, an overlay that rests on the people (a card touching their heads) is cut away, not covered: cut the photo from just below it, then place that cut low and close as below (cropY 100, cropScale as the faces allow), its top edge under a band. Kept, it would have to sit high under our card, which shrinks the people and leaves a dark gap above the headline",
-  "Where an overlay reaches past the layer we rebuild over it (or there is none, as on the Follow page), our layer keeps its usual size and place, never stretched to cover it: the rest goes under a band of var(--color-background), an HTML layer right above the photo in the stack (add_html index), under the template's fades and our layers. It is solid to about 40 px past the overlay's lowest edge, its border and shadow too (a thin line left showing is easy to miss at look_at_slides' size), then fades out into the photo over 100 px or more (linear-gradient to transparent) the way the template's fades do, clear of the faces. A photo that doesn't fill its frame (fit: contain, to keep every face whole) gets the same kind of band over each edge it leaves inside the frame (at cropY 100, its top edge): solid just past the edge, then fading into the photo clear of the faces, so no hard line shows",
+  "Where an overlay reaches past the layer we rebuild over it (or there is none, as on the Follow page), our layer keeps its usual size and place, never stretched to cover it: the rest goes under a band of var(--color-background), an HTML layer right above the photo in the stack (add_html index), under the template's fades and our layers. It is solid to about 40 px past the overlay's lowest edge, its border and shadow too (a thin line left showing is easy to miss at look_at_slides' size), then fades out into the photo over 100 px or more (linear-gradient to transparent) the way the template's fades do, clear of the faces. A photo that doesn't fill its frame (fit: contain, to keep every face whole) gets the same kind of band over each edge it leaves inside the frame (at cropY 100, its top edge): solid just past the edge, then clear within about 50 px, so no hard line shows and the heads just below it stay lit (a longer fade dims them)",
   "Every part that isn't a photo is rebuilt, never pasted from a screenshot: words as text, a post or comment as our card (Cards), a chart from its data, a logo from find_logos",
   "Rebuilt text matches the original's size and stays readable: never below var(--min-text-size), with text-wrap: pretty so no word sits alone on a line",
   "A better layout than the template page's is allowed when the content fits it (two columns, a timeline, a quote card, a comparison): build it on the closest template page, in HTML layers inside the page's margins (var(--margin-left) and the rest), and hide or empty only the template layers it replaces",
@@ -60,7 +60,7 @@ const LAYOUT_RULES = [
   "Every color in HTML comes from the brand's variables (a platform's card is the one exception: Cards); a tint is color-mix(in srgb, var(--color-text) 20%, transparent) or opacity",
   "An HTML layer's CSS pixels are output pixels unless you set designWidth: a 1080-pixel slide is 1080 CSS pixels wide",
   "A chart reads at phone size: its labels are at least var(--min-text-size) and never touch or overlap (show every other year when they crowd), and each line is named in words, next to it or in a legend, never by its color alone",
-  `The Follow page is made for this post: its call to action (the cta slot, in the accent) names what the page gives more of, tied to the post's subject (for a post of life stories, FOR MORE LIFE STORIES), on one line under FOLLOW THIS PAGE: about 21 characters at most. Its photo frame shows a photo from the post again, filling the frame and a little closer (cropScale about 1.1 to 1.25; 1 just fills it), so its people are larger than on the cover. No face is cut by the frame's edges: each is whole inside it, or out of it. The photo's own pixels aren't blown up past ${MAX_PHOTO_ZOOM} times their size (a strip cut from under an overlay is often too small for this frame: use the whole photo, its overlay under a band). When the photo still holds the original's overlay, place it so the least of the overlay shows (an overlay at the photo's top: cropY 100, the photo as high as it goes), so the band over the rest stays short and the faces sit above the bottom fade. With no photo in the post, it keeps the template's placeholder`,
+  `The Follow page is made for this post: its call to action (the cta slot, in the accent) names what the page gives more of, tied to the post's subject (for a post of life stories, FOR MORE LIFE STORIES), on one line under FOLLOW THIS PAGE: about 21 characters at most. Its photo frame shows a photo from the post again, filling the frame and a little closer (cropScale about 1.1 to 1.25; 1 just fills it), so its people are larger than on the cover. No face is cut by the frame's edges: each is whole inside it, or out of it. A strip that doesn't fill the frame (fit: contain) comes closer still, until it covers about two-thirds of the frame's height (cropY 100, its top edge under a band), so the page's top isn't left empty. The photo's own pixels aren't blown up past ${MAX_PHOTO_ZOOM} times their size (a strip cut from under an overlay is often too small for this frame: use the whole photo, its overlay under a band). When the photo still holds the original's overlay, place it so the least of the overlay shows (an overlay at the photo's top: cropY 100, the photo as high as it goes), so the band over the rest stays short and the faces sit above the bottom fade. With no photo in the post, it keeps the template's placeholder`,
   "A template text slot left without words is hidden for you (an empty list would still draw its bullet); give it words and it shows again",
 ];
 
@@ -204,7 +204,7 @@ function softPhoto(document: DesignDocument, said: Set<string>): string | null {
       if (photo.type !== "image" || !photo.slot || photo.hidden || !photo.intrinsicWidth || !photo.intrinsicHeight) continue;
       if (!underFades(photo, elements.slice(order + 1).filter(item => !item.hidden))) continue;
       const fit = (photo.fit === "contain" ? Math.min : Math.max)(photo.width / photo.intrinsicWidth, photo.height / photo.intrinsicHeight);
-      const zoom = fit * (photo.cropScale ?? 1) * scale, key = `${page.id} ${photo.id} ${photo.src}`;
+      const zoom = fit * (photo.cropScale ?? 1) * scale, key = `soft ${page.id} ${photo.id} ${photo.src}`;
       if (zoom <= MAX_PHOTO_ZOOM + .005 || said.has(key)) continue;
       said.add(key);
       return `Slide ${index + 1}'s photo shows at ${zoom.toFixed(2)}× its own pixels, so it looks soft. Keep it under ${MAX_PHOTO_ZOOM}×: cut a bigger box from the original's slide (the whole photo does, its overlay under a band), or bring it less close with cropScale. Then look at it again.`;
@@ -212,8 +212,75 @@ function softPhoto(document: DesignDocument, said: Set<string>): string | null {
   }
   return null;
 }
-/** The soft photos already said, per designer's run. */
-const softSaid = new WeakMap<DesignSession, Set<string>>();
+/** What the checks said once, per designer's run: soft photos, small Follow photos and repeated cards. */
+const saidOnce = new WeakMap<DesignSession, Set<string>>();
+
+/**
+ * How much of its frame's height the Follow page's photo covers at least. The
+ * proof's fills its frame; run 10 of the design proof left the cover's strip
+ * there at the cover's size, covering 48% of it under an empty top.
+ */
+export const FOLLOW_PHOTO_COVER = .6;
+
+/**
+ * The Follow page's photo covering less than FOLLOW_PHOTO_COVER of its frame's
+ * height, said for the designer with the cropScale that brings it to about
+ * two-thirds, short of MAX_PHOTO_ZOOM; else null. Each photo is said once
+ * (`said`): coming closer may cut a face at the frame's sides.
+ */
+function smallFollowPhoto(template: StageContext["template"], document: DesignDocument, said: Set<string>): string | null {
+  const follow = ownSlots(template, followPage);
+  if (!follow) return null;
+  const scale = formatDimensions(document).width / 360;
+  for (const [index, page] of document.pages.entries()) {
+    if (!builtOn(page, follow)) continue;
+    const elements = page.canvas?.elements ?? [];
+    for (const [order, photo] of elements.entries()) {
+      if (photo.type !== "image" || !photo.slot || photo.hidden || !photo.intrinsicWidth || !photo.intrinsicHeight) continue;
+      // With no photo in the post, the template's placeholder stays as it is.
+      const placeholder = template.pages[follow.index]?.canvas?.elements.find(item => item.type === "image" && item.slot === photo.slot);
+      if (placeholder?.type === "image" && placeholder.src === photo.src) continue;
+      const shown = shownPhoto(photo), key = `follow ${page.id} ${photo.id} ${photo.src}`;
+      if (!shown || said.has(key) || !underFades(photo, elements.slice(order + 1).filter(item => !item.hidden))) continue;
+      const cover = (Math.min(photo.height, shown.bottom) - Math.max(0, shown.top)) / photo.height;
+      if (cover >= FOLLOW_PHOTO_COVER) continue;
+      const fit = (photo.fit === "contain" ? Math.min : Math.max)(photo.width / photo.intrinsicWidth, photo.height / photo.intrinsicHeight);
+      const zoom = photo.cropScale ?? 1, closest = zoom * MAX_PHOTO_ZOOM / (fit * zoom * scale);
+      const wanted = Math.min(zoom * (2 / 3) / cover, closest);
+      // Already as close as it comes before it looks soft: only a bigger cut would cover more.
+      if (wanted <= zoom * 1.02) continue;
+      said.add(key);
+      return `Slide ${index + 1}'s photo, on the Follow page, covers only ${Math.round(cover * 100)}% of its frame's height, so the page's top is left empty. Bring it closer with cropScale, to about ${wanted.toFixed(2)} at cropY 100, so it covers ${wanted < zoom * (2 / 3) / cover ? "as much of the frame as it can before it looks soft" : "about two-thirds of the frame"}, each face whole or out of the frame (cropX moves it), and move the band over its top edge up with it. Then look at it again.`;
+    }
+  }
+  return null;
+}
+
+/** A card's words, for telling a repeat: its text without its markup, avatar, case or punctuation. */
+const cardWords = (html: string) => html.replace(/<(style|svg)\b[\s\S]*?<\/\1>/gi, " ").replace(/<[^>]*>/g, " ").replace(/&[#\w]+;/g, " ")
+  .toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+
+/**
+ * A deck page whose post or comment card repeats an earlier page's word for
+ * word, said for the designer; else null. Run 10 of the design proof kept the
+ * original's repeat of its cover's comment as a slide of its own, which the
+ * proof leaves out. Said once (`said`), in case the slide adds something of its own.
+ */
+function repeatedCard(document: DesignDocument, said: Set<string>): string | null {
+  const first = new Map<string, number>();
+  for (const [index, page] of document.pages.entries()) {
+    for (const layer of page.canvas?.elements ?? []) {
+      if (layer.type !== "html" || layer.hidden || !platformOfLayer(layer.html)) continue;
+      const words = cardWords(layer.html), earlier = first.get(words), key = `repeat ${page.id} ${words}`;
+      if (words.length < 40) continue;
+      if (earlier === undefined) { first.set(words, index); continue; }
+      if (earlier === index || said.has(key)) continue;
+      said.add(key);
+      return `Slide ${index + 1} repeats slide ${earlier + 1}'s card word for word. A slide that repeats an earlier one is left out: remove it (edit_deck remove_slide), give the pages entries without it, and say in your notes which original slide repeats which.`;
+    }
+  }
+  return null;
+}
 
 /**
  * A photo that leaves an edge inside a frame the template fades, with no HTML
@@ -240,7 +307,7 @@ function looseEdge(document: DesignDocument): string | null {
         return `Slide ${slide}'s photo stops at y ${at(edge.bottom)}, ${at(frame.bottom - edge.bottom)} px above the bottom of its frame (y ${at(frame.bottom)}). The template's fade hides a photo's edge only at the frame's own, so this one shows as a straight line. Set cropY 100 so the photo sits at the frame's bottom (cropScale brings it closer, as far as the faces allow); a band over that edge would leave a dark gap above the page's words. Then look at it again.`;
       }
       if (edge.top - frame.top > slack && !covered(seen.left, edge.top - margin, seen.right, edge.top + margin)) {
-        return `Slide ${slide}'s photo starts at y ${at(edge.top)}, ${at(edge.top - frame.top)} px below the top of its frame, and nothing covers that edge, so it shows as a straight line. Cover it with a band of var(--color-background): an HTML layer right above the photo in the stack, solid just past the edge, then fading into the photo clear of the faces. Then look at it again.`;
+        return `Slide ${slide}'s photo starts at y ${at(edge.top)}, ${at(edge.top - frame.top)} px below the top of its frame, and nothing covers that edge, so it shows as a straight line. Cover it with a band of var(--color-background): an HTML layer right above the photo in the stack, solid just past the edge, then clear within about 50 px so the heads below it stay lit. Then look at it again.`;
       }
       const leftLoose = edge.left - frame.left > slack && !covered(edge.left - margin, seen.top, edge.left + margin, seen.bottom);
       if (leftLoose || frame.right - edge.right > slack && !covered(edge.right - margin, seen.top, edge.right + margin, seen.bottom)) {
@@ -274,10 +341,16 @@ async function problemWith(session: DesignSession, value: Submitted, slides: num
   if (sample && headline?.type === "text" && headline.text.trim() && !accented(headline)) {
     return `The cover's headline sets its key phrase apart in the accent, as the template's cover does: give the ${sample.slot} slot its words again with [[ ]] around that phrase (edit_deck update_element text), then look at it again.`;
   }
+  if (!saidOnce.has(session)) saidOnce.set(session, new Set());
+  const said = saidOnce.get(session)!;
+  const repeat = repeatedCard(document, said);
+  if (repeat) return repeat;
+  // Said before the edges: coming closer moves the photo's top edge, and its band with it.
+  const small = smallFollowPhoto(session.template, document, said);
+  if (small) return small;
   const edge = looseEdge(document);
   if (edge) return edge;
-  if (!softSaid.has(session)) softSaid.set(session, new Set());
-  const soft = softPhoto(document, softSaid.get(session)!);
+  const soft = softPhoto(document, said);
   if (soft) return soft;
   if (Object.keys(session.tokens).length) {
     const off = deckOffBrand(document, session.tokens);
