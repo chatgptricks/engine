@@ -13,6 +13,7 @@ import {pdfGeometry,needsPdfRaster,photoRasterDimension,type PdfOptions} from '.
 import {fetchReviewImage} from './review-assets';
 import {publicReadingSequence} from './public-accessibility';
 import {referenceFontRuns} from './reference-fonts';
+import {glyphOverhang} from './text-fit';
 const fontCache=new Map<string,Promise<Buffer>>();
 const google:Record<string,string>={playfair:'playfair-display',dmserif:'dm-serif-display',lora:'lora',cormorant:'cormorant-garamond',crimson:'crimson-text',inter:'inter',space:'space-grotesk',montserrat:'montserrat',bebas:'bebas-neue',plexmono:'ibm-plex-mono',caveat:'caveat'};
 async function fontBytes(font:string,weight:number,italic:boolean):Promise<Buffer>{
@@ -72,8 +73,12 @@ export async function renderDocumentPdf(design:DesignDocument,pageIds:string|str
    if(element.type==='text'){
     const computed=element.textMode==='auto-fit'?(element as TextElement&{autoFitFontSize?:number}).autoFitFontSize??element.fontSize:element.fontSize,ratio=computed/element.fontSize,display={...element,fontSize:computed},runs=referenceFontRuns(textRuns(element)).map(run=>({...run,size:run.size*ratio})),padding=element.padding??0,paragraphGap=element.paragraphSpacing??0;
     const visibleText=element.richText?richTextToPlain(element.richText):element.text,measurement=referenceFontRuns([{text:visibleText,font:element.font,weight:element.fontWeight,italic:element.italic}]),measurementFont=measurement.length===1?measurement[0].font:element.font;pdf.font(await fontBytes(measurementFont,element.fontWeight,element.italic)).fontSize(display.fontSize);const measuredTextHeight=pdf.heightOfString(visibleText,{width:Math.max(1,element.width-2*padding),lineGap:display.fontSize*element.lineHeight-pdf.currentLineHeight(true),paragraphGap});
-    const y=padding+(element.verticalAlign==='bottom'?Math.max(0,element.height-2*padding-measuredTextHeight):element.verticalAlign==='middle'?Math.max(0,(element.height-2*padding-measuredTextHeight)/2):0);
-    const structure=pdf.struct('P',{actual:visibleText});semantic.set(element.id,structure);const marked=pdf.markStructureContent('P',{actual:visibleText});structure.add(marked);pdf.rect(0,0,element.width,element.height).clip();
+    // PDFKit sets a line's ascender at the line's top; the canvas centres the font's ascent and descent on each line box.
+    const halfLeading=(display.fontSize*element.lineHeight-pdf.currentLineHeight())/2;
+    const y=padding+halfLeading+(element.verticalAlign==='bottom'?Math.max(0,element.height-2*padding-measuredTextHeight):element.verticalAlign==='middle'?Math.max(0,(element.height-2*padding-measuredTextHeight)/2):0);
+    // As on the canvas, the box cuts text that doesn't fit it, but not the accents and descenders of the lines it holds.
+    const overhang=measuredTextHeight>element.height-2*padding+1?0:glyphOverhang(display.fontSize,element.lineHeight);
+    const structure=pdf.struct('P',{actual:visibleText});semantic.set(element.id,structure);const marked=pdf.markStructureContent('P',{actual:visibleText});structure.add(marked);pdf.rect(0,-overhang,element.width,element.height+2*overhang).clip();
     for(let i=0;i<runs.length;i++){const run=runs[i],color=parseColor(run.color);pdf.font(await fontBytes(run.font,run.weight,run.italic)).fontSize(run.size).fillColor(color?.rgb??'#000000',requiresRaster?0:(color?.alpha??1)*element.opacity).text(run.text,i?undefined:padding,i?undefined:y,{width:Math.max(1,element.width-2*padding),align:element.align,characterSpacing:element.letterSpacing,lineGap:run.size*element.lineHeight-pdf.currentLineHeight(true),paragraphGap,continued:i<runs.length-1,underline:run.underline,strike:run.strike,oblique:run.italic&&!['libre','serif','sfpro'].includes(run.font)});}pdf.endMarkedContent();structure.end();
    }else if(!requiresRaster){
     const alt=element.type==='image'?(element as typeof element&{publicAlt?:string}).publicAlt:(element.imageFill as typeof element.imageFill&{publicAlt?:string}|undefined)?.publicAlt;

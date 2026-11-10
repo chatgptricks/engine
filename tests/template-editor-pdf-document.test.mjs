@@ -51,6 +51,20 @@ test('PDF clipping never removes an entire semantic line from a short text box',
  }
 });
 
+test('vector PDF text sits where the canvas draws it and keeps the accents of lines that fit',async()=>{
+ // The Follow page's first line: Bebas Neue (ascent .9em, descent .3em) at line height .836 in a box one line tall.
+ const fit=load('lib/template-editor/text-fit.ts'),line={...model.createCanvasElement('text'),id:'fits',text:'SIGUE ESTA PÁGINA',font:'bebas',fontSize:40,lineHeight:.836,letterSpacing:0,x:20,y:30,width:320,height:33.44,textMode:'fixed',verticalAlign:'bottom'};
+ const design=basic();design.pages[0].canvas.elements=[line,{...line,id:'overflows',text:'THIS LINE IS FAR TOO LONG FOR ITS ONE LINE BOX',y:300}];
+ const pdf=await PDFDocument.load(await renderer().renderDocumentPdf(design,design.pages[0].id,{pdfMode:'document'},'owner')),contents=pdf.getPage(0).node.Contents();
+ const ops=(contents instanceof PDFArray?contents.asArray().map(ref=>pdf.context.lookup(ref)):[contents]).map(stream=>inflateSync(stream.contents).toString('latin1')).join('\n').split('\n');
+ const clips=ops.flatMap((op,i)=>ops[i+1]==='W n'&&/ re$/.test(op)?[op.split(' ').slice(0,4).map(Number)]:[]),near=(actual,expected,message)=>assert.ok(Math.abs(actual-expected)<.01,`${message}: ${actual} ≠ ${expected}`);
+ const overhang=fit.glyphOverhang(40,.836);assert.ok(overhang>=40*.194,'room for the accent on Á');
+ [0,-overhang,320,33.44+2*overhang].forEach((value,i)=>near(clips[1][i],value,'a line that fits keeps its accents'));
+ [0,0,320,33.44].forEach((value,i)=>near(clips[2][i],value,'text that overflows is cut at its box'));
+ // As in CSS, the line box centres the font's ascent and descent: the baseline is (.836 + .9 - .3) / 2 em below the box top.
+ const flip=Number(ops.find(op=>/^1 0 0 -1 0 \S+ cm$/.test(op)).split(' ')[5]),position=ops.find((op,i)=>i>ops.indexOf(`${clips[1].join(' ')} re`)&&/ Tm$/.test(op));
+ near(flip-Number(position.split(' ')[5]),40*(.836+.9-.3)/2,'baseline');
+});
 
 test('all bundled font families embed composite glyphs in regular and bold PDF text',async()=>{
  const server=renderer();

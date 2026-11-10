@@ -43,7 +43,6 @@
 .te-canvas-rotate-line { height:calc(24px * var(--te-control-scale,1)); top:calc(-24px * var(--te-control-scale,1)); }
 .te-canvas-layer-label { font-size:calc(9px * var(--te-control-scale,1)); line-height:1.5; }
 .te-canvas-text-frame { width:100%; height:100%; display:flex; flex-direction:column; }
-.te-canvas-text-frame.is-fixed { overflow:hidden; }
 .te-canvas-text-frame .te-canvas-text { flex-shrink:0; }
 .te-canvas-text br { margin-bottom:var(--te-paragraph-spacing,0); }
 .te-canvas-image-frame { width:100%; height:100%; overflow:hidden; }

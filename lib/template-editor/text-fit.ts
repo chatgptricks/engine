@@ -3,6 +3,14 @@ import type { TextElement } from "./model";
 export function textDisplayFontSize(element: TextElement): number {
   return element.textMode === "auto-fit" ? element.autoFitFontSize ?? element.fontSize : element.fontSize;
 }
+/** How far a line's glyphs can reach past its line box, in px. Each line box centres the
+ * font's ascent and descent, so with a line height under the font's own (Bebas Neue at .836)
+ * accented capitals rise above the first line and descenders drop below the last. Measured
+ * over the editor's fonts, ink reaches at most .64em from the middle of a line box (Inter's
+ * Á above, Lora's descenders below); .7em leaves room for the licensed fonts. */
+export function glyphOverhang(fontSize: number, lineHeight: number): number {
+  return Math.round(Math.max(0, .7 - lineHeight / 2) * fontSize * 100) / 100;
+}
 export function textFitLimits(element: TextElement) {
   const min=Math.max(1,Math.min(500,element.autoFitMinFontSize??1));
   const max=Math.max(min,Math.min(500,element.autoFitMaxFontSize??element.fontSize));
