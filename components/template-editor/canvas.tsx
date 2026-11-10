@@ -1,7 +1,7 @@
 "use client";
 import { VectorNodeEditor } from "./vector-node-editor";
 import { layersAtPoint,cycleLayerAtPoint } from "@/lib/template-editor/canvas-hit-testing";
-import { textDisplayFontSize,measureFittedText,measureTextHeight,resizeTextHeight,scaleEditableText,shouldRefitFontSize } from "@/lib/template-editor/text-fit";
+import { textDisplayFontSize,glyphOverhang,measureFittedText,measureTextHeight,resizeTextHeight,scaleEditableText,shouldRefitFontSize } from "@/lib/template-editor/text-fit";
 import { keyboardTransform } from "@/lib/template-editor/editing-actions";
 import { viewGestureDelta,type ViewPoint } from "@/lib/template-editor/view-gestures";
 import {elementEffectiveOpacity} from "@/lib/template-editor/group-opacity";
@@ -316,6 +316,29 @@ function WorldClip({ bounds, children }: { bounds?: CanvasElement["clipBounds"];
   return <div className="te-canvas-source-clip" style={{left:bounds.x,top:bounds.y,width:bounds.width,height:bounds.height}}><div style={{left:-bounds.x,top:-bounds.y}}>{children}</div></div>;
 }
 
+/** A fixed or auto-fit box cuts the text that doesn't fit it, but not the accents and
+ * descenders of the lines it holds, which reach past it at tight line heights: its clip
+ * (canvas.css) reaches past the box by their overhang, sized to the largest font in the layer.
+ * While the text overflows the box, the frame is marked data-overflow and the box cuts it exactly. */
+function TextFrame({ element, lines }: { element: TextElement; lines: string[] }) {
+  const frame = useRef<HTMLDivElement>(null);
+  const fixed = (element.textMode ?? "fixed") !== "auto-height";
+  useLayoutEffect(() => {
+    const box = frame.current, text = box?.firstElementChild;
+    if (!fixed || !box || !(text instanceof HTMLElement)) return;
+    const check = () => box.toggleAttribute("data-overflow", text.offsetHeight > box.offsetHeight + 1);
+    check();
+    const observer = typeof ResizeObserver === "undefined" ? undefined : new ResizeObserver(check);
+    observer?.observe(box); observer?.observe(text);
+    return () => { observer?.disconnect(); box.removeAttribute("data-overflow"); };
+  }, [fixed]);
+  const runSizes = lines.flatMap(line => Array.from(line.matchAll(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi), match => Number(match[1])));
+  const overhang = glyphOverhang(Math.max(textDisplayFontSize(element), ...runSizes), element.lineHeight);
+  return <div ref={frame} className={`te-canvas-text-frame${fixed ? " is-fixed" : ""}`} style={{ justifyContent: element.verticalAlign === "middle" ? "center" : element.verticalAlign === "bottom" ? "flex-end" : "flex-start", "--te-paragraph-spacing": `${element.paragraphSpacing ?? 0}px`, "--te-glyph-overhang": `${overhang}px` } as CSSProperties}>
+    <div className={`te-canvas-text gf-font-${element.font}${element.hangingIndent ? " is-hanging" : ""}`} style={textStyle(element)}>{lines.map((line, index) => <div className="te-canvas-text-line" key={index}>{element.listStyle && element.listStyle !== "none" && <span className="te-canvas-list-prefix" aria-hidden="true">{element.listStyle === "number" ? `${index + 1}. ` : "• "}</span>}<span dangerouslySetInnerHTML={{ __html: line || "<br>" }} /></div>)}</div>
+  </div>;
+}
+
 function SceneElement({ element, smartLayout }: { element: CanvasElement; smartLayout?: SmartTextLayout }) {
   const token = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const filterId = `effect-${token}`, gradientId = `gradient-${token}`;
@@ -344,9 +367,7 @@ function SceneElement({ element, smartLayout }: { element: CanvasElement; smartL
       <feComposite in="color" in2="offset" operator="in" result="shadow" />
       <feMerge><feMergeNode in="shadow" /><feMergeNode in="SourceGraphic" /></feMerge>
     </filter></defs></svg>}
-    {element.type === "text" ? <div className={`te-canvas-text-frame${(element.textMode ?? "fixed") !== "auto-height" ? " is-fixed" : ""}`} style={{ justifyContent: element.verticalAlign === "middle" ? "center" : element.verticalAlign === "bottom" ? "flex-end" : "flex-start", "--te-paragraph-spacing": `${element.paragraphSpacing ?? 0}px` } as CSSProperties}>
-      <div className={`te-canvas-text gf-font-${element.font}${element.hangingIndent ? " is-hanging" : ""}`} style={textStyle(element)}>{lines.map((line, index) => <div className="te-canvas-text-line" key={index}>{element.listStyle && element.listStyle !== "none" && <span className="te-canvas-list-prefix" aria-hidden="true">{element.listStyle === "number" ? `${index + 1}. ` : "• "}</span>}<span dangerouslySetInnerHTML={{ __html: line || "<br>" }} /></div>)}</div>
-    </div> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
+    {element.type === "text" ? <TextFrame element={element} lines={lines} /> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
     </div></div> : element.type === "html" ? <HtmlLayerContent element={element} /> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
