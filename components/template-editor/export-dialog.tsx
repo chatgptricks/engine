@@ -11,7 +11,10 @@ import "./dialog-tools.css";
 export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{design:DesignDocument;pageId:string;disabled:boolean;onClose:()=>void;onExport:(options:ExportOptions,pageIds:string[])=>void;issues?:PreflightIssue[]}) {
   const size=formatDimensions(design),nativeScale=size.width/360;
   const recommendedScale=Math.min(nativeScale,Math.floor(360*Math.sqrt(40_000_000/(360*Math.ceil(360*size.height/size.width))))/360);
-  const [format,setFormat]=useState<NonNullable<ExportOptions["format"]>>("png");
+  // MP4 is its own choice: it downloads the chosen pages that have a video, rendered with every layer.
+  const videoInDeck=design.pages.map((page,index)=>({index,page})).filter(({page})=>pageVideo(page));
+  const [choice,setChoice]=useState<NonNullable<ExportOptions["format"]>|"mp4">(videoInDeck.length?"mp4":"png");
+  const format:NonNullable<ExportOptions["format"]>=choice==="mp4"?"png":choice;
   const [pdfMode,setPdfMode]=useState<'document'|'raster'>('document'),[dpi,setDpi]=useState(150),[widthMm,setWidthMm]=useState(Math.min(2000,Math.max(10,size.width/96*25.4))),[bleedMm,setBleedMm]=useState(0),[cropMarks,setCropMarks]=useState(false),[delivery,setDelivery]=useState<'archive'|'batches'>('archive'),[batchSize,setBatchSize]=useState(4);
   const [scale,setScale]=useState(recommendedScale),[quality,setQuality]=useState(.92),[transparent,setTransparent]=useState(false);
   const [sound,setSound]=useState(true);
@@ -39,7 +42,8 @@ export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{d
   function start() {
     if(disabled)return;
     try {
-      const ids=selectedPages();if(!ids.length)throw new Error("Choose at least one page.");
+      let ids=selectedPages();if(!ids.length)throw new Error("Choose at least one page.");
+      if(choice==="mp4"){ids=ids.filter(id=>pageVideo(design.pages.find(page=>page.id===id)));if(!ids.length)throw new Error(`None of these pages has a video. ${videoInDeck.length?`Pages with a video: ${videoInDeck.map(({index})=>index+1).join(", ")}.`:"Select a photo and choose Replace photo to add one."}`);}
       const options={format,scale,quality,delivery,batchSize,pdfMode,dpi,widthMm,bleedMm,cropMarks,sound,transparent:transparent&&format!=="jpeg"&&format!=="pdf"};
       validateExportOptions(options);
       if(format==='pdf')pdfGeometry(size.width,size.height,options);
@@ -50,13 +54,15 @@ export function ExportDialog({design,pageId,disabled,onClose,onExport,issues}:{d
   return <Modal title="Download design" onClose={onClose}>
     <form onSubmit={event=>{event.preventDefault();start();}}>
       <fieldset className="te-pro-panel te-tool-dialog" disabled={disabled}>
-        <label>File type<select aria-label="Export file type" value={format} onChange={event=>{setFormat(event.target.value as typeof format);setError("");}}>
+        <label>File type<select aria-label="Export file type" value={choice} onChange={event=>{setChoice(event.target.value as typeof choice);setError("");}}>
+          <option value="mp4" disabled={!videoInDeck.length}>{videoInDeck.length?"MP4 · video slides":"MP4 · add a video to a slide first"}</option>
           <option value="png">PNG · recommended for posts</option><option value="jpeg">JPG · smaller images</option><option value="pdf">PDF · one document</option><option value="webp">WebP</option><option value="svg">SVG · web viewers</option>
         </select></label>
         {design.pages.length>1&&<label>Pages<select aria-label="Export pages" value={pages} onChange={event=>{setPages(event.target.value);setError("");}}><option value="all">All {design.pages.length} pages</option><option value="current">Current page</option><option value="range">Choose page numbers</option></select></label>}
         {pages==="range"&&<label>Page numbers<input aria-label="Export page range" value={range} onChange={event=>{setRange(event.target.value);setError("");}} placeholder="1, 3-5" aria-invalid={Boolean(error)}/></label>}
-        <div className="te-dialog-summary"><strong>{format==='pdf'?`${Math.round(widthMm*100)/100} × ${Math.round(widthMm*size.height/size.width*100)/100} mm`:`${width.toLocaleString("en-US")} × ${height.toLocaleString("en-US")} px`}</strong><span>{selectedIds.length} page{selectedIds.length===1?"":"s"}{selectedIds.length>1&&format!=="pdf"?" · ZIP":""}</span></div>
-        {videoPages.length>0&&<><p className="te-dialog-note">{videoPages.length===1?`Page ${videoPages[0]} has a video and downloads as MP4`:`Pages ${videoPages.join(", ")} have videos and download as MP4`} ({Math.min(width,1080)} px wide, 30 fps). Rendering takes a little longer than the video plays.</p>
+        <div className="te-dialog-summary"><strong>{format==='pdf'?`${Math.round(widthMm*100)/100} × ${Math.round(widthMm*size.height/size.width*100)/100} mm`:`${width.toLocaleString("en-US")} × ${height.toLocaleString("en-US")} px`}</strong><span>{choice==="mp4"?`${videoPages.length} video${videoPages.length===1?"":"s"}${videoPages.length>1?" · ZIP":""}`:<>{selectedIds.length} page{selectedIds.length===1?"":"s"}{selectedIds.length>1&&format!=="pdf"?" · ZIP":""}</>}</span></div>
+        {choice==="mp4"&&!videoPages.length&&<p className="te-dialog-note">None of the chosen pages has a video. Pages with a video: {videoInDeck.map(({index})=>index+1).join(", ")}.</p>}
+        {videoPages.length>0&&<><p className="te-dialog-note">{choice==="mp4"?`Downloads page${videoPages.length===1?"":"s"} ${videoPages.join(", ")} as MP4`:videoPages.length===1?`Page ${videoPages[0]} has a video and downloads as MP4`:`Pages ${videoPages.join(", ")} have videos and download as MP4`} ({Math.min(width,1080)} px wide, 30 fps, every layer included). Rendering takes a little longer than the video plays.</p>
         <label className="te-dialog-check"><input type="checkbox" checked={sound} onChange={event=>setSound(event.target.checked)}/>Include the video&rsquo;s sound</label></>}
         <details><summary>Advanced settings</summary><div className="te-dialog-details-body">
           {format==='pdf'?<><label>PDF mode<select value={pdfMode} onChange={event=>setPdfMode(event.target.value as typeof pdfMode)}><option value='document'>Document · text and vectors</option><option value='raster'>Picture · selectable text overlay</option></select></label><label>Page width (mm)<input type='number' min='10' max='2000' step='any' value={widthMm} onChange={event=>setWidthMm(Number(event.target.value))}/></label><label>Picture resolution (DPI)<input type='number' min='72' max='600' value={dpi} onChange={event=>setDpi(Number(event.target.value))}/></label><label>Bleed (mm)<input type='number' min='0' max='10' step='.5' value={bleedMm} onChange={event=>setBleedMm(Number(event.target.value))}/></label><label className='te-dialog-check'><input type='checkbox' checked={cropMarks} onChange={event=>setCropMarks(event.target.checked)}/>Crop marks</label><p>Fonts are embedded. Complex effects use the rendered page while text remains selectable. Colors are RGB; this is not a CMYK press profile.</p></>:<label>Image size<select aria-label="Export resolution" value={scale} onChange={event=>{setScale(Number(event.target.value));setError("");}}>{Array.from(new Set([recommendedScale,nativeScale,1,2,3,4,6])).sort((a,b)=>a-b).map(value=><option key={value} value={value}>{Math.round(360*value)} × {Math.round(360*size.height/size.width*value)} px{value===nativeScale?" · original size":value===recommendedScale?" · recommended":""}</option>)}</select></label>}
