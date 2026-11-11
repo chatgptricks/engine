@@ -238,7 +238,7 @@ test("the brief tells every agent the guide in plain words",()=>{
   assert.ok(!brief.includes("Topic logos on file"));
   const topical={...guide,logos:[...guide.logos,{id:"claude",role:"topic",name:"Claude",src:"/claude.svg",width:1,height:1,topics:["Claude","Anthropic"],note:""}]};
   assert.match(guides.guideBrief(topical),/Topic logos on file: Claude\. A cover that names one of these carries its logo/);
-  assert.deepEqual(json(guides.guideSummary(guide)),{id:"chatgptricks",name:"ChatGPTricks",version:1,updatedAt:BUILT_IN_GUIDE_UPDATED_AT,source:guide.source,colors:7,textStyles:7,logos:1,topicLogos:0,examples:3,rules:guide.rules.length,checks:14});
+  assert.deepEqual(json(guides.guideSummary(guide)),{id:"chatgptricks",name:"ChatGPTricks",version:1,updatedAt:BUILT_IN_GUIDE_UPDATED_AT,source:guide.source,colors:7,textStyles:7,logos:1,topicLogos:0,examples:3,rules:guide.rules.length,checks:15});
 });
 
 test("topic logos match whole words a cover names, in the cover's order, two at most",()=>{
@@ -565,7 +565,7 @@ test("the brands route serves people and agent tokens, scoped to their workspace
   assert.equal(listed.status,200);
   assert.equal(listed.headers.get("cache-control"),"private, no-store");
   const summaries=(await listed.json()).guides;
-  assert.deepEqual(summaries.map(item=>[item.id,item.version,item.builtIn,item.overridden,item.checks]),[["chatgptricks",1,true,false,14]]);
+  assert.deepEqual(summaries.map(item=>[item.id,item.version,item.builtIn,item.overridden,item.checks]),[["chatgptricks",1,true,false,15]]);
 
   const one=await (await route.GET(request("GET",{query:"?id=chatgptricks"}))).json();
   assert.equal(one.guide.id,"chatgptricks");

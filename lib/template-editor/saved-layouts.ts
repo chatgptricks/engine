@@ -97,7 +97,7 @@ function placeholder(width: number, height: number): string {
 }
 
 /** Where a photo came from and how it was cut: none of it belongs to the placeholder. */
-const PHOTO_DETAILS = ["previewSrc", "publicAlt", "alt", "rightsNote", "sourceUrl", "provenance", "cropScale", "flipX", "flipY"] as const;
+const PHOTO_DETAILS = ["previewSrc", "publicAlt", "alt", "rightsNote", "sourceUrl", "provenance", "cropScale", "flipX", "flipY", "video"] as const;
 function without<T extends object>(value: T, keys: readonly string[]): T {
   const next = { ...value } as Record<string, unknown>;
   for (const key of keys) delete next[key];

@@ -74,6 +74,7 @@ const chatgptricks = {
     { id: "m-proportions", area: "media", use: "guide", text: "Photos, charts and videos keep their original proportions, with the background visible around them" },
     { id: "m-no-frames", area: "media", use: "guide", text: "No frames, stretching or blurred copies behind the media" },
     { id: "m-video", area: "media", use: "guide", text: "Real video for moving demonstrations" },
+    { id: "m-video-poster", area: "media", use: "check", check: "video-poster", text: "Every video has a poster: a frame from the clip that thumbnails, PNG and PDF show" },
     { id: "m-editorial", area: "media", use: "guide", text: "Realistic editorial imagery" },
     { id: "m-diagrams", area: "media", use: "guide", text: "Diagrams in SF Pro with one consistent style. Interfaces may sit in a window frame" },
     { id: "y-margins", area: "layout", use: "check", check: "text-margins", text: "Text keeps 72 px margins on each side" },

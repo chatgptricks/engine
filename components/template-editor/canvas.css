@@ -430,3 +430,7 @@
 .te-selection-actions > button[aria-pressed="true"] { color: #d6c6ff; }
 .te-selection-actions > button:disabled { opacity: .35; cursor: not-allowed; }
 .te-selection-actions svg { width: 16px; height: 16px; }
+
+/* A layer's clip plays where its photo would be, under the same crop. */
+.te-canvas-video { pointer-events: none; background: transparent; }
+.te-video-controls .te-video-trim { display: grid; gap: 6px; border: 0; margin: 8px 0 0; padding: 0; }

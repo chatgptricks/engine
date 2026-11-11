@@ -137,7 +137,37 @@ export type PhotoMetadata = {
   rightsNote?: string;
   sourceUrl?: string;
   provenance?: { source?: string; imageId?: string; description?: string; cosmosManual?: boolean };
+  /** A clip that plays in place of the photo. `src` stays the clip's cover
+   * frame, so anything that doesn't know about video shows the cover. */
+  video?: VideoClip;
 };
+/** A stored video clip. `src` is always `/api/template-editor/videos/<sha256>`:
+ * clips never sit inside a deck. Times are in seconds. */
+export type VideoClip = {
+  src: string;
+  mimeType: (typeof VIDEO_MIME_TYPES)[number];
+  duration: number;
+  width: number;
+  height: number;
+  bytes: number;
+  /** Trim. Absent means the clip's start and end. */
+  start?: number;
+  end?: number;
+  /** Plays again from `start` when it reaches `end`. Defaults to true. */
+  loop?: boolean;
+  /** The editor plays it silently unless this is false. Export decides sound on its own. */
+  muted?: boolean;
+  /** The time the cover (`src` of the photo) was taken from. */
+  coverTime?: number;
+  /** Set when the clip arrived without a poster: `src` is only a dark stand-in, which engine_check_deck flags. Choosing a cover clears it. */
+  noPoster?: boolean;
+};
+export const VIDEO_MIME_TYPES = ["video/mp4", "video/quicktime", "video/webm"] as const;
+export const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+export const MAX_VIDEO_SECONDS = 180;
+/** A slide plays at most this much of its clip: Instagram's limit for a carousel video. A longer upload is trimmed to it. */
+export const MAX_SLIDE_VIDEO_SECONDS = 60;
+export const VIDEO_SRC_PATTERN = /^\/api\/template-editor\/videos\/([a-f0-9]{64})$/;
 export type ShapeImageFill = PhotoMetadata & {
   src: string;
   previewSrc?: string;
@@ -2283,6 +2313,26 @@ const numberIn = (value: unknown, min: number, max: number): value is number =>
   value >= min &&
   value <= max;
 
+/** A clip's fields, checked: its own stored URL only, sizes in range, and a
+ * trim inside the clip (a trim past the end is cut to the end) and no longer
+ * than a slide plays (MAX_SLIDE_VIDEO_SECONDS, measured from its start). */
+export function parseVideoClip(value: unknown): VideoClip | null {
+  if (!object(value) || typeof value.src !== "string" || !VIDEO_SRC_PATTERN.test(value.src)) return null;
+  if (!choice([...VIDEO_MIME_TYPES])(value.mimeType) || !numberIn(value.duration, 0.05, MAX_VIDEO_SECONDS + 1) || !numberIn(value.width, 1, 16_384) || !numberIn(value.height, 1, 16_384) || !numberIn(value.bytes, 1, MAX_VIDEO_BYTES)) return null;
+  if (!optional(value, "start", candidate => numberIn(candidate, 0, 100_000)) || !optional(value, "end", candidate => numberIn(candidate, 0, 100_000)) || !optional(value, "loop", boolean) || !optional(value, "muted", boolean) || !optional(value, "coverTime", candidate => numberIn(candidate, 0, 100_000))) return null;
+  const clip: VideoClip = { src: value.src, mimeType: value.mimeType as VideoClip["mimeType"], duration: value.duration, width: Math.round(value.width), height: Math.round(value.height), bytes: Math.round(value.bytes) };
+  const start = Math.min(typeof value.start === "number" ? value.start : 0, clip.duration);
+  const end = Math.min(typeof value.end === "number" ? value.end : clip.duration, clip.duration, start + MAX_SLIDE_VIDEO_SECONDS);
+  if (end - start < 0.1) return null;
+  if (start > 0) clip.start = start;
+  if (end < clip.duration) clip.end = end;
+  if (typeof value.loop === "boolean") clip.loop = value.loop;
+  if (typeof value.muted === "boolean") clip.muted = value.muted;
+  if (typeof value.coverTime === "number") clip.coverTime = Math.min(value.coverTime, clip.duration);
+  if (value.noPoster === true) clip.noPoster = true;
+  return clip;
+}
+
 function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | null {
   if (!optional(value,"publicAlt",candidate=>string(candidate,2000)) || !optional(value,"previewSrc",safeImageUrl)) return null;
   if (!optional(value, "directive", candidate => string(candidate, 2000)) || !optional(value, "rightsNote", candidate => string(candidate, 2000))) return null;
@@ -2298,6 +2348,11 @@ function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | nul
     if (!object(provenance) || !optional(provenance, "source", candidate => string(candidate, 200)) || !optional(provenance, "imageId", identity) || !optional(provenance, "description", candidate => string(candidate, 10_000)) || !optional(provenance, "cosmosManual", boolean)) return null;
     result.provenance = {};
     for (const key of ["source", "imageId", "description", "cosmosManual"] as const) if (provenance[key] !== undefined) Object.assign(result.provenance, { [key]: provenance[key] });
+  }
+  if (value.video !== undefined) {
+    const video = parseVideoClip(value.video);
+    if (!video) return null;
+    result.video = video;
   }
   return result;
 }

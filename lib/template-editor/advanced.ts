@@ -112,7 +112,7 @@ export function updateComponentInstances(design: DesignDocument, component: Reus
         const width = Math.max(1, element.width * sx), height = Math.max(1, element.height * sy), cx = (element.x + element.width / 2) * sx, cy = (element.y + element.height / 2) * sy;
         let updated: CanvasElement = { ...element, x: origin.x + cos * cx - sin * cy - width / 2, y: origin.y + sin * cx + cos * cy - height / 2, width, height, rotation: element.rotation + rotation, componentId: component.id, componentInstanceId: instance, componentSourceId: original.id, ...(element.type === "text" ? { fontSize: Math.min(500, element.fontSize * Math.min(sx, sy)) } : {}), ...(element.groupId ? {} : wrapperId ? { groupId: wrapperId } : {}) };
         if (current && oldSource && current.type === "text" && oldSource.type === "text" && updated.type === "text" && current.text !== oldSource.text) updated = { ...updated, text: current.text, richText: current.richText };
-        if (current && oldSource && current.type === "image" && oldSource.type === "image" && updated.type === "image" && current.src !== oldSource.src) updated = { ...updated, src: current.src, previewSrc:current.previewSrc, publicAlt:current.publicAlt, intrinsicWidth: current.intrinsicWidth, intrinsicHeight: current.intrinsicHeight, directive: current.directive, rightsNote: current.rightsNote, sourceUrl: current.sourceUrl, provenance: current.provenance ? structuredClone(current.provenance) : undefined };
+        if (current && oldSource && current.type === "image" && oldSource.type === "image" && updated.type === "image" && current.src !== oldSource.src) updated = { ...updated, src: current.src, previewSrc:current.previewSrc, publicAlt:current.publicAlt, intrinsicWidth: current.intrinsicWidth, intrinsicHeight: current.intrinsicHeight, directive: current.directive, rightsNote: current.rightsNote, sourceUrl: current.sourceUrl, provenance: current.provenance ? structuredClone(current.provenance) : undefined, video: current.video ? structuredClone(current.video) : undefined };
         if (current?.type === "shape" && oldSource?.type === "shape" && updated.type === "shape" && JSON.stringify(current.imageFill) !== JSON.stringify(oldSource.imageFill)) updated = { ...updated, imageFill: current.imageFill ? structuredClone(current.imageFill) : undefined };
         if (current?.type === "text" && oldSource?.type === "text" && updated.type === "text") {
           if (JSON.stringify(current.textureFill) !== JSON.stringify(oldSource.textureFill)) updated = { ...updated, textureFill: current.textureFill ? structuredClone(current.textureFill) : undefined };
@@ -134,7 +134,7 @@ export function updateComponentInstances(design: DesignDocument, component: Reus
 export function replacePhotoSource<T extends {src:string}>(previous:T,src:string):T {
   if(previous.src===src)return previous;
   const next={...previous,src} as Record<string,unknown>;
-  for(const field of ['previewSrc','intrinsicWidth','intrinsicHeight','publicAlt','alt','directive','rightsNote','sourceUrl','provenance'])delete next[field];
+  for(const field of ['previewSrc','intrinsicWidth','intrinsicHeight','publicAlt','alt','directive','rightsNote','sourceUrl','provenance','video'])delete next[field];
   return next as T;
 }
 
