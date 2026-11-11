@@ -6,6 +6,7 @@ import { parseColor, colorWithAlpha } from "@/lib/template-editor/color-utils";
 export const FONTS = [
   ["geist", "Geist Sans"],
   ["sfpro", "SF Pro Display"],
+  ["chirp", "Chirp (X posts)"],
   ["inter", "Inter"],
   ["space", "Space Grotesk"],
   ["montserrat", "Montserrat"],

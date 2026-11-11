@@ -34,11 +34,16 @@
 @font-face { font-family: "GF Bebas Neue Canva"; src: url("/fonts/licensed/BebasNeueBold-Canva.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: "GF Bebas Neue Canva"; src: url("/fonts/licensed/BebasNeueBold-Canva.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
 
+/* X's typeface (Chirp) for post cards. Without these files, text in it shows SF Pro. */
+@font-face { font-family: "GF Chirp"; src: url("/fonts/licensed/Chirp-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GF Chirp"; src: url("/fonts/licensed/Chirp-Bold.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+
 .gf-root {
   --gf-f-walsheim: "GF GT Walsheim";
   --gf-f-walsheimcond: "GF GT Walsheim Condensed";
   --gf-f-kyoto: "GF PP Kyoto";
   --gf-f-century: "GF Century Gothic";
   --gf-f-sfpro: "GF SF Pro Display";
+  --gf-f-chirp: "GF Chirp";
   --gf-f-bebascanva: "GF Bebas Neue Canva";
 }

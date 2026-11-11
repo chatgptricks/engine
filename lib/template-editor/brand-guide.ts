@@ -63,7 +63,7 @@ export type GuideExample = GuideImage & { note: string };
 export type GuideRuleArea = "writing" | "cover" | "media" | "layout" | "type" | "color" | "logos";
 export const GUIDE_CHECK_KINDS = [
   "no-final-period", "no-em-dash", "sentence-case-titles", "upper-cover", "body-length", "banned-words", "cover-remark",
-  "palette", "fonts", "min-text-size", "text-margins", "source-line", "spacing", "accent-fill", "video-poster",
+  "palette", "fonts", "min-text-size", "text-margins", "source-line", "spacing", "accent-fill", "video-poster", "x-font",
 ] as const;
 export type GuideCheckKind = typeof GUIDE_CHECK_KINDS[number];
 export type GuideRule = {
@@ -108,8 +108,8 @@ export const GUIDE_LIMITS = {
   imageUrl: 2_000, svgUrl: 400_000, dataUrl: 700_000,
   rules: 60, rule: 400, bannedWords: 40, bannedWord: 40, hookNotes: 12, hookNote: 300,
 } as const;
-export const GUIDE_FONT_IDS = ["serif", "sans", "walsheim", "walsheimcond", "kyoto", "century", "libre", "geist", "sfpro", "playfair", "dmserif", "lora", "cormorant", "crimson", "inter", "space", "montserrat", "bebas", "bebascanva", "plexmono", "caveat"] as const;
-const FONT_NAMES: Record<string, string> = { sfpro: "SF Pro Display", bebas: "Bebas Neue", bebascanva: "Bebas Neue Bold", inter: "Inter", geist: "Geist Sans" };
+export const GUIDE_FONT_IDS = ["serif", "sans", "walsheim", "walsheimcond", "kyoto", "century", "libre", "geist", "sfpro", "chirp", "playfair", "dmserif", "lora", "cormorant", "crimson", "inter", "space", "montserrat", "bebas", "bebascanva", "plexmono", "caveat"] as const;
+const FONT_NAMES: Record<string, string> = { sfpro: "SF Pro Display", chirp: "Chirp (X)", bebas: "Bebas Neue", bebascanva: "Bebas Neue Bold", inter: "Inter", geist: "Geist Sans" };
 export const fontName = (id: string) => FONT_NAMES[id] ?? id;
 
 /** What each code check measures, how serious a miss is, and who fixes it. */
@@ -130,6 +130,8 @@ export const GUIDE_CHECKS: Record<GuideCheckKind, { label: string; severity: Gui
   "accent-fill": { label: "Accent gradient inside titles", severity: "should_fix", route: "none", scope: "template" },
   // Always on: a video without a poster shows a dark frame in thumbnails, PNG and PDF, whatever the guide says.
   "video-poster": { label: "Every video has a poster", severity: "must_fix", route: "images", scope: "layer" },
+  // Always on when the server lacks X's font: post cards in chirp show SF Pro instead.
+  "x-font": { label: "X's font is installed for post cards", severity: "should_fix", route: "none", scope: "layer" },
 };
 
 export class BrandGuideError extends Error {
@@ -448,6 +450,8 @@ export type CheckOptions = {
   language?: "en" | "es";
   /** Kinds another check already covers (the page's own format rules). */
   skip?: GuideCheckKind[];
+  /** X's font (Chirp) isn't installed here, so text in it falls back to SF Pro. */
+  xFontMissing?: boolean;
 };
 
 const isReactionPage = (page: DesignPage) => (page.canvas?.elements ?? []).some(element => element.slot?.startsWith("reaction-"));
@@ -504,6 +508,8 @@ export function runGuideChecks(target: CheckTarget, guide: BrandGuide, options: 
       const clip = element.type === "image" ? element.video : element.type === "shape" ? element.imageFill?.video : undefined;
       if (!element.hidden && clip?.noPoster && !skip.has("video-poster")) add("video-poster", slide, `The video “${element.name}” has no poster, so thumbnails, PNG and PDF show a dark frame`, "Set a poster: in the editor's Video tab choose Use this frame as cover, or send update_element with poster (an image from the clip)");
     }
+    const chirp = (page.canvas?.elements ?? []).filter(element => element.type === "text" && !element.hidden && element.font === "chirp");
+    if (options.xFontMissing && options.scope === "deck" && chirp.length && !skip.has("x-font") && !issues.some(issue => issue.check === "x-font")) add("x-font", slide, `X's font (Chirp) isn't installed, so “${chirp[0].name}” and the other post text in Chirp show SF Pro instead`, "Add Chirp-Regular.woff2 and Chirp-Bold.woff2 to public/fonts/licensed (and to the licensed font bundle for deploys)");
     if (isReactionPage(page)) return; // Reaction pages keep their own post-card design.
     for (const element of page.canvas?.elements ?? []) {
       if (element.hidden) continue;
@@ -518,7 +524,8 @@ export function runGuideChecks(target: CheckTarget, guide: BrandGuide, options: 
       // Padding (accent room on Spanish templates) is box, not text: measure where the words are.
       const pad = element.padding ?? 0;
       if (!fromTemplate) {
-        if (on("fonts") && !fonts.has(element.font)) add("fonts", slide, `“${element.name}” is set in ${fontName(element.font)}, which the guide doesn't use`, `Use ${[...fonts].map(fontName).join(" or ")}`);
+        // X's font is always allowed: post cards look like X, whatever the page's own fonts.
+        if (on("fonts") && !fonts.has(element.font) && element.font !== "chirp") add("fonts", slide, `“${element.name}” is set in ${fontName(element.font)}, which the guide doesn't use`, `Use ${[...fonts].map(fontName).join(" or ")}`);
         const px = element.fontSize * k;
         if (on("min-text-size") && px < layout.minTextSize * scaleX - 0.5) add("min-text-size", slide, `“${element.name}” is ${Math.round(px * 10) / 10} px, under the ${layout.minTextSize} px minimum`, `Set it to at least ${layout.minTextSize} px`);
       }

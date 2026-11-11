@@ -36,6 +36,7 @@ export const HTML_FONT_STACKS: Readonly<Record<string, string>> = {
   kyoto: "var(--gf-f-kyoto), Georgia, serif",
   century: "var(--gf-f-century), system-ui, sans-serif",
   sfpro: "var(--gf-f-sfpro), system-ui, sans-serif",
+  chirp: "var(--gf-f-chirp), var(--gf-f-sfpro), system-ui, sans-serif",
   playfair: "var(--gf-f-playfair), Georgia, serif",
   dmserif: "var(--gf-f-dmserif), Georgia, serif",
   lora: "var(--gf-f-lora), Georgia, serif",
@@ -53,7 +54,7 @@ const ALL_FONTS: ReadonlySet<string> = new Set(Object.keys(HTML_FONT_STACKS));
 /** Family names people write for Engine's fonts, so `"SF Pro Display"` finds the brand's SF Pro. */
 const FONT_ALIASES: Readonly<Record<string, string>> = {
   ...Object.fromEntries(Object.keys(HTML_FONT_STACKS).map(id => [id, id])),
-  "sf pro display": "sfpro", "sf pro": "sfpro", "sf pro text": "sfpro", "gf sf pro display": "sfpro",
+  "sf pro display": "sfpro", "sf pro": "sfpro", "sf pro text": "sfpro", "gf sf pro display": "sfpro", "gf chirp": "chirp", "chirp regular": "chirp", "chirp bold": "chirp", "twitterchirp": "chirp",
   "bebas neue": "bebas", "bebas neue bold": "bebascanva", "gf bebas neue canva": "bebascanva",
   "geist sans": "geist", "playfair display": "playfair", "dm serif display": "dmserif",
   "cormorant garamond": "cormorant", "crimson pro": "crimson", "crimson text": "crimson",
@@ -475,7 +476,8 @@ export function htmlLayerFonts(tokens: Record<string, string> | undefined): Read
     if (!ROLE_FONT_TOKEN.test(name)) continue;
     for (const [id, stack] of Object.entries(HTML_FONT_STACKS)) if (stack === value) ids.add(id);
   }
-  return ids.size ? ids : ALL_FONTS;
+  // X's font is always allowed: a post card looks like X on any brand.
+  return ids.size ? new Set([...ids, "chirp"]) : ALL_FONTS;
 }
 
 const slug = (value: string) => value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
