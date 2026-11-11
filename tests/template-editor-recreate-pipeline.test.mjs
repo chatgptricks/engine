@@ -95,6 +95,7 @@ test("buildRecreatedDeck makes a native deck with emphasis, a chart PNG and note
   assert.equal(document.pages.length,3,"the out-of-range page is skipped, the repeated page kept");
   assert.equal(document.templateId,template.id);
   assert.ok(document.tags.includes("recreated")&&document.tags.includes("chatgptricks"));
+  assert.equal(document.pageId,"chatgptricks","Projects files the post under its page");
   assert.ok(notes.some(note=>/page 99/.test(note)));
   assert.ok(notes.some(note=>/not-a-slot/.test(note)));
   const cover=document.pages[0].canvas.elements.find(element=>element.richText&&/the jobs/.test(element.richText));

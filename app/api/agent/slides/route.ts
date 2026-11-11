@@ -7,6 +7,7 @@ import {getEditorLibrary, saveEditorLibrary, LibraryConflictError} from "@/lib/t
 import {libraryTemplates} from "@/lib/template-editor/template-catalog";
 import {formatDimensions, parseLibrary, type DesignDocument} from "@/lib/template-editor/model";
 import {checkLibrarySaveBudget} from "@/lib/template-editor/library-budget";
+import {listPageProfiles} from "@/lib/engine/page-profiles";
 import {storeNewImages} from "@/lib/template-editor/stored-images";
 import {resolveAgentVideos} from "@/lib/template-editor/agent-videos";
 import {frameCutSource, isFrameOperation, validateAgentUpdate, type FrameResolution} from "@/lib/template-editor/agent-decks";
@@ -115,6 +116,7 @@ async function dispatch(ownerKey: string, input: Record<string, unknown>) {
       const brandTokens = (templateId: unknown) => htmlTokensForTemplate(ownerKey, templates.find(template => template.id === templateId));
       if (action === "create_deck") {
         if (existing) throw new RequestError("A deck with this id already exists. Use update_deck to revise it.", 409);
+        if (spec.pageId !== undefined && typeof spec.pageId === "string" && !(await listPageProfiles(ownerKey)).some(profile => profile.id === spec.pageId)) throw new RequestError(`Unknown pageId "${spec.pageId.slice(0, 120)}". Use a page profile id from engine_list_page_profiles, or omit pageId.`);
         const tokens = addsHtmlLayers(spec) ? await brandTokens(spec.templateId) : undefined;
         document = createAgentDeck(withHtmlLayerTokens({...videoSpec, id: deckId}, tokens), templates);
       } else {

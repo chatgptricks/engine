@@ -350,6 +350,8 @@ export async function assembleDeck(input: AssembleInput): Promise<{ document: De
   for (const pair of spanPairs(document)) if (pair.start.publicAlt) pair.end.publicAlt = pair.start.publicAlt;
   document.comments = [...(document.comments ?? []), ...comments];
   document.tags = [...new Set([...(document.tags ?? []), "recreated", profile.id])].slice(0, 20);
+  // Projects files the post under its page, in the month it was made.
+  document.pageId = profile.id;
   return { document, notes, pages: prepared.map((item, index) => ({ pageId: document.pages[index].id, templatePage: item.page.index, slide: item.index })) };
 }
 
@@ -381,7 +383,7 @@ export async function saveDeck(ownerKey: string, document: DesignDocument, repla
       }
       // A fix round saving over a rebuilt copy keeps it named apart from the person's version.
       candidate = { ...deck, ...(existing.name.endsWith(REBUILT) ? { name: rebuiltName(deck.name) } : {}), createdAt: existing.createdAt, updatedAt: new Date().toISOString() };
-      for (const key of ["folderId", "favorite"] as const) if (existing[key] !== undefined) Object.assign(candidate, { [key]: existing[key] });
+      for (const key of ["folderId", "favorite", "pageId"] as const) if (existing[key] !== undefined) Object.assign(candidate, { [key]: existing[key] });
       list = designs.map(item => item.id === deck.id ? candidate : item);
     } else {
       // A new deck, or one that was deleted for good: it goes back at the top.
