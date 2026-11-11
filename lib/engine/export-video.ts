@@ -212,23 +212,46 @@ export async function exportSlideVideo(
       : raw;
   const duration = Math.min(Math.max(0.1, trimEnd - trimStart), maxSeconds);
 
+  return encodeComposite({
+    video,
+    under,
+    over,
+    drawVideo,
+    width,
+    height,
+    fps,
+    duration,
+    startAt: trimStart,
+    onProgress: opts.onProgress,
+  });
+}
+
+/** The shared encoder: draws `under`, the video, then `over` for every frame of
+ * the window [startAt, startAt + duration] and returns the file. WebCodecs (H.264
+ * MP4, the clip's AAC copied in) first; MediaRecorder in real time otherwise. */
+export async function encodeComposite(args: {
+  video: HTMLVideoElement;
+  under: HTMLCanvasElement;
+  over: HTMLCanvasElement;
+  drawVideo: (ctx: CanvasRenderingContext2D) => void;
+  width: number;
+  height: number;
+  fps: number;
+  duration: number;
+  startAt: number;
+  /** Copy the clip's sound in (default true). */
+  withAudio?: boolean;
+  bitrate?: number;
+  signal?: AbortSignal;
+  onProgress?: (fraction: number) => void;
+}): Promise<SlideVideoResult> {
   // ── Primary: WebCodecs seek-and-encode (fast, never plays in real time, so
   // a large/networked clip can't stall it) + the clip's audio copied in ──
   if (typeof window !== "undefined" && "VideoEncoder" in window) {
     try {
-      return await encodeWithWebCodecs({
-        video,
-        under,
-        over,
-        drawVideo,
-        width,
-        height,
-        fps,
-        duration,
-        startAt: trimStart,
-        onProgress: opts.onProgress,
-      });
+      return await encodeWithWebCodecs(args);
     } catch (err) {
+      args.signal?.throwIfAborted();
       console.error(
         "[gf-export-video] WebCodecs path failed, falling back to realtime:",
         err,
@@ -248,19 +271,7 @@ export async function exportSlideVideo(
       (t) => typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(t),
     ) ?? "";
   if (!mime) throw new Error("This browser can’t export video.");
-  return recordRealtime({
-    video,
-    under,
-    over,
-    drawVideo,
-    width,
-    height,
-    fps,
-    duration,
-    trimStart,
-    mime,
-    onProgress: opts.onProgress,
-  });
+  return recordRealtime({ ...args, trimStart: args.startAt, mime });
 }
 
 /** Realtime capture: play the clip from the trim point and record the
@@ -277,6 +288,9 @@ async function recordRealtime(args: {
   duration: number;
   trimStart: number;
   mime: string;
+  withAudio?: boolean;
+  bitrate?: number;
+  signal?: AbortSignal;
   onProgress?: (fraction: number) => void;
 }): Promise<SlideVideoResult> {
   const { video, under, over, drawVideo, width, height, fps, duration, trimStart, mime } =
@@ -306,7 +320,7 @@ async function recordRealtime(args: {
       window.AudioContext ||
       (window as unknown as { webkitAudioContext?: typeof AudioContext })
         .webkitAudioContext;
-    if (Ctx) {
+    if (Ctx && args.withAudio !== false) {
       audioCtx = new Ctx();
       // Safari starts an AudioContext SUSPENDED until resumed — without this the
       // tapped audio (and the element's playback) can stall. Fire-and-forget.
@@ -326,7 +340,7 @@ async function recordRealtime(args: {
 
   const rec = new MediaRecorder(stream, {
     mimeType: mime,
-    videoBitsPerSecond: 10_000_000,
+    videoBitsPerSecond: args.bitrate ?? 10_000_000,
     audioBitsPerSecond: 128_000,
   });
   const chunks: Blob[] = [];
@@ -358,7 +372,7 @@ async function recordRealtime(args: {
         }
         ctx.drawImage(over, 0, 0, width, height);
         args.onProgress?.(Math.min(1, elapsed / duration));
-        if (elapsed >= duration || video.ended) done = true;
+        if (elapsed >= duration || video.ended || args.signal?.aborted) done = true;
       } catch {
         /* defensive: never throw out of the tick */
       }
@@ -375,6 +389,7 @@ async function recordRealtime(args: {
   video.pause();
   await stopped;
   if (audioCtx) await audioCtx.close().catch(() => {});
+  args.signal?.throwIfAborted();
 
   const type = rec.mimeType || mime;
   return {
@@ -623,6 +638,9 @@ async function encodeWithWebCodecs(args: {
   duration: number;
   /** Trim offset: encoding starts at this source-clip time (output stays 0-based). */
   startAt: number;
+  withAudio?: boolean;
+  bitrate?: number;
+  signal?: AbortSignal;
   onProgress?: (fraction: number) => void;
 }): Promise<SlideVideoResult> {
   const {
@@ -646,7 +664,7 @@ async function encodeWithWebCodecs(args: {
     codec: "avc1.640028", // H.264 High — broadly decodable, IG-friendly
     width: W,
     height: H,
-    bitrate: 10_000_000,
+    bitrate: args.bitrate ?? 10_000_000,
     framerate: fps,
   };
   const support = await VideoEncoder.isConfigSupported(config);
@@ -654,11 +672,10 @@ async function encodeWithWebCodecs(args: {
 
   // ── Source audio: copy the clip's compressed AAC track (no decode/encode,
   // so it works on Safari and is memory-light), trimmed to the window ──
-  const demuxed = await demuxAudioChunks(
-    video.currentSrc || video.src,
-    startAt,
-    duration,
-  );
+  const demuxed =
+    args.withAudio === false
+      ? ((lastAudioReason = "sound left out"), null)
+      : await demuxAudioChunks(video.currentSrc || video.src, startAt, duration);
   const useAudio = Boolean(demuxed && demuxed.chunks.length);
   const audioNote = useAudio ? "sound included" : lastAudioReason;
   console.log(
@@ -748,6 +765,10 @@ async function encodeWithWebCodecs(args: {
   const totalFrames = Math.max(1, Math.round(duration * fps));
   for (let i = 0; i < totalFrames; i++) {
     if (encodeError) throw encodeError;
+    if (args.signal?.aborted) {
+      encoder.close();
+      args.signal.throwIfAborted();
+    }
     const t = i / fps;
     await seekTo(startAt + t);
     ctx.drawImage(under, 0, 0, W, H);

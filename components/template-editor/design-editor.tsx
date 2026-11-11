@@ -53,6 +53,9 @@ import {
 } from "@/lib/template-editor/model";
 import {pdfGeometry} from "@/lib/template-editor/pdf-options";
 import { exportFrames, fileName, saveBlob, type ExportOptions } from "@/lib/template-editor/export";
+import { pageVideo } from "@/lib/template-editor/export-video";
+/** What a download held: "PNG", "MP4" or "PNG and MP4" (PDF and SVG show video covers). */
+const exportedFormats=(format:string,videos:number,pages:number)=>{const still=format.toUpperCase();if(format==='pdf'||format==='svg'||!videos)return still;return videos>=pages?'MP4':`${still} and MP4`;};
 import { updateColorRole, removeColorRole, resizeDesignDocument } from "@/lib/template-editor/advanced";
 import { LayoutPanel } from "./layout-panel";
 import { WorkflowPanel } from "./workflow-panel";
@@ -1236,11 +1239,11 @@ export function DesignEditor({
     );
     exportFrames(frames, job.design.name, job.design.caption, (p) => {
       if (!ignore) setProgress(p);
-    },{scale:formatDimensions(job.design).width/FRAME_WIDTH,...job.options,document:job.design,totalFrames:pageIds.length,getFrame,signal:abort.signal,onWarnings:warnings=>{exportWarnings=warnings;}})
+    },{scale:formatDimensions(job.design).width/FRAME_WIDTH,...job.options,document:job.design,pageIds,totalFrames:pageIds.length,getFrame,signal:abort.signal,onWarnings:warnings=>{exportWarnings=warnings;}})
       .then(() => {
         if (!ignore)
           setNotice(
-            `${(job.options?.format??'png').toUpperCase()} downloaded · ${pageIds.length} page${pageIds.length===1?'':'s'}.${exportWarnings.length?' '+exportWarnings.join(' '):''}`,
+            `${exportedFormats(job.options?.format??'png',job.options?.video===false?0:job.design.pages.filter(page=>pageIds.includes(page.id)&&pageVideo(page)).length,pageIds.length)} downloaded · ${pageIds.length} page${pageIds.length===1?'':'s'}.${exportWarnings.length?' '+exportWarnings.join(' '):''}`,
           );
       })
       .catch((reason) => {

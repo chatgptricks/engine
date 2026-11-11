@@ -336,6 +336,28 @@ test("agents add a video by link: it's copied once, the deck keeps its path and 
   assert.match(JSON.stringify(await failed.json()), /no video to change/);
 });
 
+test("the @chatgptricks cover's photo and a later slide's photo or chart can each be a video", async t => {
+  const f = fixture(t, {overrides: {"./review-assets": serving(CLIP, "video/mp4")}});
+  const route = f.load("app/api/agent/slides/route.ts");
+  const post = body => route.POST(new Request("https://engine.example/api/agent/slides", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}));
+  const cover = `data:image/png;base64,${Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex").toString("base64")}`;
+  const spec = {name: "Video carousel", templateId: "chatgptricks-3x4", slides: [
+    {templatePage: 0, title: "A cover that moves", image: {src: cover, alt: "Clip", video: {url: "https://cdn.example/clip.mp4"}}},
+    {templatePage: 1, title: "A point with a clip", body: "Under the title", image: {src: cover, alt: "Clip", video: {url: "https://cdn.example/clip.mp4", start: 1, end: 9}}},
+    {templatePage: 1, title: "A still slide"}, {templatePage: 3},
+  ]};
+  const response = await post({action: "create_deck", spec, operationId: randomUUID()});
+  assert.equal(response.status, 201, await response.clone().text());
+  const {document} = await response.json();
+  const slot = page => page.canvas.elements.find(element => element.type === "image" && element.templateRole === "media" && element.video);
+  assert.equal(slot(document.pages[0])?.slot === "photo", true, "the cover's photo slot holds the clip");
+  assert.deepEqual(slot(document.pages[0]).video, clipOf());
+  assert.equal(slot(document.pages[1])?.slot === "media", true, "the Text + Media slot holds the clip");
+  assert.deepEqual(slot(document.pages[1]).video, clipOf({start: 1, end: 9}));
+  assert.deepEqual([slot(document.pages[1]).intrinsicWidth, slot(document.pages[1]).intrinsicHeight], [1080, 1440], "the frame takes the clip's shape");
+  assert.equal(document.pages.slice(2).some(slot), false);
+});
+
 test("agents' video links must be public MP4 or MOV files within the limits", async t => {
   const cases = [
     [serving(Buffer.from("<html>not a video</html>"), "text/html"), /isn't an MP4 or MOV/],
@@ -427,4 +449,52 @@ test("agents' untrimmed long videos split across slides; trimmed ones stay on on
   const one = (await trimmed.json()).document.pages;
   assert.equal(one.length, 2);
   assert.deepEqual([one[0].canvas.elements[0].video.start, one[0].canvas.elements[0].video.end], [30, 90]);
+});
+
+test("export places the clip where the canvas shows it: fit, crop point, zoom, flip and rotation", t => {
+  const f = fixture(t);
+  const {videoMatrix, applyMatrix} = f.load("lib/template-editor/export-video.ts");
+  const near = (point, x, y) => { assert.ok(Math.abs(point.x - x) < 1e-6 && Math.abs(point.y - y) < 1e-6, `${JSON.stringify(point)} should be ${x}, ${y}`); };
+  const box = {x: 10, y: 20, width: 200, height: 100, rotation: 0};
+  // A 400 × 400 clip covering a 200 × 100 box, centred: scale 0.5, 50 cut from top and bottom. Output ×3.
+  let m = videoMatrix(box, {fit: "cover", cropX: 50, cropY: 50}, {width: 400, height: 400}, 3);
+  near(applyMatrix(m, 0, 0), 30, 60 - 150); near(applyMatrix(m, 400, 400), 630, 60 + 150 + 300);
+  // Crop point at the top: the clip's top edge meets the box's top.
+  m = videoMatrix(box, {fit: "cover", cropX: 50, cropY: 0}, {width: 400, height: 400}, 1);
+  near(applyMatrix(m, 0, 0), 10, 20);
+  // Contain fits the whole clip inside: 100 × 100, centred across the 200 width.
+  m = videoMatrix(box, {fit: "contain", cropX: 50, cropY: 50}, {width: 400, height: 400}, 1);
+  near(applyMatrix(m, 0, 0), 60, 20); near(applyMatrix(m, 400, 400), 160, 120);
+  // Zoom 2 about the crop point (the centre) doubles around the box centre; a flip mirrors about it.
+  m = videoMatrix(box, {fit: "contain", cropX: 50, cropY: 50, cropScale: 2, flipX: true}, {width: 400, height: 400}, 1);
+  near(applyMatrix(m, 0, 0), 210, -30); near(applyMatrix(m, 400, 400), 10, 170);
+  // A quarter turn about the box centre (110, 70): the clip's top left goes to the top right.
+  m = videoMatrix({...box, rotation: 90}, {fit: "contain", cropX: 50, cropY: 50}, {width: 400, height: 400}, 1);
+  near(applyMatrix(m, 0, 0), 160, 20);
+});
+
+test("a page exports its lowest visible clip, at Instagram's width, with its warnings", t => {
+  const f = fixture(t);
+  const ex = f.load("lib/template-editor/export-video.ts"), {preflightDesign} = f.load("lib/template-editor/preflight.ts"), model = f.load("lib/template-editor/model.ts");
+  const design = model.createBlankDesign("Clips", "portrait");
+  const page = design.pages[0];
+  page.canvas = scene([
+    imageLayer({id: "hidden", hidden: true, video: clipOf()}),
+    imageLayer({id: "first", video: clipOf({start: 1, end: 2.5})}),
+    imageLayer({id: "second", video: clipOf()}),
+  ]);
+  const video = ex.pageVideo(page);
+  assert.equal(video.element.id, "first");
+  assert.equal(video.others, 1);
+  assert.deepEqual(ex.videoWindow(video.clip), {start: 1, duration: 1.5});
+  assert.deepEqual(ex.videoWindow(clipOf({duration: 200})), {start: 0, duration: 60}, "a slide plays at most a minute");
+  assert.equal(ex.pageVideo({canvas: scene([imageLayer()])}), undefined);
+  assert.deepEqual(ex.videoOutputSize(360, 480, 3), {width: 1080, height: 1440, scale: 3});
+  assert.deepEqual(ex.videoOutputSize(360, 480, 6), {width: 1080, height: 1440, scale: 3}, "never wider than 1080");
+  assert.deepEqual(ex.videoOutputSize(360, 450, 1.5), {width: 540, height: 676, scale: 1.5}, "sides stay even");
+  const warnings = ex.videoExportWarnings(2, video, {bytes: 120 * 1024 ** 2, ext: "webm"});
+  assert.equal(warnings.length, 4);
+  assert.match(warnings.join(" "), /at least 3.*other video.*120 MB.*WEBM/s);
+  const codes = preflightDesign(design).filter(issue => issue.code.startsWith("video")).map(issue => `${issue.elementId}:${issue.code}`).sort();
+  assert.deepEqual(codes, ["first:video-short", "second:video-extra"]);
 });

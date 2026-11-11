@@ -7,7 +7,7 @@ const source = ts.transpileModule(fs.readFileSync(new URL("../lib/template-edito
 const helperSource=ts.transpileModule(fs.readFileSync(new URL("../lib/template-editor/property-utils.ts",import.meta.url),"utf8"),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
 const helper={exports:{}};vm.runInThisContext(`(function(module,exports){${helperSource}\n})`)(helper,helper.exports);
 const unit = {exports:{}};
-vm.runInThisContext(`(function(require,module,exports){${source}\n})`)(()=>helper.exports,unit,unit.exports);
+vm.runInThisContext(`(function(require,module,exports){${source}\n})`)(name=>name==="./export-video"?{pageVideo:()=>undefined,videoExportWarnings:()=>[]}:helper.exports,unit,unit.exports);
 const {validateExportOptions, encodeImagePdf, fileName, preflightFrames} = unit.exports;
 test("export settings reject invalid resolutions and quality and normalize alpha for opaque formats", () => {
   assert.equal(validateExportOptions({format:"png",transparent:true}).transparent,true);
@@ -58,7 +58,7 @@ test("texture preload images decode before export and measure their visible text
 test('sequential batch exports release each rendered page and download bounded archives',async()=>{
  const previous={document:globalThis.document,URL:globalThis.URL,setTimeout:globalThis.setTimeout},steps=[],downloads=[];let frameIndex=0;
  class Zip{files=[];file(name,blob){this.files.push([name,blob]);return this;}async generateAsync(options){assert.equal(options.streamFiles,true);assert.equal(this.files.length,1);return new Blob(['ZIP'],{type:'application/zip'});}}
- const mock={exports:{}};vm.runInThisContext(`(function(require,module,exports){${source}\n})`)(name=>name==='./property-utils'?helper.exports:name==='modern-screenshot'?{domToBlob:async()=>{steps.push('capture'+frameIndex);return {size:40*1024*1024,type:'image/png'};}}:{default:Zip},mock,mock.exports);
+ const mock={exports:{}};vm.runInThisContext(`(function(require,module,exports){${source}\n})`)(name=>name==='./export-video'?{pageVideo:()=>undefined,videoExportWarnings:()=>[]}:name==='./property-utils'?helper.exports:name==='modern-screenshot'?{domToBlob:async()=>{steps.push('capture'+frameIndex);return {size:40*1024*1024,type:'image/png'};}}:{default:Zip},mock,mock.exports);
  globalThis.document={fonts:{ready:Promise.resolve()},body:{appendChild(){}},createElement:()=>({click(){downloads.push(this.download);},remove(){}})};globalThis.URL={createObjectURL:()=>'',revokeObjectURL(){}};globalThis.setTimeout=(callback,delay,...args)=>{const timer=previous.setTimeout(callback,delay,...args);if(delay===30000)timer.unref?.();return timer;};
  try{await mock.exports.exportFrames([], 'Batch', '',()=>{}, {totalFrames:2,delivery:'batches',batchSize:1,getFrame:async index=>{frameIndex=index;steps.push('load'+index);return{offsetWidth:360,offsetHeight:450,style:{width:'360px',height:'450px'},querySelectorAll:()=>[]};}});assert.deepEqual(steps,['load0','capture0','load1','capture1']);assert.deepEqual(downloads,['batch-part-1.zip','batch-part-2.zip']);}
  finally{Object.assign(globalThis,previous);}
@@ -66,7 +66,7 @@ test('sequential batch exports release each rendered page and download bounded a
 
 test('aggregate archive limit rejects before issuing any download',async()=>{
  const previous={document:globalThis.document,URL:globalThis.URL,setTimeout:globalThis.setTimeout};let downloads=0;
- const mock={exports:{}};vm.runInThisContext(`(function(require,module,exports){${source}\n})`)(name=>name==='./property-utils'?helper.exports:{domToBlob:async()=>({size:40*1024*1024,type:'image/png'})},mock,mock.exports);
+ const mock={exports:{}};vm.runInThisContext(`(function(require,module,exports){${source}\n})`)(name=>name==='./export-video'?{pageVideo:()=>undefined,videoExportWarnings:()=>[]}:name==='./property-utils'?helper.exports:{domToBlob:async()=>({size:40*1024*1024,type:'image/png'})},mock,mock.exports);
  globalThis.document={fonts:{ready:Promise.resolve()},body:{appendChild(){}},createElement:()=>({click(){downloads++;},remove(){}})};globalThis.URL={createObjectURL:()=>'',revokeObjectURL(){}};globalThis.setTimeout=(callback,delay,...args)=>{const timer=previous.setTimeout(callback,delay,...args);if(delay===30000)timer.unref?.();return timer;};
  try{await assert.rejects(mock.exports.exportFrames([], 'Too big', '',()=>{}, {totalFrames:2,getFrame:async()=>({offsetWidth:360,offsetHeight:450,style:{width:'360px',height:'450px'},querySelectorAll:()=>[]})}),/64 MB/);assert.equal(downloads,0);}finally{Object.assign(globalThis,previous);}
 });

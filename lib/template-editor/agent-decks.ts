@@ -520,7 +520,14 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
     ensureEditable(element, canvas, ["src", "publicAlt", "fit"], `${path}.image`);
     const image = spec.image as RecordValue;
     element.src = String(image.src); element.publicAlt = String(image.alt ?? "");
-    if (record(image.video)) { if (image.video.remove === true) delete element.video; else element.video = image.video as unknown as VideoClip; }
+    if (record(image.video)) {
+      if (image.video.remove === true) delete element.video;
+      else {
+        element.video = image.video as unknown as VideoClip;
+        // The slot takes the clip's shape, as it would a photo's (smartFlow.media frames follow it).
+        if (element.video.width && element.video.height) { element.intrinsicWidth = element.video.width; element.intrinsicHeight = element.video.height; }
+      }
+    }
     else delete element.video;
     if (image.fit !== undefined) element.fit = image.fit as "cover" | "contain";
     checkNativeElement(element, `${path}.image`);

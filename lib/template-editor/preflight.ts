@@ -2,10 +2,11 @@ import { formatDimensions, sceneForPage, type CanvasElement, type CanvasScene, t
 import { elementVisualBounds } from "./canvas-geometry";
 import {contributesToFrame} from "./export-scene";
 import { imageResolution } from "./property-utils";
+import { INSTAGRAM_VIDEO, pageVideo, videoWindow } from "./export-video";
 
 export type PreflightIssue = {
   id: string;
-  code: "image-resolution" | "image-unavailable" | "font-unavailable" | "text-overflow" | "safe-area" | "empty-slot" | "unresolved-placeholder";
+  code: "image-resolution" | "image-unavailable" | "font-unavailable" | "text-overflow" | "safe-area" | "empty-slot" | "unresolved-placeholder" | "video-short" | "video-extra";
   severity: "warning" | "error";
   pageId: string;
   elementId: string;
@@ -44,6 +45,12 @@ export function preflightDesign(design: DesignDocument, options: PreflightOption
         if (resolution?.low) add("image-resolution", `${name} has less image detail than the exported size requires (${Math.round(resolution.ratio * 100)}%).`);
         if (options.imageAvailable?.(src, element) === false) add("image-unavailable", `${name} could not be loaded. Replace it before exporting.`, "error");
         if (element.slot && !src.trim()) add("empty-slot", `${name} has an empty image slot.`, "error");
+        const clip = element.type === "image" ? element.video : photo?.video;
+        if (clip && scene !== design.masterScene) {
+          const seconds = videoWindow(clip).duration;
+          if (seconds < INSTAGRAM_VIDEO.minSeconds) add("video-short", `${name} plays ${Math.round(seconds * 10) / 10} seconds; Instagram wants a video of at least ${INSTAGRAM_VIDEO.minSeconds}.`);
+          if (pageVideo(page)?.element.id !== element.id) add("video-extra", `${name} exports as its cover: a slide plays one video, and this page has another below it.`);
+        }
       }
       if (element.type === "text") {
         const textureIds = new Set([...((element.richText ?? "").matchAll(/data-texture-id="([^"]+)"/g))].map(match => match[1]));
