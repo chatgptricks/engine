@@ -418,7 +418,9 @@ function layoutPass(scene: CanvasScene, measure: typeof measureSmartText, caps: 
     const upward = flow?.direction === "up", inline = flow?.direction === "right";
     // Upward flows: the bottom edge sits `gap` above the anchor's resolved top.
     let edge: number | undefined;
-    if (anchor && !anchor.hidden) {
+    // A hidden layer still keeps its place on a hidden one (a post's play button on its
+    // hidden video): left where it was, a centred flow would move it again on every pass.
+    if (anchor && (!anchor.hidden || original.hidden)) {
       const other = resolve(anchor);
       if (inline) element = { ...element, ...afterLastLine(other, texts.get(other.id), element.height, flow!.gap) };
       else if (upward) {

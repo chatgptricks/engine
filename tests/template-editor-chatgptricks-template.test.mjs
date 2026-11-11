@@ -351,6 +351,24 @@ test("smart layout: each card hugs its post, photo and check mark, and the page 
   assert.equal(paragraphs.texts.get(bySlot(paragraphs.scene, "reaction-text").id).lines.length, 3);
 });
 
+test("a post without a video keeps its hidden play button and length on the photo, however often the page is laid out", () => {
+  // Each pass centres the card as a block; the hidden video marks used to keep their old place and drift down by that shift every time, until the page was no longer valid.
+  const measure = (element, words = smart.smartWords(element)) => ({ size: element.fontSize, widths: words.map(word => word.text.length * element.fontSize * .45), space: element.fontSize * .25 });
+  let canvas = structuredClone(template.pages[4].canvas);
+  bySlot(canvas, "reaction-text").text = "Short post"; delete bySlot(canvas, "reaction-text").richText;
+  const marks = ["reaction-play", "reaction-length", "reaction-length-text"];
+  assert.ok(bySlot(canvas, "reaction-media").hidden && marks.every(slot => bySlot(canvas, slot).hidden), "the photo and its video marks start hidden");
+  const offsets = [];
+  for (let pass = 0; pass < 5; pass++) {
+    canvas = smart.layoutSmartScene(canvas, measure).scene;
+    const media = bySlot(canvas, "reaction-media");
+    offsets.push(marks.map(slot => bySlot(canvas, slot).y - media.y));
+    for (const slot of marks) assert.ok(bySlot(canvas, slot).y < scene(1440), `${slot} stays on the page`);
+  }
+  for (const pass of offsets.slice(1)) pass.forEach((offset, index) => close(offset, offsets[0][index]));
+  close(offsets[0][0], bySlot(canvas, "reaction-play").smartFlow.gap, "the play button sits where it would on a video");
+});
+
 // Deterministic stand-in for browser text metrics, shared by the flexible-layout tests below.
 const metrics = (element, words = smart.smartWords(element)) => ({ size: element.fontSize, widths: words.map(word => word.text.length * element.fontSize * .45), space: element.fontSize * .25 });
 const laidOut = (pageIndex, slots, edit = () => {}) => {
