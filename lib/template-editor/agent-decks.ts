@@ -116,6 +116,7 @@ export const AGENT_DECK_SPEC_SCHEMA: Schema = {
     id, name: str(200, { minLength: 1 }), format: choice([...Object.keys(PRESETS), "custom"]),
     size: obj({ width: num(100, 8192), height: num(100, 8192) }, ["width", "height"]),
     theme: themeSchema, caption: str(20_000), templateId: id,
+    pageId: { ...id, description: "The page this deck is for: a page profile id from engine_list_page_profiles, such as chatgptricks. Projects files the deck under that page, in the month it was made. Omit it and the deck goes to Unsorted." },
     slides: { type: "array", minItems: 1, maxItems: 20, items: slideSchema },
   }, ["name"]),
 };
@@ -576,6 +577,7 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
   document.name = String(spec.name).trim();
   if (!document.name) fail("$.name", "must include a visible character");
   document.caption = String(spec.caption ?? "");
+  if (spec.pageId !== undefined) document.pageId = String(spec.pageId);
   return validateDocument(document);
 }
 const positionKeys = new Set(["x", "y", "width", "height", "rotation", "designWidth"]);
@@ -813,7 +815,7 @@ export function agentDeckView(document: DesignDocument) {
   };
 }
 export function agentDeckSummary(document: DesignDocument) {
-  return { id: document.id, name: document.name, size: formatDimensions(document), pages: document.pages.length, updatedAt: document.updatedAt };
+  return { id: document.id, name: document.name, size: formatDimensions(document), pages: document.pages.length, updatedAt: document.updatedAt, ...(document.pageId ? { pageId: document.pageId } : {}) };
 }
 /** The standard .engine.json import format; all native layers and resources remain editable. */
 export function editableDeckPackage(document: DesignDocument): EditorLibrary {

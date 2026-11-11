@@ -46,6 +46,9 @@ import {useLiveCollaboration} from "@/lib/template-editor/use-collaboration";
 import {DESIGN_PRESETS,templateCreationOptions} from "@/lib/template-editor/creation-presets";
 import {AgentAccessDialog} from "./agent-access-dialog";
 import {RecreatePost} from "./recreate-dialog";
+import {fetchPageProfiles} from "./recreate-job";
+import {PageFolderGrid,MonthFolderGrid,ProjectBreadcrumbs,MovePageDialog,type Crumb} from "./project-folders-view";
+import {UNSORTED_PAGE_ID,designMonth,designPageId,inProjectLocation,monthFolders,monthKey,monthLabel,moveDesignsToPage,pageFolders,pageForNewDesign,pageName,type ProjectPage} from "@/lib/template-editor/project-folders";
 import type {RecreateResult} from "./recreate-job";
 import {AssistantPanel, type ChatEditorBridge} from "./assistant-panel";
 import {sameDocumentContent} from "@/lib/template-editor/history";
@@ -119,6 +122,8 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
   const registerChatBridge = useCallback((bridge: ChatEditorBridge | null) => { chatBridgeRef.current = bridge; }, []);
   const [awaitingDesign, setAwaitingDesign] = useState<{id: string; refreshed: boolean} | null>(null);
   const [historyId, setHistoryId] = useState<string | null>(null);
+  const [pages, setPages] = useState<ProjectPage[]>([]);
+  const [moving, setMoving] = useState<string[] | null>(null);
   const [category, setCategory] = useState("All templates");
   const [message, setMessage] = useState("");
   const [confirm, setConfirm] = useState<{
@@ -153,7 +158,18 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
     else setFilters(current => ({...current, [key]: key === "favorites" ? false : ""}));
   }
   const gallerySort = view === "templates" && filters.sort === "created" ? "updated" : filters.sort ?? "updated";
-  const filteredDesigns = sortLibraryItems(activeDesigns.filter(design=>matchesLibraryItem(design,effectiveFilters,search)),gallerySort);
+  // Projects are filed by page, then by the month each design was made (project-folders.ts).
+  const location = {page: navigation.project, month: navigation.month};
+  const browsingFolders = view === "designs" && !search && !filterCount && !location.month;
+  const thisMonth = monthKey(new Date());
+  const filteredDesigns = sortLibraryItems(activeDesigns.filter(design=>inProjectLocation(design,location,pages)&&matchesLibraryItem(design,effectiveFilters,search)),gallerySort);
+  const newDesignPage = pageForNewDesign(location);
+  const folderName = location.page ? pageName(location.page, pages) : "";
+  const crumbs: Crumb[] = location.page ? [
+    {label: "Projects", onSelect: () => navigation.setProjectLocation()},
+    {label: folderName, onSelect: () => navigation.setProjectLocation(location.page)},
+    ...(location.month ? [{label: monthLabel(location.month)}] : []),
+  ] : [];
   const filteredTemplates = sortLibraryItems(templates.filter(template=>matchesLibraryItem(template,effectiveFilters,search)&&(selectedCategory==="All templates"||(selectedCategory==="My templates"?template.custom:template.category===selectedCategory))),gallerySort);
   const filteredDrafts = selectedCategory === "My templates" ? filteredDesigns.filter(design => design.purpose === "template") : [];
   const trashCount = library.designs.filter(design => design.deletedAt).length + trashedTemplates(library).length;
@@ -204,6 +220,14 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
     }, 0);
     return () => clearTimeout(timer);
   }, [ready, canEdit, library.designs.length, setLibrary, setActiveId, setView, libraryScope]);
+
+  useEffect(() => {
+    // Page profiles name the page folders. Without them, folders still show by page id.
+    if (!ready) return;
+    const controller = new AbortController();
+    fetchPageProfiles(controller.signal).then(list => setPages(list.map(profile => ({id: profile.id, name: profile.name, handle: profile.handle})))).catch(() => { /* Folders fall back to page ids. */ });
+    return () => controller.abort();
+  }, [ready]);
 
   useEffect(() => {
     // A recreated post is saved on the server; open it once this tab's workspace includes it.
@@ -257,7 +281,7 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
   function openBlankDesign(){if(permission.current)setCreation({kind:"post"});}
   function openCarousel(){if(permission.current)setCreation({kind:"carousel"});}
   function createProject(options:CreationOptions){
-    const document=createLibraryDesign(library,options);
+    const document=createLibraryDesign(library,options.pageId===undefined?{...options,pageId:newDesignPage}:options);
     const accepted=addDocument(document,options.template?.id);
     if(accepted){setView("designs");setQuery("");changeFilters({folder:"",favorites:false,tag:""});setActiveId(document.id);}return accepted;
   }
@@ -291,11 +315,18 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
     if (!permission.current) return;
     addDocument(cloneDesign(design));
   }
+  function moveToPage(ids: string[], pageId: string) {
+    if (!permission.current) return false;
+    const accepted = setLibrary(current => ({...current, designs: moveDesignsToPage(current.designs, ids, pageId)}));
+    if (accepted) setMessage(`Moved ${ids.length === 1 ? "1 design" : `${ids.length} designs`} to ${pageName(pageId, pages)}.`);
+    return accepted;
+  }
   function designMenu(design: DesignDocument): ContextMenuDefinition {
     return { label: design.name, items: [
       { id: "open", label: design.purpose === "template" ? "Continue editing template" : "Open design", onSelect: () => setActiveId(design.id) },
       { id: "favorite", label: design.favorite ? "Remove favorite" : "Add to favorites", disabled: !canEdit, onSelect: () => updateMetadata("design", design.id, {favorite: !design.favorite}) },
       { id: "organize", label: "Folder and tags…", disabled: !canEdit, onSelect: () => setOrganize({kind: "design", id: design.id}) },
+      { id: "move-page", label: "Move to page…", disabled: !canEdit, onSelect: () => setMoving([design.id]) },
       { id: "history", label: "Version history…", onSelect: () => setHistoryId(design.id) },
       { id: "export-document", label: "Export editable design…", onSelect: () => exportItem(design, "design") },
       { id: "rename", label: "Rename", disabled: !canEdit, onSelect: () => { if (permission.current) setRename({ kind: "design", id: design.id, value: design.name }); } },
@@ -493,14 +524,15 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
                   ["templates", "Templates", LayoutIcon],
                   ["brand", "Brand", StarIcon],
                   ["resources", "Saved elements", LayoutIcon],
-                ] as const).map(([id, label, Icon]) => <button key={id} className={view === id ? "is-active" : ""} aria-current={view === id ? "page" : undefined} onClick={() => { setView(id); setQuery(""); }}>
+                ] as const).map(([id, label, Icon]) => <button key={id} className={view === id ? "is-active" : ""} aria-current={view === id ? "page" : undefined} onClick={() => { if (id === "designs") navigation.setProjectLocation(); else setView(id); setQuery(""); }}>
                   <Icon size={19} /><span className="te-nav-label">{label}</span>
                   {id === "designs" && activeDesigns.length > 0 && <span className="te-nav-count">{activeDesigns.length}</span>}
                 </button>)}
               </nav>
               <div className="te-sidebar-shortcuts">
-                <button type="button" className={filters.favorites ? "is-active" : ""} onClick={()=>{setView("designs");setQuery("");changeFilters({folder:"",favorites:!filters.favorites,tag:""});}}><StarIcon size={17}/>Starred</button>
-                {!!library.folders?.length&&<details open><summary>Folders</summary>{library.folders.map(folder=><button type="button" key={folder.id} className={navigation.folder===folder.id?"is-active":""} onClick={()=>{setView("designs");setQuery("");changeFilters({folder:folder.id,favorites:false,tag:""});}}><span aria-hidden>▱</span>{folder.name}</button>)}</details>}
+                <button type="button" className={filters.favorites ? "is-active" : ""} onClick={()=>{navigation.setProjectLocation();setQuery("");setFilters(current=>({...current,folder:"",favorites:!current.favorites,tag:""}));}}><StarIcon size={17}/>Starred</button>
+                {pages.length>0&&<details open><summary>Pages</summary>{pageFolders(activeDesigns,pages).map(folder=><button type="button" key={folder.id} className={`te-sidebar-page${view==="designs"&&location.page===folder.id?" is-active":""}`} onClick={()=>{navigation.setProjectLocation(folder.id);setQuery("");}}><span>{folder.name}</span><small>{folder.count}</small></button>)}</details>}
+                {!!library.folders?.length&&<details open><summary>Folders</summary>{library.folders.map(folder=><button type="button" key={folder.id} className={navigation.folder===folder.id?"is-active":""} onClick={()=>{navigation.setProjectLocation(undefined,undefined,folder.id);setQuery("");setFilters(current=>({...current,folder:"",favorites:false,tag:""}));}}><span aria-hidden>▱</span>{folder.name}</button>)}</details>}
                 <button type="button" onClick={()=>setView("trash")}>Trash{trashCount>0&&<span>{trashCount}</span>}</button>
               </div>
               <div className="te-sidebar-bottom">
@@ -517,13 +549,14 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
                 </section>}
                 <div className="te-gallery-heading">
                   <div>
-                    <h1>{view === "designs" ? "Projects" : "Templates"}</h1>
-                    <p>{view === "designs" ? "All your designs in one place" : "Choose a layout and make it your own"}</p>
+                    {view === "designs" && <ProjectBreadcrumbs crumbs={crumbs}/>}
+                    <h1>{view === "designs" ? (location.month ? monthLabel(location.month) : folderName || "Projects") : "Templates"}</h1>
+                    <p>{view === "designs" ? (location.month ? `${folderName} · ${location.month === thisMonth ? "new designs for this page go here" : "designs made this month"}` : location.page ? (location.page === UNSORTED_PAGE_ID ? "Designs with no page, by the month they were made" : "This page's designs, by the month they were made") : "Every page has its own folder, sorted by month") : "Choose a layout and make it your own"}</p>
                   </div>
                   <div className="te-gallery-controls">{view==="templates"&&<button className="te-button" disabled={!canEdit||library.templates.length>=80} onClick={()=>setCreation({kind:"template"})}><PlusIcon size={16}/>New template</button>}
                     <label className="te-search">
                       <SearchIcon size={17} />
-                      <input aria-label={view === "designs" ? "Search projects" : "Search templates"} placeholder={view === "designs" ? "Search projects" : "Search templates"} value={query} onChange={event => setQuery(event.target.value)} />
+                      <input aria-label={view === "designs" ? "Search projects" : "Search templates"} placeholder={view === "designs" ? (location.page ? `Search ${location.month ? monthLabel(location.month) : folderName}` : "Search projects") : "Search templates"} value={query} onChange={event => setQuery(event.target.value)} />
                       {query && <button type="button" className="te-search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>}
                     </label>
                     <button type="button" className={`te-button te-filter-toggle ${filterCount ? "has-filters" : ""}`} aria-expanded={filtersOpen} aria-controls="te-gallery-filters" onClick={() => setFiltersOpen(value => !value)}>
@@ -551,11 +584,11 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
                   {categories.map(item => <button key={item} className={selectedCategory === item ? "is-active" : ""} aria-pressed={selectedCategory === item} onClick={() => setCategory(item)}>{item}</button>)}
                 </div>}
                 <div className="te-gallery-summary" aria-live="polite">
-                  <span>{view === "designs" ? `${filteredDesigns.length} ${filteredDesigns.length === 1 ? "project" : "projects"}` : `${filteredTemplates.length + filteredDrafts.length} ${filteredTemplates.length + filteredDrafts.length === 1 ? "template" : "templates"}`}</span>
-                  <button className={`te-text-button te-selection-toggle${selectMode?" is-active":""}`} aria-pressed={selectMode} onClick={()=>{setSelectMode(!selectMode);if(selectMode)setSelected([]);}}>{selectMode?"Done selecting":"Select"}</button>
+                  <span>{view === "designs" ? browsingFolders ? (location.page ? `${filteredDesigns.length} ${filteredDesigns.length === 1 ? "design" : "designs"} by month` : `${pageFolders(activeDesigns,pages).length} pages · ${activeDesigns.length} ${activeDesigns.length === 1 ? "design" : "designs"}`) : `${filteredDesigns.length} ${filteredDesigns.length === 1 ? "project" : "projects"}` : `${filteredTemplates.length + filteredDrafts.length} ${filteredTemplates.length + filteredDrafts.length === 1 ? "template" : "templates"}`}</span>
+                  {!browsingFolders&&<button className={`te-text-button te-selection-toggle${selectMode?" is-active":""}`} aria-pressed={selectMode} onClick={()=>{setSelectMode(!selectMode);if(selectMode)setSelected([]);}}>{selectMode?"Done selecting":"Select"}</button>}
                   <label className="te-gallery-sort"><span>Sort</span><select aria-label="Sort library" value={gallerySort} onChange={event=>setFilters({...filters,sort:event.target.value as SearchFilters['sort']})}><option value="updated">{view === "templates" ? "Library order" : "Recently edited"}</option><option value="name">Name A–Z</option>{view === "designs" && <option value="created">Newest first</option>}<option value="pages">Most pages</option></select></label>
                 </div>
-                <div className="te-bulk-bar" hidden={!selectMode}>{selectMode&&<><button className="te-text-button" onClick={()=>setSelected([...new Set([...selected,...visibleKeys])])}>Select visible</button><button className="te-text-button" onClick={()=>setSelected([])}>Clear selection</button><span>{selectedKeys.length} selected</span><button className="te-button" disabled={!canEdit||!selectedKeys.length} onClick={openBulkOrganization}>Folder and tags…</button><button className="te-button" disabled={!canEdit||!selectedKeys.length} onClick={()=>bulkUpdate({favorite:true})}>Favorite</button><button className="te-text-button" disabled={!canEdit||!selectedKeys.length} onClick={()=>bulkUpdate({favorite:false})}>Unfavorite</button><button className="te-button" disabled={!selectedKeys.length} onClick={async()=>{try{await downloadPortableLibrary(selectedLibrary(library,selectedKeys),'engine-selection');}catch(reason){setMessage(reason instanceof Error?reason.message:'Export failed.');}}}>Export selected</button></>}</div>
+                <div className="te-bulk-bar" hidden={!selectMode}>{selectMode&&<><button className="te-text-button" onClick={()=>setSelected([...new Set([...selected,...visibleKeys])])}>Select visible</button><button className="te-text-button" onClick={()=>setSelected([])}>Clear selection</button><span>{selectedKeys.length} selected</span><button className="te-button" disabled={!canEdit||!selectedKeys.length} onClick={openBulkOrganization}>Folder and tags…</button>{view==="designs"&&<button className="te-button" disabled={!canEdit||!selectedKeys.some(key=>key.startsWith("design:"))} onClick={()=>setMoving(selectedKeys.filter(key=>key.startsWith("design:")).map(key=>key.slice(7)))}>Move to page…</button>}<button className="te-button" disabled={!canEdit||!selectedKeys.length} onClick={()=>bulkUpdate({favorite:true})}>Favorite</button><button className="te-text-button" disabled={!canEdit||!selectedKeys.length} onClick={()=>bulkUpdate({favorite:false})}>Unfavorite</button><button className="te-button" disabled={!selectedKeys.length} onClick={async()=>{try{await downloadPortableLibrary(selectedLibrary(library,selectedKeys),'engine-selection');}catch(reason){setMessage(reason instanceof Error?reason.message:'Export failed.');}}}>Export selected</button></>}</div>
                 {view === "templates" ? <>
                   <div className="te-template-grid">
                     {filteredDrafts.map(draft => <LibraryCard menu={designMenu(draft)} key={draft.id} selection={selectionFor(`design:${draft.id}`)}>
@@ -581,7 +614,10 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
                     <p>{search || filterCount ? "Try another search or clear your filters" : "Create a reusable template, or restore one from Trash"}</p>
                     {search || filterCount ? <button className="te-button" onClick={() => {setQuery("");clearGalleryFilters();setCategory("All templates");}}>Clear search and filters</button> : <button className="te-button te-primary" disabled={!canEdit || library.designs.length >= 150 || library.templates.length >= 80} onClick={() => setCreation({kind:"template"})}>Create template<PlusIcon size={16}/></button>}
                   </div>}
-                </> : <>
+                </> : browsingFolders ? (location.page
+                  ? <MonthFolderGrid months={monthFolders(activeDesigns,location.page,pages)} designs={activeDesigns} pageId={location.page} pages={pages} onOpen={month=>navigation.setProjectLocation(location.page,month)}/>
+                  : <PageFolderGrid folders={pageFolders(activeDesigns,pages)} designs={activeDesigns} pages={pages} monthName={monthLabel(thisMonth).split(" ")[0]} onOpen={page=>navigation.setProjectLocation(page)}/>
+                ) : <>
                   <div className="te-template-grid">
                     {filteredDesigns.map(design => <LibraryCard menu={designMenu(design)} key={design.id} selection={selectionFor(`design:${design.id}`)}>
                       <button className="te-template-open" onClick={() => selectMode?toggleSelection(`design:${design.id}`):setActiveId(design.id)} aria-label={`Open ${design.name}`}>
@@ -591,15 +627,19 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
                           <span className="te-card-action">Open project<ArrowRightIcon size={15}/></span>
                         </div>
                         <span className="te-card-name">{design.favorite ? "★ " : ""}{design.name}</span>
-                        <span className="te-card-description">Edited {new Date(design.updatedAt).toLocaleDateString(undefined, {month:"short",day:"numeric"})}</span>
+                        <span className="te-card-description">{location.month ? "" : `${location.page ? "" : `${pageName(designPageId(design,pages),pages)} · `}${monthLabel(designMonth(design))} · `}Edited {new Date(design.updatedAt).toLocaleDateString(undefined, {month:"short",day:"numeric"})}</span>
                       </button>
                     </LibraryCard>)}
                   </div>
-                  {!filteredDesigns.length && <div className="te-empty">
+                  {!filteredDesigns.length && (location.month && !search && !filterCount ? <div className="te-empty">
+                    <CopyIcon size={30}/><h2>{location.month === thisMonth ? `Nothing for ${folderName} in ${monthLabel(location.month)} yet` : `Nothing in ${monthLabel(location.month)}`}</h2>
+                    <p>{location.month === thisMonth ? "Designs you create or recreate from this folder land here." : "Designs made this month will show here."}</p>
+                    {location.month === thisMonth && <button className="te-button te-primary" disabled={!canEdit || library.designs.length >= 150} onClick={openBlankDesign}>Create a design<PlusIcon size={16}/></button>}
+                  </div> : <div className="te-empty">
                     <CopyIcon size={30}/><h2>{activeDesigns.length ? "No matching projects" : "Your ideas start here"}</h2>
                     <p>{activeDesigns.length ? "Try another search or clear your filters" : "Start with a template or choose Create for a blank post"}</p>
                     {activeDesigns.length ? <button className="te-button" onClick={() => {setQuery("");clearGalleryFilters();}}>Clear search and filters</button> : <button className="te-button te-primary" onClick={() => {setView("templates");setQuery("");changeFilters({folder:"",favorites:false,tag:""});setCategory("All templates");}}>Browse templates<ArrowRightIcon size={16}/></button>}
-                  </div>}
+                  </div>)}
                 </>}
               </>}
               {view === "trash" && <>
@@ -612,7 +652,8 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
           </div>
         </div>
       )}
-      {creation&&<CreateDesignDialog library={library} kind={creation.kind} template={creation.template} preset={creation.preset} disabled={!canEdit} onCreate={createProject} onClose={()=>setCreation(null)}/>}
+      {creation&&<CreateDesignDialog library={library} kind={creation.kind} template={creation.template} preset={creation.preset} disabled={!canEdit} onCreate={createProject} onClose={()=>setCreation(null)} pages={pages} pageId={newDesignPage}/>}
+      {moving&&<MovePageDialog count={moving.length} name={moving.length===1?library.designs.find(item=>item.id===moving[0])?.name:undefined} current={moving.length===1?(()=>{const design=library.designs.find(item=>item.id===moving[0]);return design?designPageId(design,pages):undefined;})():location.page||undefined} pages={pages} disabled={!canEdit} onMove={pageId=>moveToPage(moving,pageId)} onClose={()=>setMoving(null)}/>}
       {importing&&<LibraryImportDialog current={library} incoming={importing.library} restoreMedia={importing.restoreMedia} disabled={!canEdit} onImport={setLibrary} onComplete={setMessage} onClose={()=>setImporting(null)}/>}
       {bulkOpen && <Modal title={`Organize ${selectedKeys.length} items`} onClose={() => setBulkOpen(false)}>
         <form onSubmit={event => {event.preventDefault();bulkUpdate(bulkOrganizationMetadata(bulkFolder, bulkTags));}}>
@@ -675,7 +716,7 @@ export default function TemplateStudio({workspaceScope, preferCached}: {workspac
       {historyId && library.designs.find(item => item.id === historyId) && <DocumentVersions document={library.designs.find(item => item.id === historyId)!} canEdit={canEdit} onClose={() => setHistoryId(null)} onRestore={document => setLibrary(current => ({...current, designs: current.designs.map(item => item.id === document.id ? document : item)}))}/>}
       {agentAccessOpen && <AgentAccessDialog onClose={() => setAgentAccessOpen(false)} />}
       <AssistantPanel open={chatOpen} onClose={() => setChatOpen(false)} deckId={active?.id ?? null} deckName={active?.name} bridgeRef={chatBridgeRef} onOpenDesign={openDesign}/>
-      <RecreatePost scope={libraryScope} open={recreateOpen} onOpenChange={setRecreateOpen} activeDesignId={activeId} inEditor={Boolean(active)} onOpenDesign={openRecreatedDesign}
+      <RecreatePost scope={libraryScope} pageId={active ? undefined : newDesignPage} open={recreateOpen} onOpenChange={setRecreateOpen} activeDesignId={activeId} inEditor={Boolean(active)} onOpenDesign={openRecreatedDesign}
         blockedReason={!canEdit ? "This workspace can't be edited right now. Check the save message, then try again." : library.designs.length >= 150 ? "Your workspace has reached its 150-design limit. Remove an older project or empty Trash first." : undefined} />
       {conflictOpen && (
         <Modal

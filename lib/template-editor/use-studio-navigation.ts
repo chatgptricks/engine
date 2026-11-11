@@ -2,10 +2,13 @@
 import {useCallback,useEffect,useRef,useState} from "react";
 import type {DesignDocument} from "./model";
 export type StudioView="designs"|"templates"|"brand"|"trash"|"resources";
-export type StudioNavigation={view:StudioView;designId:string|null;folder:string;pageId?:string};
+/** project and month place someone in Projects: a page's folder (a page profile id, or "unsorted") and one of its months ("2026-11"). */
+export type StudioNavigation={view:StudioView;designId:string|null;folder:string;pageId?:string;project?:string;month?:string};
 export type NavigationHistoryMode="push"|"replace";
 export type NavigationStorage=Pick<Storage,"getItem"|"setItem">;
 const initial:StudioNavigation={view:"designs",designId:null,folder:""};
+const projectId=(value:string|null)=>value&&value.length<=120&&/^[a-zA-Z0-9][a-zA-Z0-9_-]*$/.test(value)?value:undefined;
+const monthId=(value:string|null)=>value&&/^\d{4}-(0[1-9]|1[0-2])$/.test(value)?value:undefined;
 
 export function resolveDesignPageId(design:Pick<DesignDocument,"pages">,requested?:string|null):string {
   return design.pages.find(page=>page.id===requested)?.id??design.pages[0]?.id??"";
@@ -28,7 +31,8 @@ export function parseStudioLocation(search:string,documents:readonly DesignDocum
   const params=new URLSearchParams(search),view=params.get("view"),designId=params.get("design"),folder=params.get("folder")??"";
   const design=documents.find(item=>item.id===designId&&!item.deletedAt);
   const requested=design?(params.has("page")?params.get("page"):readProjectPage(memory?.scope,design.id,memory?.storage)):undefined;
-  return {view:["designs","templates","brand","trash","resources"].includes(view??"")?view as StudioView:"designs",designId:design?.id??null,folder:folders.some(item=>item.id===folder)?folder:"",...(design&&requested!==undefined?{pageId:resolveDesignPageId(design,requested)}:{})};
+  const project=projectId(params.get("project")),month=project?monthId(params.get("month")):undefined;
+  return {view:["designs","templates","brand","trash","resources"].includes(view??"")?view as StudioView:"designs",designId:design?.id??null,folder:folders.some(item=>item.id===folder)?folder:"",...(design&&requested!==undefined?{pageId:resolveDesignPageId(design,requested)}:{}),...(project?{project}:{}),...(month?{month}:{})};
 }
 /** Structural document edits repair the current history entry, without adding page navigation or a save. */
 export function normalizeStudioPage(value:StudioNavigation,documents:readonly DesignDocument[]):StudioNavigation {
@@ -39,10 +43,11 @@ export function normalizeStudioPage(value:StudioNavigation,documents:readonly De
 }
 export function studioLink(value:StudioNavigation,href:string):string {
   const url=new URL(href);
-  for(const key of ["from","view","design","folder","page"])url.searchParams.delete(key);
+  for(const key of ["from","view","design","folder","page","project","month"])url.searchParams.delete(key);
   if(value.view!=="designs")url.searchParams.set("view",value.view);
   if(value.designId){url.searchParams.set("design",value.designId);if(value.pageId)url.searchParams.set("page",value.pageId);}
   if(value.folder)url.searchParams.set("folder",value.folder);
+  if(value.project){url.searchParams.set("project",value.project);if(value.month)url.searchParams.set("month",value.month);}
   return url.href;
 }
 export function writeStudioLocation(value:StudioNavigation,href:string,history:Pick<History,"pushState"|"replaceState">,mode:NavigationHistoryMode="push"):void {
@@ -93,5 +98,7 @@ export function useStudioNavigation(scope:string|undefined,ready:boolean,documen
   },[navigate,scope]);
   const setPageId=useCallback((id:string,mode:NavigationHistoryMode="push")=>{if(current.current.designId)navigate({pageId:id},mode);},[navigate]);
   const setFolder=useCallback((folder:string)=>navigate({folder}),[navigate]);
-  return {view:navigation.view,activeId:navigation.designId,pageId:navigation.pageId,folder:navigation.folder,notice,setNotice,setView,setActiveId,setPageId,setFolder,recent:documents.find(item=>item.id===recent&&!item.deletedAt)};
+  /** Opens Projects at every page (no project), a page's months, or one month of a page. */
+  const setProjectLocation=useCallback((project?:string,month?:string,folder="")=>navigate({view:"designs",designId:null,pageId:undefined,folder,project:project||undefined,month:project&&month?month:undefined}),[navigate]);
+  return {view:navigation.view,activeId:navigation.designId,pageId:navigation.pageId,folder:navigation.folder,project:navigation.project??"",month:navigation.month??"",setProjectLocation,notice,setNotice,setView,setActiveId,setPageId,setFolder,recent:documents.find(item=>item.id===recent&&!item.deletedAt)};
 }

@@ -3,11 +3,12 @@ import {useState} from "react";
 import {FORMATS,formatDimensions,libraryBrandKits,type EditorLibrary,type DesignTemplate,type DesignFormat} from "@/lib/template-editor/model";
 import {type CreationOptions} from "@/lib/template-editor/library-workflows";
 import {DESIGN_PRESETS} from "@/lib/template-editor/creation-presets";
+import {UNSORTED_PAGE_NAME,type ProjectPage} from "@/lib/template-editor/project-folders";
 import {Modal,NumberInput} from "./controls";
 import {DesignPreview} from "./preview";
 import "./dialog-tools.css";
 
-export function CreateDesignDialog({library,kind,template,preset,disabled,onCreate,onClose}:{library:EditorLibrary;kind:"post"|"carousel"|"template";template?:DesignTemplate;preset?:string;disabled:boolean;onCreate:(options:CreationOptions)=>boolean|void;onClose:()=>void}) {
+export function CreateDesignDialog({library,kind,template,preset,disabled,onCreate,onClose,pages=[],pageId=""}:{library:EditorLibrary;kind:"post"|"carousel"|"template";template?:DesignTemplate;preset?:string;disabled:boolean;onCreate:(options:CreationOptions)=>boolean|void;onClose:()=>void;/** The pages a design can be for, and the one chosen at first (the folder it's made from). */pages?:ProjectPage[];pageId?:string}) {
   const initialPreset=DESIGN_PRESETS.find(item=>item.id===preset)??DESIGN_PRESETS[0];
   const dimensions=template?formatDimensions(template):initialPreset;
   const [name,setName]=useState(template?.name??(kind==="carousel"?"Untitled carousel":kind==="template"?"Untitled template":"Untitled design"));
@@ -19,6 +20,7 @@ export function CreateDesignDialog({library,kind,template,preset,disabled,onCrea
   const [layout,setLayout]=useState<"separate"|"continuous">(template?.continuousCanvas?"continuous":"separate");
   const [brandId,setBrandId]=useState(library.activeBrandKitId),[applyBrand,setApplyBrand]=useState(!template);
   const [values,setValues]=useState<Record<string,string>>(()=>Object.fromEntries((template?.parameters??[]).map(parameter=>[parameter.id,parameter.defaultValue??""])));
+  const [page,setPage]=useState(pages.some(item=>item.id===pageId)?pageId:"");
   const [error,setError]=useState("");
   const preview=template?{...template,templateId:template.id,caption:"",createdAt:"",updatedAt:""}:null;
   const activePreset=DESIGN_PRESETS.find(item=>item.width===width&&item.height===height);
@@ -27,7 +29,7 @@ export function CreateDesignDialog({library,kind,template,preset,disabled,onCrea
     event.preventDefault();if(disabled)return;
     try{
       if(custom&&(!Number.isInteger(width)||!Number.isInteger(height)||width<120||height<120||width>8192||height>8192))throw new Error("Choose whole-pixel dimensions between 120 and 8192.");
-      if(onCreate({name,format,pageCount,layout,brandKitId:brandId,applyBrand,...(custom?{size:{width,height}}:{}),template,values,...(kind==="template"?{purpose:"template" as const}:{})})===false)throw new Error("This design could not be saved. Check the workspace status.");
+      if(onCreate({name,format,pageCount,layout,brandKitId:brandId,applyBrand,...(custom?{size:{width,height}}:{}),template,values,...(kind==="template"?{purpose:"template" as const}:{pageId:page})})===false)throw new Error("This design could not be saved. Check the workspace status.");
       onClose();
     }catch(cause){setError(cause instanceof Error?cause.message:"Could not create this design.");}
   }}>
@@ -37,6 +39,7 @@ export function CreateDesignDialog({library,kind,template,preset,disabled,onCrea
       {customOpen&&<div className="te-dialog-grid"><label>Width (px)<NumberInput min={120} max={8192} step={1} value={width} onChange={event=>setWidth(Number(event.target.value))}/></label><label>Height (px)<NumberInput min={120} max={8192} step={1} value={height} onChange={event=>setHeight(Number(event.target.value))}/></label></div>}
       {preview&&<div className="te-template-choice"><DesignPreview design={preview} page={preview.pages[0]}/><div><strong>{template!.name}</strong><span>{template!.pages.length} pages · {width} × {height} px</span></div></div>}
       <label>Design name<input autoFocus required maxLength={100} value={name} onChange={event=>setName(event.target.value)}/></label>
+      {kind!=="template"&&pages.length>0&&<label>Page<select value={page} onChange={event=>setPage(event.target.value)}>{pages.map(item=><option key={item.id} value={item.id}>{item.name}{item.handle&&item.handle!==item.name?` (${item.handle})`:""}</option>)}<option value="">No page ({UNSORTED_PAGE_NAME})</option></select></label>}
       {!!template?.parameters?.length&&<section><strong>Your content</strong>{template.parameters.map(parameter=><label key={parameter.id}>{parameter.name}{parameter.required?" *":""}<input aria-label={`Template field ${parameter.name}`} value={values[parameter.id]??""} maxLength={parameter.maxLength??20000} required={parameter.required} placeholder={parameter.type==="image"?"https://…":parameter.type==="color"?"#RRGGBB":parameter.defaultValue} onChange={event=>setValues(previous=>({...previous,[parameter.id]:event.target.value}))}/></label>)}</section>}
       <details open={kind==="carousel"?true:undefined} className="te-create-more"><summary>More options</summary><div className="te-dialog-details-body">
         {template&&<details><summary>Preview every page</summary><div className="te-dialog-details-body te-dialog-preview-grid">{template.pages.map((page,index)=><div key={page.id}><DesignPreview design={preview!} page={page}/><span>{page.label||`Page ${index+1}`}</span></div>)}</div></details>}

@@ -5,7 +5,7 @@ import { canEditElement, isElementHidden, constrainSceneToIsolation } from "./co
 import { libraryTemplates, withImportedTemplateStates } from "./template-catalog";
 import { stableStringify } from "./library-sync";
 
-export type CreationOptions = {name:string;format:DesignFormat;pageCount:number;layout:"separate"|"continuous";brandKitId:string;applyBrand:boolean;size?:{width:number;height:number};template?:DesignTemplate;values?:Record<string,string>;purpose?:"template"};
+export type CreationOptions = {name:string;format:DesignFormat;pageCount:number;layout:"separate"|"continuous";brandKitId:string;applyBrand:boolean;size?:{width:number;height:number};template?:DesignTemplate;values?:Record<string,string>;purpose?:"template";/** The page profile the design is for; empty files it under no page. */pageId?:string};
 export function brandScene(scene:CanvasScene, brand:EditorLibrary["brand"]):CanvasScene {
   return {...scene,background:brand.background,elements:scene.elements.map(element=>canEditElement(scene,element,"style")&&!isElementHidden(scene,element)&&element.type==="text"?{...element,font:brand.font,color:brand.text,textStyleId:undefined,colorRoleId:undefined}:element)};
 }
@@ -23,6 +23,7 @@ export function createLibraryDesign(library:EditorLibrary, options:CreationOptio
   if(options.layout==="continuous"&&!design.continuousCanvas)design=enableContinuousCarousel(design);
   if(options.layout==="separate"&&design.continuousCanvas)design=splitContinuousCarousel(design);
   if(options.applyBrand){const kit=libraryBrandKits(library).find(item=>item.id===options.brandKitId);if(!kit)throw new Error("Choose an available brand kit.");design={...design,pages:design.pages.map(page=>({...page,canvas:brandScene(page.canvas??sceneForPage(page,design.format),kit)})),...(design.continuousCanvas?{continuousCanvas:brandScene(design.continuousCanvas,kit)}:{}),...(design.masterScene?{masterScene:brandScene(design.masterScene,kit)}:{})};}
+  if(options.pageId&&options.purpose!=="template")design={...design,pageId:options.pageId};
   return design;
 }
 

@@ -263,6 +263,8 @@ export type DesignDocument = DocumentResources & {
   /** The reusable template this draft edits; ordinary designs never carry it. */
   editingTemplateId?: string;
   reviewStatus?: "draft" | "review" | "approved";
+  /** The page (page profile id, such as chatgptricks) this design is for; Projects files it under that page. "unsorted" files it under no page. */
+  pageId?: string;
   comments?: DesignComment[];
   versions?: DesignVersion[];
   reviewLinks?: { id: string; url: string; expiresAt: string }[];
@@ -2673,8 +2675,9 @@ export function parseLibrary(input: unknown): EditorLibrary | null {
       const pages = parsePages(d.pages);
       if (!pages) return null;
       const resources = parseResources(d);
-      if (!resources || !optional(d, "reviewStatus", choice(["draft", "review", "approved"]))) return null;
-      const metadata: Pick<DesignDocument, "reviewStatus" | "comments" | "versions" | "agentOperations"> = {};
+      if (!resources || !optional(d, "reviewStatus", choice(["draft", "review", "approved"])) || !optional(d, "pageId", candidate => identity(candidate) && candidate.length <= 120)) return null;
+      const metadata: Pick<DesignDocument, "reviewStatus" | "pageId" | "comments" | "versions" | "agentOperations"> = {};
+      if (d.pageId !== undefined) metadata.pageId = d.pageId as string;
       if (d.agentOperations !== undefined) {
         if (!Array.isArray(d.agentOperations) || d.agentOperations.length > 20) return null;
         const operations: NonNullable<DesignDocument["agentOperations"]> = [];

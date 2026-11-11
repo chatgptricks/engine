@@ -110,8 +110,10 @@ function duration(ms: number): string {
  * Recreate post: the dialog plus a small persistent indicator. The run keeps
  * going on the server while the dialog is closed, and resumes after a reload.
  */
-export function RecreatePost({scope, open, onOpenChange, blockedReason, activeDesignId, inEditor, onOpenDesign}: {
+export function RecreatePost({scope, open, onOpenChange, blockedReason, activeDesignId, inEditor, onOpenDesign, pageId}: {
   scope?: string;
+  /** Opened from a page's folder in Projects: that page is chosen for the post. */
+  pageId?: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** Shown instead of allowing a new run, e.g. when the workspace is read-only or full. */
@@ -122,6 +124,12 @@ export function RecreatePost({scope, open, onOpenChange, blockedReason, activeDe
   onOpenDesign: (result: RecreateResult) => void;
 }) {
   const [draft, setDraft] = useState<Draft>(EMPTY_DRAFT);
+  // Each time the dialog opens from a page's folder, the post is for that page.
+  const [shownOpen, setShownOpen] = useState(open);
+  if (open !== shownOpen) {
+    setShownOpen(open);
+    if (open && pageId && draft.profileId !== pageId) setDraft(current => ({...current, profileId: pageId}));
+  }
   const openRef = useRef(open), openDesign = useRef(onOpenDesign);
   useEffect(() => { openRef.current = open; openDesign.current = onOpenDesign; });
   const recreate = useRecreateJob(scope, (job, tracked) => {
