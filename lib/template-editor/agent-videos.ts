@@ -1,4 +1,5 @@
 import {AgentDeckValidationError} from "./agent-decks";
+import {normalizeVideoLayers} from "./agent-video-layers";
 import {VIDEO_SRC_PATTERN} from "./model";
 import {clipFromRecord, readVideoRecord, storeVideoFromUrl, VideoError, type VideoRecord} from "./video-storage";
 
@@ -32,7 +33,9 @@ export async function resolveAgentVideos<T>(owner: string, value: T, path = "$")
       if (error instanceof AgentDeckValidationError) throw error;
       throw new AgentDeckValidationError(error instanceof Error ? error.message : "could not be stored", at);
     }
-    return clipFromRecord(stored, {start: number(clip.start), end: number(clip.end), coverTime: number(clip.coverTime), loop: typeof clip.loop === "boolean" ? clip.loop : undefined, muted: typeof clip.muted === "boolean" ? clip.muted : undefined});
+    const result = clipFromRecord(stored, {start: number(clip.start), end: number(clip.end), coverTime: number(clip.coverTime), loop: typeof clip.loop === "boolean" ? clip.loop : undefined, muted: typeof clip.muted === "boolean" ? clip.muted : undefined});
+    if (clip.noPoster === true) result.noPoster = true;
+    return result;
   }
   async function walk(node: unknown, at: string): Promise<unknown> {
     if (Array.isArray(node)) return Promise.all(node.map((item, index) => walk(item, `${at}[${index}]`)));
@@ -40,5 +43,5 @@ export async function resolveAgentVideos<T>(owner: string, value: T, path = "$")
     const entries = await Promise.all(Object.entries(node).map(async ([key, child]) => [key, key === "video" && record(child) ? await resolve(child, `${at}.video`) : await walk(child, `${at}.${key}`)] as const));
     return Object.fromEntries(entries);
   }
-  return await walk(value, path) as T;
+  return await walk(normalizeVideoLayers(value), path) as T;
 }

@@ -63,7 +63,7 @@ export type GuideExample = GuideImage & { note: string };
 export type GuideRuleArea = "writing" | "cover" | "media" | "layout" | "type" | "color" | "logos";
 export const GUIDE_CHECK_KINDS = [
   "no-final-period", "no-em-dash", "sentence-case-titles", "upper-cover", "body-length", "banned-words", "cover-remark",
-  "palette", "fonts", "min-text-size", "text-margins", "source-line", "spacing", "accent-fill",
+  "palette", "fonts", "min-text-size", "text-margins", "source-line", "spacing", "accent-fill", "video-poster",
 ] as const;
 export type GuideCheckKind = typeof GUIDE_CHECK_KINDS[number];
 export type GuideRule = {
@@ -128,6 +128,8 @@ export const GUIDE_CHECKS: Record<GuideCheckKind, { label: string; severity: Gui
   "source-line": { label: "Source line style and position", severity: "should_fix", route: "none", scope: "template" },
   spacing: { label: "Spacing under the title and header", severity: "should_fix", route: "none", scope: "template" },
   "accent-fill": { label: "Accent gradient inside titles", severity: "should_fix", route: "none", scope: "template" },
+  // Always on: a video without a poster shows a dark frame in thumbnails, PNG and PDF, whatever the guide says.
+  "video-poster": { label: "Every video has a poster", severity: "must_fix", route: "images", scope: "layer" },
 };
 
 export class BrandGuideError extends Error {
@@ -497,6 +499,11 @@ export function runGuideChecks(target: CheckTarget, guide: BrandGuide, options: 
   const remarkLimit = 40;
   target.pages.forEach((page, index) => {
     const slide = options.slideOf?.(index) ?? index + 1;
+    // A video is checked like a photo (no colors to match), except that it needs a poster.
+    for (const element of page.canvas?.elements ?? []) {
+      const clip = element.type === "image" ? element.video : element.type === "shape" ? element.imageFill?.video : undefined;
+      if (!element.hidden && clip?.noPoster && !skip.has("video-poster")) add("video-poster", slide, `The video “${element.name}” has no poster, so thumbnails, PNG and PDF show a dark frame`, "Set a poster: in the editor's Video tab choose Use this frame as cover, or send update_element with poster (an image from the clip)");
+    }
     if (isReactionPage(page)) return; // Reaction pages keep their own post-card design.
     for (const element of page.canvas?.elements ?? []) {
       if (element.hidden) continue;

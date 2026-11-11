@@ -59,7 +59,7 @@ export function VideoControls({element, disabled, onUpdate, onReplace}: {element
     setBusy("Taking the cover…"); setError("");
     try {
       const cover = await coverAt(clip, time, element.name);
-      onUpdate("video-cover", layer => { const current = layerVideo(layer); return current ? withLayerVideo(layer, {...current, coverTime: Math.round(time * 100) / 100}, {src: cover.src, previewSrc: cover.previewSrc}) : layer; });
+      onUpdate("video-cover", layer => { const current = layerVideo(layer); return current ? withLayerVideo(layer, {...current, coverTime: Math.round(time * 100) / 100, noPoster: undefined}, {src: cover.src, previewSrc: cover.previewSrc}) : layer; });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Couldn't take a cover from this video."); }
     finally { setBusy(""); }
   }

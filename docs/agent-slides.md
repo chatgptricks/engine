@@ -214,7 +214,27 @@ Image layers accept a supported image `src` and optional public alt text.
 
 ### Videos
 
-An image layer, or a slide's `image`, can play a video. Add `video` to it:
+A video is its own layer, in the stack like an image, so text, shapes and fades can go above or below it:
+
+```json
+{ "type": "video", "src": "/api/template-editor/videos/…", "poster": "/api/template-editor/assets/…",
+  "x": 0, "y": 0, "width": 1080, "height": 1000, "start": 0, "end": 12, "loop": true, "muted": true }
+```
+
+- `src` is the clip: an Engine video path from `engine_video_upload` or `engine_get_deck`, or a public https link Engine copies. Through the Engine MCP, `path` (an absolute path to an `.mp4`, `.m4v`, `.mov` or `.webm` file) works instead; the bridge uploads it, and without `poster` takes one from the clip with ffmpeg.
+- `poster` is the still that thumbnails, PNG and PDF show. Without one the slide shows a dark frame and `engine_check_deck` flags it.
+- To swap a still for its clip, use `add_video` with `replaces`: the layer's id. The video takes that layer's box, crop and place in the stack, and the still is hidden:
+
+```json
+{ "operations": [
+  { "op": "add_video", "pageId": "s1", "replaces": "l1", "path": "/Users/me/Clips/01-cover-video.mp4" },
+  { "op": "add_video", "pageId": "s9", "replaces": "s9-l10", "path": "/Users/me/Clips/09-media.mp4" } ] }
+```
+
+- `update_element` on a video layer changes `poster`, `start`, `end`, `loop` or `muted`. `engine_get_deck` shows it as `type: "video"` with `src` (the clip), `poster`, and the clip's facts in `video`.
+- Over plain HTTP, upload with `POST /api/agent/videos`: `{action: "start", id: <sha-256>, bytes, mimeType, name}` (a WebM also sends `duration`, `width`, `height`), send the bytes where it says (a signed Storage URL, or 4 MB `PUT` parts in development), then `{action: "finish", …}` returns `src`.
+
+Engine stores a video layer as an image whose `src` is the poster and whose `video` is the clip, so a photo slot can also play one. Add `video` to an image layer or a slide's `image`:
 
 ```json
 { "type": "image", "src": "data:image/jpeg;base64,…cover frame…", "x": 0, "y": 0, "width": 1080, "height": 1440,

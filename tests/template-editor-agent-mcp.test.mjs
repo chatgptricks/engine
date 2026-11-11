@@ -424,6 +424,12 @@ test("a video file on this computer is uploaded once, given a cover, and put on 
   const ffmpeg = path.join(folder, "ffmpeg");
   await writeFile(ffmpeg, `#!/bin/sh\necho "$@" > "${folder}/ffmpeg-args"\nprintf '\\377\\330\\377\\340cover'\n`);
   await chmod(ffmpeg, 0o755);
+  const ffprobe = path.join(folder, "ffprobe");
+  await writeFile(ffprobe, `#!/bin/sh\nprintf '{"streams":[{"width":720,"height":1280}],"format":{"duration":"6.5"}}'\n`);
+  await chmod(ffprobe, 0o755);
+  const webm = path.join(folder, "09-media.webm");
+  const webmBytes = Buffer.concat([Buffer.from([0x1a, 0x45, 0xdf, 0xa3]), Buffer.alloc(60, 3)]);
+  await writeFile(webm, webmBytes);
   const calls = [];
   const instance = http.createServer(async (request, response) => {
     const chunks = [];
@@ -438,12 +444,13 @@ test("a video file on this computer is uploaded once, given a cover, and put on 
     if (request.url === "/api/agent/videos" && body.action === "finish") return json(response, { src: `/api/template-editor/videos/${id}`, duration: 8, width: 1080, height: 1920, bytes: bytes.length, mimeType: "video/mp4" }, 201);
     if (request.url === "/api/agent/assets") return json(response, { src: "/api/template-editor/assets/cover-1", width: 1080, height: 1920 }, 201);
     if (request.url === "/api/agent/slides" && body.action === "create_deck") return json(response, { document: { id: "deck-1" }, hash: "h1", editorUrl: "/editor/deck-1" });
+    if (request.url === "/api/agent/slides" && body.action === "update_deck") return json(response, { document: { id: "deck-1" }, hash: "h2", editorUrl: "/editor/deck-1" });
     return json(response, { error: "unexpected" }, 500);
   });
   instance.listen(0, "127.0.0.1");
   await once(instance, "listening");
   t.after(() => { instance.closeAllConnections(); instance.close(); });
-  const mcp = client(t, `http://127.0.0.1:${instance.address().port}`, { ENGINE_FFMPEG: ffmpeg });
+  const mcp = client(t, `http://127.0.0.1:${instance.address().port}`, { ENGINE_FFMPEG: ffmpeg, ENGINE_FFPROBE: ffprobe });
   await mcp.init();
   const listed = await mcp.request("tools/list");
   const createTool = listed.result.tools.find((tool) => tool.name === "engine_create_deck");
@@ -476,5 +483,19 @@ test("a video file on this computer is uploaded once, given a cover, and put on 
   assert.equal(uploaded.result.structuredContent.coverSrc, "/api/template-editor/assets/cover-1");
   assert.equal(uploaded.result.structuredContent.coverTime, 3);
   assert.equal(calls.filter((call) => call.method === "PUT").length, 1, "a stored clip isn't sent again");
+
+  // A still replaced by a local clip (add_video), and a WebM video layer whose facts come from ffprobe.
+  const replaced = await mcp.call("engine_update_deck", { deckId: "deck-1", expectedHash: "h1", changes: { operations: [
+    { op: "add_video", pageId: "s1", replaces: "l1", path: clip },
+    { op: "add_element", pageId: "s9", element: { type: "video", path: webm, poster: "/api/template-editor/assets/own", x: 101, y: 633, width: 878, height: 496 } },
+  ] } });
+  assert.equal(replaced.result.isError, false, JSON.stringify(replaced.result.structuredContent));
+  const operations = calls.find((call) => call.body?.action === "update_deck").body.changes.operations;
+  assert.deepEqual(operations[0], { op: "add_video", pageId: "s1", replaces: "l1", src: `/api/template-editor/videos/${id}`, coverTime: 0.5, poster: "/api/template-editor/assets/cover-1" });
+  assert.equal(operations[1].element.src, `/api/template-editor/videos/${id}`, "the stand-in server answers every finish with the same clip");
+  assert.equal(operations[1].element.poster, "/api/template-editor/assets/own");
+  assert.equal(operations[1].element.path, undefined);
+  const webmStart = calls.find((call) => call.body?.action === "start" && call.body.mimeType === "video/webm");
+  assert.deepEqual({ duration: webmStart.body.duration, width: webmStart.body.width, height: webmStart.body.height, id: webmStart.body.id }, { duration: 6.5, width: 720, height: 1280, id: createHash("sha256").update(webmBytes).digest("hex") });
   await mcp.close();
 });

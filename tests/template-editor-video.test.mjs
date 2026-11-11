@@ -356,7 +356,8 @@ test("without Blob (production on Render), the browser and agents send clips to 
   const clip = mp4({seconds: 75, width: 1080, height: 1920}), clipId = sha(clip);
   const call = body => agent.POST(new Request("https://engine.example/api/agent/videos", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)}));
   const facts = {id: clipId, bytes: clip.length, mimeType: "video/mp4", name: "01-cover-video.mp4"};
-  assert.equal((await call({action: "start", ...facts, mimeType: "video/webm"})).status, 415);
+  assert.equal((await call({action: "start", ...facts, mimeType: "video/x-matroska"})).status, 415);
+  assert.equal((await call({action: "start", ...facts, mimeType: "video/webm"})).status, 400, "a WebM needs its length and size");
   assert.equal((await call({action: "start", ...facts, id: "not-a-hash"})).status, 400);
   const agentStart = await (await call({action: "start", ...facts})).json();
   assert.equal(agentStart.mode, "signed");
@@ -427,6 +428,62 @@ test("agents add a video by link: it's copied once, the deck keeps its path and 
   assert.match(JSON.stringify(await failed.json()), /no video to change/);
 });
 
+test("agents add video as its own layer: create, add_video in place of a still, view, update, and a missing poster is flagged", async t => {
+  const f = fixture(t, {overrides: {"./review-assets": serving(CLIP, "video/mp4")}});
+  const route = f.load("app/api/agent/slides/route.ts"), guides = f.load("lib/template-editor/brand-guide.ts"), seed = f.load("lib/template-editor/brand-guide-seed.ts");
+  const post = body => route.POST(new Request("https://engine.example/api/agent/slides", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}));
+  const capabilities = await (await post({action: "capabilities"})).json();
+  assert.ok(capabilities.editable.includes("video"));
+  assert.ok(JSON.stringify(capabilities.updateSchema).includes("add_video"));
+  assert.ok(JSON.stringify(capabilities.deckSchema).includes("\"const\":\"video\""));
+  const poster = `data:image/png;base64,${Buffer.from("89504e470d0a1a0a0000000d4948445200000001000000010806000000", "hex").toString("base64")}`;
+  const response = await post({action: "create_deck", operationId: randomUUID(), spec: {name: "Video layers", format: "portrait", slides: [
+    {id: "s1", layout: "blank", elements: [
+      {id: "still", type: "image", src: COVER, x: 0, y: 0, width: 1080, height: 1000, cropY: 20, radius: 24},
+      {id: "headline", type: "text", text: "A clip under the headline", x: 60, y: 1050, width: 960, height: 120},
+    ]},
+    {id: "s2", layout: "blank", elements: [
+      {id: "clip", type: "video", src: "https://cdn.example/clip.mp4", x: 100, y: 600, width: 880, height: 500, start: 1, end: 9, loop: false},
+      {id: "caption", type: "text", text: "Over the clip", x: 100, y: 1000, width: 880, height: 80},
+    ]},
+  ]}});
+  assert.equal(response.status, 201, await response.clone().text());
+  let value = await response.json();
+  let hash = value.hash;
+  const stored = value.document.pages[1].canvas.elements[0];
+  assert.equal(stored.type, "image", "stored as a photo with a clip, so decks without video load as before");
+  assert.deepEqual(stored.video, clipOf({start: 1, end: 9, loop: false, noPoster: true}));
+  const viewed = value.view.slides[1].elements[0];
+  assert.deepEqual([viewed.type, viewed.src, viewed.poster, viewed.posterMissing, viewed.start, viewed.end, viewed.loop], ["video", clipOf().src, undefined, true, 1, 9, false]);
+  assert.deepEqual(value.view.slides[1].elements.map(element => element.id), ["clip", "caption"], "text sits above the video");
+
+  // engine_check_deck: a video layer gets no color complaints, and its missing poster is flagged.
+  const guide = seed.builtInBrandGuide("chatgptricks");
+  const issues = guides.runGuideChecks(value.document, guide, {scope: "deck", language: "en"});
+  const flagged = issues.filter(issue => issue.check === "video-poster");
+  assert.deepEqual(flagged.map(issue => [issue.slide, issue.severity]), [[2, "must_fix"]]);
+  assert.ok(!issues.some(issue => issue.check === "palette" && /clip|still/i.test(issue.problem)), JSON.stringify(issues));
+
+  const update = async operations => { const result = await post({action: "update_deck", deckId: value.document.id, expectedHash: hash, operationId: randomUUID(), changes: {operations}}); const body = await result.json(); assert.equal(result.status, 200, JSON.stringify(body)); hash = body.hash; return body; };
+  // A poster clears the flag; trim fields at the top level change the clip.
+  value = await update([{op: "update_element", pageId: "s2", elementId: "clip", properties: {poster, start: 2, muted: false}}]);
+  const updated = value.document.pages[1].canvas.elements[0];
+  assert.deepEqual(updated.video, clipOf({start: 2, end: 9, loop: false, muted: false}));
+  assert.notEqual(updated.src, stored.src);
+  assert.equal(guides.runGuideChecks(value.document, guide, {scope: "deck", language: "en"}).filter(issue => issue.check === "video-poster").length, 0);
+
+  // add_video in place of a still: its box, crop and place in the stack; the still is hidden.
+  value = await update([{op: "add_video", pageId: "s1", replaces: "still", src: clipOf().src, poster}]);
+  const [still, video, headline] = value.document.pages[0].canvas.elements;
+  assert.deepEqual([still.id, still.hidden, headline.id], ["still", true, "headline"]);
+  assert.deepEqual([video.type, video.x, video.y, video.width, video.height, video.cropY, video.radius], ["image", still.x, still.y, still.width, still.height, 20, still.radius]);
+  assert.deepEqual(video.video, clipOf());
+  assert.equal(value.view.slides[0].elements[1].type, "video");
+  const missing = await post({action: "update_deck", deckId: value.document.id, expectedHash: hash, operationId: randomUUID(), changes: {operations: [{op: "add_video", pageId: "s1"}]}});
+  assert.equal(missing.status, 400);
+  assert.match(JSON.stringify(await missing.json()), /needs src/);
+});
+
 test("the @chatgptricks cover's photo and a later slide's photo or chart can each be a video", async t => {
   const f = fixture(t, {overrides: {"./review-assets": serving(CLIP, "video/mp4")}});
   const route = f.load("app/api/agent/slides/route.ts");
@@ -477,11 +534,12 @@ test("the real guarded fetch refuses loopback and private links", async t => {
 test("agents learn about videos from capabilities and the schema", async t => {
   const f = fixture(t), decks = f.load("lib/template-editor/agent-decks.ts");
   const capabilities = decks.agentCapabilities();
-  assert.ok(capabilities.notes.some(note => /video: \{url/.test(note)));
+  assert.ok(capabilities.notes.some(note => /type: \\?"video\\?"/.test(note) && /add_video/.test(note) && /poster/.test(note)));
   const image = decks.AGENT_DECK_SPEC_SCHEMA.properties.slides.items.properties.elements.items.oneOf.find(variant => variant.properties.type.const === "image");
   assert.ok(image.properties.video.properties.url);
   const mcp = fs.readFileSync(path.join(root, "scripts/engine-agent-mcp.mjs"), "utf8");
-  assert.match(mcp, /video: \{url\}/);
+  assert.match(mcp, /add_video/);
+  assert.match(mcp, /\.webm/);
 });
 
 test("a slide plays at most 60 seconds of its clip", async t => {
