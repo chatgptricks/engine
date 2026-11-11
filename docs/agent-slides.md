@@ -210,7 +210,25 @@ For a fully positioned slide, use `layout: "blank"` and independent `elements`. 
 
 `engine_get_deck` returns an output-pixel `view` alongside the saved native `document`. Use `view.slides` and their elements to inspect positions and prepare updates in the same coordinate system as the authoring API. The raw native document stores positions on Engine's **360-wide scene**, with the conversion described in the response's `coordinates`. If working directly from the raw document at 1920 output pixels, multiply a scene value by `1920 / 360` before sending it as an agent authoring value.
 
-Image layers accept a supported image `src` and optional public alt text. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
+Image layers accept a supported image `src` and optional public alt text.
+
+### Videos
+
+An image layer, or a slide's `image`, can play a video. Add `video` to it:
+
+```json
+{ "type": "image", "src": "data:image/jpeg;base64,…cover frame…", "x": 0, "y": 0, "width": 1080, "height": 1440,
+  "video": { "url": "https://example.com/clip.mp4", "start": 2, "end": 14 } }
+```
+
+- `url` is a public https link to an MP4 or MOV file (H.264), up to 200 MB and 3 minutes. Engine copies it into the workspace's storage once (the same file is reused), and the saved deck points to it as `/api/template-editor/videos/<sha-256>`. A clip never sits inside the deck, so it doesn't count against the 12 MB library limit. Private and local hosts are refused.
+- `src` stays the layer's image and is the video's **cover**: thumbnails, PNG and PDF exports and review links show it, so use a frame from the clip.
+- `start` and `end` trim the clip, in seconds. A slide plays at most **60 seconds** (Instagram's limit for a carousel video).
+- A clip longer than 60 seconds **without** `start` or `end` continues on new slides placed right after its own: each is a copy of that slide playing the next 60 seconds (0–60, 60–120, 120–180), and the last plays what's left. The copies show the first cover until someone sets theirs in the editor. With `start` or `end` set, the clip stays on one slide and plays at most 60 seconds from `start`. The deck still holds at most 20 slides; a video that would need more is refused. `loop` (default true) plays it again from `start`; `muted` (default true) is how it plays while editing.
+- `engine_get_deck` returns the stored clip with its `src`, `duration`, `width`, `height` and `bytes`. Pass `video: {"src": "/api/template-editor/videos/…"}` to reuse it on another layer.
+- `update_element` with `video: {"start": 3, "end": 9}` changes the trim (the clip itself stays); `video: {"url": …}` replaces it; `video: {"remove": true}` keeps only the cover as a still photo.
+- A video stays on one slide: `span` isn't available on it.
+- In the editor, a clip longer than 60 seconds is split the same way when it's uploaded, each new slide with a cover from its own part, as one undo step. The clip plays muted on the canvas, and the Video tab trims it, sets its cover from any frame, and switches loop and sound. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
 
 ### HTML layers
 

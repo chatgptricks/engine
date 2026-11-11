@@ -330,6 +330,7 @@ export function spanBlocker(design: DesignDocument, pageId: string, elementId: s
   const element = elementsOf(page).find(item => item.id === elementId);
   if (!page || !element || element.type !== "image") return "Select a photo to span.";
   if (isSpanHalf(element)) return undefined;
+  if (element.video) return "A video stays on one slide: Instagram plays each slide on its own.";
   if (element.locked) return "Unlock the photo first.";
   if (element.templateRole === "brand") return "Brand layers stay where they are.";
   const brand = design.templateId === CHATGPTRICKS_TEMPLATE;

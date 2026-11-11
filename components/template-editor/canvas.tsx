@@ -6,6 +6,7 @@ import { keyboardTransform } from "@/lib/template-editor/editing-actions";
 import { viewGestureDelta,type ViewPoint } from "@/lib/template-editor/view-gestures";
 import {elementEffectiveOpacity} from "@/lib/template-editor/group-opacity";
 import { SceneLayers } from "./scene-layers";
+import { VideoPlayer } from "./video-player";
 import { CollaborationOverlay } from "./collaboration-overlay";
 import type { CollaborationPeer } from "./collaboration-bar";
 import { cropAfterDrag } from "@/lib/template-editor/photo-crop-geometry";
@@ -340,7 +341,8 @@ function TextFrame({ element, lines }: { element: TextElement; lines: string[] }
   </div>;
 }
 
-function SceneElement({ element, smartLayout }: { element: CanvasElement; smartLayout?: SmartTextLayout }) {
+/** `playVideo` is set only on the editing canvas: thumbnails, previews and exports show a clip's cover. */
+function SceneElement({ element, smartLayout, playVideo = false }: { element: CanvasElement; smartLayout?: SmartTextLayout; playVideo?: boolean }) {
   const token = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const filterId = `effect-${token}`, gradientId = `gradient-${token}`;
   const shadow = element.shadow;
@@ -369,8 +371,9 @@ function SceneElement({ element, smartLayout }: { element: CanvasElement; smartL
       <feMerge><feMergeNode in="shadow" /><feMergeNode in="SourceGraphic" /></feMerge>
     </filter></defs></svg>}
     {element.type === "text" ? <TextFrame element={element} lines={lines} /> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
+      {playVideo && element.video ? <VideoPlayer clip={element.video} layerId={element.id} poster={proxied(element.src)} className="te-canvas-image te-canvas-video" style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
+      // eslint-disable-next-line @next/next/no-img-element
+      : <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />}
     </div></div> : element.type === "html" ? <HtmlLayerContent element={element} /> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
       <clipPath id={photoClipId} clipPathUnits="userSpaceOnUse">{geometry({fillRule,clipRule:fillRule})}</clipPath>
       {strokeAlign === "outside" && <mask id={outsideMaskId} maskUnits="userSpaceOnUse" x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} style={{maskType:"luminance"}}><rect x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} fill="white" />{geometry({fill:"black",fillRule})}</mask>}
@@ -378,8 +381,9 @@ function SceneElement({ element, smartLayout }: { element: CanvasElement; smartL
     </defs>
     {geometry({fill:gradient?`url(#${gradientId})`:shape.fill,fillRule})}
     {photo && <foreignObject x="0" y="0" width={shape.width} height={shape.height} clipPath={`url(#${photoClipId})`}><div className="te-canvas-shape-photo"><div className="te-canvas-image-zoom" style={{width:"100%",height:"100%",transform:`scale(${photo.cropScale??1})`,transformOrigin:`${photo.cropX}% ${photo.cropY}%`}}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img className="te-canvas-image" data-shape-photo-id={shape.id} src={proxied(photo.src)} alt={photo.publicAlt??""} draggable={false} referrerPolicy="no-referrer" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center"}} />
+      {playVideo && photo.video ? <VideoPlayer clip={photo.video} layerId={shape.id} poster={proxied(photo.src)} className="te-canvas-image te-canvas-video" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center"}} />
+      // eslint-disable-next-line @next/next/no-img-element
+      : <img className="te-canvas-image" data-shape-photo-id={shape.id} src={proxied(photo.src)} alt={photo.publicAlt??""} draggable={false} referrerPolicy="no-referrer" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center"}} />}
     </div></div></foreignObject>}
     {shape.strokeWidth>0 && <g {...(strokeAlign==="inside"?{clipPath:`url(#${photoClipId})`}:strokeAlign==="outside"?{mask:`url(#${outsideMaskId})`}:{})}>{geometry({fill:"none",stroke:shape.stroke,strokeWidth:shape.strokeWidth*(strokeAlign==="center"?1:2),strokeDasharray:shape.strokeDash?.join(" "),strokeLinejoin:"round",strokeLinecap:"round",vectorEffect:"non-scaling-stroke",fillRule})}</g>}
     </svg>}
@@ -1418,7 +1422,7 @@ export function CanvasEditor({
         {masterScene&&Array.from({length:slideCount||1},(_,index)=>masterPageVisibility?.[index]!==false&&<div className="te-canvas-master-page" key={index} data-master-slide={index} style={{left:index*(slideWidth??width),width:slideWidth??width,height}}><SceneRenderer scene={sceneWithPreviewAssets({...masterScene,background:"transparent"})} isolate={false}/></div>)}
         {<SceneLayers scene={displayScene} render={(element) => (
           <div key={element.id} className={`te-canvas-page-layer${clippedIds.has(element.id) ? " is-clipped" : ""}${!inScope(element)?" is-outside-isolation":""}`}>
-            <SceneElement element={elementWithPreviewAsset(element)} smartLayout={smartView.texts.get(element.id)} />
+            <SceneElement element={elementWithPreviewAsset(element)} smartLayout={smartView.texts.get(element.id)} playVideo />
           </div>
         )} />}
       </div>

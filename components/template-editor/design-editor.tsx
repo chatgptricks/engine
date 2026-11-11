@@ -14,6 +14,8 @@ import {CollaborationBar, type EditorCollaboration} from "./collaboration-bar";
 import {sameContent} from "@/lib/template-editor/library-sync";
 import {PageAccessibilitySection} from "./page-accessibility";
 import {prepareRasterAsset} from "@/lib/template-editor/client-media";
+import {coverAt,isVideoFile,prepareVideoAsset} from "@/lib/template-editor/client-video";
+import {needsVideoSlides,splitVideoAcrossSlides,videoParts} from "@/lib/template-editor/video-slides";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowLeftIcon,
@@ -822,8 +824,19 @@ export function DesignEditor({
     const targetContinuous = Boolean(current.current.continuousCanvas);
     setUploading(true);
     try {
-      const {src,previewSrc,width:originalWidth,height:originalHeight} = await prepareRasterAsset(file);
+      const isVideo = isVideoFile(file);
+      if (isVideo) setNotice("Uploading video…");
+      const {src,previewSrc,width:originalWidth,height:originalHeight,video} = isVideo ? await prepareVideoAsset(file, fraction => { if (mounted.current) setNotice(`Uploading video… ${Math.round(fraction * 100)}%`); }) : {...await prepareRasterAsset(file), video: undefined};
       if (!mounted.current) return;
+      // A clip longer than a slide plays goes on as many slides as it needs, a minute each, each with its own cover.
+      const splits = Boolean(video && needsVideoSlides(video) && !targetMaster && !targetContinuous);
+      const partCovers: {src: string; previewSrc: string}[] = [];
+      if (splits && video) for (const [at, part] of videoParts(video).slice(1).entries()) {
+        setNotice(`Taking covers for the next slides… ${at + 1}`);
+        partCovers.push(await coverAt(video, part.start, file.name).catch(() => ({src, previewSrc})));
+      }
+      if (!mounted.current) return;
+      let madePages: string[] = [];
       const targetPage = current.current.pages.find((p) => p.id === targetId);
       if (!targetPage)
         throw new Error(
@@ -851,6 +864,7 @@ export function DesignEditor({
       const image = createCanvasElement("image", {
         src,
         previewSrc,
+        ...(video ? {video} : {}),
         name: file.name.slice(0, 100),
         x: (targetContinuous ? current.current.pages.indexOf(targetPage) * FRAME_WIDTH : 0) + (FRAME_WIDTH - w) / 2,
         y: (canvasHeight - h) / 2,
@@ -863,19 +877,25 @@ export function DesignEditor({
         const update = (live: CanvasScene): CanvasScene => {
           if(targetIsolation&&!live.groups?.some(group=>group.id===targetIsolation))throw new Error('The target group was removed. Upload the image again.');
           const frame=replaceId?live.elements.find(element=>element.id===replaceId&&element.type==='shape'):undefined;
-          if(frame)return fillShapeWithImage(live,frame.id,{src,previewSrc,alt:file.name.slice(0,200),objectFit:'cover',cropX:50,cropY:50,cropScale:1,intrinsicWidth:originalWidth,intrinsicHeight:originalHeight}).scene;
+          if(frame)return fillShapeWithImage(live,frame.id,{src,previewSrc,alt:file.name.slice(0,200),objectFit:'cover',cropX:50,cropY:50,cropScale:1,intrinsicWidth:originalWidth,intrinsicHeight:originalHeight,...(video?{video}:{})}).scene;
           return constrainSceneToIsolation(live,{...live, elements: replaceId
-          ? live.elements.map((element) => element.id === replaceId && element.type === "image" ? {...element, src, previewSrc, intrinsicWidth:originalWidth,intrinsicHeight:originalHeight,name: file.name.slice(0, 100)} : element)
+          ? live.elements.map((element) => { if (element.id !== replaceId || element.type !== "image") return element; const replaced = {...element, src, previewSrc, intrinsicWidth:originalWidth,intrinsicHeight:originalHeight,name: file.name.slice(0, 100), video}; if (!video) delete replaced.video; return replaced; })
           : [...live.elements, image]},targetIsolation);
         };
-        return targetMaster?{...d,masterScene:update(d.masterScene??{background:'transparent',elements:[]})}:d.continuousCanvas ? {...d, continuousCanvas: update(d.continuousCanvas)} : {
-          ...d, pages: d.pages.map((p) => p.id === targetId ? {...p, canvas: update(p.canvas ?? sceneForPage(p, d.format))} : p),
-        };
+        if(targetMaster)return {...d,masterScene:update(d.masterScene??{background:'transparent',elements:[]})};
+        if(d.continuousCanvas)return {...d, continuousCanvas: update(d.continuousCanvas)};
+        const next = {...d, pages: d.pages.map((p) => p.id === targetId ? {...p, canvas: update(p.canvas ?? sceneForPage(p, d.format))} : p)};
+        if (!splits) return next;
+        const split = splitVideoAcrossSlides(next, targetId, replaceId ?? image.id, partCovers);
+        madePages = split.pageIds;
+        return split.design;
       });
       if (!accepted) return;
       if (activePage.current === targetId) setSelected([replaceId ?? image.id]);
       setNotice(
-        replaceId
+        isVideo
+          ? madePages.length ? `The video is ${Math.round(video!.duration)} seconds, and a slide plays up to 60, so it continues on ${madePages.length === 1 ? "a new slide" : `${madePages.length} new slides`} after this one.` : targetMaster || targetContinuous ? "Video added. A slide plays its first 60 seconds; trim it in the Video panel." : replaceId ? "Video placed. It plays muted here; trim it in the Video panel." : "Video added. It plays muted here; trim it in the Video panel."
+          : replaceId
           ? "Image replaced."
           : "Image added. Drag its handles to resize it.",
       );
@@ -1178,7 +1198,7 @@ export function DesignEditor({
     const copy=(event:ClipboardEvent)=>{if(event.defaultPrevented||editable(event.target)||Boolean(window.getSelection()?.toString())||!selected.length||!event.clipboardData)return;event.preventDefault();void copyElements(selected,event.type==="cut",event.clipboardData);};
     const paste=(event:ClipboardEvent)=>{
       if(event.defaultPrevented||editable(event.target)||disabled||!event.clipboardData)return;
-      const file=Array.from(event.clipboardData.files).find(file=>file.type.startsWith("image/"));
+      const file=Array.from(event.clipboardData.files).find(file=>file.type.startsWith("image/")||isVideoFile(file));
       if(file){event.preventDefault();void upload(file);return;}
       const text=event.clipboardData.getData(ENGINE_CLIPBOARD_TYPE)||event.clipboardData.getData("text/plain");
       if(text){event.preventDefault();pasteClipboardText(text);}
@@ -1441,7 +1461,7 @@ export function DesignEditor({
                   ref={fileRef}
                   hidden
                   type="file"
-                  accept="image/jpeg,image/png,image/webp,image/svg+xml,.svg"
+                  accept="image/jpeg,image/png,image/webp,image/svg+xml,.svg,video/mp4,video/quicktime,video/webm,.mp4,.mov,.m4v,.webm"
                   onChange={(e) => {
                     const file = e.target.files?.[0];
                     e.target.value = "";
@@ -1459,7 +1479,7 @@ export function DesignEditor({
                     if (file) void newFrameSlide(file, frameAfterRef.current ?? page.id);
                   }}
                 />
-      <input ref={replaceFileRef} hidden type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" onChange={event=>{
+      <input ref={replaceFileRef} hidden type="file" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,video/mp4,video/quicktime,video/webm,.mp4,.mov,.m4v,.webm" onChange={event=>{
         const file=event.target.files?.[0],id=replaceTargetRef.current;
         event.target.value="";replaceTargetRef.current=null;
         if(file&&id)void upload(file,id);
@@ -1697,7 +1717,7 @@ export function DesignEditor({
                   <strong>
                     {uploading ? "Preparing image…" : "Upload an image"}
                   </strong>
-                  <span>JPG, PNG or WebP · up to 15 MB</span>
+                  <span>JPG, PNG or WebP up to 15 MB · MP4, MOV or WebM video up to 200 MB</span>
                 </button>
                 {selected.length === 1 &&
                   scene.elements.some(e=>e.id===selected[0]&&(e.type==='image'||e.type==='shape')) && (
@@ -1706,7 +1726,7 @@ export function DesignEditor({
                       <input
                         type="file"
                         hidden
-                        accept="image/jpeg,image/png,image/webp"
+                        accept="image/jpeg,image/png,image/webp,video/mp4,video/quicktime,video/webm,.mp4,.mov,.m4v,.webm"
                         onChange={(e) => {
                           const file = e.target.files?.[0];
                           e.target.value = "";

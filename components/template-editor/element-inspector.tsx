@@ -1,4 +1,5 @@
 "use client";
+import { VideoControls, layerVideo } from "./video-controls";
 import { changeStyledTextCase } from "@/lib/template-editor/editing-actions";
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -262,7 +263,7 @@ export function ElementInspector({
   ) {
     if (noEdits) return;
     const metadata = ["name", "slot", "master", "anchor", "protection"].includes(group);
-    const property = ["text", "uppercase", "lowercase", "image-fill", "public-alt"].includes(group) ? "content" : ["x", "y", "width", "height", "rotation", "square-shape"].includes(group) ? "position" : "style";
+    const property = ["text", "uppercase", "lowercase", "image-fill", "public-alt"].includes(group) || group.startsWith("video-") ? "content" : ["x", "y", "width", "height", "rotation", "square-shape"].includes(group) ? "position" : "style";
     const next = scene.elements.map((element) => editableIds.has(element.id) && (metadata || canEditElement(scene, element, property)) ? transform(element) : element);
     if (next.some((element, index) => element !== scene.elements[index])) onChange({ ...scene, elements: next }, `${groupPrefix}:${group}`);
   }
@@ -370,7 +371,7 @@ export function ElementInspector({
     ...(htmlLayer?[{id:"html" as const,label:"HTML"}]:[]),
     ...(texts.length||shapes.length?[{id:"edit" as const,label:texts.length&&!shapes.length?"Text":shapes.length&&!texts.length?"Fill":"Edit"}]:[]),
     ...(shapes.length?[{id:"outline" as const,label:"Outline"}]:[]),
-    ...(images.length?[{id:"photo" as const,label:"Photo"}]:[]),
+    ...(images.length?[{id:"photo" as const,label:onlyElement&&layerVideo(onlyElement)?"Video":"Photo"}]:[]),
     {id:"position",label:"Position"},{id:"effects",label:"Effects"},{id:"advanced",label:"Advanced"},
   ];
   // With a callback, the parent owns the category; selection changes cannot retain a stale local tab.
@@ -380,7 +381,7 @@ export function ElementInspector({
   const categoryKey=categories.map(category=>category.id).join(",");
   useEffect(()=>{if(elements.length&&!categoryKey.split(",").includes(initialSection))onSectionChange?.(effectiveSection);},[initialSection,effectiveSection,categoryKey,elements.length,onSectionChange]);
   const advancedFor=(section:"text"|"texture"|"photo"|"shape"|"path"|"outline"|"effects"|"brand"|"constraints")=>({...advancedProps,sections:[section],onFormatText,styleDisabled:section==="text"||section==="texture"?textStyleDisabled:section==="photo"?photoStyleDisabled:section==="shape"||section==="path"||section==="outline"?shapeStyleDisabled:styleDisabled,contentDisabled:section==="texture"?textContentDisabled:photoContentDisabled,positionDisabled});
-  const framePhotoControl=onUploadFramePhoto&&shapes.length===1?<label className="te-frame-photo-upload">{frameUploading?"Loading photo…":shapes[0].imageFill?"Replace frame photo":"Add photo to shape"}<input type="file" aria-label="Choose shape frame photo" accept="image/png,image/jpeg,image/webp,image/gif,image/avif" disabled={noEdits||frameUploading||!canEditElement(scene,shapes[0],"content")} onChange={async event=>{const file=event.target.files?.[0];event.target.value="";if(!file||noEdits||!canEditElement(scene,shapes[0],"content"))return;setFrameUploading(true);setFrameError("");try{await onUploadFramePhoto(file,shapes[0].id);}catch(error){setFrameError(error instanceof Error?error.message:"Could not load this photo.");}finally{setFrameUploading(false);}}}/></label>:null;
+  const framePhotoControl=onUploadFramePhoto&&shapes.length===1?<label className="te-frame-photo-upload">{frameUploading?"Loading photo…":shapes[0].imageFill?"Replace frame photo":"Add photo to shape"}<input type="file" aria-label="Choose shape frame photo" accept="image/png,image/jpeg,image/webp,image/gif,image/avif,video/mp4,video/quicktime,video/webm,.mp4,.mov,.m4v,.webm" disabled={noEdits||frameUploading||!canEditElement(scene,shapes[0],"content")} onChange={async event=>{const file=event.target.files?.[0];event.target.value="";if(!file||noEdits||!canEditElement(scene,shapes[0],"content"))return;setFrameUploading(true);setFrameError("");try{await onUploadFramePhoto(file,shapes[0].id);}catch(error){setFrameError(error instanceof Error?error.message:"Could not load this photo.");}finally{setFrameUploading(false);}}}/></label>:null;
   const positionSection=(
             <Section title="Align"><fieldset disabled={positionDisabled}>
               <label className="te-field">Align relative to<select aria-label="Alignment reference" value={effectiveAlignmentScope} onChange={event => { const value = event.target.value as typeof alignmentScope; setAlignmentScope(value); setAlignmentMode(value === "selection" || value === "key-object" ? "individual" : "group"); }}><option value="page">Canvas</option>{slideBounds && <option value="slide">Current slide</option>}<option value="selection" disabled={elements.length < 2}>Selection bounds</option><option value="key-object" disabled={elements.length < 2}>Key object</option></select></label>
@@ -553,6 +554,7 @@ export function ElementInspector({
               <AdvancedProperties {...advancedFor("outline")}/>
             </>}
             {effectiveSection==="photo"&&<>
+              {onlyElement&&layerVideo(onlyElement)&&<VideoControls key={onlyElement.id} element={onlyElement} disabled={photoContentDisabled} onUpdate={update} onReplace={onUploadFramePhoto?file=>onUploadFramePhoto(file,onlyElement.id):undefined}/>}
               <Section title={images.length===elements.length?"Image":`Images · ${images.length}`}>
                 {framePhotoControl}{frameError&&<p className="te-element-hint" role="alert">{frameError}</p>}
                 <fieldset disabled={photoStyleDisabled}><div className="te-element-segments" role="group" aria-label="Image fit"><Toggle label="Fill image frame" active={shared(images,"fit")==="cover"} onClick={()=>updateImage({fit:"cover"},"image-fit")}>Fill frame</Toggle><Toggle label="Fit entire image" active={shared(images,"fit")==="contain"} onClick={()=>updateImage({fit:"contain"},"image-fit")}>Fit image</Toggle></div><div className="te-element-segments" role="group" aria-label="Image orientation"><Toggle label="Flip photo horizontally" active={images.every(image=>image.flipX)} onClick={()=>updateImage({flipX:!images.every(image=>image.flipX)},"image-flip")}>Flip horizontal</Toggle><Toggle label="Flip photo vertically" active={images.every(image=>image.flipY)} onClick={()=>updateImage({flipY:!images.every(image=>image.flipY)},"image-flip")}>Flip vertical</Toggle></div></fieldset>

@@ -3,8 +3,9 @@ import {
   BUILT_IN_TEMPLATES, EMPTY_LIBRARY, MAX_HTML_CHARS, MAX_HTML_CSS_CHARS, MAX_HTML_DESIGN_WIDTH, MAX_HTML_TOKENS, createBlankDesign, createCanvasElement,
   createDesign, duplicatePage, formatDimensions, parseCanvasScene, parseLibrary, prepareSmartTemplate, sceneForPage,
   type CanvasElement, type CanvasScene, type DesignDocument, type DesignPage,
-  type DesignTemplate, type EditorLibrary, type HtmlElement, type SmartTextRole,
+  type DesignTemplate, type EditorLibrary, type HtmlElement, type SmartTextRole, type VideoClip,
 } from "./model";
+import { splitUntrimmedVideos } from "./video-slides";
 import { findSpan, hasSpans, isSpanHalf, reconcileSpans, seamOf, setSeam, spanPairs, spanPhoto, syncSpans, unlinkSpan } from "./spanning-photos";
 import { cleanHtmlLayer, cleanHtmlTokens } from "./html-layer";
 import { frameBackground, frameBackgroundLayer, frameCutLayer, sceneToImage, type Box } from "./frames";
@@ -50,12 +51,26 @@ const textProperties = {
   letterSpacing: num(-1000, 1000), padding: num(0, 10_000), paragraphSpacing: num(0, 10_000),
   textMode: choice(["fixed", "auto-height", "auto-fit"]), listStyle: choice(["none", "bullet", "number"]),
 };
+/** A clip on a photo. Agents send url (copied into storage) or src (a clip already in the
+ * workspace); Engine fills in the rest before the deck is checked (agent-videos.ts). */
+const videoSchema: Schema = obj({
+  url: str(4000, { description: "A public https link to an MP4 or MOV file (H.264). Engine copies it into the workspace's storage, up to 200 MB and 3 minutes" }),
+  src: str(200, { description: "An Engine video path (/api/template-editor/videos/<sha-256>) from engine_get_deck, to reuse a clip" }),
+  start: { ...num(0, 100_000), description: "Trim: second the clip starts at" },
+  end: { ...num(0, 100_000), description: "Trim: second the clip ends at. A slide plays at most 60 seconds from start" },
+  loop: { ...bool, description: "Plays again from start (default true)" },
+  muted: { ...bool, description: "Silent while editing (default true). Export has its own sound setting" },
+  coverTime: { ...num(0, 100_000), description: "Second the cover (the layer's src) shows; informational" },
+  remove: { const: true, description: "update_element only: remove the clip; the cover stays as a still photo" },
+  mimeType: choice(["video/mp4", "video/quicktime", "video/webm"]), duration: num(0, 100_000), width: num(1, 16_384), height: num(1, 16_384), bytes: num(1, 1e10),
+}, [], { description: "A video that plays in this photo. src (the image) stays its cover: thumbnails, PNG and PDF show it, so give a frame from the clip" });
 const imageProperties = {
   src: str(LIMITS.imageCharacters, { minLength: 1 }), publicAlt: str(2000), fit: choice(["cover", "contain"]),
   cropX: num(0, 100), cropY: num(0, 100), cropScale: num(.1, 20), radius: num(0, 100_000),
   flipX: bool, flipY: bool, mask: choice(["none", "ellipse", "triangle", "diamond"]),
   // The photo's own size in pixels: a spanning photo's frame takes its proportions.
   intrinsicWidth: num(1, 100_000), intrinsicHeight: num(1, 100_000),
+  video: videoSchema,
 };
 const seamSchema = (description: string): Schema => ({ ...num(.1, .9), description });
 const shapeProperties = {
@@ -94,7 +109,7 @@ const elementSchema: Schema = { oneOf: [
   obj({ ...baseProperties, type: { const: "shape" }, ...shapeProperties }, ["type", "x", "y", "width", "height"]),
   obj({ ...baseProperties, type: { const: "html" }, ...htmlProperties, tokens: htmlTokensSchema }, ["type", "html", "x", "y", "width", "height"]),
 ] };
-const slideImageSchema = obj({ src: imageProperties.src, alt: str(2000), fit: imageProperties.fit }, ["src"]);
+const slideImageSchema = obj({ src: imageProperties.src, alt: str(2000), fit: imageProperties.fit, video: videoSchema }, ["src"]);
 const slideSchema = obj({
   id, label: str(200), layout: choice(LAYOUTS), background: color, title: str(20_000), body: str(20_000),
   bullets: { type: "array", maxItems: 40, items: str(2000) }, image: slideImageSchema,
@@ -310,6 +325,11 @@ type SpanRequest = { pageId: string; elementId: string; seam?: number; path: str
 function spanRequest(input: RecordValue, pageId: string, element: CanvasElement, path: string, requests: SpanRequest[]) {
   if (input.span !== undefined) requests.push({ pageId, elementId: element.id, ...(input.seam !== undefined ? { seam: Number(input.seam) } : {}), path });
 }
+/** A video over 60 seconds without a trim continues on new slides after its own (video-slides.ts). */
+function splitLongVideos(document: DesignDocument): DesignDocument {
+  try { return splitUntrimmedVideos(document).design; }
+  catch (error) { fail("$.slides", error instanceof Error ? error.message : "a long video doesn't fit in 20 slides"); }
+}
 function applySpanRequests(document: DesignDocument, requests: SpanRequest[]): DesignDocument {
   for (const request of requests) {
     try { document = spanPhoto(document, request.pageId, request.elementId, request.seam ?? .5).design; }
@@ -359,7 +379,7 @@ function makeSlide(spec: RecordValue, size: { width: number; height: number }, t
         box = [m, h - m - imageHeight, contentW, imageHeight];
         textH = contentH - imageHeight - m;
       }
-      elements.push(makeElement({ type: "image", name: "Image", slot: "image", src: image.src, publicAlt: image.alt ?? "", fit: image.fit ?? "cover", x: box[0], y: box[1], width: box[2], height: box[3] }, scale, theme, used, `${path}.image`));
+      elements.push(makeElement({ type: "image", name: "Image", slot: "image", src: image.src, publicAlt: image.alt ?? "", fit: image.fit ?? "cover", ...(image.video !== undefined ? { video: image.video } : {}), x: box[0], y: box[1], width: box[2], height: box[3] }, scale, theme, used, `${path}.image`));
     }
     if (layout === "title") {
       textY = m + textH * .18;
@@ -500,6 +520,8 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
     ensureEditable(element, canvas, ["src", "publicAlt", "fit"], `${path}.image`);
     const image = spec.image as RecordValue;
     element.src = String(image.src); element.publicAlt = String(image.alt ?? "");
+    if (record(image.video)) { if (image.video.remove === true) delete element.video; else element.video = image.video as unknown as VideoClip; }
+    else delete element.video;
     if (image.fit !== undefined) element.fit = image.fit as "cover" | "contain";
     checkNativeElement(element, `${path}.image`);
   }
@@ -571,6 +593,7 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
   requireSpanPartners(document, paths, pairTemplate, sourcePages);
   for (const request of requests.seams) document = setSeam(document, request.pageId, request.elementId, request.seam ?? .5);
   document = applySpanRequests(reconcileSpans(document).design, requests.spans);
+  document = splitLongVideos(document);
   document.id = String(spec.id ?? document.id);
   if (used.has(document.id)) fail("$.id", "must differ from page and element identifiers");
   document.name = String(spec.name).trim();
@@ -579,7 +602,7 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
   return validateDocument(document);
 }
 const positionKeys = new Set(["x", "y", "width", "height", "rotation", "designWidth"]);
-const contentKeys = new Set(["text", "src", "publicAlt", "html", "css"]);
+const contentKeys = new Set(["text", "src", "publicAlt", "html", "css", "video"]);
 function ensureEditable(element: CanvasElement, scene: CanvasScene, properties: string[], path: string, deleting = false) {
   let group = scene.groups?.find(candidate => candidate.id === element.groupId);
   const seen = new Set<string>();
@@ -768,6 +791,15 @@ export function updateAgentDeck(document: DesignDocument, input: unknown, frames
       for (const key of Object.keys(properties)) if (!allowed.has(key)) fail(`${path}.properties.${key}`, `is not supported on a ${element.type} element`);
       ensureEditable(element, canvas, Object.keys(properties), `${path}.properties`);
       let updated = { ...element, ...toScene(properties, scale) } as CanvasElement;
+      if (updated.type === "image" && record(properties.video)) {
+        const patch = properties.video;
+        if (patch.remove === true) delete updated.video;
+        // Only trim or playback fields: they change the clip the image already has.
+        else if (patch.src === undefined) {
+          if (element.type !== "image" || !element.video) fail(`${path}.properties.video`, "needs url: this image has no video to change");
+          updated.video = { ...element.video, ...patch } as VideoClip;
+        }
+      }
       if (updated.type === "html" && (properties.html !== undefined || properties.css !== undefined)) updated = withHtml(updated, { html: updated.html, css: updated.css, tokens: updated.tokens }, `${path}.properties`);
       if (element.type === "text") {
         const updatedText = updated as Extract<CanvasElement, { type: "text" }>;
@@ -779,6 +811,7 @@ export function updateAgentDeck(document: DesignDocument, input: unknown, frames
     }
   }
   if (before) next = syncSpans(before, next).design;
+  next = splitLongVideos(next);
   next.updatedAt = new Date().toISOString();
   return validateDocument(next);
 }
@@ -841,6 +874,6 @@ export function agentCapabilities() {
     ] },
     updateExample: { operations: [{ op: "update_slide", pageId: "intro", label: "Opening slide" }, { op: "rename", name: "My editable presentation" }] },
     ...(composable ? { templateExample: { name: "A carousel composed from template pages", templateId: composable.id, slides: [{ templatePage: 0 }, { templatePage: 1 }, { templatePage: 1 }, { templatePage: composable.pages.length - 1 }] } } : {}),
-    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates. Omit slides to copy every page, or pass exactly one slide per template page in order to fill its text/image slots.", "To build a carousel of any length (1–20 slides) from a template's page types, set templatePage (0-based template page index) on every slide; pages may repeat, reorder or be left out. Each slide gets fresh page and layer ids and keeps that page's smart-template rules. Setting templatePage on only some slides is an error. Template pages and their slots are listed per page as pageTypes.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Photo slots and image.src accept the imageSources listed here, up to 2,000,000 characters. Render charts as PNG data URLs; base64 SVG is rejected.", "Engine stores data: PNG, JPEG, WebP and SVG images as media files in the workspace, once each, and the saved deck points to them (/api/template-editor/assets/<sha-256>), so they don't count against the 12 MB library limit. GIF and AVIF stay embedded.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace.", "Spanning photos: one photo can start on one slide and continue on the next, split at the seam as people swipe. In a template, use the two pages pageTypes marks with pair together and in order, fill the photo once on the first and give its photoSize and seam (0.1 to 0.9, the share of the photo on that slide, chosen so the cut misses faces and text). In any deck, add an image with span: \"next\" (and seam), or use span_photo on an existing image; span_photo on a photo that already spans moves its seam. update_element on either half updates both, remove_element removes both, unlink_span leaves two ordinary photos, and a slide moved away from its partner unlinks them. engine_get_deck shows each half's span with its partnerPageId and seam."],
+    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates. Omit slides to copy every page, or pass exactly one slide per template page in order to fill its text/image slots.", "To build a carousel of any length (1–20 slides) from a template's page types, set templatePage (0-based template page index) on every slide; pages may repeat, reorder or be left out. Each slide gets fresh page and layer ids and keeps that page's smart-template rules. Setting templatePage on only some slides is an error. Template pages and their slots are listed per page as pageTypes.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Photo slots and image.src accept the imageSources listed here, up to 2,000,000 characters. Render charts as PNG data URLs; base64 SVG is rejected.", "Engine stores data: PNG, JPEG, WebP and SVG images as media files in the workspace, once each, and the saved deck points to them (/api/template-editor/assets/<sha-256>), so they don't count against the 12 MB library limit. GIF and AVIF stay embedded.", "Videos: an image layer (or a slide's image) can carry video: {url, start, end, loop}. url is a public https link to an MP4 or MOV (H.264) of up to 200 MB and 3 minutes; A slide plays at most 60 seconds: a longer clip given without start or end continues on copies of its slide placed right after it, 60 seconds each; with start or end it stays on one slide and plays 60 seconds from start. Engine copies it into the workspace once and the deck stores only its path (/api/template-editor/videos/<sha-256>), so it never counts against the library limit. src stays the layer's image and is the video's cover: thumbnails, PNG and PDF show it, so give a frame from the clip. Reuse a stored clip with video: {src} from engine_get_deck; update_element with video: {start, end} changes the trim, and video: {remove: true} keeps only the cover. A video stays on one slide (no span). The editor plays it muted.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace.", "Spanning photos: one photo can start on one slide and continue on the next, split at the seam as people swipe. In a template, use the two pages pageTypes marks with pair together and in order, fill the photo once on the first and give its photoSize and seam (0.1 to 0.9, the share of the photo on that slide, chosen so the cut misses faces and text). In any deck, add an image with span: \"next\" (and seam), or use span_photo on an existing image; span_photo on a photo that already spans moves its seam. update_element on either half updates both, remove_element removes both, unlink_span leaves two ordinary photos, and a slide moved away from its partner unlinks them. engine_get_deck shows each half's span with its partnerPageId and seam."],
   };
 }

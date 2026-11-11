@@ -414,3 +414,6 @@
   font: 600 calc(11px * var(--te-control-scale, 1)) / 1.3 system-ui, sans-serif;
   white-space: nowrap;
 }
+/* A layer's clip plays where its photo would be, under the same crop. */
+.te-canvas-video { pointer-events: none; background: transparent; }
+.te-video-controls .te-video-trim { display: grid; gap: 6px; border: 0; margin: 8px 0 0; padding: 0; }
