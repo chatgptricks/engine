@@ -230,7 +230,12 @@ test("fonts map to Engine's font ids, inverting the HTML font stacks", () => {
   assert.equal(engineFontId({ fontFamily: '"GF GT Walsheim Condensed", system-ui' }), "walsheimcond");
   assert.equal(engineFontId({ fontFamily: '"IBM Plex Mono", monospace' }), "plexmono");
   assert.equal(engineFontId({ fontFamily: "Inter, sans-serif" }), "inter");
-  assert.equal(engineFontId({ fontFamily: "Georgia, serif" }), "serif");
+  assert.equal(engineFontId({ fontFamily: "Georgia, serif" }), "georgia", "Georgia is a font of its own");
+  assert.equal(engineFontId({ fontFamily: "\"Times New Roman\", serif" }), "serif");
+  assert.equal(engineFontId({ fontFamily: "Poppins, sans-serif" }), "poppins");
+  assert.equal(engineFontId({ fontFamily: "\"Neue Montreal\", sans-serif" }), "neuemontreal");
+  assert.equal(engineFontId({ fontFamily: "\"TT Supermolot\", sans-serif" }), "supermolot");
+  assert.equal(engineFontId({ fontFamily: "\"Helvetica Neue\", Arial" }), "helvetica");
   assert.equal(engineFontId({ fontFamily: "monospace" }), "plexmono");
   assert.equal(engineFontId({ fontFamily: '"Comic Sans MS"' }), "geist");
   for (const id of Object.keys(layer.HTML_FONT_STACKS)) valid(htmlPiecesToLayers(htmlElement(), [text([[run("Hi")]], { style: style({ font: id }) })]));

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { gzipSync } from "node:zlib";
 import { BUNDLE_AAD, BUNDLE_VERSION, MAX_DECOMPRESSED_BYTES, REQUIRED_FONT_NAMES, decodeFontBundle, parseBundleKey, prepareLicensedFonts } from "../scripts/prepare-licensed-fonts.mjs";
+import { buildFontBundle, encodeFontBundle } from "../scripts/build-licensed-fonts-bundle.mjs";
 
 // Public, deterministic fixture values. These are never deployment credentials.
 const key = Buffer.alloc(32, 0x12), iv = Buffer.alloc(12, 0x34);
@@ -120,4 +121,26 @@ test("an invalid bundle changes no preexisting files and symlinked destinations 
   await symlink(external, destination, "dir");
   await assert.rejects(prepareLicensedFonts(withKey), /not symlinks/);
   assert.deepEqual(await readdir(external), []);
+});
+
+test("the bundle builder writes a bundle the deploy opens, keeping old fonts and adding new ones", async t => {
+  const { rootDir } = await workspace(t);
+  const fontDir = path.join(rootDir, "public", "fonts", "licensed");
+  await mkdir(fontDir, { recursive: true });
+  await writeFile(path.join(fontDir, "Chirp-Regular.woff2"), Buffer.from("chirp regular"));
+  await writeFile(path.join(fontDir, "TTSupermolot-Bold.otf"), Buffer.from("supermolot bold"));
+  await writeFile(path.join(fontDir, "Unlisted.otf"), Buffer.from("not documented"));
+  const result = await buildFontBundle({ rootDir, keyText: key.toString("base64") });
+  assert.deepEqual(result.added, ["Chirp-Regular.woff2", "TTSupermolot-Bold.otf"]);
+  const files = decodeFontBundle(await readFile(path.join(rootDir, "assets", "licensed-fonts.enc")), key);
+  assert.deepEqual(files.map(file => file.name), [...REQUIRED_FONT_NAMES, "Chirp-Regular.woff2", "TTSupermolot-Bold.otf"]);
+  assert.equal(files.find(file => file.name === "Chirp-Regular.woff2").data.toString(), "chirp regular");
+  assert.equal(files[0].data.toString(), "fixture font 0\u0000");
+  // Nothing new: the bundle keeps the same fonts.
+  assert.deepEqual((await buildFontBundle({ rootDir, keyText: key.toString("base64") })).added, []);
+  // Named files must be documented, and the key must open the current bundle.
+  await assert.rejects(buildFontBundle({ rootDir, keyText: key.toString("base64"), names: ["Unlisted.otf"] }), /documented/);
+  await assert.rejects(buildFontBundle({ rootDir, keyText: Buffer.alloc(32, 9).toString("base64") }), /authentication failed/);
+  await assert.rejects(buildFontBundle({ rootDir, keyText: "" }), /ENGINE_FONT_BUNDLE_KEY/);
+  assert.deepEqual(decodeFontBundle(encodeFontBundle([{ name: REQUIRED_FONT_NAMES[0], data: Buffer.from("x") }, ...REQUIRED_FONT_NAMES.slice(1).map(name => ({ name, data: Buffer.from(name) }))], key), key).length, REQUIRED_FONT_NAMES.length);
 });

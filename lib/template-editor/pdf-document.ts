@@ -14,14 +14,19 @@ import {fetchReviewImage} from './review-assets';
 import {publicReadingSequence} from './public-accessibility';
 import {referenceFontRuns} from './reference-fonts';
 import {glyphOverhang} from './text-fit';
-const fontCache=new Map<string,Promise<Buffer>>();
-const google:Record<string,string>={playfair:'playfair-display',dmserif:'dm-serif-display',lora:'lora',cormorant:'cormorant-garamond',crimson:'crimson-text',inter:'inter',space:'space-grotesk',montserrat:'montserrat',bebas:'bebas-neue',plexmono:'ibm-plex-mono',caveat:'caveat'};
-async function fontBytes(font:string,weight:number,italic:boolean):Promise<Buffer>{
+const fontCache=new Map<string,Promise<Buffer|string>>();
+const google:Record<string,string>={playfair:'playfair-display',dmserif:'dm-serif-display',lora:'lora',cormorant:'cormorant-garamond',crimson:'crimson-text',inter:'inter',space:'space-grotesk',montserrat:'montserrat',bebas:'bebas-neue',plexmono:'ibm-plex-mono',caveat:'caveat',poppins:'poppins'};
+/** System fonts we can't ship: the PDF's own standard faces (Helvetica for Helvetica and Arial, which share its widths; Times for Georgia). */
+const PDF_STANDARD:Record<string,[string,string,string,string]>={helvetica:['Helvetica','Helvetica-Bold','Helvetica-Oblique','Helvetica-BoldOblique'],arial:['Helvetica','Helvetica-Bold','Helvetica-Oblique','Helvetica-BoldOblique'],georgia:['Times-Roman','Times-Bold','Times-Italic','Times-BoldItalic']};
+async function fontBytes(font:string,weight:number,italic:boolean):Promise<Buffer|string>{
+ const standard=PDF_STANDARD[font];if(standard)return standard[(weight>=600?1:0)+(italic?2:0)];
  const bold=weight>=600,key=`${font}:${weight>=700?700:weight>=600?600:weight>=500?500:400}:${italic}`;let found=fontCache.get(key);if(found)return found;
  found=(async()=>{let filename:string;
  if(font==='libre'||font==='serif')filename=path.join(process.cwd(),'assets/pdf-fonts',`libre-baskerville-latin-${italic?(bold?'700italic':'italic'):(bold?'700':'regular')}.ttf`);
  else if(font==='sfpro')filename=path.join(process.cwd(),'public/fonts/licensed',`SF-Pro-Display-${bold?'Bold':'Regular'}${italic?'Italic':''}.otf`);
  else if(font==='chirp')filename=path.join(process.cwd(),'public/fonts/licensed',`Chirp-${bold?'Bold':'Regular'}.woff2`);
+ else if(font==='neuemontreal')filename=path.join(process.cwd(),'public/fonts/licensed',`NeueMontreal-${weight>=700?'Bold':weight>=500?'Medium':'Regular'}.otf`);
+ else if(font==='supermolot')filename=path.join(process.cwd(),'public/fonts/licensed',`TTSupermolot-${bold?'Bold':'Regular'}.otf`);
  else if(font==='sfprocanva')filename=path.join(process.cwd(),'public/fonts/licensed',`SF-Pro-Display-Canva-${bold?'Bold':'Regular'}.ttf`);
  else if(font==='bebascanva')filename=path.join(process.cwd(),'public/fonts/licensed','BebasNeueBold-Canva.woff2');
  else if(google[font])filename=path.join(process.cwd(),'assets/pdf-fonts',`${google[font]}-latin-${bold&&font!=='dmserif'&&font!=='bebas'?(font==='plexmono'?'600':'700'):'regular'}.ttf`);
