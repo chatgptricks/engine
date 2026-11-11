@@ -88,11 +88,11 @@ test("the deck's highlight colors are its accent color roles, Accent green on @c
   ]),[{name:"Highlight",color:"#ff0"},{name:"Accent purple",color:"#a855f7"}],"each visible color once, other roles left out");
 });
 
-test("template text with a fixed style takes word colors, while bold and the other styles stay fixed",()=>{
+test("template text with a fixed style takes word colors and word sizes, while bold and the other styles stay fixed",()=>{
   const {scene,headline}=deck("SMALL DECISIONS BUILD BIG CAREERS");
   assert.equal(words.takesWordColorsOnly(scene,headline),true);
-  for(const patch of [{color:GREEN},{color:"#00D98A"},{color:"white"},{color:null}])assert.equal(words.canFormatWords(scene,headline,patch),true,JSON.stringify(patch));
-  for(const patch of [{fontWeight:700},{italic:true},{underline:true},{strikethrough:true},{fontSize:20},{font:"inter"},{textureFill:null},{color:GREEN,fontWeight:700},{color:"transparent"},{color:"red; x"},{},
+  for(const patch of [{color:GREEN},{color:"#00D98A"},{color:"white"},{color:null},{fontSize:20}])assert.equal(words.canFormatWords(scene,headline,patch),true,JSON.stringify(patch));
+  for(const patch of [{fontWeight:700},{italic:true},{underline:true},{strikethrough:true},{font:"inter"},{textureFill:null},{color:GREEN,fontWeight:700},{color:"transparent"},{color:"red; x"},{},
     paint.paintTextFormattingPatch({type:"solid",color:GREEN}),
     {fontWeight:400,italic:false,underline:false,strikethrough:false,color:headline.color,font:headline.font,fontSize:headline.fontSize}])
     assert.equal(words.canFormatWords(scene,headline,patch),false,JSON.stringify(patch));
@@ -184,4 +184,15 @@ test("the text toolbar offers each highlight color and No color for the selected
   for(const button of buttons)button.props.onClick();
   assert.deepEqual(picked,[GREEN,"#a855f7",null]);
   assert.equal((renderToStaticMarkup(React.createElement(WordColorControls,{colors,onColor(){},disabled:true})).match(/disabled=""/g)||[]).length,3);
+});
+
+test("a template headline's words can be resized, but other styles stay fixed", () => {
+  const headline = {...model.createCanvasElement("text", {text: "Stocks fell almost 30%"}), templateRole: "media", smartText: {role: "cover", lines: 0, minFontSize: 12, maxFontSize: 48, maxHeight: 110}, protected: ["position", "style", "delete"]};
+  const plainTemplate = {...headline, smartText: undefined};
+  const scene = {background: "#111111", elements: [headline, plainTemplate]};
+  assert.equal(words.isWordSizePatch({fontSize: 30}), true);
+  assert.equal(words.isWordSizePatch({fontSize: 30, color: "#fff"}), false);
+  assert.equal(words.canFormatWords(scene, headline, {fontSize: 30}), true);
+  assert.equal(words.canFormatWords(scene, headline, {fontWeight: 700}), false);
+  assert.equal(words.canFormatWords(scene, plainTemplate, {fontSize: 30}), false, "only smart text, whose fit keeps word sizes in proportion");
 });

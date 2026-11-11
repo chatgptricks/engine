@@ -248,3 +248,14 @@ test("the template keeps a deleted picture or fade deleted and a moved fade wher
   assert.equal(moved.elements[1].height, 60);
   assert.equal(moved.elements[1].fill, fade.fill, "only its place changes");
 });
+
+test("the template keeps a headline size the person set, and drops it for Auto size", () => {
+  const smartTemplate = loadModule("lib/template-editor/smart-template.ts", { "./model": model, "./commands": commands });
+  const rule = { role: "cover", lines: 3, minFontSize: 12, maxFontSize: 48, maxHeight: 110 };
+  const headline = { ...model.createCanvasElement("text", { text: "Stocks fell" }), id: "h", smartText: rule, protected: ["position", "style", "delete"] };
+  const previous = scene(headline);
+  const sized = smartTemplate.constrainSmartTemplate(previous, scene({ ...headline, smartText: { ...rule, fontSize: 30, maxHeight: 999 } }));
+  assert.equal(sized.elements[0].smartText.fontSize, 30);
+  assert.equal(sized.elements[0].smartText.maxHeight, 110, "the template's own limits stay");
+  assert.equal(smartTemplate.constrainSmartTemplate(sized, scene({ ...headline, smartText: rule })).elements[0].smartText.fontSize, undefined);
+});

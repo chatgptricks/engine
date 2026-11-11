@@ -38,14 +38,20 @@ export function isWordColorPatch(patch: TextFormattingPatch): boolean {
   return patch.color === null || Boolean(parsed && parsed.alpha > 0);
 }
 
+/** A change that only resizes words, so a template's headline can set some words bigger or smaller. */
+export function isWordSizePatch(patch: TextFormattingPatch): boolean {
+  const keys = Object.entries(patch).filter(([, value]) => value !== undefined).map(([key]) => key);
+  return keys.length === 1 && keys[0] === "fontSize" && typeof patch.fontSize === "number" && Number.isFinite(patch.fontSize) && patch.fontSize > 0;
+}
+
 /** Template text whose words take colors and nothing else: its text can change, its style can't. */
 export function takesWordColorsOnly(scene: CanvasScene, element: TextElement): boolean {
   return canEditElement(scene, element, "content") && !canEditElement(scene, element, "style");
 }
 
 /** Whether `patch` may format selected words of `element`: anything when its
- * style is editable, and only a color when the template fixes its style. */
+ * style is editable, and only a color (or, in smart text, a size) when the template fixes its style. */
 export function canFormatWords(scene: CanvasScene, element: TextElement, patch: TextFormattingPatch): boolean {
   if (!canEditElement(scene, element, "content")) return false;
-  return canEditElement(scene, element, "style") || isWordColorPatch(patch);
+  return canEditElement(scene, element, "style") || isWordColorPatch(patch) || Boolean(element.smartText) && isWordSizePatch(patch);
 }
