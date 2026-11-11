@@ -43,6 +43,8 @@ export function isElementHidden(scene: CanvasScene, element: CanvasElement): boo
 export const isPicture = (element: CanvasElement): boolean => element.type === "image" || element.type === "shape" && Boolean(element.imageFill);
 /** A fade or shade laid over a photo: a gradient shape, or a layer named for one. */
 export const isFade = (element: CanvasElement): boolean => element.type === "shape" && !element.imageFill && (Boolean(element.gradient) || /fade|shade|shadow|overlay/i.test(element.name));
+/** The author name, handle and words of an X post card on a Reaction page. */
+export const isXPostText = (element: CanvasElement): boolean => element.type === "text" && /^reaction-(?:name|handle|text)(?:-\d+)?$/.test(element.slot ?? "");
 export function canEditElement(scene: CanvasScene, element: CanvasElement, property: ProtectedProperty): boolean {
   // Any picture can be deleted, the template's own and background pictures
   // included (Ivan, 2026-11-10). Only a lock the person set keeps it.
@@ -57,6 +59,8 @@ export function canEditElement(scene: CanvasScene, element: CanvasElement, prope
   // Slots still store "style" in protected; for template text it no longer applies.
   if (element.type === "text" && element.smartText) {
     if (property === "position" || property === "delete") return false;
+    // An X post card's name, handle and words keep X's own look, so the card reads like the real post.
+    if (property === "style" && isXPostText(element)) return false;
     return !isElementLocked(scene, element) && (property === "style" || !element.protected?.includes(property));
   }
   return !isElementLocked(scene, element) && !element.protected?.includes(property);

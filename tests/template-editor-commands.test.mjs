@@ -274,3 +274,32 @@ test("a template headline keeps the look the person gives it, but not a new plac
   assert.deepEqual([kept.x, kept.y], [20, 300], "the slot stays where the template put it");
   assert.deepEqual(kept.protected, ["position", "style", "delete"]);
 });
+
+test("an X post card's name, handle and words keep X's look; the headline above it can be restyled", () => {
+  const smartTemplate = loadModule("lib/template-editor/smart-template.ts", { "./model": model, "./commands": commands });
+  const rule = { role: "body", lines: 0, minFontSize: 10, maxFontSize: 20, maxHeight: 200 };
+  const post = { ...model.createCanvasElement("text", { text: "Shipping today", font: "sfpro" }), id: "p", slot: "reaction-text-2", smartText: rule, protected: ["position", "style", "delete"] };
+  const name = { ...post, id: "n", slot: "reaction-name", text: "Sam" };
+  const title = { ...post, id: "t", slot: "title", text: "How X reacted" };
+  const previous = scene(post, name, title);
+  assert.equal(commands.isXPostText(post), true);
+  assert.equal(commands.isXPostText(title), false);
+  for (const element of [post, name]) {
+    assert.equal(commands.canEditElement(previous, element, "style"), false);
+    assert.equal(commands.canEditElement(previous, element, "content"), true);
+  }
+  assert.equal(commands.canEditElement(previous, title, "style"), true);
+  const next = smartTemplate.constrainSmartTemplate(previous, scene({ ...post, font: "bebas", text: "Shipping now" }, { ...name, color: "#ff0000" }, { ...title, font: "bebas" }));
+  const [kept, keptName, keptTitle] = next.elements;
+  assert.deepEqual([kept.font, kept.text], ["sfpro", "Shipping now"], "the words change, X's font stays");
+  assert.equal(keptName.color, name.color);
+  assert.equal(keptTitle.font, "bebas");
+});
+
+test("a fitted size never feeds the next fit, so the layout settles", () => {
+  const smartTemplate = loadModule("lib/template-editor/smart-template.ts", { "./model": model, "./commands": commands });
+  const rule = { role: "body", lines: 0, minFontSize: 10, maxFontSize: 20, maxHeight: 200 };
+  const headline = { ...model.createCanvasElement("text", { text: "Stocks fell", fontSize: 18 }), id: "h", slot: "title", smartText: rule };
+  const kept = smartTemplate.constrainSmartTemplate(scene(headline), scene({ ...headline, fontSize: 12.5, autoFitFontSize: 12.5, color: "#ff0000" })).elements[0];
+  assert.deepEqual([kept.fontSize, kept.autoFitFontSize, kept.color], [18, headline.autoFitFontSize, "#ff0000"]);
+});
