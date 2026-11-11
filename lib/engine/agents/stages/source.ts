@@ -20,7 +20,7 @@ import type { PostSource } from "../../post-files";
 import { imageBlock, RecreateError, work, type SourceImage } from "../claude";
 import { rerunNote, today, type RunCache, type StageContext, type StageRunner } from "../context";
 import { stagePrompt } from "../playbook";
-import { SourceNotesSchema } from "../schemas";
+import { HandedInSourceSchema, type SourceNotes } from "../schemas";
 import { fitForClaude, keepSourceImages, loadSourceImages } from "../source";
 import {
   describeDetails, importedDetails, keptDetails, missingSlides, normalizeSourceNotes, skippedSlides, slideLabel, sourceRules, SUBMIT_NOTES,
@@ -91,10 +91,10 @@ export const source: StageRunner = async context => {
     role: "source", what: "read the original post", content, maxTokens: MAX_TOKENS, maxTurns: MAX_TURNS,
     system: stagePrompt("source", file.mode, profile, sourceRules(today())), signal: context.signal, usage: context.usage,
     submit: {
-      name: SUBMIT_NOTES, description: "Hand in your notes on the original post, once you have read every slide.", schema: SourceNotesSchema,
+      name: SUBMIT_NOTES, description: "Hand in your notes on the original post, once you have read every slide.", schema: HandedInSourceSchema,
       // A skipped slide is asked for once; after that, the clean-up gives it an empty entry and a note.
       check: async notes => {
-        const missing = asked ? [] : missingSlides(notes, images.length);
+        const missing = asked ? [] : missingSlides(notes as SourceNotes, images.length);
         if (!missing.length) return null;
         asked = true;
         return skippedSlides(missing);
@@ -102,7 +102,7 @@ export const source: StageRunner = async context => {
     },
   });
   if (!read.slides.length) throw new RecreateError("Claude read nothing on the original's slides. Try again.", 502);
-  const output = normalizeSourceNotes(read, details, today());
+  const output = normalizeSourceNotes(read as SourceNotes, details, today());
   const { url, author, caption } = output.post, link = url ?? file.source.url;
   const record: Partial<PostSource> = { caption, slideCount: images.length, imageIds, ...(link ? { url: link } : {}), ...(author.handle ? { owner: author.handle } : {}) };
   return { output, source: record };

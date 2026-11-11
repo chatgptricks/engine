@@ -171,7 +171,7 @@ test("a full recreation researches the story, with the page's numbers worked out
     assert.deepEqual([call.role,call.effort,call.maxTurns],["research","high",24]);
     assert.deepEqual(call.tools.map(item=>item.name),["search_x","x_post","page_posts","our_library"]);
     assert.deepEqual(plain(call.serverTools),[{type:"web_search_20260209",name:"web_search",max_uses:12},{type:"web_fetch_20260209",name:"web_fetch",max_uses:8}]);
-    assert.deepEqual(Object.keys(call.submit.schema.shape),["origin","surfaces","facts","firstSeen","saturation","covered","fabrication","positions","reactions","recommendation"]);
+    assert.deepEqual(Object.keys(call.submit.schema.shape),["origin","originals","surfaces","facts","firstSeen","saturation","covered","fabrication","positions","reactions","recommendation"]);
     // The prompt: the card's rules, the page's limits and the budgets; then what Engine read before the loop.
     assert.match(call.system,/You are the researcher on the team that recreates Instagram posts/);
     assert.match(call.system,/search X first: search_x sorted by Latest/);
@@ -241,7 +241,7 @@ test("an exact copy's quick check reads only where the post comes from, and the 
     assert.deepEqual([call.effort,call.maxTurns],["medium",14]);
     assert.deepEqual(call.tools.map(item=>item.name),["search_x","x_post","page_posts"]);
     assert.deepEqual(plain(call.serverTools).map(item=>item.max_uses),[6,4]);
-    assert.deepEqual(Object.keys(call.submit.schema.shape),["origin","fabrication","recommendation"]);
+    assert.deepEqual(Object.keys(call.submit.schema.shape),["origin","originals","fabrication","recommendation"]);
     assert.match(call.system,/You are the quick check on the team that rebuilds Instagram posts/);
     assert.match(call.system,/Budgets for this run: web_search 6, web_fetch 4, search_x 3, x_post 6, page_posts 2\./);
     assert.doesNotMatch(call.system,/This page's limits/);

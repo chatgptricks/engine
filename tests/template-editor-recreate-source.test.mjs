@@ -180,7 +180,7 @@ test("a carousel: one vision call over every slide, the import's details win, an
     const [call]=calls.reads;
     assert.equal(call.role,"source");
     assert.equal(call.submit.name,"submit_source_notes");
-    assert.equal(call.submit.schema,schemas.SourceNotesSchema,"the notes are checked against the schema");
+    assert.equal(call.submit.schema,schemas.HandedInSourceSchema,"the notes are checked against the schema, each part's decision optional (it defaults by kind)");
     assert.equal(call.tools,undefined,"no tools: it reads what it's given");
     assert.equal(call.serverTools,undefined);
     assert.equal(call.maxTurns,4);
@@ -485,6 +485,6 @@ test("in a run, the orchestrator merges the source record into the post file and
     assert.equal(read[0].slides.length,3,"research reads the notes");
     assert.deepEqual(read[1].imageIds,finished.source.imageIds,"the designer finds the kept slides");
     const view=jobs.postView(finished,false);
-    assert.match(view.stages.find(entry=>entry.stage==="source").summary,/^Read 3 slides; 48(\.2)?K likes$/);
+    assert.match(view.stages.find(entry=>entry.stage==="source").summary,/^Read 3 slides; 48(\.2)?K likes; images: 1 kept, 3 rebuilt$/);
   });
 });

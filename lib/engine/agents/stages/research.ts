@@ -38,7 +38,8 @@ import { fetchXPost, fetchXPosts, fetchXReactions, videoLength, XReactionsError,
 import { ToolError, work, type ClientTool } from "../claude";
 import { need, rerunNote, type StageContext, type StageRunner } from "../context";
 import { stagePrompt } from "../playbook";
-import { FABRICATION_SIGNS, ResearchSchema, type Link, type PickedReaction, type Research, type SourceNotes, type Traction } from "../schemas";
+import { decisionOf } from "../source-notes";
+import { FABRICATION_SIGNS, OriginalPageSchema, ResearchSchema, type Link, type OriginalPage, type PickedReaction, type Research, type SourceNotes, type Traction } from "../schemas";
 
 /** What one run may spend. A full recreation researches the whole story; an exact copy only checks where it comes from. */
 export const BUDGETS = {
@@ -102,7 +103,7 @@ const notesView = (notes: SourceNotes) => ({
   post: notes.post, originalLanguage: notes.originalLanguage, shows: notes.shows, claims: notes.claims, mismatch: notes.mismatch,
   slides: notes.slides.map(slide => ({
     index: slide.index, role: slide.role, texts: slide.texts,
-    parts: slide.parts.map(part => ({ kind: part.kind, what: part.what, text: part.text, ...(part.post ? { post: { name: part.post.name, handle: part.post.handle, badge: part.post.badge, date: part.post.date, link: part.post.link } } : {}) })),
+    parts: slide.parts.map((part, index) => ({ part: index + 1, kind: part.kind, what: part.what, text: part.text, ...decisionOf(part), ...(part.post ? { post: { name: part.post.name, handle: part.post.handle, badge: part.post.badge, date: part.post.date, link: part.post.link } } : {}) })),
   })),
   notes: notes.notes,
 });
@@ -214,9 +215,12 @@ export function libraryTool(load: () => Promise<LibraryDeck[]>, budget: number):
 const Shape = ResearchSchema.shape;
 const PicksSchema = z.array(z.object({ id: z.string(), why: z.string().describe("One line on why it's worth a reaction slide") }))
   .describe("Posts from X worth a reaction slide, best first: ids from your search_x and x_post results. Empty when none is good enough");
-export const QuickHandInSchema = z.object({ origin: Shape.origin, fabrication: Shape.fabrication, recommendation: Shape.recommendation });
+const OriginalsSchema = z.array(OriginalPageSchema).max(20).default([])
+  .describe("For each part the source notes mark treatment source: the official page that holds the original picture (slide and part numbers from the notes). Empty when there are none or you found none");
+export const QuickHandInSchema = z.object({ origin: Shape.origin, originals: OriginalsSchema, fabrication: Shape.fabrication, recommendation: Shape.recommendation });
 export const FullHandInSchema = z.object({
   origin: Shape.origin,
+  originals: OriginalsSchema,
   surfaces: Shape.surfaces,
   facts: Shape.facts,
   firstSeen: z.string().nullable().describe("When the news first broke (the event, the announcement or the first post), YYYY-MM-DD. Null for a timeless post that isn't news, such as a meme or a tip, and when you can't date it"),
@@ -274,10 +278,21 @@ const emptyWorth = (post: Traction): Research["worth"] => ({
   covered: { already: false, by: [], note: "" },
 });
 
+/** The original pages handed in: public links only, one per part. */
+export function originalsOf(list: readonly OriginalPage[] | undefined): OriginalPage[] {
+  const seen = new Set<string>();
+  return (list ?? []).flatMap(item => {
+    const page = publicHttpUrl(String(item.page ?? "").trim())?.toString(), key = `${item.slide}:${item.part}`;
+    if (!page || !Number.isInteger(item.slide) || !Number.isInteger(item.part) || item.slide < 1 || item.part < 1 || seen.has(key)) return [];
+    seen.add(key);
+    return [{ slide: item.slide, part: item.part, page }];
+  }).slice(0, 20);
+}
+
 /** An exact copy's quick check: the origin and the signs; everything else stays empty. */
 export function quickResearch(handIn: QuickHandIn, notes: SourceNotes): Research {
   return {
-    quick: true, origin: originOf(handIn.origin), surfaces: [], facts: [], worth: emptyWorth(notes.post.traction),
+    quick: true, origin: originOf(handIn.origin), originals: originalsOf(handIn.originals), surfaces: [], facts: [], worth: emptyWorth(notes.post.traction),
     fabrication: signsOf(handIn.fabrication), positions: [], reactions: [], recommendation: recommendationOf(handIn.recommendation),
   };
 }
@@ -307,6 +322,7 @@ export function fullResearch(handIn: FullHandIn, inputs: FullInputs): Research {
   return {
     quick: false,
     origin: originOf(handIn.origin),
+    originals: originalsOf(handIn.originals),
     surfaces: handIn.surfaces.flatMap(surface => {
       const link = linkOf(surface);
       return link ? [{ ...link, independent: surface.independent }] : [];
@@ -354,6 +370,7 @@ function guidance(quick: boolean, limits: PageProfileCheck): string {
   const budget = quick ? BUDGETS.quick : BUDGETS.full;
   return [
     quick ? "" : `This page's limits, which Engine applies to what you hand in:\n- Stale: news that first broke more than ${plural(limits.staleAfterDays, "day")} ago. Give firstSeen and Engine works out the age; a timeless post has none\n- Saturated: a story ${plural(limits.saturatedAfterPages, "other Instagram page")} or more already posted. Give saturation.pages and Engine compares it`,
+    "Pictures the source notes mark treatment source are official screenshots our post keeps: for each, find the official page that holds the original picture (the announcement, the product or app page, never a repost) and give it in originals with the slide and part numbers. Its origin, when given, says where to look",
     `Budgets for this run: web_search ${budget.webSearch}, web_fetch ${budget.webFetch}, search_x ${budget.xSearch}, x_post ${budget.xPost}, page_posts ${budget.pagePosts}${quick ? "" : `, our_library ${budget.library}`}. Hand in everything once, with submit_research`,
   ].filter(Boolean).join("\n\n");
 }

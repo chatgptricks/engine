@@ -45,8 +45,10 @@ import { cleanBox, cropOriginal, cutLogo, snapBox } from "./cut";
 import { cleanSlideText, emphasis, htmlReactionCards } from "./deck";
 import { cardsFor, MAX_POST_SEARCHES } from "./exact-posts";
 import { templatePages } from "./pages";
+import { pageLink, pickOriginal, type Candidate } from "./originals";
 import { photoSize, photosFromPages } from "./research";
-import { ChartSchema, MediaBoxSchema, X_BADGES, type MediaBox, type WrittenChart } from "./schemas";
+import type { ImageDecision } from "./source-notes";
+import { ChartSchema, MediaBoxSchema, X_BADGES, type ImageTreatment, type MediaBox, type OriginalPage, type WrittenChart } from "./schemas";
 
 const message = (error: unknown) => error instanceof Error ? error.message : String(error);
 const round = (value: number) => Math.round(value * 10) / 10;
@@ -95,6 +97,8 @@ export type DesignSession = {
   unseen: Set<string>;
   /** False once the server couldn't draw the slides; then handing in needs no look. */
   renderable: boolean;
+  /** Pictures kept whole (an official screenshot, or its original found online), by their path: placed whole on the margins. */
+  kept: Map<string, KeptImage>;
   store: ImageStore;
   fetch: typeof fetch;
   render: typeof renderSlides;
@@ -105,7 +109,7 @@ export function designSession(input: Pick<DesignSession, "ownerKey" | "mode" | "
   return {
     guide: null, caption: "", document: null, store: MEDIA, fetch, render: renderSlides, ...input,
     assets: new Map(), found: new Map(), posts: new Map(), known: new Map(), searches: { searches: MAX_POST_SEARCHES },
-    credits: new Set(), imageCredits: [], unseen: new Set(), renderable: true,
+    credits: new Set(), imageCredits: [], unseen: new Set(), renderable: true, kept: new Map(),
   };
 }
 
@@ -230,6 +234,103 @@ async function stored(session: DesignSession, url: string, asset: Asset): Promis
   const path = await storeBytes(session, data, asset.what);
   session.assets.set(path, asset);
   return path;
+}
+
+// ── Kept pictures: an official screenshot as it is, or its original found online ──
+
+/** A picture the post keeps whole, ready for the designer to place. */
+export type KeptImage = {
+  slide: number; part: number; kind: ImageDecision["kind"]; treatment: Exclude<ImageTreatment, "rebuild">; why: string;
+  src: string; width: number; height: number;
+  /** source: the original found online; post: cut from the post. */
+  from: "source" | "post";
+  /** The page the original came from. */
+  page?: string;
+  /** One line for the deck's notes and the run view. */
+  note: string;
+};
+/** At most this many images are read from the pages a picture may come from. */
+const MAX_CANDIDATES = 8;
+
+/** Whether code prepares a part as a kept picture: a screenshot or graphic kept or sourced, or a photo sourced. Kept photos the designer cuts itself, as their frames need. */
+export const preparedHere = (decision: Pick<ImageDecision, "kind" | "treatment">) =>
+  decision.treatment !== "rebuild" && (decision.kind === "screenshot" || decision.kind === "graphic" || decision.kind === "photo" && decision.treatment === "source");
+
+/** A snapped box whose edges moved out into another part's box keep their first place on that side. */
+export function keepClear(first: MediaBox, snapped: MediaBox, others: MediaBox[]): MediaBox {
+  const overlaps = (a: MediaBox, b: MediaBox) => a.x < b.x + b.width && b.x < a.x + a.width && a.y < b.y + b.height && b.y < a.y + a.height;
+  let [left, top, right, bottom] = [snapped.x, snapped.y, snapped.x + snapped.width, snapped.y + snapped.height];
+  const [left0, top0, right0, bottom0] = [first.x, first.y, first.x + first.width, first.y + first.height];
+  const strip = (x0: number, y0: number, x1: number, y1: number) => ({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 });
+  if (left < left0 && others.some(box => overlaps(strip(left, top, left0, bottom), box))) left = left0;
+  if (top < top0 && others.some(box => overlaps(strip(left, top, right, top0), box))) top = top0;
+  if (right > right0 && others.some(box => overlaps(strip(right0, top, right, bottom), box))) right = right0;
+  if (bottom > bottom0 && others.some(box => overlaps(strip(left, bottom0, right, bottom), box))) bottom = bottom0;
+  return { x: left, y: top, width: right - left, height: bottom - top };
+}
+
+export type OriginalFinder = { pages: (pages: string[], signal: AbortSignal, fetcher: typeof fetch) => Promise<StoryImage[]> };
+
+/**
+ * Cuts each kept picture from its original slide, and looks online for the
+ * original of each picture marked source: on the page the research found for
+ * it, the page or site the picture names, and the post's origin. The original
+ * replaces the cut only when it is the same picture with more pixels
+ * (originals.ts); else the cut stays and its note says why.
+ */
+export async function prepareKept(session: DesignSession, decisions: ImageDecision[], input: { originals?: OriginalPage[]; originUrl?: string | null; finder?: OriginalFinder } = {}): Promise<KeptImage[]> {
+  const finder = input.finder ?? { pages: photosFromPages };
+  const prepared = await Promise.all(decisions.filter(preparedHere).map(async (decision): Promise<KeptImage | null> => {
+    const image = session.slides[decision.slide - 1], treatment = decision.treatment as KeptImage["treatment"];
+    const base = { slide: decision.slide, part: decision.part, kind: decision.kind, treatment, why: decision.why };
+    if (!image) return null;
+    const box = cleanBox(decision.box);
+    if (!box) return null;
+    // The snap finds the picture's real edges, but never grows into another part (the post's sticker beside it).
+    const others = decisions.filter(other => other.slide === decision.slide && other.part !== decision.part).map(other => other.box);
+    const snapped = keepClear(box, await snapBox(image, box, "photo").catch(() => box), others);
+    const cut = await cropOriginal(image, snapped).catch(() => null);
+    const cutBytes = cut ? embeddedImageBytes(cut.url) : null;
+    if (!cut || !cutBytes) return null;
+    let why = "";
+    if (treatment === "source") {
+      const pages = [...new Set([
+        input.originals?.find(item => item.slide === decision.slide && item.part === decision.part)?.page,
+        pageLink(decision.origin), input.originUrl ?? undefined,
+      ].filter((page): page is string => Boolean(page && publicHttpUrl(page))))];
+      if (!pages.length) why = "no page to look on: the screenshot names none and the research found none";
+      else {
+        const found = await finder.pages(pages, session.signal, session.fetch).catch(() => [] as StoryImage[]);
+        const candidates = (await Promise.all(found.slice(0, MAX_CANDIDATES).map(async (item): Promise<Candidate | null> => {
+          try {
+            const bytes = await download(session, item.url), meta = await sharp(bytes).metadata();
+            return meta.width && meta.height ? { url: item.url, page: item.sourceUrl ?? pages[0], bytes, width: meta.width, height: meta.height } : null;
+          } catch {
+            return null;
+          }
+        }))).filter((item): item is Candidate => item !== null);
+        const picked = await pickOriginal({ bytes: cutBytes, width: cut.width, height: cut.height }, candidates);
+        if (picked.match) {
+          const { candidate } = picked.match, host = new URL(candidate.page).hostname.replace(/^www\./, "");
+          const src = await storeBytes(session, candidate.bytes, decision.what || "Original");
+          session.assets.set(src, { width: candidate.width, height: candidate.height, what: decision.what, credit: candidate.page });
+          credit(session, src, `Slide ${decision.slide}'s ${decision.kind}: the original from ${candidate.page}.`);
+          return { ...base, src, width: candidate.width, height: candidate.height, from: "source", page: candidate.page,
+            note: `Slide ${decision.slide}: found the original on ${host} (${candidate.width}×${candidate.height}${candidate.cropped ? ", the part the post shows" : ""}; the post's cut was ${cut.width}×${cut.height}) and kept it whole: ${decision.why}` };
+        }
+        why = picked.why;
+      }
+    }
+    const src = await stored(session, cut.url, { width: cut.width, height: cut.height, what: decision.what || "Screenshot" });
+    credit(session, src, `Slide ${decision.slide}'s ${decision.kind}: kept as it is, cut from the original's slide.`);
+    return { ...base, src, width: cut.width, height: cut.height, from: "post",
+      note: treatment === "source"
+        ? `Slide ${decision.slide}: the original wasn't found (${why}), so the ${decision.kind} is cut from the post and kept whole: ${decision.why}`
+        : `Slide ${decision.slide}: kept the ${decision.kind} as it is: ${decision.why}` };
+  }));
+  const kept = prepared.filter((item): item is KeptImage => item !== null);
+  for (const item of kept) session.kept.set(item.src, item);
+  return kept;
 }
 
 // ── Brand: HTML layers take colors from the brand's variables ───────────────

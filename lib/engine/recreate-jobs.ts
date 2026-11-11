@@ -10,6 +10,7 @@
  */
 import { editorUrl } from "./agents/deck";
 import { stageCard } from "./agents/playbook";
+import { decisionLine, decisionsSummary, imageDecisions } from "./agents/source-notes";
 import { verdictChoice, type Approval, type Brief, type ChartsOutput, type CopyOutput, type DataOutput, type DeckOutput, type DesignOutput, type ExactDataOutput, type Facts, type Headlines, type HooksOutput, type ImagesOutput, type Link, type Outline, type PlanApproval, type ReactionsOutput, type Research, type ReviewOutput, type ReviewReport, type SourceNotes, type StoryBrief, type TranscriptOutput, type Verdict, type VisualsOutput } from "./agents/schemas";
 import { isCurrentPostFile, legacyStagesFor, POST_STAGES, stagesFor, type LegacyStage, type PostFile, type PostStage, type StageName, type StageRecord } from "./post-files";
 
@@ -57,7 +58,7 @@ function summary(file: PostFile, stage: PostStage): string {
   switch (stage) {
     case "source": {
       const notes = record.output as SourceNotes, { likes, views } = notes.post.traction;
-      return [`Read ${plural(notes.slides.length, "slide")}`, views ? `${compact(views)} views` : likes ? `${compact(likes)} likes` : ""].filter(Boolean).join("; ");
+      return [`Read ${plural(notes.slides.length, "slide")}`, views ? `${compact(views)} views` : likes ? `${compact(likes)} likes` : "", decisionsSummary(imageDecisions(notes))].filter(Boolean).join("; ");
     }
     case "research": {
       const found = record.output as Research;
@@ -166,6 +167,24 @@ export function postView(file: PostFile, active: boolean): PostView {
   return isCurrentPostFile(file) ? currentView(file, active) : legacyView(file);
 }
 
+/**
+ * Each image's decision, once the source reader made it: rebuild, keep or
+ * source, with its reason, and, once the designer ran, what was used (the
+ * original found online, or the cut from the post).
+ */
+type ImageView = { slide: number; kind: string; treatment: "rebuild" | "keep" | "source"; why: string; line: string; used?: string };
+function imagesView(file: PostFile): ImageView[] {
+  const notes = output<SourceNotes>(file, "source");
+  if (!notes) return [];
+  const built = output<DesignOutput>(file, "design")?.images ?? [];
+  return imageDecisions(notes).map(item => {
+    const done = built.find(image => image.slide === item.slide && image.part === item.part);
+    return { slide: item.slide, kind: item.kind, treatment: item.treatment, why: short(item.why, 200), line: short(decisionLine(item), 260), ...(done ? { used: short(done.note, 300) } : {}) };
+  });
+}
+
+const withImages = (images: ImageView[]): { images?: ImageView[] } => images.length ? { images } : {};
+
 function currentView(file: PostFile, active: boolean) {
   const status = statusOf(file, active), interrupted = !active && file.status === "running";
   const message = interrupted ? "This run stopped before it finished, for example when the server restarted. Resume it to pick up where it left off." : file.message;
@@ -184,6 +203,7 @@ function currentView(file: PostFile, active: boolean) {
       };
     }),
     usage: usageOf(file),
+    ...withImages(imagesView(file)),
     ...(check ? { verdict: check } : {}),
     ...(checkpoint ? { checkpoint } : {}),
     ...(result ? { result } : {}),
