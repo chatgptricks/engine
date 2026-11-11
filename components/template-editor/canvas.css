@@ -414,3 +414,23 @@
   font: 600 calc(11px * var(--te-control-scale, 1)) / 1.3 system-ui, sans-serif;
   white-space: nowrap;
 }
+
+/* Canva's small bar over a selection: lock, duplicate, delete, more. It keeps
+ * its screen size at any zoom. */
+.te-selection-actions {
+  position: absolute; z-index: 6; display: flex; gap: 2px; padding: 3px;
+  margin-top: calc(-30px * var(--te-control-scale, 1));
+  transform: scale(var(--te-control-scale, 1)) translate(-50%, -100%);
+  transform-origin: 0 0;
+  background: #1f1f25; border: 1px solid #ffffff1f; border-radius: 10px; box-shadow: 0 6px 18px #0007;
+  pointer-events: auto;
+}
+.te-selection-actions > button { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: #ececf1; cursor: pointer; }
+.te-selection-actions > button:hover:not(:disabled) { background: #ffffff17; }
+.te-selection-actions > button[aria-pressed="true"] { color: #d6c6ff; }
+.te-selection-actions > button:disabled { opacity: .35; cursor: not-allowed; }
+.te-selection-actions svg { width: 16px; height: 16px; }
+
+/* A layer's clip plays where its photo would be, under the same crop. */
+.te-canvas-video { pointer-events: none; background: transparent; }
+.te-video-controls .te-video-trim { display: grid; gap: 6px; border: 0; margin: 8px 0 0; padding: 0; }

@@ -55,7 +55,8 @@ export const CHATGPTRICKS_SIZE = { width: 1080, height: 1440 } as const;
 /** Slot names per page (the List page column by column). Photo slots take an image URL.
  * agentTemplateSlots() returns the same slots in top-to-bottom order with character guides. */
 export const CHATGPTRICKS_SLOTS = [
-  { page: 0, label: "Cover", text: ["cover-headline"], photo: ["photo"] },
+  // cover-remark is the fixed SWIPE FOR MORE until a post writes its own bottom line.
+  { page: 0, label: "Cover", text: ["cover-headline", "cover-remark"], photo: ["photo"] },
   { page: 1, label: "Text + Media", text: ["title", "body", "source"], photo: ["media"] },
   { page: 2, label: "List", text: ["title", "body", "list-left-heading", "list-left-items", "list-right-heading", "list-right-items", "source"], photo: [] },
   { page: 3, label: "Follow", text: ["cta"], photo: ["photo"] },
@@ -125,7 +126,7 @@ export function xCardHtml(card: XCard): { html: string; css: string } {
   const border = X_CARD.border, at = (value: number) => px(value - border), g = X_LAYOUT, length = X_CARD.length;
   const css = [
     ":root{display:flex;flex-direction:column}",
-    `.platform-card{position:relative;margin:auto 0;width:${px(X_CARD.width)};box-sizing:border-box;background:${X_POST_COLORS.card};border:${px(border)} solid ${X_POST_COLORS.border};border-radius:${px(X_CARD.radius)};padding:${at(X_CARD.textTop)} ${at(X_CARD.inset)} ${at(X_CARD.foot)};font-family:"SF Pro Display",sans-serif;color:${X_POST_COLORS.text}}`,
+    `.platform-card{position:relative;margin:auto 0;width:${px(X_CARD.width)};box-sizing:border-box;background:${X_POST_COLORS.card};border:${px(border)} solid ${X_POST_COLORS.border};border-radius:${px(X_CARD.radius)};padding:${at(X_CARD.textTop)} ${at(X_CARD.inset)} ${at(X_CARD.foot)};font-family:"Chirp","SF Pro Display",sans-serif;color:${X_POST_COLORS.text}}`,
     `.avatar{position:absolute;left:${at(X_CARD.inset)};top:${at(g.avatarTop)};width:${px(g.avatar)};height:${px(g.avatar)};border-radius:${card.square ? px(g.avatar * .113) : "50%"};overflow:hidden;object-fit:cover;display:block}`,
     `.who{position:absolute;left:${at(g.nameX)};top:${at(g.nameTop)};height:${px(g.name * 1.2)};display:flex;align-items:center;gap:${px(g.badgeGap)};white-space:nowrap}`,
     `.name{font-weight:700;font-size:${px(g.name)};line-height:${px(g.name * 1.2)};max-width:${px(g.nameWidth)};overflow:hidden;text-overflow:ellipsis}`,

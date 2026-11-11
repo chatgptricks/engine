@@ -21,12 +21,13 @@ async function fontBytes(font:string,weight:number,italic:boolean):Promise<Buffe
  found=(async()=>{let filename:string;
  if(font==='libre'||font==='serif')filename=path.join(process.cwd(),'assets/pdf-fonts',`libre-baskerville-latin-${italic?(bold?'700italic':'italic'):(bold?'700':'regular')}.ttf`);
  else if(font==='sfpro')filename=path.join(process.cwd(),'public/fonts/licensed',`SF-Pro-Display-${bold?'Bold':'Regular'}${italic?'Italic':''}.otf`);
+ else if(font==='chirp')filename=path.join(process.cwd(),'public/fonts/licensed',`Chirp-${bold?'Bold':'Regular'}.woff2`);
  else if(font==='sfprocanva')filename=path.join(process.cwd(),'public/fonts/licensed',`SF-Pro-Display-Canva-${bold?'Bold':'Regular'}.ttf`);
  else if(font==='bebascanva')filename=path.join(process.cwd(),'public/fonts/licensed','BebasNeueBold-Canva.woff2');
  else if(google[font])filename=path.join(process.cwd(),'assets/pdf-fonts',`${google[font]}-latin-${bold&&font!=='dmserif'&&font!=='bebas'?(font==='plexmono'?'600':'700'):'regular'}.ttf`);
  else if(['walsheim','walsheimcond','kyoto','century'].includes(font)){const names:Record<string,string>={walsheim:`GT-Walsheim-${bold?'Bold':weight>=500?'Medium':'Regular'}-Trial.otf`,walsheimcond:`GT-Walsheim-Condensed-${bold?'Bold':weight>=500?'Medium':'Regular'}-Trial.otf`,kyoto:`PPKyoto-${bold?'Extrabold':weight>=400?'Medium':'Light'}.otf`,century:`Century Gothic${bold?' Bold':''}.otf`};filename=path.join(process.cwd(),'public/fonts/licensed',names[font]);}
  else filename=path.join(process.cwd(),'node_modules/geist/dist/fonts/geist-sans',`Geist-${weight>=700?'Bold':weight>=600?'SemiBold':weight>=500?'Medium':'Regular'}.ttf`);
- try{return await fs.readFile(/*turbopackIgnore: true*/ filename);}catch{if(font==='sfprocanva')return fontBytes('sfpro',weight,italic);return fs.readFile(path.join(process.cwd(),'node_modules/geist/dist/fonts/geist-sans/Geist-Regular.ttf'));}})();fontCache.set(key,found);return found;
+ try{return await fs.readFile(/*turbopackIgnore: true*/ filename);}catch{if(font==='sfprocanva'||font==='chirp')return fontBytes('sfpro',weight,italic);return fs.readFile(path.join(process.cwd(),'node_modules/geist/dist/fonts/geist-sans/Geist-Regular.ttf'));}})();fontCache.set(key,found);return found;
 }
 
 const xml=(value:string)=>value.replace(/[&<>"']/g,char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[char]!));

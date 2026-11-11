@@ -1,6 +1,7 @@
 import {imageResolution} from "./property-utils";
 import type {DesignDocument} from './model';
 import type {PdfOptions} from './pdf-options';
+import {pageVideo, videoExportWarnings} from './export-video';
 
 /** Export rendered snapshots, with preflight and cancellable downloads. */
 export function saveBlob(blob: Blob, name: string) {
@@ -19,6 +20,12 @@ export interface ExportOptions extends PdfOptions {
   document?:DesignDocument;
   totalFrames?:number;
   getFrame?:(index:number,signal?:AbortSignal)=>Promise<HTMLElement>;
+  /** The page ids being exported, in order, so pages with a video can export as MP4. */
+  pageIds?:string[];
+  /** Pages with a video export as MP4 (PNG, JPG and WebP downloads); default true. */
+  video?:boolean;
+  /** Include each clip's sound in its MP4; default true. */
+  sound?:boolean;
 }
 export function validateExportOptions(options: ExportOptions = {}) {
   const format = options.format ?? "png", scale = options.scale ?? 3, quality = options.quality ?? .92;
@@ -105,16 +112,28 @@ export async function exportFrames(frames: HTMLElement[], name: string, caption:
   if(!total)throw Error('No pages to export.');
   if(settings.format==='pdf'&&options.document){const{exportDocumentPdf}=await import('./pdf-export');return exportDocumentPdf(frames,name,progress,options);}
   options.signal?.throwIfAborted();
-  const {domToBlob, domToForeignObjectSvg} = await import("modern-screenshot"), outputs: Blob[] = [];
+  const {domToBlob, domToForeignObjectSvg} = await import("modern-screenshot"), outputs: {blob: Blob; ext: string}[] = [];
   const pdfPages: {data: Uint8Array; width: number; height: number}[] = [];
   const extension = settings.format === "jpeg" ? "jpg" : settings.format;
   let outputBytes=0,batch=1;
   const batchSize=options.delivery==='batches'?options.batchSize??4:total;
-  async function archive(){const JSZip=(await import('jszip')).default,zip=new JSZip();outputs.forEach((blob,index)=>zip.file(`${String((batch-1)*batchSize+index+1).padStart(2,'0')}-${fileName(name)}.${extension}`,blob));if(caption.trim())zip.file('caption.txt',caption.trim());if(warnings.length)zip.file('export-notes.txt',warnings.join('\n'));const blob=await zip.generateAsync({type:'blob',streamFiles:true},()=>options.signal?.throwIfAborted());options.signal?.throwIfAborted();saveBlob(blob,`${fileName(name)}${options.delivery==='batches'?`-part-${batch}`:''}.zip`);outputs.length=0;outputBytes=0;batch++;}
+  async function archive(){const JSZip=(await import('jszip')).default,zip=new JSZip();outputs.forEach((output,index)=>zip.file(`${String((batch-1)*batchSize+index+1).padStart(2,'0')}-${fileName(name)}.${output.ext}`,output.blob,output.ext===extension?{}:{compression:'STORE'}));if(caption.trim())zip.file('caption.txt',caption.trim());if(warnings.length)zip.file('export-notes.txt',warnings.join('\n'));const blob=await zip.generateAsync({type:'blob',streamFiles:true},()=>options.signal?.throwIfAborted());options.signal?.throwIfAborted();saveBlob(blob,`${fileName(name)}${options.delivery==='batches'?`-part-${batch}`:''}.zip`);outputs.length=0;outputBytes=0;batch++;}
   for (let i = 0; i < total; i++) {
     options.signal?.throwIfAborted();
     const frame=options.getFrame?await bounded(options.getFrame(i,options.signal),options.signal):frames[i];
     warnings.push(...(await preflightFrames([frame],options)).map(warning=>warning.replace('Page 1',`Page ${i+1}`)));options.onWarnings?.([...new Set(warnings)]);
+    const page=options.pageIds&&options.document?options.document.pages.find(item=>item.id===options.pageIds![i]):undefined;
+    const clip=options.video!==false&&settings.format!=='pdf'&&settings.format!=='svg'?pageVideo(page):undefined;
+    if(clip){
+      const {exportPageVideo}=await import('./export-video');
+      const result=await exportPageVideo(frame,clip,{scale:settings.scale,sound:options.sound,signal:options.signal,onProgress:fraction=>progress(Math.round(((i+fraction)/total)*90))});
+      options.signal?.throwIfAborted();
+      warnings.push(...videoExportWarnings(i+1,clip,{bytes:result.blob.size,ext:result.ext}));options.onWarnings?.([...new Set(warnings)]);
+      outputs.push({blob:result.blob,ext:result.ext});
+      progress(Math.round(((i + 1) / total) * 90));
+      if(options.delivery==='batches'&&outputs.length>=batchSize){await archive();}
+      continue;
+    }
     const width = Number.parseFloat(frame.style.width) || frame.offsetWidth, height = Number.parseFloat(frame.style.height) || frame.offsetHeight;
     const outputWidth = Math.round(width * settings.scale), outputHeight = Math.round(height * settings.scale);
     const capture = {
@@ -135,7 +154,7 @@ export async function exportFrames(frames: HTMLElement[], name: string, caption:
     if (!blob.size) throw new Error(`Could not export page ${i + 1}.`);
     outputBytes+=blob.size;if(outputBytes>64*1024*1024)throw Error('This export exceeds the 64 MB output budget. Choose smaller images or batch downloads.');
     if (settings.format === "pdf") pdfPages.push({data: new Uint8Array(await blob.arrayBuffer()), width: outputWidth, height: outputHeight});
-    else { if (blob.type !== `image/${settings.format}`) throw new Error(`This browser does not support ${settings.format.toUpperCase()} export. Choose PNG.`); outputs.push(blob); }
+    else { if (blob.type !== `image/${settings.format}`) throw new Error(`This browser does not support ${settings.format.toUpperCase()} export. Choose PNG.`); outputs.push({blob, ext: extension}); }
     progress(Math.round(((i + 1) / total) * 90));
     if(options.delivery==='batches'&&settings.format!=='pdf'&&outputs.length>=batchSize){await archive();}
   }
@@ -143,10 +162,10 @@ export async function exportFrames(frames: HTMLElement[], name: string, caption:
   const base = fileName(name);
   if (settings.format === "pdf") saveBlob(encodeImagePdf(pdfPages), `${base}.pdf`);
   else if(options.delivery==='batches'){if(outputs.length)await archive();}
-  else if (outputs.length === 1) saveBlob(outputs[0], `${base}.${extension}`);
+  else if (outputs.length === 1) saveBlob(outputs[0].blob, `${base}.${outputs[0].ext}`);
   else {
     const JSZip = (await import("jszip")).default, zip = new JSZip();
-    outputs.forEach((blob, i) => zip.file(`${String(i + 1).padStart(2, "0")}-${base}.${extension}`, blob));
+    outputs.forEach((output, i) => zip.file(`${String(i + 1).padStart(2, "0")}-${base}.${output.ext}`, output.blob, output.ext === extension ? {} : {compression: "STORE"}));
     if (caption.trim()) zip.file("caption.txt", caption.trim());
     if (warnings.length) zip.file("export-notes.txt", warnings.join("\n"));
     const blob = await zip.generateAsync({type: "blob"}, metadata => { options.signal?.throwIfAborted(); progress(90 + Math.round(metadata.percent / 10)); });

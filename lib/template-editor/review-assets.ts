@@ -11,21 +11,30 @@ function privateAddress(address: string): boolean {
   }
   return !value.startsWith("2") && !value.startsWith("3"); // IPv6 global unicast only, excludes mapped/private/loopback.
 }
-export async function fetchOriginalImageBytes(value: string, redirects = 0): Promise<Buffer> {
+/** GET a public http(s) URL: private, loopback and link-local hosts are refused
+ * (checked again after each redirect, and the connection is pinned to the
+ * checked address), at most 3 redirects. The caller reads or destroys the body. */
+export async function guardedGet(value: string, accept: string, timeout = 12_000, redirects = 0): Promise<http.IncomingMessage> {
   const url = new URL(value);
-  if (!["http:","https:"].includes(url.protocol) || url.username || url.password || (url.port && url.port !== "80" && url.port !== "443") || redirects > 3) throw new Error("A review image URL is not supported.");
+  if (!["http:","https:"].includes(url.protocol) || url.username || url.password || (url.port && url.port !== "80" && url.port !== "443") || redirects > 3) throw new Error("This URL is not supported.");
   const addresses = await lookup(url.hostname.replace(/^\[|\]$/g, ""), {all:true});
-  if (!addresses.length || addresses.some(item => privateAddress(item.address))) throw new Error("A review image uses a private or unavailable host.");
+  if (!addresses.length || addresses.some(item => privateAddress(item.address))) throw new Error("This URL uses a private or unavailable host.");
   const address = addresses[0];
   const response = await new Promise<http.IncomingMessage>((resolve,reject) => {
     const request = (url.protocol === "https:" ? https : http).request(url, {
-      method:"GET", agent:false, headers:{Accept:"image/png,image/jpeg,image/webp,image/avif,image/gif", "User-Agent":"Engine-Design-Review/1.0"},
+      method:"GET", agent:false, headers:{Accept:accept, "User-Agent":"Engine-Design-Review/1.0"},
       lookup: (_hostname, options, callback) => { if (typeof options === "object" && options.all) callback(null,[address]); else callback(null,address.address,address.family); },
     },resolve);
-    const timer=setTimeout(()=>request.destroy(new Error("A review image timed out.")),12_000);
+    const timer=setTimeout(()=>request.destroy(new Error("The request timed out.")),timeout);
     request.once("close",()=>clearTimeout(timer));request.once("error",reject);request.end();
   });
-  if ([301,302,303,307,308].includes(response.statusCode ?? 0) && response.headers.location) {response.resume();return fetchOriginalImageBytes(new URL(response.headers.location,url).href,redirects+1);}
+  if ([301,302,303,307,308].includes(response.statusCode ?? 0) && response.headers.location) {response.resume();return guardedGet(new URL(response.headers.location,url).href,accept,timeout,redirects+1);}
+  return response;
+}
+export async function fetchOriginalImageBytes(value: string, redirects = 0): Promise<Buffer> {
+  let response: http.IncomingMessage;
+  try {response = await guardedGet(value, "image/png,image/jpeg,image/webp,image/avif,image/gif", 12_000, redirects);}
+  catch(error) {const message=error instanceof Error?error.message:"";throw new Error(/private/.test(message)?"A review image uses a private or unavailable host.":/supported/.test(message)?"A review image URL is not supported.":/timed out/.test(message)?"A review image timed out.":message);}
   if (response.statusCode !== 200 || !/^image\/(png|jpeg|webp|avif|gif)(;|$)/i.test(response.headers["content-type"] ?? "")) {response.destroy();throw new Error("A review image is unavailable. Replace it with an uploaded image before sharing.");}
   const chunks: Buffer[] = [];let size=0;
   for await (const chunk of response) {const buffer=Buffer.from(chunk);size+=buffer.length;if(size>8*1024*1024){response.destroy();throw new Error("A review image is larger than 8 MB.");}chunks.push(buffer);}

@@ -46,6 +46,7 @@ const load = loader();
 const loadHandlers = loader({ isolatedHandlers: true });
 const { createCanvasElement } = load("lib/template-editor/model.ts");
 const { QuickToolbar } = load("components/template-editor/quick-toolbar.tsx");
+const { selectionActionState } = load("lib/template-editor/selection-actions.ts");
 const { ElementInspector } = load("components/template-editor/element-inspector.tsx");
 const HandlerInspector = loadHandlers("components/template-editor/element-inspector.tsx").ElementInspector;
 
@@ -57,8 +58,11 @@ const sceneWith = (elements, groups) => ({ background: "#fff", elements, ...(gro
 const quickProps = scene => ({ scene, selectedIds: scene.elements.map(item => item.id), disabled: false, onChange() {}, onDuplicate() {}, onDelete() {}, onMore() {}, onAddText() {}, onUpload() {} });
 const inspectorProps = scene => ({ scene, selectedIds: scene.elements.map(item => item.id), width: 360, height: 450, onChange() {}, onSelect() {} });
 
+// The text bar is a plain function component without hooks: walk into what it renders.
+const EXPANDED = new Set(["TextFormatBar"]);
 function nodes(node, predicate, disabled = false) {
   if (!node || typeof node !== "object") return [];
+  if (typeof node.type === "function" && EXPANDED.has(node.type.name)) return nodes(node.type(node.props), predicate, disabled);
   const inheritedDisabled = disabled || Boolean(node.props?.disabled);
   return [
     ...(predicate(node) ? [{ node, disabled: inheritedDisabled }] : []),
@@ -434,8 +438,8 @@ test("readonly contextual navigation remains available while destructive actions
     node.props.onClick();
   }
   assert.deepEqual(requested, ["edit", "outline", "photo", "position", "effects"]);
-  assert.equal(control(tree, "Duplicate selection").disabled, true);
-  assert.equal(control(tree, "Delete selection").disabled, true);
+  // Duplicate and Delete live on the bar over the selection (selectionActionState), not here.
+  assert.equal(nodes(tree, node => ["Duplicate selection", "Delete selection"].includes(node.props?.["aria-label"])).length, 0);
 });
 
 test("Unlock acts on a direct lock and explains an inherited group lock", () => {
@@ -459,9 +463,9 @@ test("Duplicate capacity counts the editable layers that the command will actual
   const locked = text({ id: "locked", locked: true });
   const padding = Array.from({ length: 97 }, (_, index) => shape({ id: `padding-${index}` }));
   const scene = sceneWith([editable, locked, ...padding]);
-  const props = { ...quickProps(scene), selectedIds: [editable.id, locked.id] };
-  assert.equal(control(QuickToolbar(props), "Duplicate selection").disabled, false);
-  assert.equal(control(QuickToolbar({ ...props, scene: sceneWith([...scene.elements, shape({ id: "last" })]) }), "Duplicate selection").disabled, true);
+  const ids = [editable.id, locked.id];
+  assert.equal(selectionActionState(scene, ids).canDuplicate, true);
+  assert.equal(selectionActionState(sceneWith([...scene.elements, shape({ id: "last" })]), ids).canDuplicate, false);
 });
 
 test("content protection blocks texture and replacement actions without disabling permitted photo styling", () => {

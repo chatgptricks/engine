@@ -31,6 +31,7 @@ export type LayersPanelProps = {
 };
 
 function typeName(element: CanvasElement) {
+  if ((element.type === "image" && element.video) || (element.type === "shape" && element.imageFill?.video)) return "Video";
   return element.type === "text" ? "Text" : element.type === "image" ? "Image" : element.type === "html" ? "HTML" : element.shape.charAt(0).toUpperCase() + element.shape.slice(1);
 }
 function layerName(element: CanvasElement) {
@@ -53,7 +54,9 @@ function Locate() {
   return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden><circle cx="12" cy="12" r="6" /><path d="M12 2v5m0 10v5M2 12h5m10 0h5" /></svg>;
 }
 function Thumbnail({ element }: { element: CanvasElement }) {
-  return <span className={`te-layer-thumb te-layer-thumb-${element.type}`} aria-hidden>
+  const video = (element.type === "image" && element.video) || (element.type === "shape" && element.imageFill?.video);
+  return <span className={`te-layer-thumb te-layer-thumb-${element.type}${video ? " has-video" : ""}`} aria-hidden>
+    {video && <svg className="te-layer-thumb-play" width="10" height="10" viewBox="0 0 10 10"><path d="M2.5 1.5v7l6-3.5z" fill="currentColor" /></svg>}
     {element.type === "image" ? (
       // Reuse the same proxy as the canvas; never inline remote SVG markup.
       // eslint-disable-next-line @next/next/no-img-element

@@ -35,7 +35,7 @@ const bySlot = (canvas, slot) => canvas.elements.find(element => element.slot ==
 // The post cards' X marks and ".com" are fixed too; each Reaction page has one, two or three cards.
 const CARDS = [[4, "reaction", 1], [5, "reactions", 2], [6, "reactions3", 3]];
 const suffixOf = n => n === 1 ? "" : `-${n}`;
-const FIXED = ["cover-top-fade", "cover-bottom-fade", "cover-hairline-left", "cover-logo", "cover-hairline-right", "cover-swipe", "follow-top-fade", "follow-bottom-fade", "follow-line",
+const FIXED = ["cover-top-fade", "cover-bottom-fade", "cover-hairline-left", "cover-logo", "cover-hairline-right", "follow-top-fade", "follow-bottom-fade", "follow-line",
   ...CARDS.flatMap(([, key, cards]) => Array.from({ length: cards }, (_, index) => ["card", "x-mark", "x-com"].map(part => `${key}-${part}${suffixOf(index + 1)}`)).flat())];
 const LABELS = ["Cover", "Text + Media", "List", "Follow", "Reaction", "Two reactions", "Three reactions", "Wide photo · start", "Wide photo · end"];
 // Ivan's phone screenshots of X are 1206 px wide; a card is 936 px wide with 24 px of black padding
@@ -66,7 +66,7 @@ test("every layer is a native layer that survives validation and persistence", (
     assert.ok(page.canvas.elements.every(element => ["text", "image", "shape"].includes(element.type)));
     assert.deepEqual(model.parseCanvasScene(page.canvas), page.canvas, page.label);
     assert.equal(page.canvas.background, "#0B1014");
-    for (const element of page.canvas.elements) if (element.type === "text") assert.ok(["bebas", "sfpro"].includes(element.font));
+    for (const element of page.canvas.elements) if (element.type === "text") assert.ok(["bebas", "sfpro", "chirp"].includes(element.font));
   }
   const library = model.parseLibrary({ ...structuredClone(model.EMPTY_LIBRARY), templates: [structuredClone(template)] });
   assert.ok(library);
@@ -103,7 +103,8 @@ test("photo placeholders and the logo are safe, servable images", () => {
 test("agents see the copy and photo slots; brand furniture stays fixed", () => {
   const slots = agent.agentTemplateSlots(template);
   const summary = page => slots.filter(slot => slot.pageIndex === page).map(slot => [slot.slot, slot.type, slot.role ?? null]);
-  assert.deepEqual(summary(0), [["photo", "photo", null], ["cover-headline", "text", "cover"]]);
+  // The cover's SWIPE FOR MORE takes a remark of its own through cover-remark.
+  assert.deepEqual(summary(0), [["photo", "photo", null], ["cover-headline", "text", "cover"], ["cover-remark", "text", null]]);
   assert.deepEqual(summary(1), [["title", "text", "heading"], ["body", "text", "body"], ["media", "photo", null], ["source", "text", "body"]]);
   assert.deepEqual(summary(2), [["title", "text", "heading"], ["body", "text", "body"], ["list-left-heading", "text", "heading"], ["list-right-heading", "text", "heading"], ["list-left-items", "text", "list"], ["list-right-items", "text", "list"], ["source", "text", "body"]]);
   assert.deepEqual(summary(3), [["photo", "photo", null], ["cta", "text", "cover"]]);
@@ -121,6 +122,10 @@ test("agents see the copy and photo slots; brand furniture stays fixed", () => {
     assert.deepEqual(summary(page.page).filter(slot => slot[1] === "photo").map(slot => slot[0]), [...page.photo]);
   }
   const listed = new Set(slots.map(slot => slot.elementId));
+  // SWIPE FOR MORE stays fixed brand furniture in the template; agents reach it as cover-remark.
+  const swipe = template.pages[0].canvas.elements.find(item => item.id === "cgt-cover-swipe");
+  assert.equal(swipe.templateRole, "brand"); assert.deepEqual(swipe.protected, ["content", "position", "style", "delete"]);
+  assert.equal(slots.find(slot => slot.slot === "cover-remark").elementId, swipe.id);
   for (const id of FIXED) {
     const element = template.pages.flatMap(page => page.canvas.elements).find(item => item.id === `cgt-${id}`);
     assert.ok(element, id); assert.equal(listed.has(element.id), false, id);
@@ -169,8 +174,8 @@ test("createAgentDeck fills every slot and keeps the template's look", () => {
   // Post text is kept exactly, line breaks and emoji included; the card keeps the template's style.
   const post = bySlot(reaction, "reaction-text");
   assert.equal(post.text, "Memory is the feature\n\nI have wanted since day one 🎉"); assert.equal(post.richText, undefined);
-  // X's dark-mode colours at the screenshot's size, on every Reaction page.
-  assert.equal(post.font, "sfpro"); assert.equal(post.color, "#E7E9EA"); near(post.fontSize, shot(57.9));
+  // X's own typeface and dark-mode colours at the screenshot's size, on every Reaction page.
+  assert.equal(post.font, "chirp"); assert.equal(post.color, "#E7E9EA"); near(post.fontSize, shot(57.9));
   assert.equal(bySlot(reaction, "reaction-avatar").src, avatar); assert.equal(bySlot(reaction, "reaction-handle").text, "@ada");
   assert.equal(bySlot(reaction, "reaction-handle").color, "#71767B"); assert.equal(bySlot(reaction, "reaction-name").fontWeight, 700); assert.equal(bySlot(reaction, "reaction-name").color, "#E7E9EA");
   assert.equal(bySlot(reactions, "reaction-text-2").text, "Second"); assert.equal(bySlot(reactions, "reaction-avatar-2").src, avatar);
@@ -349,6 +354,24 @@ test("smart layout: each card hugs its post, photo and check mark, and the page 
   // A blank line between paragraphs is kept.
   const paragraphs = fill(4, { "reaction-text": "Line one\n\nLine three" });
   assert.equal(paragraphs.texts.get(bySlot(paragraphs.scene, "reaction-text").id).lines.length, 3);
+});
+
+test("a post without a video keeps its hidden play button and length on the photo, however often the page is laid out", () => {
+  // Each pass centres the card as a block; the hidden video marks used to keep their old place and drift down by that shift every time, until the page was no longer valid.
+  const measure = (element, words = smart.smartWords(element)) => ({ size: element.fontSize, widths: words.map(word => word.text.length * element.fontSize * .45), space: element.fontSize * .25 });
+  let canvas = structuredClone(template.pages[4].canvas);
+  bySlot(canvas, "reaction-text").text = "Short post"; delete bySlot(canvas, "reaction-text").richText;
+  const marks = ["reaction-play", "reaction-length", "reaction-length-text"];
+  assert.ok(bySlot(canvas, "reaction-media").hidden && marks.every(slot => bySlot(canvas, slot).hidden), "the photo and its video marks start hidden");
+  const offsets = [];
+  for (let pass = 0; pass < 5; pass++) {
+    canvas = smart.layoutSmartScene(canvas, measure).scene;
+    const media = bySlot(canvas, "reaction-media");
+    offsets.push(marks.map(slot => bySlot(canvas, slot).y - media.y));
+    for (const slot of marks) assert.ok(bySlot(canvas, slot).y < scene(1440), `${slot} stays on the page`);
+  }
+  for (const pass of offsets.slice(1)) pass.forEach((offset, index) => close(offset, offsets[0][index]));
+  close(offsets[0][0], bySlot(canvas, "reaction-play").smartFlow.gap, "the play button sits where it would on a video");
 });
 
 // Deterministic stand-in for browser text metrics, shared by the flexible-layout tests below.

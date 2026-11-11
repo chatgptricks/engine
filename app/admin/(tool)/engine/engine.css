@@ -548,6 +548,8 @@
 .gf-font-kyoto { font-family: var(--gf-f-kyoto), Georgia, serif; }
 .gf-font-century { font-family: var(--gf-f-century), system-ui, sans-serif; }
 .gf-font-sfpro { font-family: var(--gf-f-sfpro), system-ui, sans-serif; }
+/* X's own typeface for post cards; SF Pro until its files are installed. */
+.gf-font-chirp { font-family: var(--gf-f-chirp), var(--gf-f-sfpro), system-ui, sans-serif; }
 .gf-font-playfair { font-family: var(--gf-f-playfair), Georgia, serif; }
 .gf-font-dmserif { font-family: var(--gf-f-dmserif), Georgia, serif; }
 .gf-font-lora { font-family: var(--gf-f-lora), Georgia, serif; }

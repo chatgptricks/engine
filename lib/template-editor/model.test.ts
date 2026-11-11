@@ -10,6 +10,8 @@ import {
   createBlankTemplateDesign,
   createCanvasElement,
   createDesign,
+  parseCanvasScene,
+  parseVideoClip,
   designAsTemplate,
   duplicatePage,
   editTemplateDesign,
@@ -1091,4 +1093,62 @@ test("copied template images are counted once when loading objects and legacy JS
   assert.ok(parseLibrary(JSON.stringify(value)));
   assert.equal(fitsJsonCharacterLimit({src, nested:{src}}, 2_000_000, true),true);
   assert.equal(fitsJsonCharacterLimit({unknown:src, nested:{unknown:src}}, 2_000_000, true),false);
+});
+
+/* ─── Video layers ───────────────────────────────────────────────────────────
+ * A video layer is an image layer whose photo carries a clip: `src` is the
+ * poster, `video` the stored clip and its trim. */
+const VIDEO_ID = "a".repeat(64);
+const videoClip = {src: `/api/template-editor/videos/${VIDEO_ID}`, mimeType: "video/mp4" as const, duration: 12.4, width: 1080, height: 1440, bytes: 5_947_134};
+const POSTER = `/api/template-editor/assets/${"b".repeat(64)}`;
+function videoLayer(extra: Record<string, unknown> = {}): CanvasElement {
+  return {...createCanvasElement("image"), id: "cover-video", name: "Cover video", src: POSTER, x: 0, y: 0, width: 360, height: 333, cropY: 0, radius: 12, opacity: 0.9, video: {...videoClip, start: 1, end: 9, loop: true, muted: true}, ...extra} as CanvasElement;
+}
+
+test("a video layer is created with its clip, poster, box, crop, radius, opacity and trim, between other layers", () => {
+  const fade = {...createCanvasElement("shape"), id: "fade", name: "Fade", x: 0, y: 250, width: 360, height: 230};
+  const headline = {...createCanvasElement("text"), id: "headline", name: "Headline", text: "A clip under the headline", x: 20, y: 380, width: 320, height: 60};
+  const scene = parseCanvasScene({background: "#000000", elements: [videoLayer(), fade, headline]});
+  assert.ok(scene);
+  assert.deepEqual(scene.elements.map(element => element.id), ["cover-video", "fade", "headline"], "the video keeps its place in the stack");
+  const video = scene.elements[0];
+  assert.equal(video.type, "image");
+  if (video.type !== "image") return;
+  assert.equal(video.src, POSTER);
+  assert.deepEqual([video.x, video.y, video.width, video.height, video.cropY, video.radius, video.opacity], [0, 0, 360, 333, 0, 12, 0.9]);
+  assert.deepEqual(video.video, {...videoClip, start: 1, end: 9, loop: true, muted: true});
+});
+
+test("a video layer's trim, playback and poster flag update within the clip", () => {
+  assert.deepEqual(parseVideoClip({...videoClip, start: 3, end: 7.5, loop: false, muted: false}), {...videoClip, start: 3, end: 7.5, loop: false, muted: false});
+  assert.deepEqual(parseVideoClip({...videoClip, start: 2, end: 99}), {...videoClip, start: 2}, "a trim past the end stops at the end");
+  assert.deepEqual(parseVideoClip({...videoClip, start: 0, end: 12.4}), videoClip, "a trim of the whole clip is no trim");
+  assert.equal(parseVideoClip({...videoClip, start: 5, end: 5.05}), null, "a trim shorter than a tenth of a second is refused");
+  assert.deepEqual(parseVideoClip({...videoClip, noPoster: true}), {...videoClip, noPoster: true});
+  assert.deepEqual(parseVideoClip({...videoClip, noPoster: false}), videoClip);
+  const long = {...videoClip, duration: 150};
+  assert.equal(parseVideoClip({...long, start: 10})?.end, 70, "a slide plays at most 60 seconds from its start");
+  for (const src of [`data:video/mp4;base64,AAAA`, "javascript:alert(1)", "https://cdn.example/clip.mp4", "/api/template-editor/assets/" + "a".repeat(64)]) {
+    assert.equal(parseVideoClip({...videoClip, src}), null, `refuses ${src.slice(0, 30)}`);
+  }
+  assert.equal(parseVideoClip({...videoClip, mimeType: "video/x-matroska"}), null);
+  assert.equal(parseVideoClip({...videoClip, bytes: 300 * 1024 * 1024}), null);
+  // Updating a layer is replacing its clip fields; the parsed scene keeps the update.
+  const updated = parseCanvasScene({background: "#000000", elements: [videoLayer({video: {...videoClip, start: 4, end: 8, loop: false}})]});
+  assert.deepEqual(updated?.elements[0].type === "image" ? updated.elements[0].video : null, {...videoClip, start: 4, end: 8, loop: false});
+  const broken = parseCanvasScene({background: "#000000", elements: [videoLayer({video: {...videoClip, src: "https://cdn.example/clip.mp4"}})]});
+  assert.equal(broken, null, "a layer with a clip that isn't stored in Engine doesn't load");
+});
+
+test("a deck with a video layer serializes and loads back the same, and a deck without one is unchanged", () => {
+  const design = createBlankDesign("Video deck", "portrait");
+  const withVideo = {...structuredClone(design), id: "video-deck"};
+  withVideo.pages[0].canvas = {background: "#000000", elements: [videoLayer()]};
+  const library = {...structuredClone(EMPTY_LIBRARY), designs: [withVideo, design]};
+  const loaded = parseLibrary(JSON.parse(JSON.stringify(library)));
+  assert.ok(loaded);
+  assert.deepEqual(loaded.designs[0].pages[0].canvas, withVideo.pages[0].canvas);
+  assert.deepEqual(JSON.parse(JSON.stringify(loaded.designs[0])), JSON.parse(JSON.stringify(withVideo)), "the round trip changes nothing");
+  assert.equal(JSON.stringify(loaded.designs[1]).includes("video"), false, "a deck without video gains no video fields");
+  assert.deepEqual(JSON.parse(JSON.stringify(loaded.designs[1])), JSON.parse(JSON.stringify(parseLibrary(JSON.parse(JSON.stringify({...structuredClone(EMPTY_LIBRARY), designs: [design]})))!.designs[0])));
 });

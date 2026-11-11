@@ -9,6 +9,7 @@ import {formatDimensions, parseLibrary, type DesignDocument} from "@/lib/templat
 import {checkLibrarySaveBudget} from "@/lib/template-editor/library-budget";
 import {listPageProfiles} from "@/lib/engine/page-profiles";
 import {storeNewImages} from "@/lib/template-editor/stored-images";
+import {resolveAgentVideos} from "@/lib/template-editor/agent-videos";
 import {frameCutSource, isFrameOperation, validateAgentUpdate, type FrameResolution} from "@/lib/template-editor/agent-decks";
 import {cutFrame, FrameError, prepareFrameImage, viewFrame, type RemoveBackground} from "@/lib/template-editor/frames-server";
 import {frameBackground, sceneToImage} from "@/lib/template-editor/frames";
@@ -98,6 +99,9 @@ async function dispatch(ownerKey: string, input: Record<string, unknown>) {
     if (action === "update_deck" && (typeof input.expectedHash !== "string" || !/^[a-f0-9]{64}$/.test(input.expectedHash))) throw new RequestError("Supply expectedHash from get_deck before updating a deck.");
     const inputHash = await contentHash(action === "create_deck" ? {action, spec} : {action, deckId, expectedHash: input.expectedHash, changes: input.changes});
     const images = new Map<string, string | null>();
+    // Video links are copied into storage once, before any retry; the deck stores only their paths.
+    const videoSpec = action === "create_deck" ? await resolveAgentVideos(ownerKey, spec, "$") : spec;
+    const videoChanges = action === "update_deck" ? await resolveAgentVideos(ownerKey, input.changes, "$") : input.changes;
     for (let attempt = 0; attempt < 4; attempt++) {
       const stored = await getEditorLibrary(ownerKey), existing = stored.library.designs.find(document => document.id === deckId);
       const receipt = existing?.agentOperations?.find(operation => operation.id === operationId);
@@ -114,12 +118,12 @@ async function dispatch(ownerKey: string, input: Record<string, unknown>) {
         if (existing) throw new RequestError("A deck with this id already exists. Use update_deck to revise it.", 409);
         if (spec.pageId !== undefined && typeof spec.pageId === "string" && !(await listPageProfiles(ownerKey)).some(profile => profile.id === spec.pageId)) throw new RequestError(`Unknown pageId "${spec.pageId.slice(0, 120)}". Use a page profile id from engine_list_page_profiles, or omit pageId.`);
         const tokens = addsHtmlLayers(spec) ? await brandTokens(spec.templateId) : undefined;
-        document = createAgentDeck(withHtmlLayerTokens({...spec, id: deckId}, tokens), templates);
+        document = createAgentDeck(withHtmlLayerTokens({...videoSpec, id: deckId}, tokens), templates);
       } else {
         const before = checkedDocument(deckId, stored.library.designs);
         if (await contentHash(before) !== input.expectedHash) throw new RequestError("This deck changed. Call get_deck and apply your edits to its latest hash.", 409);
         const tokens = addsHtmlLayers(input.changes) ? await brandTokens(before.templateId) : undefined;
-        document = await applyUpdate(ownerKey, before, withHtmlLayerTokens(input.changes, tokens));
+        document = await applyUpdate(ownerKey, before, withHtmlLayerTokens(videoChanges, tokens));
       }
       document = {...document, agentOperations: [...(document.agentOperations ?? []), {id: operationId, inputHash}].slice(-20)};
       // data: images the agent sent are stored as media files and the deck points to them, so they

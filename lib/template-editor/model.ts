@@ -116,7 +116,7 @@ export type TextElement = CanvasElementBase & {
    * height, so their rows line up.
    * `guideHeight` is what agents' copy-length guide measures against when the
    * box may stretch past the copy the slot is written for. */
-  smartText?: { role: SmartTextRole; lines: 0 | 2 | 3 | 4; minFontSize: number; maxFontSize: number; maxHeight: number; baseHeight?: number; softMinFontSize?: number; anchorBottom?: number; anchorTop?: number; group?: string; paragraphSpacing?: number; maxParagraphSpacing?: number; guideHeight?: number };
+  smartText?: { role: SmartTextRole; lines: 0 | 2 | 3 | 4; /** A size the person set: the text keeps it instead of being fitted. */ fontSize?: number; minFontSize: number; maxFontSize: number; maxHeight: number; baseHeight?: number; softMinFontSize?: number; anchorBottom?: number; anchorTop?: number; group?: string; paragraphSpacing?: number; maxParagraphSpacing?: number; guideHeight?: number };
   verticalAlign?: "top" | "middle" | "bottom";
   padding?: number;
   paragraphSpacing?: number;
@@ -137,7 +137,37 @@ export type PhotoMetadata = {
   rightsNote?: string;
   sourceUrl?: string;
   provenance?: { source?: string; imageId?: string; description?: string; cosmosManual?: boolean };
+  /** A clip that plays in place of the photo. `src` stays the clip's cover
+   * frame, so anything that doesn't know about video shows the cover. */
+  video?: VideoClip;
 };
+/** A stored video clip. `src` is always `/api/template-editor/videos/<sha256>`:
+ * clips never sit inside a deck. Times are in seconds. */
+export type VideoClip = {
+  src: string;
+  mimeType: (typeof VIDEO_MIME_TYPES)[number];
+  duration: number;
+  width: number;
+  height: number;
+  bytes: number;
+  /** Trim. Absent means the clip's start and end. */
+  start?: number;
+  end?: number;
+  /** Plays again from `start` when it reaches `end`. Defaults to true. */
+  loop?: boolean;
+  /** The editor plays it silently unless this is false. Export decides sound on its own. */
+  muted?: boolean;
+  /** The time the cover (`src` of the photo) was taken from. */
+  coverTime?: number;
+  /** Set when the clip arrived without a poster: `src` is only a dark stand-in, which engine_check_deck flags. Choosing a cover clears it. */
+  noPoster?: boolean;
+};
+export const VIDEO_MIME_TYPES = ["video/mp4", "video/quicktime", "video/webm"] as const;
+export const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
+export const MAX_VIDEO_SECONDS = 180;
+/** A slide plays at most this much of its clip: Instagram's limit for a carousel video. A longer upload is trimmed to it. */
+export const MAX_SLIDE_VIDEO_SECONDS = 60;
+export const VIDEO_SRC_PATTERN = /^\/api\/template-editor\/videos\/([a-f0-9]{64})$/;
 export type ShapeImageFill = PhotoMetadata & {
   src: string;
   previewSrc?: string;
@@ -226,6 +256,13 @@ export type DesignComment = { id: string; pageId?: string; elementId?: string; t
 export type DesignVersion = Pick<DocumentResources, "styles" | "components" | "colorRoles" | "parameters"> & { id: string; name: string; createdAt: string; format: DesignFormat; pages: DesignPage[]; continuousCanvas?: CanvasScene; caption: string; masterScene?: CanvasScene; customSize?: { width: number; height: number } };
 export type DocumentResources = { styles?: TextStyle[]; colorRoles?: { id: string; name: string; color: string }[]; components?: ReusableComponent[]; parameters?: TemplateParameter[]; masterScene?: CanvasScene; customSize?: { width: number; height: number }; tags?: string[]; folderId?: string; favorite?: boolean; deletedAt?: string };
 export type FrameRole = "background" | "cutout" | "text";
+/** X's own typeface (Chirp) for a post card's name, handle and words; text in it shows SF Pro until its files are installed. */
+export const X_FONT = "chirp";
+/** A cover's bottom line: a brief remark of its own, or SWIPE FOR MORE when empty. On
+ * @chatgptricks covers it is the fixed SWIPE FOR MORE layer until a post writes its own. */
+export const COVER_REMARK_SLOT = "cover-remark";
+export const COVER_REMARK_DEFAULT = "SWIPE FOR MORE";
+export const COVER_REMARK_MAX = 40;
 export const FRAME_ROLES: readonly FrameRole[] = ["background", "cutout", "text"];
 /** Frames: the image a slide was made from. It never changes, so a cut always
  * takes the original pixels and "Reset to original" can bring them back. */
@@ -1647,6 +1684,7 @@ const FONT_IDS = new Set([
   "libre",
   "geist",
   "sfpro",
+  "chirp",
   "playfair",
   "dmserif",
   "lora",
@@ -2031,7 +2069,7 @@ function parseTextExtensions(value: Record<string, unknown>): Partial<TextElemen
   if (value.smartText !== undefined) {
     const smart = value.smartText;
     if (!object(smart) || !choice(["cover", "heading", "body", "list"])(smart.role) || ![0, 2, 3, 4].includes(Number(smart.lines)) || typeof smart.lines !== "number" || !numberIn(smart.minFontSize, 1, 500) || !numberIn(smart.maxFontSize, smart.minFontSize as number, 500) || !numberIn(smart.maxHeight, 1, 10000) || !optional(smart, "baseHeight", candidate => numberIn(candidate, 1, 10000)) || !optional(smart, "softMinFontSize", candidate => numberIn(candidate, 1, 500)) || !optional(smart, "anchorBottom", candidate => numberIn(candidate, -10000, 10000)) || !optional(smart, "anchorTop", candidate => numberIn(candidate, -10000, 10000)) || !optional(smart, "group", candidate => typeof candidate === "string" && /^[\w-]{1,40}$/.test(candidate)) || !optional(smart, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(smart, "maxParagraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(smart, "guideHeight", candidate => numberIn(candidate, 1, 10000))) return null;
-    result.smartText = { role: smart.role as SmartTextRole, lines: smart.lines as 0 | 2 | 3 | 4, minFontSize: smart.minFontSize, maxFontSize: smart.maxFontSize, maxHeight: smart.maxHeight, ...(smart.baseHeight !== undefined ? { baseHeight: smart.baseHeight as number } : {}), ...(smart.softMinFontSize !== undefined ? { softMinFontSize: smart.softMinFontSize as number } : {}), ...(smart.anchorBottom !== undefined ? { anchorBottom: smart.anchorBottom as number } : {}), ...(smart.anchorTop !== undefined ? { anchorTop: smart.anchorTop as number } : {}), ...(smart.group !== undefined ? { group: smart.group as string } : {}), ...(smart.paragraphSpacing !== undefined ? { paragraphSpacing: smart.paragraphSpacing as number } : {}), ...(smart.maxParagraphSpacing !== undefined ? { maxParagraphSpacing: smart.maxParagraphSpacing as number } : {}), ...(smart.guideHeight !== undefined ? { guideHeight: smart.guideHeight as number } : {}) };
+    result.smartText = { role: smart.role as SmartTextRole, lines: smart.lines as 0 | 2 | 3 | 4, ...(numberIn(smart.fontSize, 1, 500) ? { fontSize: smart.fontSize as number } : {}), minFontSize: smart.minFontSize, maxFontSize: smart.maxFontSize, maxHeight: smart.maxHeight, ...(smart.baseHeight !== undefined ? { baseHeight: smart.baseHeight as number } : {}), ...(smart.softMinFontSize !== undefined ? { softMinFontSize: smart.softMinFontSize as number } : {}), ...(smart.anchorBottom !== undefined ? { anchorBottom: smart.anchorBottom as number } : {}), ...(smart.anchorTop !== undefined ? { anchorTop: smart.anchorTop as number } : {}), ...(smart.group !== undefined ? { group: smart.group as string } : {}), ...(smart.paragraphSpacing !== undefined ? { paragraphSpacing: smart.paragraphSpacing as number } : {}), ...(smart.maxParagraphSpacing !== undefined ? { maxParagraphSpacing: smart.maxParagraphSpacing as number } : {}), ...(smart.guideHeight !== undefined ? { guideHeight: smart.guideHeight as number } : {}) };
   }
   for (const key of ["textMode", "verticalAlign", "listStyle", "hangingIndent", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
   if (value.richText !== undefined) {
@@ -2285,6 +2323,26 @@ const numberIn = (value: unknown, min: number, max: number): value is number =>
   value >= min &&
   value <= max;
 
+/** A clip's fields, checked: its own stored URL only, sizes in range, and a
+ * trim inside the clip (a trim past the end is cut to the end) and no longer
+ * than a slide plays (MAX_SLIDE_VIDEO_SECONDS, measured from its start). */
+export function parseVideoClip(value: unknown): VideoClip | null {
+  if (!object(value) || typeof value.src !== "string" || !VIDEO_SRC_PATTERN.test(value.src)) return null;
+  if (!choice([...VIDEO_MIME_TYPES])(value.mimeType) || !numberIn(value.duration, 0.05, MAX_VIDEO_SECONDS + 1) || !numberIn(value.width, 1, 16_384) || !numberIn(value.height, 1, 16_384) || !numberIn(value.bytes, 1, MAX_VIDEO_BYTES)) return null;
+  if (!optional(value, "start", candidate => numberIn(candidate, 0, 100_000)) || !optional(value, "end", candidate => numberIn(candidate, 0, 100_000)) || !optional(value, "loop", boolean) || !optional(value, "muted", boolean) || !optional(value, "coverTime", candidate => numberIn(candidate, 0, 100_000))) return null;
+  const clip: VideoClip = { src: value.src, mimeType: value.mimeType as VideoClip["mimeType"], duration: value.duration, width: Math.round(value.width), height: Math.round(value.height), bytes: Math.round(value.bytes) };
+  const start = Math.min(typeof value.start === "number" ? value.start : 0, clip.duration);
+  const end = Math.min(typeof value.end === "number" ? value.end : clip.duration, clip.duration, start + MAX_SLIDE_VIDEO_SECONDS);
+  if (end - start < 0.1) return null;
+  if (start > 0) clip.start = start;
+  if (end < clip.duration) clip.end = end;
+  if (typeof value.loop === "boolean") clip.loop = value.loop;
+  if (typeof value.muted === "boolean") clip.muted = value.muted;
+  if (typeof value.coverTime === "number") clip.coverTime = Math.min(value.coverTime, clip.duration);
+  if (value.noPoster === true) clip.noPoster = true;
+  return clip;
+}
+
 function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | null {
   if (!optional(value,"publicAlt",candidate=>string(candidate,2000)) || !optional(value,"previewSrc",safeImageUrl)) return null;
   if (!optional(value, "directive", candidate => string(candidate, 2000)) || !optional(value, "rightsNote", candidate => string(candidate, 2000))) return null;
@@ -2300,6 +2358,11 @@ function parsePhotoMetadata(value: Record<string, unknown>): PhotoMetadata | nul
     if (!object(provenance) || !optional(provenance, "source", candidate => string(candidate, 200)) || !optional(provenance, "imageId", identity) || !optional(provenance, "description", candidate => string(candidate, 10_000)) || !optional(provenance, "cosmosManual", boolean)) return null;
     result.provenance = {};
     for (const key of ["source", "imageId", "description", "cosmosManual"] as const) if (provenance[key] !== undefined) Object.assign(result.provenance, { [key]: provenance[key] });
+  }
+  if (value.video !== undefined) {
+    const video = parseVideoClip(value.video);
+    if (!video) return null;
+    result.video = video;
   }
   return result;
 }
@@ -3052,15 +3115,15 @@ function chatgptricksTemplate(): DesignTemplate {
         smartFlow: { after, gap: px(gap), bottom: px(X_CARD.bottom), hug: { after: slot("media"), gap: px(X.foot) } } },
       { type: "image", ...at(`${key}-avatar${suffix}`, "Avatar", [left + X.inset, top + X.avatarTop, X.avatar, X.avatar]), src: avatarPlaceholder(Math.round(X.avatar)), fit: "cover", cropX: 50, cropY: 50, radius: px(X.avatar / 2), intrinsicWidth: Math.round(X.avatar), intrinsicHeight: Math.round(X.avatar),
         directive: "The post author's profile photo from X (pbs.twimg.com)", slot: slot("avatar"), templateRole: "media", layoutRole: "media", protected: ["position", "delete"], smartFlow: inside(X.avatarTop) },
-      { type: "text", ...at(`${key}-name${suffix}`, "Author name", [left + X.nameX, nameY, nameWidth, X.name * 1.2]), text: post.name, ...typeset("sfpro", X.name, 700, X_POST_COLORS.text, 1.2, 0), ...textSlot(slot("name")), smartFlow: inside(nameTop), smartText: fit("heading", 0, X.name, X.name * .75, X.name * 1.2, X.name * 1.2) },
+      { type: "text", ...at(`${key}-name${suffix}`, "Author name", [left + X.nameX, nameY, nameWidth, X.name * 1.2]), text: post.name, ...typeset(X_FONT, X.name, 700, X_POST_COLORS.text, 1.2, 0), ...textSlot(slot("name")), smartFlow: inside(nameTop), smartText: fit("heading", 0, X.name, X.name * .75, X.name * 1.2, X.name * 1.2) },
       // Sits after the name's last letter. Recreate recolours it per account (blue, gold for organizations, grey) or hides it.
       { type: "shape", ...at(`${key}-badge${suffix}`, "Verified badge", [left + X.nameX + X.name * .55 * post.name.length + X.badgeGap, nameY + (X.name * 1.2 - X.badge) / 2, X.badge, X.badge]), shape: "path", path: X_BADGES.blue.path, viewBox: "0 0 100 100", fillRule: "evenodd", fill: X_BADGES.blue.fill, stroke: "transparent", strokeWidth: 0, radius: 0,
         slot: slot("badge"), templateRole: "brand", layoutRole: "fixed", protected: ["content", "position"], smartFlow: { after: slot("name"), gap: px(X.badgeGap), bottom: px(1440), direction: "right" } },
-      { type: "text", ...at(`${key}-handle${suffix}`, "Author handle", [left + X.nameX, top + handleTop, X.markX - X.markGap - X.nameX, X.handle * 1.2]), text: post.handle, ...typeset("sfpro", X.handle, 400, X_POST_COLORS.handle, 1.2, 0), ...textSlot(slot("handle")), smartFlow: inside(handleTop), smartText: fit("body", 0, X.handle, X.handle * .75, X.handle * 1.2, X.handle * 1.2) },
+      { type: "text", ...at(`${key}-handle${suffix}`, "Author handle", [left + X.nameX, top + handleTop, X.markX - X.markGap - X.nameX, X.handle * 1.2]), text: post.handle, ...typeset(X_FONT, X.handle, 400, X_POST_COLORS.handle, 1.2, 0), ...textSlot(slot("handle")), smartFlow: inside(handleTop), smartText: fit("body", 0, X.handle, X.handle * .75, X.handle * 1.2, X.handle * 1.2) },
       { type: "shape", ...at(`${key}-x-mark${suffix}`, "X logo", [left + X.markX, top + X.markTop, markWidth, X.mark]), shape: "path", path: xPath, viewBox: "0 0 1200 1227", fill: X_POST_COLORS.text, stroke: "transparent", strokeWidth: 0, radius: 0, ...fixed(), smartFlow: inside(X.markTop) },
       { type: "text", ...at(`${key}-x-com${suffix}`, "X.com", [left + X.markX + markWidth, top + comTop, 120, X.com * 1.2]), text: ".com", ...typeset("sfpro", X.com, 700, X_POST_COLORS.text, 1.2, 0), textMode: "fixed", verticalAlign: "top", ...fixed(), smartFlow: inside(comTop) },
       // The post word for word at the screenshot's size, wrapping like X; only a post too long for its page shrinks.
-      { type: "text", ...at(`${key}-text${suffix}`, "Post text", [left + X.inset, top + textTop, 936 - 2 * X.inset, post.lines * X.textLine]), text: post.text, ...typeset("sfpro", X.text, 400, X_POST_COLORS.text, X.textLine / X.text, 0), ...textSlot(slot("text")),
+      { type: "text", ...at(`${key}-text${suffix}`, "Post text", [left + X.inset, top + textTop, 936 - 2 * X.inset, post.lines * X.textLine]), text: post.text, ...typeset(X_FONT, X.text, 400, X_POST_COLORS.text, X.textLine / X.text, 0), ...textSlot(slot("text")),
         smartFlow: { after: slot("card"), edge: "top", gap: px(textTop), bottom: px(textBottom) }, smartText: fit("body", 0, X.text, X.text * .8, maxLines * X.textLine, post.lines * X.textLine) },
       // The post's own photo under its text, whole and with X's rounded corners. Hidden until Recreate
       // fills it and sizes it to the photo's proportions; while hidden, the card ends under the text.
@@ -3119,6 +3182,7 @@ function chatgptricksTemplate(): DesignTemplate {
         hairline("cover-hairline-right", "Right hairline", 578, white, "#F9FFFE00"),
         // Three balanced lines at 97 px; the box bottom stays 130 px above the page bottom.
         { type: "text", ...at("cover-headline", "Cover headline", [68, 1066.724, 944, 243.276]), text: "SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED WHILE US JOB OPENINGS FELL ALMOST 30%", richText: `SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED WHILE US JOB OPENINGS <span style="color:${green}">FELL ALMOST 30%</span>`, ...typeset("bebas", 97, 400, white, .836, -.02, "center"), ...textSlot("cover-headline"), verticalAlign: "bottom", shadow: glow(), smartText: fit("cover", 3, 97, 54, 4 * 97 * .836, 3 * 97 * .836, 97 * .85, 1310) },
+        // Agents may write their own line here through the cover-remark slot (agent-decks.ts).
         { type: "text", ...at("cover-swipe", "Swipe for more", [0, 1334, 1080, 32]), text: "SWIPE FOR MORE", ...typeset("sfpro", 32, 700, grey, 1, .01, "center"), textMode: "fixed", verticalAlign: "top", ...fixed() },
       ], 68),
       sheet("media", "Text + Media", [

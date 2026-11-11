@@ -95,7 +95,9 @@ test("new ChatGPTricks copies merge imported title runs; source and unrelated te
   assert.equal(headings[0].align, "center");
   assert.equal(headings[0].smartText.lines, 3);
   assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "content"), true);
-  assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "style"), false);
+  // Template text keeps its slot but its look is the person's (Ivan, 2026-11-11).
+  assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "style"), true);
+  assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "position"), false);
   const library = {...model.EMPTY_LIBRARY, designs: [design]};
   assert.deepEqual(model.parseLibrary(library).designs[0].pages[0].canvas.elements[0].smartText, headings[0].smartText);
   const other = {...source, name: "Other"}, otherBefore = JSON.stringify(other), prepared = template.prepareSmartTemplate(other);
@@ -382,4 +384,40 @@ test("a check mark follows a name's last line, a card hugs its copy past a hidde
   // A flow too tall for its space starts at the top instead.
   const tall = smart.layoutSmartScene({...scene, elements: scene.elements.map(element => element === photo ? {...element, hidden: false, height: 600} : element)}, metrics).scene.elements;
   assert.equal(tall[0].y, 50);
+});
+
+test("a size the person set is kept: only the line breaks follow it, and Auto size fits again", () => {
+  const auto = fit(text());
+  const fixed = fit(text({smartText: {role: "cover", lines: 3, fontSize: 16, minFontSize: 12, maxFontSize: 48, maxHeight: 110}}));
+  assert.notEqual(auto.fontSize, 16);
+  assert.equal(fixed.fontSize, 16);
+  assert.equal(fixed.lines.length, 3);
+  assert.equal(fixed.overflow, false);
+  assert.equal(fixed.lines.map(line => line.text).join(" "), text().text);
+  // Bigger than the text's space: kept, with a warning instead of shrinking.
+  const big = fit(text({smartText: {role: "cover", lines: 0, fontSize: 80, minFontSize: 12, maxFontSize: 48, maxHeight: 110}}));
+  assert.equal(big.fontSize, 80);
+  assert.equal(big.overflow, true);
+  assert.match(big.warning, /too big/);
+  // Outside the min and max the template sets, too: the person's size wins.
+  assert.equal(fit(text({smartText: {role: "cover", lines: 3, fontSize: 9, minFontSize: 12, maxFontSize: 48, maxHeight: 110}})).fontSize, 9);
+  assert.equal(model.parseCanvas({background: "#111111", elements: [text({smartText: {role: "cover", lines: 3, fontSize: 16, minFontSize: 12, maxFontSize: 48, maxHeight: 110}})]}).elements[0].smartText.fontSize, 16);
+  assert.equal(model.parseCanvas({background: "#111111", elements: [text({smartText: {role: "cover", lines: 3, fontSize: 900, minFontSize: 12, maxFontSize: 48, maxHeight: 110}})]}).elements[0].smartText.fontSize, undefined);
+});
+
+test("a set size neither sets nor takes a group's shared size", () => {
+  const rule = size => ({role: "heading", lines: 0, minFontSize: 10, maxFontSize: 40, maxHeight: 200, group: "g", ...(size ? {fontSize: size} : {})});
+  const a = text({id: "a", text: "Short", smartText: rule()}), b = text({id: "b", y: 300, text: "Short too", smartText: rule(11)});
+  const laid = smart.layoutSmartScene({background: "#111111", elements: [a, b]}, metrics);
+  assert.equal(laid.texts.get("b").fontSize, 11);
+  assert.ok(laid.texts.get("a").fontSize > 11, "the auto member isn't pulled down to the set size");
+});
+
+test("a set size too wide for the chosen line count wraps on more lines and says so", () => {
+  const layout = fit(text({smartText: {role: "cover", lines: 2, fontSize: 40, minFontSize: 12, maxFontSize: 48, maxHeight: 1000}}));
+  assert.equal(layout.fontSize, 40);
+  assert.ok(layout.lines.length > 2);
+  assert.equal(layout.overflow, false);
+  assert.match(layout.warning, /needs \d+ lines, not 2/);
+  assert.equal(layout.lines.map(line => line.text).join(" "), text().text);
 });

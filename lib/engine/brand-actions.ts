@@ -1,4 +1,5 @@
 import {randomUUID} from "node:crypto";
+import {xFontInstalled} from "@/lib/template-editor/x-font";
 import {BrandGuideError, GUIDE_CHECKS, enabledChecks, runGuideChecks, type BrandGuide, type GuideIssue} from "@/lib/template-editor/brand-guide";
 import {designTemplateFromGuide, guideTemplateId, templateBrand, type GuideLanguage} from "@/lib/template-editor/guide-template";
 import {htmlTokensForGuide} from "@/lib/template-editor/html-layer";
@@ -72,7 +73,7 @@ export async function checkAgainstGuide(ownerKey: string, input: {brandId?: stri
     target = template; kind = "template";
   }
   const guide = await guideFor(ownerKey, input.brandId, template);
-  const issues = runGuideChecks(target, guide, {scope: kind, language: template?.tags?.includes("language:es") ? "es" : "en"});
+  const issues = runGuideChecks(target, guide, {scope: kind, language: template?.tags?.includes("language:es") ? "es" : "en", xFontMissing: !xFontInstalled()});
   return {
     brand: {id: guide.id, name: guide.name, version: guide.version},
     target: {kind, id: target.id, name: target.name},

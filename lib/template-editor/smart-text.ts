@@ -107,7 +107,10 @@ export function fitSmartText(element: TextElement, metrics: SmartMetrics, words 
   };
   let chosen: number;
   const pad = 2 * (element.padding ?? 0);
-  if (!requested && rule.baseHeight !== undefined && rule.softMinFontSize !== undefined && rule.baseHeight < rule.maxHeight) {
+  // A size the person set is kept as it is: only the line breaks follow it.
+  const fixed = rule.fontSize !== undefined && Number.isFinite(rule.fontSize) ? Math.max(1, Math.min(500, rule.fontSize)) : undefined;
+  if (fixed !== undefined) chosen = fixed;
+  else if (!requested && rule.baseHeight !== undefined && rule.softMinFontSize !== undefined && rule.baseHeight < rule.maxHeight) {
     // Stay in the authored box while a modest size change is enough; only then
     // take room from the layout, and finally shrink to the readable minimum.
     const soft = Math.min(high, Math.max(low, rule.softMinFontSize));
@@ -118,6 +121,8 @@ export function fitSmartText(element: TextElement, metrics: SmartMetrics, words 
   if (!result.ends.length) {
     // Show all content, with a visible warning; never silently truncate the copy.
     const fallback = fitSmartText({ ...element, smartText: { ...rule, lines: 0, minFontSize: chosen, maxFontSize: chosen } }, metrics, words);
+    // A size the person set wraps on as many lines as it needs; only running out of room is a problem.
+    if (fixed !== undefined) return { ...fallback, warning: fallback.overflow ? fallback.warning : `At this size the text needs ${fallback.lines.length} lines, not ${requested}. Make it smaller for ${requested} lines.` };
     return { ...fallback, overflow: true, warning: "This text needs shortening to fit legibly. Choose Auto or use fewer words." };
   }
   let start = 0;
@@ -127,7 +132,7 @@ export function fitSmartText(element: TextElement, metrics: SmartMetrics, words 
     start = end;
     return [...Array.from({length:blankLines}, () => ({text:"", html:"<br>", width:0})), { text: subset.map(word => word.text).join(" "), html: subset.map(word => word.html).join(" "), width: used }];
   });
-  return { fontSize: chosen, height: Math.ceil(result.height * 100) / 100, lines, overflow, warning: overflow ? "This text needs shortening to fit legibly. Use fewer words or another slide." : requested && lines.length !== requested ? `Add more words to fill ${requested} balanced lines. Using ${lines.length} for now.` : undefined };
+  return { fontSize: chosen, height: Math.ceil(result.height * 100) / 100, lines, overflow, warning: overflow ? fixed !== undefined ? "This size is too big for the text's space. Make it smaller or choose Auto size." : "This text needs shortening to fit legibly. Use fewer words or another slide." : requested && lines.length !== requested ? `Add more words to fill ${requested} balanced lines. Using ${lines.length} for now.` : undefined };
 }
 
 /** The bullet or number column, as wide as `.te-canvas-list-prefix`; wrapped lines hang under the item's text. */
@@ -306,7 +311,8 @@ function carryGroups(before: CanvasScene, layout: SmartSceneLayout): SmartSceneL
 function groupCaps({ scene, texts }: SmartSceneLayout): Map<string, GroupCap> {
   const members = new Map<string, { fontSize: number; paragraphSpacing?: number; height: number }[]>();
   for (const element of scene.elements) {
-    const group = element.type === "text" && !element.hidden ? element.smartText?.group : undefined, fitted = texts.get(element.id);
+    // A size the person set neither sets nor takes the group's shared size.
+    const group = element.type === "text" && !element.hidden && element.smartText?.fontSize === undefined ? element.smartText?.group : undefined, fitted = texts.get(element.id);
     if (group && fitted) members.set(group, [...(members.get(group) ?? []), { fontSize: fitted.fontSize, paragraphSpacing: fitted.paragraphSpacing, height: element.height }]);
   }
   const caps = new Map<string, GroupCap>();
@@ -412,7 +418,9 @@ function layoutPass(scene: CanvasScene, measure: typeof measureSmartText, caps: 
     const upward = flow?.direction === "up", inline = flow?.direction === "right";
     // Upward flows: the bottom edge sits `gap` above the anchor's resolved top.
     let edge: number | undefined;
-    if (anchor && !anchor.hidden) {
+    // A hidden layer still keeps its place on a hidden one (a post's play button on its
+    // hidden video): left where it was, a centred flow would move it again on every pass.
+    if (anchor && (!anchor.hidden || original.hidden)) {
       const other = resolve(anchor);
       if (inline) element = { ...element, ...afterLastLine(other, texts.get(other.id), element.height, flow!.gap) };
       else if (upward) {
@@ -425,7 +433,7 @@ function layoutPass(scene: CanvasScene, measure: typeof measureSmartText, caps: 
       }
     }
     if (element.type === "text" && element.smartText && !element.hidden) {
-      const rule = element.smartText, bottomEdge = edge ?? rule.anchorBottom, cap = rule.group ? caps.get(rule.group) : undefined;
+      const rule = element.smartText, bottomEdge = edge ?? rule.anchorBottom, cap = rule.group && rule.fontSize === undefined ? caps.get(rule.group) : undefined;
       let maximum = rule.maxHeight;
       if (flow && !upward && !inline) maximum = Math.min(maximum, Math.max(1, flow.bottom - element.y));
       if (flow && upward && edge !== undefined) maximum = Math.min(maximum, Math.max(1, edge - flow.bottom));

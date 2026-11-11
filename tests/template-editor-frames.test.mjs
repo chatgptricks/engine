@@ -25,7 +25,7 @@ const frames = loadModule("lib/template-editor/frames.ts", { "./model": model })
 const commands = loadModule("lib/template-editor/commands.ts", { "./model": model });
 const spans = loadModule("lib/template-editor/spanning-photos.ts", { "./model": model });
 const htmlLayer = loadModule("lib/template-editor/html-layer.ts", { "./model": model });
-const agent = loadModule("lib/template-editor/agent-decks.ts", { "./model": model, "./spanning-photos": spans, "./html-layer": htmlLayer, "./frames": frames });
+const agent = loadModule("lib/template-editor/agent-decks.ts", { "./model": model, "./text-accents": loadModule("lib/template-editor/text-accents.ts", { "./model": model, "./brand-guide": loadModule("lib/template-editor/brand-guide.ts", { "./model": model }), "./color-utils": loadModule("lib/template-editor/color-utils.ts") }), "./agent-video-layers": loadModule("lib/template-editor/agent-video-layers.ts", { "./model": model }), "./spanning-photos": spans, "./video-slides": loadModule("lib/template-editor/video-slides.ts", { "./model": model, "./spanning-photos": spans }), "./html-layer": htmlLayer, "./frames": frames });
 const { createAgentDeck, updateAgentDeck, agentDeckView, frameCutSource, isFrameOperation, AgentDeckValidationError } = agent;
 
 const ORIGINAL = `/api/template-editor/assets/${"a".repeat(64)}`;

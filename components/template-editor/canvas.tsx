@@ -6,6 +6,7 @@ import { keyboardTransform } from "@/lib/template-editor/editing-actions";
 import { viewGestureDelta,type ViewPoint } from "@/lib/template-editor/view-gestures";
 import {elementEffectiveOpacity} from "@/lib/template-editor/group-opacity";
 import { SceneLayers } from "./scene-layers";
+import { VideoPlayer } from "./video-player";
 import { CollaborationOverlay } from "./collaboration-overlay";
 import type { CollaborationPeer } from "./collaboration-bar";
 import { cropAfterDrag } from "@/lib/template-editor/photo-crop-geometry";
@@ -41,6 +42,8 @@ import { editorRichHtml, formatTextRange, textRangeTogglePatch, splitRichLines, 
 import { duplicateSelection, expandGroupSelection, isElementHidden, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
 import { canFormatWords, takesWordColorsOnly, type WordColor } from "@/lib/template-editor/word-colors";
 import { WordColorControls } from "./word-color-controls";
+import { EditorIcon } from "./editor-icons";
+import { CopyIcon, TrashIcon } from "@/components/engine/icons";
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
 import { MAX_HTML_DESIGN_WIDTH, richTextToPlain } from "@/lib/template-editor/model";
 import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-layer";
@@ -340,7 +343,8 @@ function TextFrame({ element, lines }: { element: TextElement; lines: string[] }
   </div>;
 }
 
-function SceneElement({ element, smartLayout }: { element: CanvasElement; smartLayout?: SmartTextLayout }) {
+/** `playVideo` is set only on the editing canvas: thumbnails, previews and exports show a clip's cover. */
+function SceneElement({ element, smartLayout, playVideo = false }: { element: CanvasElement; smartLayout?: SmartTextLayout; playVideo?: boolean }) {
   const token = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const filterId = `effect-${token}`, gradientId = `gradient-${token}`;
   const shadow = element.shadow;
@@ -369,8 +373,9 @@ function SceneElement({ element, smartLayout }: { element: CanvasElement; smartL
       <feMerge><feMergeNode in="shadow" /><feMergeNode in="SourceGraphic" /></feMerge>
     </filter></defs></svg>}
     {element.type === "text" ? <TextFrame element={element} lines={lines} /> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
+      {playVideo && element.video ? <VideoPlayer clip={element.video} layerId={element.id} poster={proxied(element.src)} className="te-canvas-image te-canvas-video" style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
+      // eslint-disable-next-line @next/next/no-img-element
+      : <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />}
     </div></div> : element.type === "html" ? <HtmlLayerContent element={element} /> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
       <clipPath id={photoClipId} clipPathUnits="userSpaceOnUse">{geometry({fillRule,clipRule:fillRule})}</clipPath>
       {strokeAlign === "outside" && <mask id={outsideMaskId} maskUnits="userSpaceOnUse" x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} style={{maskType:"luminance"}}><rect x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} fill="white" />{geometry({fill:"black",fillRule})}</mask>}
@@ -378,8 +383,9 @@ function SceneElement({ element, smartLayout }: { element: CanvasElement; smartL
     </defs>
     {geometry({fill:gradient?`url(#${gradientId})`:shape.fill,fillRule})}
     {photo && <foreignObject x="0" y="0" width={shape.width} height={shape.height} clipPath={`url(#${photoClipId})`}><div className="te-canvas-shape-photo"><div className="te-canvas-image-zoom" style={{width:"100%",height:"100%",transform:`scale(${photo.cropScale??1})`,transformOrigin:`${photo.cropX}% ${photo.cropY}%`}}>
-      {/* eslint-disable-next-line @next/next/no-img-element */}
-      <img className="te-canvas-image" data-shape-photo-id={shape.id} src={proxied(photo.src)} alt={photo.publicAlt??""} draggable={false} referrerPolicy="no-referrer" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center"}} />
+      {playVideo && photo.video ? <VideoPlayer clip={photo.video} layerId={shape.id} poster={proxied(photo.src)} className="te-canvas-image te-canvas-video" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center"}} />
+      // eslint-disable-next-line @next/next/no-img-element
+      : <img className="te-canvas-image" data-shape-photo-id={shape.id} src={proxied(photo.src)} alt={photo.publicAlt??""} draggable={false} referrerPolicy="no-referrer" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center"}} />}
     </div></div></foreignObject>}
     {shape.strokeWidth>0 && <g {...(strokeAlign==="inside"?{clipPath:`url(#${photoClipId})`}:strokeAlign==="outside"?{mask:`url(#${outsideMaskId})`}:{})}>{geometry({fill:"none",stroke:shape.stroke,strokeWidth:shape.strokeWidth*(strokeAlign==="center"?1:2),strokeDasharray:shape.strokeDash?.join(" "),strokeLinejoin:"round",strokeLinecap:"round",vectorEffect:"non-scaling-stroke",fillRule})}</g>}
     </svg>}
@@ -638,6 +644,19 @@ type CanvasEditorProps = {
   areaMode?: boolean;
   area?: AreaBox | null;
   onAreaChange?: (area: AreaBox | null) => void;
+  /** Canva's small bar over a selection: lock, duplicate, delete and more. */
+  selectionActions?: SelectionActions;
+};
+
+export type SelectionActions = {
+  locked: boolean;
+  canLock: boolean;
+  canDuplicate: boolean;
+  canDelete: boolean;
+  onLock: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onMore: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 };
 
 export function CanvasEditor({
@@ -681,6 +700,7 @@ export function CanvasEditor({
   areaMode = false,
   area = null,
   onAreaChange,
+  selectionActions,
 }: CanvasEditorProps) {
   const root = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -816,6 +836,17 @@ export function CanvasEditor({
     const html=editorRichHtml(node),used=new Set([...html?.matchAll(/data-texture-id="([a-zA-Z0-9_-]+)"/g)??[]].map(match=>match[1]));
     const wordTextures=[...(editingElement.wordTextures??[]),...(patch.textureFill&&textureId?[{...patch.textureFill,id:textureId}]:[])].filter(texture=>used.has(texture.id));
     richRange.current=range.cloneRange();updateEditing(false,true,{wordTextures:wordTextures.length?wordTextures:undefined});return editingAccepted.current;
+  }
+  /** Selected words a step bigger or smaller, relative to their own size now (a headline's words keep their share when it refits). */
+  function resizeRange(factor: number) {
+    const node=editingNode.current, range=richRange.current;
+    if(!node||!range||!editingElement)return false;
+    const start=range.startContainer.nodeType===Node.ELEMENT_NODE?range.startContainer as Element:range.startContainer.parentElement;
+    const shown=Number.parseFloat(getComputedStyle(start&&node.contains(start)?start:node).fontSize);
+    const display=textDisplayFontSize(editingElement);
+    if(!Number.isFinite(shown)||shown<=0||display<=0)return false;
+    const base=editingElement.fontSize, next=shown*factor*base/display;
+    return formatRange({fontSize:Math.round(Math.max(base*.4,Math.min(base*3,next))*100)/100});
   }
   function toggleRange(key: "fontWeight" | "italic" | "underline" | "strikethrough") {
     const node=editingNode.current, range=richRange.current;
@@ -1418,7 +1449,7 @@ export function CanvasEditor({
         {masterScene&&Array.from({length:slideCount||1},(_,index)=>masterPageVisibility?.[index]!==false&&<div className="te-canvas-master-page" key={index} data-master-slide={index} style={{left:index*(slideWidth??width),width:slideWidth??width,height}}><SceneRenderer scene={sceneWithPreviewAssets({...masterScene,background:"transparent"})} isolate={false}/></div>)}
         {<SceneLayers scene={displayScene} render={(element) => (
           <div key={element.id} className={`te-canvas-page-layer${clippedIds.has(element.id) ? " is-clipped" : ""}${!inScope(element)?" is-outside-isolation":""}`}>
-            <SceneElement element={elementWithPreviewAsset(element)} smartLayout={smartView.texts.get(element.id)} />
+            <SceneElement element={elementWithPreviewAsset(element)} smartLayout={smartView.texts.get(element.id)} playVideo />
           </div>
         )} />}
       </div>
@@ -1600,6 +1631,15 @@ export function CanvasEditor({
             style={boxStyle(selectionBounds([element]))}
           />
         ))}
+      {selectionBox && selectionActions && !selectionArea && !typingId && !drawingMode && navigationMode==="select" && !cropImageId && (
+        <div className="te-selection-actions" role="toolbar" aria-label="Selection actions" style={{left:selectionBox.x+selectionBox.width/2,top:selectionBox.y}}
+          onPointerDown={event=>event.stopPropagation()} onDoubleClick={event=>event.stopPropagation()} onContextMenu={event=>event.stopPropagation()}>
+          <button type="button" aria-label={selectionActions.locked?"Unlock":"Lock"} title={selectionActions.locked?"Unlock":"Lock position and appearance"} aria-pressed={selectionActions.locked} disabled={disabled||!selectionActions.canLock} onClick={selectionActions.onLock}><EditorIcon name={selectionActions.locked?"lock":"unlock"}/></button>
+          <button type="button" aria-label="Duplicate" title="Duplicate · ⌘/Ctrl D" disabled={disabled||!selectionActions.canDuplicate} onClick={selectionActions.onDuplicate}><CopyIcon/></button>
+          <button type="button" aria-label="Delete" title="Delete" disabled={disabled||!selectionActions.canDelete} onClick={selectionActions.onDelete}><TrashIcon/></button>
+          <button type="button" aria-label="More" title="More" aria-haspopup="menu" onClick={selectionActions.onMore}><EditorIcon name="more"/></button>
+        </div>
+      )}
       {selectionBox && (
         <div
           className={`te-canvas-outline${selected.some((element) => isElementLocked(currentScene,element)) ? " is-locked" : ""}`}
@@ -1693,6 +1733,7 @@ export function CanvasEditor({
         <button type="button" aria-label="Italic selected text" title="Italic · ⌘/Ctrl I" onClick={()=>toggleRange("italic")}><i>I</i></button>
         <button type="button" aria-label="Underline selected text" title="Underline · ⌘/Ctrl U" onClick={()=>toggleRange("underline")}><u>U</u></button>
         <button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button>
+        {editingElement.smartText&&canFormatWords(scene,editingElement,{fontSize:editingElement.fontSize})?<span className="te-word-sizes" role="group" aria-label="Size of selected words"><button type="button" aria-label="Make selected words smaller" title="Selected words smaller" disabled={disabled} onClick={()=>resizeRange(1/1.1)}>A−</button><button type="button" aria-label="Make selected words bigger" title="Selected words bigger" disabled={disabled} onClick={()=>resizeRange(1.1)}>A+</button></span>:null}
         {wordColors?.length&&takesWordColorsOnly(scene,editingElement)?<WordColorControls colors={wordColors} disabled={disabled} onColor={color=>formatRange({color})}/>:null}
         <button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button>
         <button type="button" className="te-rich-controls-done" onClick={()=>{finishEditing();if(!editingActive.current)root.current?.focus({preventScroll:true});}}>Done</button>

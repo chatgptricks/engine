@@ -214,7 +214,7 @@ test("the built-in ChatGPTricks guide carries the style guide and the house rule
   assert.match(rule("y-reactions").text,/no source line/);
   assert.equal(rule("y-reactions").use,"guide","Reaction pages are an exception the checks leave alone");
   assert.ok(guide.rules.every(item=>!item.text.endsWith(".")),"house style: no final periods");
-  assert.deepEqual([...guides.enabledChecks(guide)].sort(),[...guides.GUIDE_CHECK_KINDS].sort(),"every code check is on");
+  assert.deepEqual([...guides.enabledChecks(guide)].sort(),[...guides.GUIDE_CHECK_KINDS].filter(kind=>kind!=="x-font").sort(),"every code check is on (the X font check needs no rule: it runs whenever X's font is missing)");
   assert.equal(guide.hooks.method,"headline-engine");
   for(const image of [...guide.logos,...guide.examples]) assert.ok(fs.existsSync(path.join(root,"public",image.src)),`${image.src} ships with the app`);
 });
@@ -238,7 +238,7 @@ test("the brief tells every agent the guide in plain words",()=>{
   assert.ok(!brief.includes("Topic logos on file"));
   const topical={...guide,logos:[...guide.logos,{id:"claude",role:"topic",name:"Claude",src:"/claude.svg",width:1,height:1,topics:["Claude","Anthropic"],note:""}]};
   assert.match(guides.guideBrief(topical),/Topic logos on file: Claude\. A cover that names one of these carries its logo/);
-  assert.deepEqual(json(guides.guideSummary(guide)),{id:"chatgptricks",name:"ChatGPTricks",version:1,updatedAt:BUILT_IN_GUIDE_UPDATED_AT,source:guide.source,colors:7,textStyles:7,logos:1,topicLogos:0,examples:3,rules:guide.rules.length,checks:14});
+  assert.deepEqual(json(guides.guideSummary(guide)),{id:"chatgptricks",name:"ChatGPTricks",version:1,updatedAt:BUILT_IN_GUIDE_UPDATED_AT,source:guide.source,colors:7,textStyles:7,logos:1,topicLogos:0,examples:3,rules:guide.rules.length,checks:15});
 });
 
 test("topic logos match whole words a cover names, in the cover's order, two at most",()=>{
@@ -565,7 +565,7 @@ test("the brands route serves people and agent tokens, scoped to their workspace
   assert.equal(listed.status,200);
   assert.equal(listed.headers.get("cache-control"),"private, no-store");
   const summaries=(await listed.json()).guides;
-  assert.deepEqual(summaries.map(item=>[item.id,item.version,item.builtIn,item.overridden,item.checks]),[["chatgptricks",1,true,false,14]]);
+  assert.deepEqual(summaries.map(item=>[item.id,item.version,item.builtIn,item.overridden,item.checks]),[["chatgptricks",1,true,false,15]]);
 
   const one=await (await route.GET(request("GET",{query:"?id=chatgptricks"}))).json();
   assert.equal(one.guide.id,"chatgptricks");
@@ -660,9 +660,11 @@ test("a drafted template is saved in the workspace and passes its guide, and dec
   headline.text="breaking: óscar lo hizo.";delete headline.richText;delete headline.wordTextures;
   await store.saveEditorLibrary("owner-a",{...stored.library,designs:[deck,...stored.library.designs]},stored.revision);
   const checked=await actions.checkAgainstGuide("owner-a",{deckId:deck.id});
-  assert.deepEqual(kinds(checked.issues),["1:banned-words","1:no-final-period","1:upper-cover"]);
+  // Whether X's font is missing depends on this machine's font files; text-accents.test.ts covers that check.
+  assert.deepEqual(kinds(checked.issues.filter(issue=>issue.check!=="x-font")),["1:banned-words","1:no-final-period","1:upper-cover"]);
   assert.equal(checked.target.kind,"deck");
-  assert.equal(checked.summary,"3 issues against the ChatGPTricks guide (2 must fix, 1 should fix).");
+  const xFont=checked.issues.some(issue=>issue.check==="x-font")?1:0;
+  assert.equal(checked.summary,`${3+xFont} issues against the ChatGPTricks guide (2 must fix, ${1+xFont} should fix).`);
   assert.ok(!checked.checks.some(item=>item.kind==="spacing"),"decks get copy and layer checks");
   for(const [input,status] of [[{},400],[{deckId:deck.id,templateId:"chatgptricks-3x4"},400],[{templateId:"missing"},404],[{deckId:"missing"},404],[{templateId:"chatgptricks-guide-es",brandId:"nope"},404]]) await rejectsGuide(actions.checkAgainstGuide("owner-a",input),status);
 

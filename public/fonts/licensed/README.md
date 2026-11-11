@@ -9,11 +9,15 @@ Put your own licensed copies of these fonts here (they are not in git):
 - SF-Pro-Display-Canva-Regular.woff2, SF-Pro-Display-Canva-Bold.woff2
 - SF-Pro-Display-Canva-Regular.ttf, SF-Pro-Display-Canva-Bold.ttf (PDF export)
 - BebasNeueBold-Canva.woff2
+- Chirp-Regular.woff2, Chirp-Bold.woff2 (X's typeface, for post cards)
 
 Without them the app still works; those font options fall back to system fonts.
 The file names are wired up in app/admin/(tool)/engine/licensed-fonts.css.
 
-SF Pro Display uses the `sfpro` font ID. The original Canva Bebas Neue Bold
+SF Pro Display uses the `sfpro` font ID. X's typeface uses `chirp`: post cards
+(the Reaction template pages, Recreate's cards and HTML post cards) are set in
+it. Until the two Chirp files are present, text in `chirp` shows SF Pro, in the
+editor and in every export, and `engine_check_deck` says the X font is missing. The original Canva Bebas Neue Bold
 face uses `bebascanva`; its metrics differ from the bundled Google Bebas Neue
 regular (`bebas`). Both remain editable text and use these same font files for
 PDF export. These assets are deliberately ignored by git and must be supplied

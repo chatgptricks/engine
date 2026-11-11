@@ -66,29 +66,38 @@ export function smartTemplateTextIds(design: DesignDocument, pageId: string, sel
   return scene.elements.filter(element => element.type === "text" && element.smartText && selected.has(element.id)).map(element => element.id);
 }
 
-export type SmartTemplateTextPatch = { lines?: NonNullable<TextElement["smartText"]>["lines"]; text?: string };
+/** `fontSize`: a size the person set, in scene units, or null for Auto size. */
+export type SmartTemplateTextPatch = { lines?: NonNullable<TextElement["smartText"]>["lines"]; text?: string; fontSize?: number | null };
 
 /** Adopt smart layout as part of one deliberate, undoable content edit. */
 export function updateSmartTemplateText(design: DesignDocument, pageId: string, elementId: string, patch: SmartTemplateTextPatch, templates: readonly DesignTemplate[] = []): DesignDocument {
-  if (patch.lines === undefined && patch.text === undefined) return design;
+  if (patch.lines === undefined && patch.text === undefined && patch.fontSize === undefined) return design;
   if (patch.lines !== undefined && ![0, 2, 3, 4].includes(patch.lines)) return design;
+  if (patch.fontSize !== undefined && patch.fontSize !== null && !(Number.isFinite(patch.fontSize) && patch.fontSize >= 1 && patch.fontSize <= 500)) return design;
   const scene = smartTemplatePage(design, pageId, templates);
   const target = scene?.elements.find(element => element.id === elementId);
   if (!scene || target?.type !== "text" || !target.smartText || !canEditElement(scene, target, "content") || isElementHidden(scene, target)) return design;
   const changedText = patch.text !== undefined && patch.text !== target.text;
   const changedLines = patch.lines !== undefined && patch.lines !== target.smartText.lines;
+  const changedSize = patch.fontSize !== undefined && (patch.fontSize ?? undefined) !== target.smartText.fontSize;
   const original = design.pages.find(page => page.id === pageId)!.canvas;
   const originalTarget = original?.elements.find(element => element.id === elementId);
   if (original && originalTarget && (!canEditElement(original, originalTarget, "content") || isElementHidden(original, originalTarget))) return design;
-  if (originalTarget?.type === "text" && originalTarget.smartText && !changedText && !changedLines) return design;
+  if (originalTarget?.type === "text" && originalTarget.smartText && !changedText && !changedLines && !changedSize) return design;
   const replacement: TextElement = {
     ...target,
     ...(changedText ? { text: patch.text!, richText: undefined, wordTextures: undefined } : {}),
-    ...(patch.lines === undefined ? {} : { smartText: { ...target.smartText, lines: patch.lines } }),
+    smartText: sizedRule({ ...target.smartText, ...(patch.lines === undefined ? {} : { lines: patch.lines }) }, patch.fontSize === undefined ? target.smartText.fontSize : patch.fontSize ?? undefined),
   };
   const base = original?.elements.some(element => element.type === "text" && element.smartText) ? original : scene;
   return {
     ...design,
     pages: design.pages.map(page => page.id === pageId ? { ...page, canvas: { ...base, elements: base.elements.map(element => element.id === elementId ? replacement : element) } } : page),
   };
+}
+
+function sizedRule(rule: NonNullable<TextElement["smartText"]>, fontSize: number | undefined): NonNullable<TextElement["smartText"]> {
+  const next = { ...rule };
+  if (fontSize === undefined) delete next.fontSize; else next.fontSize = Math.round(fontSize * 100) / 100;
+  return next;
 }

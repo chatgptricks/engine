@@ -514,6 +514,7 @@ const FONT_IDS = new Set([
   "libre",
   "geist",
   "sfpro",
+  "chirp",
   "playfair",
   "dmserif",
   "lora",
