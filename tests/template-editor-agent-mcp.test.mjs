@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import { once } from "node:events";
 import http from "node:http";
 import path from "node:path";
@@ -113,7 +116,7 @@ test("MCP process negotiates, discovers live schemas, and calls all authenticate
   assert.deepEqual(init.result.capabilities, { tools: {} });
   mcp.notify("notifications/initialized");
   const listed = await mcp.request("tools/list");
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_answer_check", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template", "engine_frame_upload", "engine_frame_view", "engine_frame_cut"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_answer_check", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template", "engine_video_upload", "engine_frame_upload", "engine_frame_view", "engine_frame_cut"]);
   assert.deepEqual(listed.result.tools[4].inputSchema.properties.spec, schemas.deckSchema);
   assert.deepEqual(listed.result.tools[5].inputSchema.properties.changes, schemas.updateSchema);
   await mcp.call("engine_capabilities");
@@ -203,7 +206,7 @@ test("discovery falls back while unavailable and refreshes live schemas after re
   const mcp = client(t, api.url);
   assert.equal((await mcp.init("future-version")).result.protocolVersion, "2025-11-25");
   const tools = await mcp.request("tools/list");
-  assert.equal(tools.result.tools.length, 26);
+  assert.equal(tools.result.tools.length, 27);
   assert.match(tools.result.tools[4].inputSchema.properties.spec.description, /engine_capabilities/);
   const failure = await mcp.call("engine_capabilities");
   assert.equal(failure.result.isError, true);
@@ -408,4 +411,70 @@ test("brand tools read, save, restore, check and design through the brands endpo
     ["engine_design_template", { language: "en" }],
   ]) assert.equal((await mcp.call(tool, args)).error?.code, -32602, `${tool} ${JSON.stringify(args)} is refused`);
   assert.equal(api.calls.length, before, "invalid calls never reach Engine");
+});
+
+test("a video file on this computer is uploaded once, given a cover, and put on the deck as src", async (t) => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), "engine-mcp-video-"));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  const clip = path.join(folder, "01-cover-video.mp4");
+  const bytes = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.alloc(40, 7)]);
+  await writeFile(clip, bytes);
+  const id = createHash("sha256").update(bytes).digest("hex");
+  // A stand-in for ffmpeg that prints a JPEG's first bytes, and logs the second it was asked for.
+  const ffmpeg = path.join(folder, "ffmpeg");
+  await writeFile(ffmpeg, `#!/bin/sh\necho "$@" > "${folder}/ffmpeg-args"\nprintf '\\377\\330\\377\\340cover'\n`);
+  await chmod(ffmpeg, 0o755);
+  const calls = [];
+  const instance = http.createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
+    const body = request.headers["content-type"] === "application/json" ? JSON.parse(raw.toString("utf8")) : raw;
+    calls.push({ method: request.method, path: request.url, headers: request.headers, body });
+    const base = `http://127.0.0.1:${instance.address().port}`;
+    if (request.url === "/api/agent/slides" && body.action === "capabilities") return json(response, { deckSchema: { type: "object", properties: { slides: { type: "array", items: { type: "object", properties: { image: { type: "object", properties: { src: { type: "string" }, video: { type: "object" } }, required: ["src"] } } } } } } });
+    if (request.url === "/api/agent/videos" && body.action === "start") return json(response, calls.some((call) => call.method === "PUT") ? { existing: true, src: `/api/template-editor/videos/${id}`, duration: 8, width: 1080, height: 1920, bytes: bytes.length, mimeType: "video/mp4" } : { mode: "signed", url: `${base}/storage/v1/object/upload/sign/engine-videos/clip.mp4?token=signed`, apiKey: "publishable", contentType: "video/mp4" });
+    if (request.url.startsWith("/storage/v1/object/upload/sign/")) return json(response, { Key: "engine-videos/clip.mp4" });
+    if (request.url === "/api/agent/videos" && body.action === "finish") return json(response, { src: `/api/template-editor/videos/${id}`, duration: 8, width: 1080, height: 1920, bytes: bytes.length, mimeType: "video/mp4" }, 201);
+    if (request.url === "/api/agent/assets") return json(response, { src: "/api/template-editor/assets/cover-1", width: 1080, height: 1920 }, 201);
+    if (request.url === "/api/agent/slides" && body.action === "create_deck") return json(response, { document: { id: "deck-1" }, hash: "h1", editorUrl: "/editor/deck-1" });
+    return json(response, { error: "unexpected" }, 500);
+  });
+  instance.listen(0, "127.0.0.1");
+  await once(instance, "listening");
+  t.after(() => { instance.closeAllConnections(); instance.close(); });
+  const mcp = client(t, `http://127.0.0.1:${instance.address().port}`, { ENGINE_FFMPEG: ffmpeg });
+  await mcp.init();
+  const listed = await mcp.request("tools/list");
+  const createTool = listed.result.tools.find((tool) => tool.name === "engine_create_deck");
+  assert.deepEqual(createTool.inputSchema.properties.spec.properties.slides.items.properties.image.required, [], "src is optional when the bridge makes the cover");
+
+  const refused = await mcp.call("engine_video_upload", { path: path.join(folder, "notes.txt") });
+  assert.equal(refused.error.code, -32602);
+
+  const created = await mcp.call("engine_create_deck", { spec: { templateId: "chatgptricks-3x4", slides: [{ templatePage: 0, image: { video: { path: clip, loop: false } } }, { templatePage: 1, image: { src: "/api/template-editor/assets/own", video: { path: clip, start: 2 } } }] } });
+  assert.equal(created.result.isError, false, JSON.stringify(created.result.structuredContent));
+  const puts = calls.filter((call) => call.method === "PUT");
+  assert.equal(puts.length, 1, "the same file is uploaded once");
+  assert.ok(puts[0].body.equals(bytes));
+  assert.equal(puts[0].headers.apikey, "publishable");
+  assert.equal(puts[0].headers["content-type"], "video/mp4");
+  assert.equal(puts[0].headers.authorization, undefined, "the agent token never goes to storage");
+  const start = calls.find((call) => call.body?.action === "start");
+  assert.deepEqual({ id: start.body.id, bytes: start.body.bytes, mimeType: start.body.mimeType, name: start.body.name }, { id, bytes: bytes.length, mimeType: "video/mp4", name: "01-cover-video.mp4" });
+  assert.equal(start.headers.authorization, `Bearer ${token}`);
+  const sent = calls.find((call) => call.body?.action === "create_deck").body.spec;
+  assert.deepEqual(sent.slides[0].image, { src: "/api/template-editor/assets/cover-1", video: { loop: false, src: `/api/template-editor/videos/${id}`, coverTime: 0.5 } });
+  assert.deepEqual(sent.slides[1].image, { src: "/api/template-editor/assets/own", video: { start: 2, src: `/api/template-editor/videos/${id}` } }, "an image with its own src keeps it");
+  assert.equal(calls.filter((call) => call.path === "/api/agent/assets").length, 1, "only the image without src gets a cover");
+  const cover = calls.find((call) => call.path === "/api/agent/assets");
+  assert.equal(cover.body.subarray(0, 3).toString("hex"), "ffd8ff");
+
+  const uploaded = await mcp.call("engine_video_upload", { path: clip, coverTime: 3 });
+  assert.equal(uploaded.result.isError, false);
+  assert.equal(uploaded.result.structuredContent.src, `/api/template-editor/videos/${id}`);
+  assert.equal(uploaded.result.structuredContent.coverSrc, "/api/template-editor/assets/cover-1");
+  assert.equal(uploaded.result.structuredContent.coverTime, 3);
+  assert.equal(calls.filter((call) => call.method === "PUT").length, 1, "a stored clip isn't sent again");
+  await mcp.close();
 });

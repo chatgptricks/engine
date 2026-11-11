@@ -84,6 +84,7 @@ export function fillShapeWithImage(scene: CanvasScene, shapeId: string, image: I
     ...(photo.rightsNote !== undefined ? { rightsNote: photo.rightsNote } : {}),
     ...(photo.sourceUrl !== undefined ? { sourceUrl: photo.sourceUrl } : {}),
     ...(photo.provenance !== undefined ? { provenance: structuredClone(photo.provenance) } : {}),
+    ...(photo.video !== undefined ? { video: structuredClone(photo.video) } : {}),
   } : image;
   const imageFill = parseShapeImageFill(candidate);
   if (!imageFill) throw new Error("Choose a valid photo URL and crop settings for this frame.");
