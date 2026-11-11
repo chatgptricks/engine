@@ -288,6 +288,97 @@ test("with Vercel Blob, the browser uploads straight to Blob under this workspac
   assert.equal(played.headers.get("location"), blobUrl);
 });
 
+/** Supabase as production has it on Render: records in gf_client_state, clips in Storage. */
+function supabase() {
+  const rows = new Map(), objects = new Map(), buckets = new Map(), signedUploads = [];
+  const db = {
+    from() {
+      const query = {};
+      const chain = {
+        select: () => chain, eq: (_, value) => { query.eq = value; return chain; }, like: (_, pattern) => { query.like = pattern; return chain; },
+        maybeSingle: async () => ({data: rows.has(query.eq) ? {data: rows.get(query.eq)} : null, error: null}),
+        upsert: async row => { rows.set(row.owner, row.data); return {error: null}; },
+        then: (resolve, reject) => Promise.resolve({data: [...rows].filter(([key]) => key.startsWith(query.like.replace(/%$/, ""))).map(([, data]) => ({data})), error: null}).then(resolve, reject),
+      };
+      return chain;
+    },
+    storage: {
+      getBucket: async id => buckets.has(id) ? {data: {id}, error: null} : {data: null, error: {message: "Bucket not found"}},
+      createBucket: async (id, options) => { buckets.set(id, options); return {data: {name: id}, error: null}; },
+      from: bucket => ({
+        createSignedUploadUrl: async (name, options) => { signedUploads.push({bucket, name, options}); return {data: {signedUrl: `https://project.supabase.co/storage/v1/object/upload/sign/${bucket}/${name}?token=up`, token: "up", path: name}, error: null}; },
+        createSignedUrl: async name => objects.has(name) ? {data: {signedUrl: `https://project.supabase.co/storage/v1/object/sign/${bucket}/${name}?token=read`}, error: null} : {data: null, error: {message: "Object not found"}},
+        upload: async (name, body) => { objects.set(name, Buffer.from(body)); return {data: {path: name}, error: null}; },
+        remove: async names => { for (const name of names) objects.delete(name); return {data: [], error: null}; },
+      }),
+    },
+  };
+  return {db, rows, objects, buckets, signedUploads};
+}
+
+test("without Blob (production on Render), the browser and agents send clips to a signed Supabase Storage URL, and playback redirects to a signed link", async t => {
+  const store = supabase();
+  const original = globalThis.fetch;
+  // Range reads of a stored object, as Storage serves a signed link.
+  globalThis.fetch = async (url, init = {}) => {
+    const name = decodeURIComponent(new URL(url).pathname.replace(/^\/storage\/v1\/object\/sign\/engine-videos\//, ""));
+    const bytes = store.objects.get(name);
+    if (!bytes) return new Response("not found", {status: 400});
+    const [, from, to] = /bytes=(\d+)-(\d+)/.exec(new Headers(init.headers).get("range"));
+    const end = Math.min(Number(to), bytes.length - 1);
+    return new Response(bytes.subarray(Number(from), end + 1), {status: 206, headers: {"content-range": `bytes ${from}-${end}/${bytes.length}`}});
+  };
+  t.after(() => { globalThis.fetch = original; });
+  const f = fixture(t, {env: {NODE_ENV: "production", NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "publishable"}, overrides: {"@/lib/supabase/admin": {getAdminSupabase: () => store.db}, "./review-assets": serving(mp4({seconds: 20}))}});
+  const storage = f.load("lib/template-editor/video-storage.ts"), uploads = f.load("app/api/template-editor/videos/route.ts"), file = f.load("app/api/template-editor/videos/[id]/route.ts"), agent = f.load("app/api/agent/videos/route.ts");
+  const meta = {id: ID, bytes: CLIP.length, mimeType: "video/mp4", duration: 12, width: 1080, height: 1440, name: "clip.mp4"};
+  const post = body => uploads.POST(new Request("https://engine.example/api/template-editor/videos", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)}));
+  const name = `te-video/${storage.ownerTag(OWNER)}/${ID}.mp4`;
+
+  const start = await (await post({action: "start", meta})).json();
+  assert.deepEqual(start, {mode: "signed", url: `https://project.supabase.co/storage/v1/object/upload/sign/engine-videos/${name}?token=up`, apiKey: "publishable", contentType: "video/mp4"});
+  assert.deepEqual(store.buckets.get("engine-videos"), {public: false, allowedMimeTypes: ["video/mp4", "video/quicktime", "video/webm"]}, "the bucket is private and made once");
+  assert.equal((await post({action: "finish", meta})).status, 409, "nothing arrived yet");
+  store.objects.set(name, CLIP.subarray(0, 100));
+  assert.equal((await post({action: "finish", meta})).status, 409, "part of the file isn't recorded");
+  store.objects.set(name, CLIP);
+  const finished = await post({action: "finish", meta});
+  assert.equal(finished.status, 200, await finished.clone().text());
+  const record = (await finished.json()).record;
+  assert.deepEqual({storagePath: record.storagePath, duration: record.duration, blobUrl: record.blobUrl}, {storagePath: name, duration: 12, blobUrl: undefined});
+  assert.equal((await (await uploads.GET()).json()).mode, "signed");
+  const played = await file.GET(new Request(`https://engine.example/api/template-editor/videos/${ID}`), {params: Promise.resolve({id: ID})});
+  assert.equal(played.status, 302);
+  assert.equal(played.headers.get("location"), `https://project.supabase.co/storage/v1/object/sign/engine-videos/${name}?token=read`);
+  assert.equal(played.headers.get("cache-control"), "private, max-age=1800", "the redirect expires before its signed link does");
+
+  // An agent (the MCP bridge) stores a file from its computer the same way.
+  const clip = mp4({seconds: 75, width: 1080, height: 1920}), clipId = sha(clip);
+  const call = body => agent.POST(new Request("https://engine.example/api/agent/videos", {method: "POST", headers: {"content-type": "application/json"}, body: JSON.stringify(body)}));
+  const facts = {id: clipId, bytes: clip.length, mimeType: "video/mp4", name: "01-cover-video.mp4"};
+  assert.equal((await call({action: "start", ...facts, mimeType: "video/webm"})).status, 415);
+  assert.equal((await call({action: "start", ...facts, id: "not-a-hash"})).status, 400);
+  const agentStart = await (await call({action: "start", ...facts})).json();
+  assert.equal(agentStart.mode, "signed");
+  store.objects.set(`te-video/${storage.ownerTag(OWNER)}/${clipId}.mp4`, clip);
+  const stored = await call({action: "finish", ...facts});
+  assert.equal(stored.status, 201, await stored.clone().text());
+  assert.deepEqual(await stored.json(), {src: `/api/template-editor/videos/${clipId}`, mimeType: "video/mp4", duration: 75, width: 1080, height: 1920, bytes: clip.length});
+  assert.deepEqual(await (await call({action: "start", ...facts})).json(), {existing: true, src: `/api/template-editor/videos/${clipId}`, mimeType: "video/mp4", duration: 75, width: 1080, height: 1920, bytes: clip.length});
+  // A PNG sent as a video is thrown away.
+  const png = Buffer.concat([Buffer.from("\x89PNG\r\n\x1a\n", "latin1"), Buffer.alloc(64)]), pngName = `te-video/${storage.ownerTag(OWNER)}/${sha(png)}.mp4`;
+  store.objects.set(pngName, png);
+  assert.equal((await call({action: "finish", id: sha(png), bytes: png.length, mimeType: "video/mp4"})).status, 415);
+  assert.equal(store.objects.has(pngName), false);
+  // A link an agent gives is copied into Storage too.
+  const linked = await storage.storeVideoFromUrl(OWNER, "https://cdn.example/clip.mp4");
+  assert.match(linked.storagePath, /^te-video\/[a-f0-9]{24}\/[a-f0-9]{64}\.mp4$/);
+  assert.equal(store.objects.get(linked.storagePath).length, mp4({seconds: 20}).length);
+  // Over HTTP, a local path is the bridge's job.
+  const agentVideos = f.load("lib/template-editor/agent-videos.ts");
+  await assert.rejects(agentVideos.resolveAgentVideos(OWNER, {slides: [{image: {src: COVER, video: {path: "/Users/me/clip.mp4"}}}]}), /MCP bridge/);
+});
+
 /** A guarded fetch that serves `bytes` for every link, with the given type. */
 function serving(bytes, type = "video/mp4", seen = []) {
   return {guardedGet: async url => {

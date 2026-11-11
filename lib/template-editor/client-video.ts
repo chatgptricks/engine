@@ -5,7 +5,7 @@ import {MAX_SLIDE_VIDEO_SECONDS, MAX_VIDEO_BYTES, MAX_VIDEO_SECONDS, VIDEO_MIME_
  * `src`), and the clip is stored apart and attached as `video`. */
 export type PreparedVideoAsset = PreparedRasterAsset & {video: VideoClip};
 type Meta = {id: string; bytes: number; mimeType: string; duration: number; width: number; height: number; name: string};
-type Start = {src: string; existing: true} | {mode: "blob"; pathname: string} | {mode: "chunks"; chunkBytes: number; received: number};
+type Start = {src: string; existing: true} | {mode: "blob"; pathname: string} | {mode: "signed"; url: string; apiKey: string; contentType: string} | {mode: "chunks"; chunkBytes: number; received: number};
 
 export const isVideoFile = (file: File) => (VIDEO_MIME_TYPES as readonly string[]).includes(file.type) || /\.(mp4|m4v|mov|webm)$/i.test(file.name);
 const mimeFor = (file: File) => (VIDEO_MIME_TYPES as readonly string[]).includes(file.type) ? file.type : /\.mov$/i.test(file.name) ? "video/quicktime" : /\.webm$/i.test(file.name) ? "video/webm" : "video/mp4";
@@ -60,6 +60,21 @@ async function post(body: unknown): Promise<Record<string, unknown>> {
   return value;
 }
 
+/** Sends the file to the signed Storage URL the server made, with progress. */
+function sendSigned(start: {url: string; apiKey: string; contentType: string}, file: File, onProgress?: (fraction: number) => void): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("PUT", start.url);
+    if (start.apiKey) request.setRequestHeader("apikey", start.apiKey);
+    request.setRequestHeader("content-type", start.contentType);
+    request.setRequestHeader("x-upsert", "true");
+    request.upload.onprogress = event => { if (event.lengthComputable) onProgress?.(event.loaded / event.total); };
+    request.onload = () => request.status >= 200 && request.status < 300 ? resolve() : reject(new Error(request.status === 413 ? "This video is larger than the storage allows. Trim or compress it first." : "The video upload could not be completed. Try again."));
+    request.onerror = () => reject(new Error("The connection dropped while uploading. Upload the video again."));
+    request.send(file);
+  });
+}
+
 /** Stores the clip's bytes (once per workspace; the same file is reused) and returns its `src`. */
 export async function storeVideo(file: File, meta: Meta, onProgress?: (fraction: number) => void): Promise<string> {
   const start = await post({action: "start", meta}) as Start;
@@ -68,6 +83,11 @@ export async function storeVideo(file: File, meta: Meta, onProgress?: (fraction:
     const {upload} = await import("@vercel/blob/client");
     const stored = await upload(start.pathname, file, {access: "public", handleUploadUrl: "/api/template-editor/videos/blob", clientPayload: JSON.stringify(meta), contentType: meta.mimeType, multipart: file.size > 8 * 1024 * 1024, onUploadProgress: event => onProgress?.(event.percentage / 100)});
     const done = await post({action: "finish", meta, url: stored.url});
+    return String(done.src);
+  }
+  if (start.mode === "signed") {
+    await sendSigned(start, file, onProgress);
+    const done = await post({action: "finish", meta});
     return String(done.src);
   }
   for (let offset = start.received; offset < file.size;) {

@@ -1,7 +1,7 @@
 import {createReadStream,promises as fs} from "node:fs";
 import {Readable} from "node:stream";
 import {resolveEngineAccess} from "@/lib/engine/member";
-import {appendVideoChunk,readVideoRecord,VideoError,videoFile} from "@/lib/template-editor/video-storage";
+import {appendVideoChunk,readVideoRecord,VideoError,videoFile,videoPlayUrl} from "@/lib/template-editor/video-storage";
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
 const json=(value:unknown,status:number)=>Response.json(value,{status,headers:{"Cache-Control":"private, no-store"}});
@@ -10,7 +10,7 @@ function sameOrigin(request:Request) {
   if(origin===null) return true;
   return [request.url,process.env.NEXT_PUBLIC_SITE_URL,process.env.RENDER_EXTERNAL_URL,process.env.ENGINE_FRONTEND_URL].some(value=>{try {return Boolean(value)&&new URL(value!).origin===origin && /^https?:\/\//.test(origin);}catch{return false;}});
 }
-/** Plays a clip. In production it redirects to the clip's Blob file; in development
+/** Plays a clip. In production it redirects to the clip's Blob file or a signed Storage link; in development
  * it serves the file with Range, which the player needs to seek. Ids are content
  * hashes, so a response never changes. */
 export async function GET(request:Request,context:{params:Promise<{id:string}>}) {
@@ -20,7 +20,9 @@ export async function GET(request:Request,context:{params:Promise<{id:string}>})
   try {
     const record=await readVideoRecord(access.ownerKey,id);
     if(!record) return json({error:"Video not found in this workspace."},404);
-    if(record.blobUrl) return new Response(null,{status:302,headers:{Location:record.blobUrl,"Cache-Control":"private, max-age=3600"}});
+    const location=await videoPlayUrl(record);
+    // A signed link lasts an hour, so the redirect is kept for less.
+    if(location) return new Response(null,{status:302,headers:{Location:location,"Cache-Control":`private, max-age=${record.blobUrl?3600:1800}`}});
     const file=await videoFile(access.ownerKey,id);
     if(!file) return json({error:"Video not found in this workspace."},404);
     const {size}=await fs.stat(file);

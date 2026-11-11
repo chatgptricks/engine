@@ -10,14 +10,16 @@ import {readMp4Info, sniffVideo} from "./mp4-info";
 import {guardedGet} from "./review-assets";
 
 /** Clips are stored apart from decks: a deck keeps only `/api/template-editor/videos/<sha256>`.
- * With Vercel Blob connected (production), the browser sends the file straight
- * to Blob and the record points at it; without it (development), the file is
- * sent in 4 MB parts, because the `/api` proxy buffers at most 10 MB of a body,
- * and kept on disk. Records hold only facts about the file, never the bytes. */
+ * Where the bytes go, in order: Vercel Blob when it is connected; otherwise the
+ * Supabase project's Storage (production on Render), in a private bucket the
+ * browser or agent bridge uploads to with a signed URL; otherwise (development)
+ * disk, sent in 4 MB parts, because the `/api` proxy buffers at most 10 MB of a
+ * body. No upload passes through a route body. Records hold only facts about the
+ * file, never the bytes. */
 export const VIDEO_QUOTA_BYTES = 10 * 1024 ** 3;
 export const VIDEO_CHUNK_BYTES = 4 * 1024 * 1024;
 export type VideoMimeType = (typeof VIDEO_MIME_TYPES)[number];
-export type VideoRecord = {version: 1; id: string; owner: string; mimeType: VideoMimeType; bytes: number; duration: number; width: number; height: number; name: string; createdAt: string; blobUrl?: string};
+export type VideoRecord = {version: 1; id: string; owner: string; mimeType: VideoMimeType; bytes: number; duration: number; width: number; height: number; name: string; createdAt: string; blobUrl?: string; storagePath?: string};
 export type VideoMeta = {id: string; bytes: number; mimeType: string; duration: number; width: number; height: number; name?: string};
 
 const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
@@ -31,11 +33,39 @@ const partPath = (owner: string, id: string) => path.join(directory(), `${hash(r
 const recordPath = (owner: string, id: string) => path.join(directory(), `${hash(recordKey(owner, id))}.json`);
 const extension: Record<VideoMimeType, string> = {"video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm"};
 export const blobPathPrefix = (owner: string, id: string) => `te-video/${ownerTag(owner)}/${id}`;
+export const VIDEO_BUCKET = "engine-videos";
+const storageObject = (owner: string, id: string, mimeType: VideoMimeType) => `${blobPathPrefix(owner, id)}.${extension[mimeType]}`;
+/** Supabase Storage holds clips when Blob isn't connected and the database is. */
+const supabaseStorage = () => !blobConfigured() && Boolean(getAdminSupabase());
 
 export class VideoError extends Error {
   constructor(message: string, readonly status: number) { super(message); }
 }
 const unavailable = () => new VideoError("Video storage is unavailable. Retry when connected.", 503);
+
+let bucketReady: Promise<void> | undefined;
+/** The private clip bucket, made the first time it's needed. */
+async function bucket() {
+  const db = getAdminSupabase();
+  if (!db) throw unavailable();
+  bucketReady ??= (async () => {
+    const {data} = await db.storage.getBucket(VIDEO_BUCKET);
+    if (data) return;
+    const {error} = await db.storage.createBucket(VIDEO_BUCKET, {public: false, allowedMimeTypes: [...VIDEO_MIME_TYPES]});
+    if (error && !/exist/i.test(error.message)) throw error;
+  })().catch(() => { bucketReady = undefined; throw unavailable(); });
+  await bucketReady;
+  return db.storage.from(VIDEO_BUCKET);
+}
+
+/** Where a stored clip plays from: its Blob file, or a signed Storage link that lasts an hour. */
+export async function videoPlayUrl(record: VideoRecord): Promise<string | null> {
+  if (record.blobUrl) return record.blobUrl;
+  if (!record.storagePath) return null;
+  const {data, error} = await (await bucket()).createSignedUrl(record.storagePath, 3600);
+  if (error || !data?.signedUrl) throw unavailable();
+  return data.signedUrl;
+}
 
 function development() {
   if (process.env.NODE_ENV === "production") throw unavailable();
@@ -109,13 +139,21 @@ async function checkQuota(owner: string, bytes: number) {
   if (used + bytes > VIDEO_QUOTA_BYTES) throw new VideoError(`This workspace keeps ${(used / 1024 ** 3).toFixed(1)} GB of video, and the limit is ${VIDEO_QUOTA_BYTES / 1024 ** 3} GB. Remove unused videos first.`, 413);
 }
 
-export type UploadStart = {src: string; existing: true; record: VideoRecord} | {mode: "blob"; pathname: string} | {mode: "chunks"; chunkBytes: number; received: number};
-/** Step 1 of an upload: a clip the workspace already has is reused, otherwise the browser is told where to send it. */
-export async function beginVideoUpload(owner: string, meta: VideoMeta): Promise<UploadStart> {
+export type UploadStart = {src: string; existing: true; record: VideoRecord} | {mode: "blob"; pathname: string} | {mode: "signed"; url: string; apiKey: string; contentType: VideoMimeType} | {mode: "chunks"; chunkBytes: number; received: number};
+/** Step 1 of an upload: a clip the workspace already has is reused, otherwise the
+ * uploader is told where to send it. Agents (`signedOnly`) never get Blob, whose
+ * upload protocol only the browser library speaks. */
+export async function beginVideoUpload(owner: string, meta: Pick<VideoMeta, "id" | "bytes" | "mimeType">, options: {signedOnly?: boolean} = {}): Promise<UploadStart> {
   const existing = await readVideoRecord(owner, meta.id);
   if (existing) return {src: videoSrc(meta.id), existing: true, record: existing};
   await checkQuota(owner, meta.bytes);
-  if (blobConfigured()) return {mode: "blob", pathname: `${blobPathPrefix(owner, meta.id)}.${extension[meta.mimeType as VideoMimeType]}`};
+  const mimeType = meta.mimeType as VideoMimeType;
+  if (blobConfigured() && !options.signedOnly) return {mode: "blob", pathname: `${blobPathPrefix(owner, meta.id)}.${extension[mimeType]}`};
+  if (getAdminSupabase()) {
+    const {data, error} = await (await bucket()).createSignedUploadUrl(storageObject(owner, meta.id, mimeType), {upsert: true});
+    if (error || !data?.signedUrl) throw unavailable();
+    return {mode: "signed", url: data.signedUrl, apiKey: process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? "", contentType: mimeType};
+  }
   development();
   let received = 0;
   try { received = (await fs.stat(partPath(owner, meta.id))).size; } catch { /* A new upload starts at 0. */ }
@@ -135,11 +173,19 @@ export async function appendVideoChunk(owner: string, id: string, offset: number
   return size + data.length;
 }
 
-async function fileInfo(file: string, claimed: VideoMeta | null): Promise<{mimeType: VideoMimeType; duration: number; width: number; height: number}> {
+type FileInfo = {mimeType: VideoMimeType; duration: number; width: number; height: number};
+async function fileInfo(file: string, claimed: VideoMeta | null): Promise<FileInfo> {
   const handle = await fs.open(file, "r");
   try {
     const {size} = await handle.stat();
     const read = async (offset: number, length: number) => { const buffer = Buffer.alloc(Math.max(0, Math.min(length, size - offset))); await handle.read(buffer, 0, buffer.length, offset); return buffer; };
+    return await infoFrom(read, size, claimed);
+  } finally { await handle.close(); }
+}
+
+/** What a clip is, from its first bytes and its MP4/MOV header; `claimed` covers WebM, whose length only a browser can read. */
+async function infoFrom(read: (offset: number, length: number) => Promise<Buffer>, size: number, claimed: VideoMeta | null): Promise<FileInfo> {
+  {
     const kind = sniffVideo(await read(0, 16));
     if (!kind) throw new VideoError("This file isn't a video Engine can play. Choose an MP4, MOV or WebM video.", 415);
     if (kind === "video/webm") {
@@ -149,7 +195,7 @@ async function fileInfo(file: string, claimed: VideoMeta | null): Promise<{mimeT
     const info = await readMp4Info(read, size);
     if (!info) throw new VideoError("This video's header couldn't be read. Export it again as MP4 (H.264).", 415);
     return {mimeType: kind, duration: info.duration, width: info.width, height: info.height};
-  } finally { await handle.close(); }
+  }
 }
 
 async function sha256File(file: string): Promise<string> {
@@ -164,8 +210,42 @@ function recordFrom(owner: string, id: string, bytes: number, info: {mimeType: V
   return {version: 1, id, owner: ownerTag(owner), mimeType: info.mimeType, bytes, duration: Math.round(info.duration * 1000) / 1000, width: info.width, height: info.height, name, createdAt: new Date().toISOString(), ...(blobUrl ? {blobUrl} : {})};
 }
 
+/** The last step of an upload sent to a signed Storage URL or in parts: checks the
+ * file that arrived and records it. `claimed` is what the browser read from the
+ * file (agents send none, so only MP4 and MOV are accepted from them). */
+export async function finishUpload(owner: string, meta: Pick<VideoMeta, "id" | "bytes" | "mimeType" | "name">, claimed: VideoMeta | null): Promise<VideoRecord> {
+  if (getAdminSupabase()) return finishSignedUpload(owner, meta, claimed);
+  return finishChunkedUpload(owner, meta, claimed);
+}
+
+async function finishSignedUpload(owner: string, meta: Pick<VideoMeta, "id" | "bytes" | "mimeType" | "name">, claimed: VideoMeta | null): Promise<VideoRecord> {
+  const files = await bucket();
+  const name = storageObject(owner, meta.id, meta.mimeType as VideoMimeType);
+  const {data} = await files.createSignedUrl(name, 600);
+  if (!data?.signedUrl) throw new VideoError("Nothing was uploaded for this video.", 409);
+  const url = data.signedUrl;
+  let size = -1;
+  const read = async (offset: number, length: number) => {
+    if (length <= 0 || (size >= 0 && offset >= size)) return Buffer.alloc(0);
+    const response = await fetch(url, {headers: {range: `bytes=${offset}-${offset + length - 1}`}}).catch(() => null);
+    if (!response || (response.status !== 206 && response.status !== 200)) throw new VideoError("The uploaded video can't be read. Upload it again.", 409);
+    const total = Number(response.headers.get("content-range")?.split("/")[1]);
+    if (Number.isFinite(total)) size = total;
+    return Buffer.from(await response.arrayBuffer()).subarray(0, length);
+  };
+  const head = await read(0, 16);
+  if (size < 0) size = head.length;
+  if (size !== meta.bytes) throw new VideoError(`Only ${Math.max(0, size)} of ${meta.bytes} bytes arrived. Upload the video again.`, 409);
+  let record: VideoRecord;
+  try { record = recordFrom(owner, meta.id, size, await infoFrom(read, size, claimed), meta.name ?? "Video"); }
+  catch (error) { await files.remove([name]).catch(() => undefined); throw error; }
+  record.storagePath = name;
+  await writeRecord(owner, record);
+  return record;
+}
+
 /** Development: the last step of a parted upload. The bytes must hash to the id. */
-export async function finishChunkedUpload(owner: string, meta: VideoMeta): Promise<VideoRecord> {
+async function finishChunkedUpload(owner: string, meta: Pick<VideoMeta, "id" | "bytes" | "name">, claimed: VideoMeta | null): Promise<VideoRecord> {
   development();
   const part = partPath(owner, meta.id);
   let size = 0;
@@ -173,7 +253,7 @@ export async function finishChunkedUpload(owner: string, meta: VideoMeta): Promi
   if (size !== meta.bytes) throw new VideoError(`Only ${size} of ${meta.bytes} bytes arrived.`, 409);
   if (await sha256File(part) !== meta.id) { await fs.unlink(part).catch(() => undefined); throw new VideoError("The uploaded video doesn't match the file. Upload it again.", 409); }
   let record: VideoRecord;
-  try { record = recordFrom(owner, meta.id, size, await fileInfo(part, meta), meta.name ?? "Video"); }
+  try { record = recordFrom(owner, meta.id, size, await fileInfo(part, claimed), meta.name ?? "Video"); }
   catch (error) { await fs.unlink(part).catch(() => undefined); throw error; }
   await fs.rename(part, filePath(owner, meta.id));
   await writeRecord(owner, record);
@@ -230,6 +310,11 @@ export async function storeVideoFromUrl(owner: string, url: string): Promise<Vid
     if (blobConfigured()) {
       const stored = await put(`${blobPathPrefix(owner, id)}.${extension[info.mimeType]}`, createReadStream(temporary), {access: "public", contentType: info.mimeType, addRandomSuffix: true, multipart: size > 8 * 1024 * 1024});
       record.blobUrl = stored.url;
+    } else if (supabaseStorage()) {
+      const name = storageObject(owner, id, info.mimeType);
+      const {error} = await (await bucket()).upload(name, await fs.readFile(temporary), {contentType: info.mimeType, upsert: true});
+      if (error) throw new VideoError("The video could not be saved. Retry when connected.", 503);
+      record.storagePath = name;
     } else {
       development();
       await fs.mkdir(directory(), {recursive: true, mode: 0o700});

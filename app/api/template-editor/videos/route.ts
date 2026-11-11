@@ -1,5 +1,6 @@
 import {resolveEngineAccess} from "@/lib/engine/member";
-import {beginVideoUpload, blobConfigured, checkVideoMeta, finishBlobUpload, finishChunkedUpload, VIDEO_QUOTA_BYTES, VideoError, videoSrc, videoUsage} from "@/lib/template-editor/video-storage";
+import {getAdminSupabase} from "@/lib/supabase/admin";
+import {beginVideoUpload, blobConfigured, checkVideoMeta, finishBlobUpload, finishUpload, VIDEO_QUOTA_BYTES, VideoError, videoSrc, videoUsage} from "@/lib/template-editor/video-storage";
 export const runtime="nodejs";
 export const dynamic="force-dynamic";
 const headers={"Cache-Control":"private, no-store"};
@@ -17,7 +18,7 @@ function videoFailure(error:unknown) {
 export async function GET() {
   const access=await resolveEngineAccess();
   if(!access) return reply({error:"Sign in to upload videos."},401);
-  try {return reply({mode:blobConfigured()?"blob":"chunks",used:await videoUsage(access.ownerKey),quota:VIDEO_QUOTA_BYTES});}
+  try {return reply({mode:blobConfigured()?"blob":getAdminSupabase()?"signed":"chunks",used:await videoUsage(access.ownerKey),quota:VIDEO_QUOTA_BYTES});}
   catch(error) {return videoFailure(error);}
 }
 /** `{action:"start", meta}` reuses a clip the workspace has or says where to send it;
@@ -31,7 +32,7 @@ export async function POST(request:Request) {
     const meta=checkVideoMeta(body?.meta);
     if(body?.action==="start") return reply(await beginVideoUpload(access.ownerKey,meta));
     if(body?.action==="finish") {
-      const record=typeof body.url==="string"?await finishBlobUpload(access.ownerKey,meta,body.url):await finishChunkedUpload(access.ownerKey,meta);
+      const record=typeof body.url==="string"?await finishBlobUpload(access.ownerKey,meta,body.url):await finishUpload(access.ownerKey,meta,meta);
       return reply({src:videoSrc(record.id),record});
     }
     return reply({error:"Unknown video action."},400);

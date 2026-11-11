@@ -221,6 +221,16 @@ An image layer, or a slide's `image`, can play a video. Add `video` to it:
   "video": { "url": "https://example.com/clip.mp4", "start": 2, "end": 14 } }
 ```
 
+**A video file on your computer.** Through the Engine MCP, give `video: {"path": "/Users/me/Clips/01-cover-video.mp4"}` (an absolute path to an `.mp4`, `.m4v` or `.mov` file). The bridge uploads the file and sends Engine its `src` instead; when the image has no `src`, it also takes the cover from the clip's frame at `coverTime` (0.5 s by default) with ffmpeg (set `ENGINE_FFMPEG` if it isn't on the PATH). The cover works the same way on a template's photo slot:
+
+```json
+{ "templateId": "chatgptricks-3x4", "slides": [
+  { "templatePage": 0, "title": "…", "image": { "video": { "path": "/Users/me/Clips/01-cover-video.mp4" } } },
+  { "templatePage": 1, "title": "…", "image": { "video": { "path": "/Users/me/Clips/02-demo.mp4", "start": 0, "end": 20 } } } ] }
+```
+
+To put a clip on an image that's already there (a deck's cover photo, say), use `engine_update_deck` with `update_element` and `properties: {"video": {"path": …}}`; the cover is replaced too unless you give `src`. `engine_video_upload` does only the upload and returns `src` and `coverSrc` to use later. A file is stored once. Over plain HTTP, store a file with `POST /api/agent/videos` (`{action: "start", id: <sha-256>, bytes, mimeType, name}`, then send the bytes where it says, then `{action: "finish", …}`) and give `video: {src}`.
+
 - `url` is a public https link to an MP4 or MOV file (H.264), up to 200 MB and 3 minutes. Engine copies it into the workspace's storage once (the same file is reused), and the saved deck points to it as `/api/template-editor/videos/<sha-256>`. A clip never sits inside the deck, so it doesn't count against the 12 MB library limit. Private and local hosts are refused.
 - `src` stays the layer's image and is the video's **cover**: thumbnails, PNG and PDF exports and review links show it, so use a frame from the clip.
 - `start` and `end` trim the clip, in seconds. A slide plays at most **60 seconds** (Instagram's limit for a carousel video).
@@ -228,6 +238,7 @@ An image layer, or a slide's `image`, can play a video. Add `video` to it:
 - `engine_get_deck` returns the stored clip with its `src`, `duration`, `width`, `height` and `bytes`. Pass `video: {"src": "/api/template-editor/videos/…"}` to reuse it on another layer.
 - `update_element` with `video: {"start": 3, "end": 9}` changes the trim (the clip itself stays); `video: {"url": …}` replaces it; `video: {"remove": true}` keeps only the cover as a still photo.
 - A video stays on one slide: `span` isn't available on it.
+- A download as PNG, JPG or WebP turns every slide with a video into an MP4 (H.264, 1080 wide, 30 fps, with the clip's sound), with every layer drawn over or under the clip as on the canvas. PDF and SVG show the cover.
 - In the editor, a clip longer than 60 seconds is split the same way when it's uploaded, each new slide with a cover from its own part, as one undo step. The clip plays muted on the canvas, and the Video tab trims it, sets its cover from any frame, and switches loop and sound. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
 
 ### HTML layers

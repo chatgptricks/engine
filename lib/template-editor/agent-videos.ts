@@ -7,7 +7,7 @@ const record = (value: unknown): value is Record<string, unknown> => typeof valu
 const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
 
 /** An agent's deck or changes with every `video: {url}` or `video: {src}` turned into a
- * stored clip: a link is copied into the workspace's storage first (public MP4/MOV only),
+ * stored clip (`video: {path}` is the MCP bridge's to replace with src first): a link is copied into the workspace's storage first (public MP4/MOV only),
  * an Engine clip path must already be in this workspace. Trim and playback fields are kept;
  * `{remove: true}` is left for update_element. The input itself is never changed. */
 export async function resolveAgentVideos<T>(owner: string, value: T, path = "$"): Promise<T> {
@@ -15,6 +15,7 @@ export async function resolveAgentVideos<T>(owner: string, value: T, path = "$")
   let count = 0;
   async function resolve(clip: Record<string, unknown>, at: string): Promise<unknown> {
     // A removal, or only trim and playback fields for update_element to apply to the clip already there.
+    if (clip.path !== undefined) throw new AgentDeckValidationError("is read by the Engine MCP bridge, which uploads the file and sends src. Over HTTP, store the file with POST /api/agent/videos and send its src", `${at}.path`);
     if (clip.remove === true || (clip.url === undefined && clip.src === undefined)) return clip;
     if (++count > MAX_VIDEOS_PER_REQUEST) throw new AgentDeckValidationError(`allows at most ${MAX_VIDEOS_PER_REQUEST} videos in one request`, at);
     let stored: VideoRecord | null;
