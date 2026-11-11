@@ -42,6 +42,8 @@ import { editorRichHtml, formatTextRange, textRangeTogglePatch, splitRichLines, 
 import { duplicateSelection, expandGroupSelection, isElementHidden, isElementLocked, canEditElement } from "@/lib/template-editor/commands";
 import { canFormatWords, takesWordColorsOnly, type WordColor } from "@/lib/template-editor/word-colors";
 import { WordColorControls } from "./word-color-controls";
+import { EditorIcon } from "./editor-icons";
+import { CopyIcon, TrashIcon } from "@/components/engine/icons";
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
 import { MAX_HTML_DESIGN_WIDTH, richTextToPlain } from "@/lib/template-editor/model";
 import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-layer";
@@ -642,6 +644,19 @@ type CanvasEditorProps = {
   areaMode?: boolean;
   area?: AreaBox | null;
   onAreaChange?: (area: AreaBox | null) => void;
+  /** Canva's small bar over a selection: lock, duplicate, delete and more. */
+  selectionActions?: SelectionActions;
+};
+
+export type SelectionActions = {
+  locked: boolean;
+  canLock: boolean;
+  canDuplicate: boolean;
+  canDelete: boolean;
+  onLock: () => void;
+  onDuplicate: () => void;
+  onDelete: () => void;
+  onMore: (event: ReactMouseEvent<HTMLButtonElement>) => void;
 };
 
 export function CanvasEditor({
@@ -685,6 +700,7 @@ export function CanvasEditor({
   areaMode = false,
   area = null,
   onAreaChange,
+  selectionActions,
 }: CanvasEditorProps) {
   const root = useRef<HTMLDivElement>(null);
   const gesture = useRef<Gesture | null>(null);
@@ -1615,6 +1631,15 @@ export function CanvasEditor({
             style={boxStyle(selectionBounds([element]))}
           />
         ))}
+      {selectionBox && selectionActions && !selectionArea && !typingId && !drawingMode && navigationMode==="select" && !cropImageId && (
+        <div className="te-selection-actions" role="toolbar" aria-label="Selection actions" style={{left:selectionBox.x+selectionBox.width/2,top:selectionBox.y}}
+          onPointerDown={event=>event.stopPropagation()} onDoubleClick={event=>event.stopPropagation()} onContextMenu={event=>event.stopPropagation()}>
+          <button type="button" aria-label={selectionActions.locked?"Unlock":"Lock"} title={selectionActions.locked?"Unlock":"Lock position and appearance"} aria-pressed={selectionActions.locked} disabled={disabled||!selectionActions.canLock} onClick={selectionActions.onLock}><EditorIcon name={selectionActions.locked?"lock":"unlock"}/></button>
+          <button type="button" aria-label="Duplicate" title="Duplicate · ⌘/Ctrl D" disabled={disabled||!selectionActions.canDuplicate} onClick={selectionActions.onDuplicate}><CopyIcon/></button>
+          <button type="button" aria-label="Delete" title="Delete" disabled={disabled||!selectionActions.canDelete} onClick={selectionActions.onDelete}><TrashIcon/></button>
+          <button type="button" aria-label="More" title="More" aria-haspopup="menu" onClick={selectionActions.onMore}><EditorIcon name="more"/></button>
+        </div>
+      )}
       {selectionBox && (
         <div
           className={`te-canvas-outline${selected.some((element) => isElementLocked(currentScene,element)) ? " is-locked" : ""}`}

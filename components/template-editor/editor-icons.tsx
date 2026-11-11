@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more";
+export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency";
 
 /** One visual language for tools, property shortcuts, and their selected states. */
 export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: EditorIconName }) {
@@ -21,6 +21,14 @@ export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name:
     unlock: "M8 10V7a4 4 0 0 1 8 0M5 10h14v11H5Zm7 4v3",
     span: "M2 4h9v16H2Zm11 0h9v16h-9ZM5 9h14v6H5Z",
     more: "M5 12h.01M12 12h.01M19 12h.01",
+    lock: "M8 10V7a4 4 0 0 1 8 0v3M5 10h14v11H5Zm7 4v3",
+    "align-left": "M4 6h16M4 10h10M4 14h16M4 18h10",
+    "align-center": "M4 6h16M7 10h10M4 14h16M7 18h10",
+    "align-right": "M4 6h16M10 10h10M4 14h16M10 18h10",
+    list: "M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01",
+    "list-number": "M10 6h10M10 12h10M10 18h10M4 4h1v4M4 14h2l-2 3h2",
+    spacing: "M4 3v18M20 3v18M8 9l-2 3 2 3M16 9l2 3-2 3M9 12h6",
+    transparency: "M4 4h16v16H4ZM4 4h4v4H4Zm8 0h4v4h-4ZM8 8h4v4H8Zm8 0h4v4h-4ZM4 12h4v4H4Zm8 0h4v4h-4Zm-4 4h4v4H8Zm8 0h4v4h-4Z",
   };
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d={paths[name]} /></svg>;
 }

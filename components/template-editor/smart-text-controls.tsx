@@ -48,32 +48,60 @@ const SIZE_STEP = 2, MIN_SIZE = 8, MAX_SIZE = 400;
 
 /** A headline's own size, in export pixels: − / + and the field set it, and
  * the text keeps it (only its line breaks follow); Auto size hands it back to the fit. */
-export function SmartSizeStepper({ label = "Text", value, manual, disabled, onSet }: {
+export function SmartSizeStepper({ label = "Text", value, manual, disabled, onSet, compact = false, auto = true, step = SIZE_STEP, min = MIN_SIZE, max = MAX_SIZE }: {
   label?: string; value: number | undefined; manual: boolean; disabled: boolean;
   onSet: (size: number | undefined, current: number | undefined) => void;
+  /** The toolbar's form: − field +, with no words around it. */
+  compact?: boolean; auto?: boolean; step?: number; min?: number; max?: number;
 }) {
-  const clamp = (size: number) => Math.max(MIN_SIZE, Math.min(MAX_SIZE, Math.round(size)));
-  return <div className="te-smart-size-control" role="group" aria-label={`${label} size`}>
-    <span>Size</span>
-    <button type="button" disabled={disabled || value === undefined} aria-label={`${label}: smaller`} onMouseDown={event => event.preventDefault()} onClick={() => value !== undefined && onSet(clamp(value - SIZE_STEP), value)}>−</button>
-    <input type="number" aria-label={`${label} size in pixels`} min={MIN_SIZE} max={MAX_SIZE} step={1} disabled={disabled} key={value ?? "mixed"} defaultValue={value} placeholder="Mixed"
+  const clamp = (size: number) => Math.max(min, Math.min(max, Math.round(size)));
+  return <div className={`te-smart-size-control${compact ? " is-compact" : ""}`} role="group" aria-label={`${label} size`}>
+    {!compact && <span>Size</span>}
+    <button type="button" disabled={disabled || value === undefined} aria-label={`${label}: smaller`} title="Smaller" onMouseDown={event => event.preventDefault()} onClick={() => value !== undefined && onSet(clamp(value - step), value)}>−</button>
+    <input type="number" aria-label={`${label} size in pixels`} title="Size in export pixels" min={min} max={max} step={1} disabled={disabled} key={value ?? "mixed"} defaultValue={value} placeholder="Mixed"
       onKeyDown={event => { if (event.key === "Enter") event.currentTarget.blur(); }}
       onBlur={event => { const size = Number(event.currentTarget.value); if (event.currentTarget.value !== "" && Number.isFinite(size) && clamp(size) !== value) onSet(clamp(size), value); }} />
-    <span className="te-smart-size-unit">px</span>
-    <button type="button" disabled={disabled || value === undefined} aria-label={`${label}: bigger`} onMouseDown={event => event.preventDefault()} onClick={() => value !== undefined && onSet(clamp(value + SIZE_STEP), value)}>+</button>
-    <button type="button" className="te-smart-size-auto" disabled={disabled || !manual} aria-pressed={!manual} onMouseDown={event => event.preventDefault()} onClick={() => onSet(undefined, value)}>Auto size</button>
+    {!compact && <span className="te-smart-size-unit">px</span>}
+    <button type="button" disabled={disabled || value === undefined} aria-label={`${label}: bigger`} title="Bigger" onMouseDown={event => event.preventDefault()} onClick={() => value !== undefined && onSet(clamp(value + step), value)}>+</button>
+    {auto && <button type="button" className="te-smart-size-auto" disabled={disabled || !manual} aria-pressed={!manual} title="Let the template fit the size" onMouseDown={event => event.preventDefault()} onClick={() => onSet(undefined, value)}>{compact ? "Auto" : "Auto size"}</button>}
   </div>;
 }
 
-function SmartSizeControl({ scene, texts, fitted, editable, outputScale, onChange }: {
-  scene: CanvasScene; texts: CanvasScene["elements"]; fitted: (number | undefined)[]; editable: boolean; outputScale: number;
+/** The toolbar's size stepper and line-count menu for template text. */
+export function SmartQuickControls({ scene, selectedIds, disabled = false, outputScale = 3, onChange }: {
+  scene: CanvasScene; selectedIds: string[]; disabled?: boolean; outputScale?: number;
   onChange: (scene: CanvasScene, group?: string) => void;
+}) {
+  const measured = useSmartScene(scene);
+  const texts = scene.elements.filter(element => selectedIds.includes(element.id) && element.type === "text" && element.smartText);
+  if (!texts.length) return null;
+  const editable = !disabled && texts.every(element => canEditElement(scene, element, "content"));
+  const fitted = texts.filter(element => element.type === "text" && element.smartText?.role !== "list");
+  const lines = fitted.length && fitted.every(element => element.type === "text" && element.smartText?.lines === (fitted[0].type === "text" ? fitted[0].smartText?.lines : -1)) && fitted[0].type === "text" ? String(fitted[0].smartText?.lines ?? "") : "";
+  const warnings = [...new Set(texts.flatMap(element => measured.texts.get(element.id)?.warning ?? []))];
+  return <>
+    <SmartSizeControl compact scene={scene} texts={texts} fitted={texts.map(element => measured.texts.get(element.id)?.fontSize)} editable={editable} outputScale={outputScale} onChange={onChange} />
+    {fitted.length > 0 && <select className="te-format-lines" aria-label="Lines" title="How many lines the text breaks into" disabled={!editable} value={lines} onChange={event => {
+      const count = Number(event.target.value) as 0 | 2 | 3 | 4;
+      if (!editable || ![0, 2, 3, 4].includes(count)) return;
+      onChange({ ...scene, elements: scene.elements.map(element => selectedIds.includes(element.id) && element.type === "text" && element.smartText && element.smartText.role !== "list" && canEditElement(scene, element, "content") ? { ...element, smartText: { ...element.smartText, lines: count } } : element) }, "smart-text-lines");
+    }}>
+      {lines === "" && <option value="" disabled>Mixed lines</option>}
+      <option value="0">Auto lines</option><option value="2">2 lines</option><option value="3">3 lines</option><option value="4">4 lines</option>
+    </select>}
+    {warnings.length > 0 && <span className="te-format-warning" role="status" title={warnings.join(" ")}>!</span>}
+  </>;
+}
+
+function SmartSizeControl({ scene, texts, fitted, editable, outputScale, onChange, compact = false }: {
+  scene: CanvasScene; texts: CanvasScene["elements"]; fitted: (number | undefined)[]; editable: boolean; outputScale: number;
+  onChange: (scene: CanvasScene, group?: string) => void; compact?: boolean;
 }) {
   const sizes = texts.map((element, index) => element.type === "text" ? element.smartText?.fontSize ?? fitted[index] ?? element.fontSize : undefined);
   const value = sizes.every(size => size !== undefined && Math.abs(size - sizes[0]!) < .01) && sizes[0] !== undefined ? Math.round(sizes[0] * outputScale) : undefined;
   const manual = texts.some(element => element.type === "text" && element.smartText?.fontSize !== undefined);
   const ids = new Set(texts.map(element => element.id));
-  return <SmartSizeStepper value={value} manual={manual} disabled={!editable} onSet={size => {
+  return <SmartSizeStepper compact={compact} value={value} manual={manual} disabled={!editable} onSet={size => {
     if (!editable) return;
     onChange({ ...scene, elements: scene.elements.map(element => {
       if (!ids.has(element.id) || element.type !== "text" || !element.smartText || !canEditElement(scene, element, "content")) return element;

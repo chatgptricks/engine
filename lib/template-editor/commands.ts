@@ -52,7 +52,13 @@ export function canEditElement(scene: CanvasScene, element: CanvasElement, prope
   if (element.templateRole === "brand") return false;
   // A template photo stays in its frame, except a spanning photo, whose seam moves.
   if (element.templateRole === "media" && (property === "delete" || property === "position" && !(element.type === "image" && element.span))) return false;
-  if (element.type === "text" && element.smartText && property !== "content") return false;
+  // Template text keeps its slot, but its words and its look (font, color,
+  // bold, alignment, spacing, transparency) are the person's (Ivan, 2026-11-11).
+  // Slots still store "style" in protected; for template text it no longer applies.
+  if (element.type === "text" && element.smartText) {
+    if (property === "position" || property === "delete") return false;
+    return !isElementLocked(scene, element) && (property === "style" || !element.protected?.includes(property));
+  }
   return !isElementLocked(scene, element) && !element.protected?.includes(property);
 }
 
