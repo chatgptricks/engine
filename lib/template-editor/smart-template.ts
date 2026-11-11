@@ -13,7 +13,10 @@ export function constrainSmartTemplate(previous: CanvasScene, next: CanvasScene)
     if (!changed && canEditElement(previous, original, "delete")) continue;
     if (!changed || changed.type !== original.type) { byId.set(original.id, original); continue; }
     if (original.type === "text" && original.smartText && changed.type === "text") {
-      byId.set(original.id, { ...original, text: changed.text, richText: changed.richText, wordTextures: changed.wordTextures, smartText: { ...original.smartText, lines: changed.smartText?.lines ?? original.smartText.lines } });
+      // The words, their line count and a size the person set are theirs; the rest of the rule is the template's.
+      const smartText = { ...original.smartText, lines: changed.smartText?.lines ?? original.smartText.lines };
+      if (changed.smartText?.fontSize !== undefined) smartText.fontSize = changed.smartText.fontSize; else delete smartText.fontSize;
+      byId.set(original.id, { ...original, text: changed.text, richText: changed.richText, wordTextures: changed.wordTextures, smartText });
     } else if (original.templateRole === "media") {
       // A spanning photo moves and resizes with its seam (spanning-photos.ts keeps it in place).
       const geometry = original.type === "image" && original.span && changed.type === "image" && changed.span ? changed : original;

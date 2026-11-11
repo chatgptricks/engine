@@ -23,3 +23,13 @@
 .te-smart-layout-empty p:last-child { margin-bottom: 0; }
 .te-simple-editor .te-smart-layout-entry { border: 1px solid #01d59266; background: #01d59215; color: #adf4da; }
 @media (max-width: 600px) { .te-smart-line-control button { min-height: 36px; } .te-smart-text.is-compact { width: 100%; } }
+.te-smart-size-control { display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+.te-smart-size-control > span:first-child { font-size: 12px; font-weight: 600; margin-right: 4px; }
+.te-smart-size-control button { border: 1px solid #ffffff25; border-radius: 7px; min-width: 32px; padding: 7px 9px; font: inherit; font-size: 12px; cursor: pointer; background: var(--te-surface, #fff); color: #e9e9eb; white-space: nowrap; }
+.te-smart-size-control button.te-smart-size-auto[aria-pressed="true"] { background: #01d592; border-color: #01b67e; color: #09291f; font-weight: 650; }
+.te-smart-size-control button:focus-visible, .te-smart-size-control input:focus-visible { outline: 2px solid #01b67e; outline-offset: 2px; }
+.te-smart-size-control button:disabled { opacity: .45; cursor: default; }
+.te-smart-size-control input { width: 58px; box-sizing: border-box; border: 1px solid #ffffff25; border-radius: 7px; padding: 7px 6px; font: inherit; font-size: 12px; background: #121217; color: #f3f0fa; text-align: right; }
+.te-smart-size-unit { font-size: 12px; color: #bdb9c9; }
+.te-smart-layout-card .te-smart-size-control button { min-height: 40px; }
+@media (max-width: 600px) { .te-smart-size-control button { min-height: 36px; } }

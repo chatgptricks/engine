@@ -817,6 +817,17 @@ export function CanvasEditor({
     const wordTextures=[...(editingElement.wordTextures??[]),...(patch.textureFill&&textureId?[{...patch.textureFill,id:textureId}]:[])].filter(texture=>used.has(texture.id));
     richRange.current=range.cloneRange();updateEditing(false,true,{wordTextures:wordTextures.length?wordTextures:undefined});return editingAccepted.current;
   }
+  /** Selected words a step bigger or smaller, relative to their own size now (a headline's words keep their share when it refits). */
+  function resizeRange(factor: number) {
+    const node=editingNode.current, range=richRange.current;
+    if(!node||!range||!editingElement)return false;
+    const start=range.startContainer.nodeType===Node.ELEMENT_NODE?range.startContainer as Element:range.startContainer.parentElement;
+    const shown=Number.parseFloat(getComputedStyle(start&&node.contains(start)?start:node).fontSize);
+    const display=textDisplayFontSize(editingElement);
+    if(!Number.isFinite(shown)||shown<=0||display<=0)return false;
+    const base=editingElement.fontSize, next=shown*factor*base/display;
+    return formatRange({fontSize:Math.round(Math.max(base*.4,Math.min(base*3,next))*100)/100});
+  }
   function toggleRange(key: "fontWeight" | "italic" | "underline" | "strikethrough") {
     const node=editingNode.current, range=richRange.current;
     return node && range && editingElement ? formatRange(textRangeTogglePatch(node,range,key,editingElement)) : false;
@@ -1693,6 +1704,7 @@ export function CanvasEditor({
         <button type="button" aria-label="Italic selected text" title="Italic · ⌘/Ctrl I" onClick={()=>toggleRange("italic")}><i>I</i></button>
         <button type="button" aria-label="Underline selected text" title="Underline · ⌘/Ctrl U" onClick={()=>toggleRange("underline")}><u>U</u></button>
         <button type="button" aria-label="Strike selected text" onClick={()=>toggleRange("strikethrough")}><s>S</s></button>
+        {editingElement.smartText&&canFormatWords(scene,editingElement,{fontSize:editingElement.fontSize})?<span className="te-word-sizes" role="group" aria-label="Size of selected words"><button type="button" aria-label="Make selected words smaller" title="Selected words smaller" disabled={disabled} onClick={()=>resizeRange(1/1.1)}>A−</button><button type="button" aria-label="Make selected words bigger" title="Selected words bigger" disabled={disabled} onClick={()=>resizeRange(1.1)}>A+</button></span>:null}
         {wordColors?.length&&takesWordColorsOnly(scene,editingElement)?<WordColorControls colors={wordColors} disabled={disabled} onColor={color=>formatRange({color})}/>:null}
         <button type="button" aria-label="Clear selected text formatting" onClick={()=>formatRange({fontWeight:400,italic:false,underline:false,strikethrough:false,color:editingElement.color,font:editingElement.font,fontSize:editingElement.fontSize})}>Clear</button>
         <button type="button" className="te-rich-controls-done" onClick={()=>{finishEditing();if(!editingActive.current)root.current?.focus({preventScroll:true});}}>Done</button>
