@@ -30,7 +30,7 @@ function load(relative) {
   return unit.exports;
 }
 const model=load("lib/template-editor/model.ts"),rich=load("lib/template-editor/rich-text-editing.ts"),words=load("lib/template-editor/word-colors.ts");
-const paint=load("lib/template-editor/paint.ts"),edits=load("lib/engine/assistant/chat-edits.ts"),{WordColorControls}=load("components/template-editor/word-color-controls.tsx");
+const edits=load("lib/engine/assistant/chat-edits.ts"),{WordColorControls}=load("components/template-editor/word-color-controls.tsx");
 
 const GREEN="#00d98a";
 const template=()=>model.BUILT_IN_TEMPLATES.find(item=>item.id==="chatgptricks-3x4");
