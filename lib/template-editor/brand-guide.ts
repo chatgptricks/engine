@@ -108,8 +108,8 @@ export const GUIDE_LIMITS = {
   imageUrl: 2_000, svgUrl: 400_000, dataUrl: 700_000,
   rules: 60, rule: 400, bannedWords: 40, bannedWord: 40, hookNotes: 12, hookNote: 300,
 } as const;
-export const GUIDE_FONT_IDS = ["serif", "sans", "walsheim", "walsheimcond", "kyoto", "century", "libre", "geist", "sfpro", "chirp", "playfair", "dmserif", "lora", "cormorant", "crimson", "inter", "space", "montserrat", "bebas", "bebascanva", "plexmono", "caveat"] as const;
-const FONT_NAMES: Record<string, string> = { sfpro: "SF Pro Display", chirp: "Chirp (X)", bebas: "Bebas Neue", bebascanva: "Bebas Neue Bold", inter: "Inter", geist: "Geist Sans" };
+export const GUIDE_FONT_IDS = ["serif", "sans", "walsheim", "walsheimcond", "kyoto", "century", "libre", "geist", "sfpro", "chirp", "playfair", "dmserif", "lora", "cormorant", "crimson", "inter", "space", "montserrat", "bebas", "bebascanva", "plexmono", "caveat", "poppins", "neuemontreal", "supermolot", "helvetica", "arial", "georgia"] as const;
+const FONT_NAMES: Record<string, string> = { sfpro: "SF Pro Display", chirp: "Chirp (X)", poppins: "Poppins", neuemontreal: "Neue Montreal", supermolot: "TT Supermolot", helvetica: "Helvetica", arial: "Arial", georgia: "Georgia", bebas: "Bebas Neue", bebascanva: "Bebas Neue Bold", inter: "Inter", geist: "Geist Sans" };
 export const fontName = (id: string) => FONT_NAMES[id] ?? id;
 
 /** What each code check measures, how serious a miss is, and who fixes it. */

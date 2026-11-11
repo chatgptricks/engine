@@ -1697,6 +1697,12 @@ const FONT_IDS = new Set([
   "bebascanva",
   "plexmono",
   "caveat",
+  "poppins",
+  "neuemontreal",
+  "supermolot",
+  "helvetica",
+  "arial",
+  "georgia",
 ]);
 const LAYOUTS = new Set([
   "text",

@@ -24,7 +24,7 @@ export class AgentDeckValidationError extends Error {
     this.issues = normalized;
   }
 }
-const FONTS = ["serif", "sans", "walsheim", "walsheimcond", "kyoto", "century", "libre", "geist", "sfpro", "chirp", "playfair", "dmserif", "lora", "cormorant", "crimson", "inter", "space", "montserrat", "bebas", "bebascanva", "plexmono", "caveat"];
+const FONTS = ["serif", "sans", "walsheim", "walsheimcond", "kyoto", "century", "libre", "geist", "sfpro", "chirp", "playfair", "dmserif", "lora", "cormorant", "crimson", "inter", "space", "montserrat", "bebas", "bebascanva", "plexmono", "caveat", "poppins", "neuemontreal", "supermolot", "helvetica", "arial", "georgia"];
 const LAYOUTS = ["title", "content", "split", "quote", "blank"];
 const PRESETS = {
   presentation: { width: 1920, height: 1080 },

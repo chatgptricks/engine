@@ -527,6 +527,12 @@ const FONT_IDS = new Set([
   "bebascanva",
   "plexmono",
   "caveat",
+  "poppins",
+  "neuemontreal",
+  "supermolot",
+  "helvetica",
+  "arial",
+  "georgia",
 ]);
 export function fontClassOf(font?: string): string {
   if (font === "sans") return "gf-font-geist";

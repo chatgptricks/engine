@@ -10,6 +10,8 @@ Put your own licensed copies of these fonts here (they are not in git):
 - SF-Pro-Display-Canva-Regular.ttf, SF-Pro-Display-Canva-Bold.ttf (PDF export)
 - BebasNeueBold-Canva.woff2
 - Chirp-Regular.woff2, Chirp-Bold.woff2 (X's typeface, for post cards)
+- NeueMontreal-Regular.otf, NeueMontreal-Medium.otf, NeueMontreal-Bold.otf (`neuemontreal`)
+- TTSupermolot-Regular.otf, TTSupermolot-Bold.otf (`supermolot`, the original TT Supermolot)
 
 Without them the app still works; those font options fall back to system fonts.
 The file names are wired up in app/admin/(tool)/engine/licensed-fonts.css.

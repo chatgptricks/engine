@@ -101,6 +101,17 @@ const caveat = localFont({
   preload: false,
 });
 
+const poppins = localFont({
+  src: [
+    { path: "./typefaces/google/poppins-latin-regular.ttf", weight: "400", style: "normal" },
+    { path: "./typefaces/google/poppins-latin-500.ttf", weight: "500", style: "normal" },
+    { path: "./typefaces/google/poppins-latin-600.ttf", weight: "600", style: "normal" },
+    { path: "./typefaces/google/poppins-latin-700.ttf", weight: "700", style: "normal" },
+  ],
+  variable: "--gf-f-poppins",
+  preload: false,
+});
+
 /* ── Licensed typefaces (GT Walsheim, PP Kyoto, Century Gothic) ──
  * These are commercial fonts, so their files are NOT in the repo. They
  * load through plain @font-face rules in ./licensed-fonts.css from
@@ -120,6 +131,7 @@ export const ENGINE_FONT_VARS = [
   bebas.variable,
   plexmono.variable,
   caveat.variable,
+  poppins.variable,
 ].join(" ");
 
 /** The picker's options. `id` is stored on SlideStyle.font ("serif"/"sans"
@@ -144,4 +156,10 @@ export const ENGINE_FONTS: Array<{ id: string; label: string }> = [
   { id: "bebascanva", label: "Bebas Neue Bold (Canva)" },
   { id: "plexmono", label: "IBM Plex Mono" },
   { id: "caveat", label: "Caveat" },
+  { id: "poppins", label: "Poppins" },
+  { id: "neuemontreal", label: "Neue Montreal" },
+  { id: "supermolot", label: "TT Supermolot" },
+  { id: "helvetica", label: "Helvetica" },
+  { id: "arial", label: "Arial" },
+  { id: "georgia", label: "Georgia" },
 ];

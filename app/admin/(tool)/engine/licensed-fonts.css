@@ -38,6 +38,13 @@
 @font-face { font-family: "GF Chirp"; src: url("/fonts/licensed/Chirp-Regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
 @font-face { font-family: "GF Chirp"; src: url("/fonts/licensed/Chirp-Bold.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
 
+/* Studio's fonts. Without these files, text in them shows the next font in its stack. */
+@font-face { font-family: "GF Neue Montreal"; src: url("/fonts/licensed/NeueMontreal-Regular.otf") format("opentype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GF Neue Montreal"; src: url("/fonts/licensed/NeueMontreal-Medium.otf") format("opentype"); font-weight: 500; font-style: normal; font-display: swap; }
+@font-face { font-family: "GF Neue Montreal"; src: url("/fonts/licensed/NeueMontreal-Bold.otf") format("opentype"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "GF TT Supermolot"; src: url("/fonts/licensed/TTSupermolot-Regular.otf") format("opentype"); font-weight: 400; font-style: normal; font-display: swap; }
+@font-face { font-family: "GF TT Supermolot"; src: url("/fonts/licensed/TTSupermolot-Bold.otf") format("opentype"); font-weight: 700; font-style: normal; font-display: swap; }
+
 .gf-root {
   --gf-f-walsheim: "GF GT Walsheim";
   --gf-f-walsheimcond: "GF GT Walsheim Condensed";
@@ -45,5 +52,7 @@
   --gf-f-century: "GF Century Gothic";
   --gf-f-sfpro: "GF SF Pro Display";
   --gf-f-chirp: "GF Chirp";
+  --gf-f-neuemontreal: "GF Neue Montreal";
+  --gf-f-supermolot: "GF TT Supermolot";
   --gf-f-bebascanva: "GF Bebas Neue Canva";
 }
