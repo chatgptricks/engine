@@ -159,6 +159,8 @@ export type VideoClip = {
   muted?: boolean;
   /** The time the cover (`src` of the photo) was taken from. */
   coverTime?: number;
+  /** Set when the clip arrived without a poster: `src` is only a dark stand-in, which engine_check_deck flags. Choosing a cover clears it. */
+  noPoster?: boolean;
 };
 export const VIDEO_MIME_TYPES = ["video/mp4", "video/quicktime", "video/webm"] as const;
 export const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
@@ -2327,6 +2329,7 @@ export function parseVideoClip(value: unknown): VideoClip | null {
   if (typeof value.loop === "boolean") clip.loop = value.loop;
   if (typeof value.muted === "boolean") clip.muted = value.muted;
   if (typeof value.coverTime === "number") clip.coverTime = Math.min(value.coverTime, clip.duration);
+  if (value.noPoster === true) clip.noPoster = true;
   return clip;
 }
 

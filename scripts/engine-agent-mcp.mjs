@@ -16,9 +16,10 @@ const MAX_FRAME_BYTES = 15 * 1024 * 1024;
 const FRAME_TYPES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" };
 // Videos an agent names by path: uploaded to Engine's video storage, never anything else.
 const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
-const VIDEO_TYPES = { ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime" };
+const VIDEO_TYPES = { ".mp4": "video/mp4", ".m4v": "video/mp4", ".mov": "video/quicktime", ".webm": "video/webm" };
 const VIDEO_UPLOAD_TIMEOUT_MS = 15 * 60_000;
 const FFMPEG = [process.env.ENGINE_FFMPEG, "ffmpeg", "/opt/homebrew/bin/ffmpeg", "/usr/local/bin/ffmpeg"].filter(Boolean);
+const FFPROBE = [process.env.ENGINE_FFPROBE, ...FFMPEG.map((program) => program.replace(/ffmpeg$/, "ffprobe"))].filter(Boolean);
 
 class RpcError extends Error {
   constructor(code, message) {
@@ -110,8 +111,8 @@ function toolDefinitions(capabilities) {
     { name: "engine_list_templates", description: "List available Engine templates to use as an editable starting point, with pagination. Each slot reports its pageIndex and pageLabel; use those page indexes as templatePage to compose a deck of any length from the template's page types. A page type with pair shares one photo with its partner page, pair.with (like the @chatgptricks Wide photo pages): use the two together, in order, and fill the photo once on the first.", inputSchema: pagination, annotations: read },
     { name: "engine_list_decks", description: "List saved editable decks in this token's workspace, with pagination.", inputSchema: pagination, annotations: read },
     { name: "engine_get_deck", description: "Read a complete native editable deck, an output-pixel view for inspection and authoring, its current concurrency hash, stable page/layer IDs, and editor URL. Use view coordinates for edits; the raw document uses 360-wide scene units. Each half of a photo that spans two slides shows span with its partnerPageId and seam. Read immediately before an update.", inputSchema: schema({ deckId }, ["deckId"]), annotations: read },
-    { name: "engine_create_deck", description: "Create and save a deck of independent editable text, image, shape, and HTML layers. Read engine_capabilities first. Returns the native document, concurrency hash, editor URL, and operationId. Keep headlines as text layers and photos as image layers. An image can play a video, on the cover's photo slot or any later slide: give it video: {path} (an absolute path to an .mp4, .m4v or .mov file on this computer; the bridge uploads it and, when you leave src out, makes the cover from the clip), video: {src} (from engine_video_upload) or video: {url} (a public link Engine copies). A slide plays at most 60 seconds; a longer untrimmed clip continues on extra slides. An HTML layer (type html) draws part of a slide, or a whole slide, from HTML and CSS in the brand's colors and fonts: use it for charts, tables, comparisons, logo grids, memes, and X post cards (engine_capabilities htmlLayers says how). With templateId, either omit slides, pass one slide per template page, or set templatePage (0-based template page index) on every slide to build 1–20 slides that repeat, reorder or skip template pages. For a photo across two slides, use a pair of page types in order with photoSize and seam on the first, or give an image span: \"next\" and a seam (0.1 to 0.9, chosen so the cut misses faces and text).", inputSchema: schema({ spec: deckSchema, operationId }, ["spec"]), annotations: write },
-    { name: "engine_update_deck", description: "Update an existing native editable deck using stable IDs and expectedHash from engine_get_deck. A stale hash returns a conflict: read again and reconcile before retrying. Read engine_capabilities for supported changes. add_html adds an HTML layer (its box defaults to the whole slide; with replaces it takes a template frame's place, and the frame is hidden) and replace_html replaces its HTML and CSS. span_photo makes an image continue on the next slide (or moves its seam), unlink_span splits it into two photos, and edits to either half of a spanning photo update both. To put a video on an existing image (such as a template's cover photo), use update_element with properties: {video: {path}} (a local file the bridge uploads; it also replaces the cover unless you give src), {video: {src}} or {video: {url}}. Returns the updated document, hash, editor URL, and operationId.", inputSchema: schema({ deckId, expectedHash: { type: "string", minLength: 1 }, changes: updateSchema, operationId }, ["deckId", "expectedHash", "changes"]), annotations: { ...write, destructiveHint: true } },
+    { name: "engine_create_deck", description: "Create and save a deck of independent editable text, image, shape, and HTML layers. Read engine_capabilities first. Returns the native document, concurrency hash, editor URL, and operationId. Keep headlines as text layers and photos as image layers. Video: add a layer {type: \"video\", path | src, poster, x, y, width, height, start, end, loop, muted}, where path is an absolute path to an .mp4, .m4v, .mov or .webm file on this computer (the bridge uploads it and, without poster, takes one from the clip), or src is an Engine video path from engine_video_upload or a public link. Text, shapes and fades go above or below it like an image. A template's photo slot (such as the @chatgptricks cover, templatePage 0) takes image: {video: {path}} the same way. A slide plays at most 60 seconds; a longer untrimmed clip continues on extra slides. Slides with video export as MP4. An HTML layer (type html) draws part of a slide, or a whole slide, from HTML and CSS in the brand's colors and fonts: use it for charts, tables, comparisons, logo grids, memes, and X post cards (engine_capabilities htmlLayers says how). With templateId, either omit slides, pass one slide per template page, or set templatePage (0-based template page index) on every slide to build 1–20 slides that repeat, reorder or skip template pages. For a photo across two slides, use a pair of page types in order with photoSize and seam on the first, or give an image span: \"next\" and a seam (0.1 to 0.9, chosen so the cut misses faces and text).", inputSchema: schema({ spec: deckSchema, operationId }, ["spec"]), annotations: write },
+    { name: "engine_update_deck", description: "Update an existing native editable deck using stable IDs and expectedHash from engine_get_deck. A stale hash returns a conflict: read again and reconcile before retrying. Read engine_capabilities for supported changes. add_html adds an HTML layer (its box defaults to the whole slide; with replaces it takes a template frame's place, and the frame is hidden) and replace_html replaces its HTML and CSS. span_photo makes an image continue on the next slide (or moves its seam), unlink_span splits it into two photos, and edits to either half of a spanning photo update both. To replace a still with a video (a cover photo, or the media in an X post card), use add_video with replaces: the layer's id and path (a local file the bridge uploads and takes a poster from) or src: the video takes that layer's box, crop and place in the stack, and the still is hidden. update_element on a video layer changes poster, start, end, loop or muted. Returns the updated document, hash, editor URL, and operationId.", inputSchema: schema({ deckId, expectedHash: { type: "string", minLength: 1 }, changes: updateSchema, operationId }, ["deckId", "expectedHash", "changes"]), annotations: { ...write, destructiveHint: true } },
     { name: "engine_export_deck", description: "Return an editable .engine.json package and suggested filename for a deck, plus its editor URL. This preserves native text, images, shapes, pages, and layers for reimport; it is not a flattened slide image or PowerPoint export.", inputSchema: schema({ deckId }, ["deckId"]), annotations: read },
     { name: "engine_list_page_profiles", description: "List the pages Engine recreates posts for: id, name, handle, language (en/es), templateId, voice, house rules and Follow line. Use a profile id with engine_recreate_post.", inputSchema: schema(), annotations: read },
     { name: "engine_playbook", description: "Read the Recreate team's playbook: the carousel shape, the house rules, and one role card per stage (job, rules, quality bar, output schema). Read it before handing in a stage with engine_recreate_submit_stage, so your work meets the same bar as Engine's own agents.", inputSchema: schema(), annotations: read },
@@ -159,7 +160,7 @@ function toolDefinitions(capabilities) {
     { name: "engine_restore_brand", description: "Undo changes to a brand guide by bringing back an earlier version (from engine_get_brand's versions) as a new version. The version it replaces stays in the history.", inputSchema: schema({ brandId, version: { type: "integer", minimum: 1 } }, ["brandId", "version"]), annotations: write },
     { name: "engine_check_deck", description: "Check a deck (deckId) or a template (templateId) against a brand guide with code: full stops, em dashes, sentence-case titles, capitals on the cover, body length, banned words, colors, fonts, text size, margins, the source line, spacing and the accent gradient, as the guide turns them on. brandId defaults to the brand the template names or the page that uses it. Returns issues with the slide, the problem and the fix. Code can't judge the look: also read the deck's slides.", inputSchema: schema({ deckId, templateId: { type: "string", minLength: 1, maxLength: 200 }, brandId }), annotations: read },
     { name: "engine_design_template", description: "Draft a template from a brand guide: Engine restyles the page's carousel with the guide's colors, type, margins and spacing (gradient titles, a cover remark, topic logo spots, photos in their own shape; pages of real posts from X stay as they are) and saves it as \"<brand>-guide-<language>\", replacing an earlier draft. Returns the template id, the guide checks on it and which pages use it. No page switches to it until a person or agent sets the page profile's templateId. Use language es for Spanish pages: their draft leaves room for accents.", inputSchema: schema({ brandId, language: { type: "string", enum: ["en", "es"] }, baseTemplateId: { type: "string", minLength: 1, maxLength: 200, description: "The template to restyle; defaults to chatgptricks-3x4." } }, ["brandId", "language"]), annotations: write },
-    { name: "engine_video_upload", description: "Store a video file from this computer in Engine (MP4, M4V or MOV, H.264, up to 200 MB and 3 minutes) and get its src, plus a cover picture taken from the clip (needs ffmpeg). Then put it on any image, including a template's cover photo slot: in engine_create_deck give the image src: coverSrc and video: {src}; in engine_update_deck use update_element with properties {src: coverSrc, video: {src}}. engine_create_deck and engine_update_deck also take video: {path} directly and do this for you. The same file is stored once.", inputSchema: schema({ path: { type: "string", minLength: 1, maxLength: 4096, description: "Absolute path to an .mp4, .m4v or .mov file." }, name: { type: "string", maxLength: 200 }, coverTime: { type: "number", minimum: 0, maximum: 180, description: "Second of the clip to take the cover from. Default 0.5." } }, ["path"]), annotations: write },
+    { name: "engine_video_upload", description: "Store a video file from this computer in Engine (MP4, M4V, MOV or WebM, up to 200 MB and 3 minutes) and get its src, plus a poster taken from the clip (needs ffmpeg). Then use them in a video layer {type: \"video\", src, poster} or add_video {src, poster, replaces}. engine_create_deck and engine_update_deck also take path directly and do this for you. The same file is stored once.", inputSchema: schema({ path: { type: "string", minLength: 1, maxLength: 4096, description: "Absolute path to an .mp4, .m4v, .mov or .webm file." }, name: { type: "string", maxLength: 200 }, coverTime: { type: "number", minimum: 0, maximum: 180, description: "Second of the clip to take the cover from. Default 0.5." } }, ["path"]), annotations: write },
     { name: "engine_frame_upload", description: "Frames: make a slide from a flat image (PNG, JPG or WebP), for a slide that only exists as a picture, such as one made in another chat or design system. The image becomes the slide's locked bottom layer and Engine keeps the original; nothing else runs. Give path (a local file, read by this bridge) or dataUrl. Without deckId, a new deck the image's size is made. Then look at it with engine_frame_view, read its words yourself, and take it apart with engine_frame_cut. Returns the deck, its new hash, slideId and editorUrl.", inputSchema: schema({ deckId, path: { type: "string", minLength: 1, maxLength: 4096, description: "Absolute path to a .png, .jpg, .jpeg or .webp file of at most 15 MB." }, dataUrl: { type: "string", minLength: 1, maxLength: 21_000_000, description: "data:image/png|jpeg|webp;base64,… instead of path." }, name: { type: "string", maxLength: 200 }, index: { type: "integer", minimum: 0, maximum: 20, description: "Where the slide goes. Default: the end." }, expectedHash: { type: "string", minLength: 1, description: "The deck's hash from engine_get_deck. Default: the current hash." }, operationId }), annotations: write },
     { name: "engine_frame_view", description: "Frames: look at a Frames slide's original image (or a box of it) with your own eyes. Returns the image and how it sits on the slide, so you can give engine_frame_cut boxes in slide output pixels. Engine runs no model; you read the picture.", inputSchema: schema({ deckId, slideId: { type: "string", minLength: 1, maxLength: 200 }, box: frameBox }, ["deckId", "slideId"]), annotations: read },
     { name: "engine_frame_cut", description: "Frames: cut a box of a Frames slide's original image into an image layer of its own, in the same place, above the image. removeBackground flat makes the colour around the box's edge transparent and trims the cut (logos, icons, cards on one colour); none keeps the box as it is (photos). Always cuts from the original. Mark the part with a little of its background around it.", inputSchema: schema({ deckId, expectedHash: { type: "string", minLength: 1 }, slideId: { type: "string", minLength: 1, maxLength: 200 }, box: frameBox, name: { type: "string", maxLength: 200 }, removeBackground: { type: "string", enum: ["none", "flat"] }, operationId }, ["deckId", "expectedHash", "slideId", "box"]), annotations: write },
@@ -290,7 +291,7 @@ function validatedArguments(name, args) {
     throw new RpcError(-32602, "limit must be an integer from 1 through 100.");
   }
   if (name === "engine_video_upload") {
-    if (!validVideoPath(args.path)) throw new RpcError(-32602, "path must be an absolute path to an .mp4, .m4v or .mov file.");
+    if (!validVideoPath(args.path)) throw new RpcError(-32602, "path must be an absolute path to an .mp4, .m4v, .mov or .webm file.");
     if (Object.hasOwn(args, "name") && (typeof args.name !== "string" || args.name.length > 200)) throw new RpcError(-32602, "name must be text of at most 200 characters.");
     if (Object.hasOwn(args, "coverTime") && (typeof args.coverTime !== "number" || !Number.isFinite(args.coverTime) || args.coverTime < 0 || args.coverTime > 180)) throw new RpcError(-32602, "coverTime must be a number of seconds from 0 through 180.");
   }
@@ -319,12 +320,14 @@ function validVideoPath(path) {
   return typeof path === "string" && isAbsolute(path) && path.length <= 4096 && !/\0/.test(path) && Boolean(VIDEO_TYPES[extname(path).toLowerCase()]);
 }
 
-/** Every `video` object with a path in an agent's deck or changes, with the object that holds it. */
+/** Every local video in an agent's deck or changes: a `video: {path}` on an image (the image
+ * holds the cover in src), or a video layer or add_video with path (it holds the cover in poster). */
 function localVideos(value, found = []) {
   if (Array.isArray(value)) { for (const item of value) localVideos(item, found); return found; }
   if (!object(value)) return found;
+  if ((value.type === "video" || value.op === "add_video") && Object.hasOwn(value, "path")) { found.push({ holder: value, video: value, cover: "poster" }); return found; }
   for (const [key, child] of Object.entries(value)) {
-    if (key === "video" && object(child) && Object.hasOwn(child, "path")) found.push({ holder: value, video: child });
+    if (key === "video" && object(child) && Object.hasOwn(child, "path")) found.push({ holder: value, video: child, cover: "src" });
     else localVideos(child, found);
   }
   return found;
@@ -414,16 +417,33 @@ function bridge(config) {
       throw new ApiError(controller.signal.aborted ? "Uploading the picture timed out after 30 seconds." : "Could not reach Engine. Check ENGINE_URL and that the server is running.");
     } finally { clearTimeout(timer); }
   }
-  /** Reads a video an agent named, in full: an .mp4, .m4v or .mov file of at most 200 MB that really is an MP4/MOV. */
+  /** A program's output, trying each place it may be installed; null when none is. */
+  async function run(programs, args, options) {
+    for (const program of programs) {
+      try { return await new Promise((resolve, reject) => execFile(program, args, options, (error, stdout) => error ? reject(error) : resolve(stdout))); }
+      catch (error) { if (error.code === "ENOENT") continue; throw error; }
+    }
+    return null;
+  }
+  /** Reads a video an agent named, in full: an .mp4, .m4v, .mov or .webm file of at most 200 MB that really is one. */
   async function readVideo(path) {
-    if (!validVideoPath(path)) throw new ApiError("video.path must be an absolute path to an .mp4, .m4v or .mov file.");
+    if (!validVideoPath(path)) throw new ApiError("path must be an absolute path to an .mp4, .m4v, .mov or .webm file.");
     const handle = await openFile(path, "r").catch(() => { throw new ApiError(`Could not open ${basename(path)}. Give an absolute path to a video file.`); });
     try {
       const info = await handle.stat();
       if (!info.isFile()) throw new ApiError("video.path must be a file.");
       if (info.size < 16 || info.size > MAX_VIDEO_BYTES) throw new ApiError(`${basename(path)} must be at most 200 MB. Trim or compress it first.`);
       const data = await handle.readFile();
-      if (data.subarray(4, 8).toString("latin1") !== "ftyp") throw new ApiError(`${basename(path)} is not an MP4 or MOV video.`);
+      if (data.subarray(0, 4).equals(Buffer.from([0x1a, 0x45, 0xdf, 0xa3]))) {
+        // Engine reads an MP4's length and size itself; a WebM's come from ffprobe here.
+        const probed = await run(FFPROBE, ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height:format=duration", "-of", "json", path], { maxBuffer: 1024 * 1024, timeout: 30_000 }).catch(() => null);
+        if (!probed) throw new ApiError(`Reading ${basename(path)} needs ffprobe (it comes with ffmpeg). Or convert it to MP4.`);
+        const info = JSON.parse(probed);
+        const facts = { duration: Number(info.format?.duration), width: Number(info.streams?.[0]?.width), height: Number(info.streams?.[0]?.height) };
+        if (!(facts.duration > 0 && facts.width > 0 && facts.height > 0)) throw new ApiError(`${basename(path)} has no picture Engine can read.`);
+        return { data, mimeType: "video/webm", facts };
+      }
+      if (data.subarray(4, 8).toString("latin1") !== "ftyp") throw new ApiError(`${basename(path)} is not an MP4, MOV or WebM video.`);
       const brand = data.subarray(8, 12).toString("latin1");
       return { data, mimeType: brand === "qt  " ? "video/quicktime" : "video/mp4" };
     } finally { await handle.close(); }
@@ -439,8 +459,8 @@ function bridge(config) {
   }
   /** Stores a local video in Engine once (the server knows it by its SHA-256) and returns its src and facts. */
   async function storeVideo(path, name) {
-    const { data, mimeType } = await readVideo(path);
-    const meta = { id: createHash("sha256").update(data).digest("hex"), bytes: data.length, mimeType, name: (name ?? basename(path)).slice(0, 200) };
+    const { data, mimeType, facts } = await readVideo(path);
+    const meta = { id: createHash("sha256").update(data).digest("hex"), bytes: data.length, mimeType, name: (name ?? basename(path)).slice(0, 200), ...facts };
     const start = await send({ url: config.videos, method: "POST", body: { action: "start", ...meta } });
     if (start.existing) return start;
     if (start.mode === "signed") {
@@ -468,17 +488,11 @@ function bridge(config) {
   }
   /** A JPEG of the clip's frame at `time`, taken with ffmpeg, uploaded as the video's cover. */
   async function storeCover(path, time, name) {
-    let frame, missing = 0;
-    for (const program of FFMPEG) {
-      try {
-        frame = await new Promise((resolve, reject) => execFile(program, ["-v", "error", "-ss", String(time), "-i", path, "-frames:v", "1", "-q:v", "2", "-f", "image2", "-c:v", "mjpeg", "pipe:1"], { encoding: "buffer", maxBuffer: MAX_FRAME_BYTES, timeout: 60_000 }, (error, stdout) => error ? reject(error) : resolve(stdout)));
-        if (frame.length) break;
-      } catch (error) {
-        if (error.code === "ENOENT") { missing += 1; continue; }
-        throw new ApiError(`Could not take a cover from ${basename(path)} at ${time} s. Give the image a src instead.`);
-      }
-    }
-    if (!frame?.length) throw new ApiError(missing === FFMPEG.length ? "Taking a cover from the video needs ffmpeg. Install it (brew install ffmpeg), set ENGINE_FFMPEG to its path, or give the image a src." : `Could not take a cover from ${basename(path)} at ${time} s. Give the image a src instead.`);
+    let frame;
+    try { frame = await run(FFMPEG, ["-v", "error", "-ss", String(time), "-i", path, "-frames:v", "1", "-q:v", "2", "-f", "image2", "-c:v", "mjpeg", "pipe:1"], { encoding: "buffer", maxBuffer: MAX_FRAME_BYTES, timeout: 60_000 }); }
+    catch { throw new ApiError(`Could not take a cover from ${basename(path)} at ${time} s. Give a poster (or the image's src) instead.`); }
+    if (frame === null) throw new ApiError("Taking a cover from the video needs ffmpeg. Install it (brew install ffmpeg), set ENGINE_FFMPEG to its path, or give a poster (or the image's src).");
+    if (!frame.length) throw new ApiError(`Could not take a cover from ${basename(path)} at ${time} s. Give a poster (or the image's src) instead.`);
     return upload(frame, `${name} cover`);
   }
   async function videoUpload(path, { name, coverTime, cover = true } = {}) {
@@ -493,23 +507,23 @@ function bridge(config) {
     const copy = structuredClone(args);
     const found = localVideos(copy.spec ?? copy.changes);
     const stored = new Map();
-    for (const { holder, video } of found) {
-      const { path, ...rest } = video;
-      if (!validVideoPath(path)) throw new ApiError("video.path must be an absolute path to an .mp4, .m4v or .mov file.");
-      const needsCover = !Object.hasOwn(holder, "src");
-      const key = `${path}\0${needsCover ? rest.coverTime ?? "" : ""}`;
-      if (!stored.has(key)) stored.set(key, videoUpload(path, { coverTime: rest.coverTime, cover: needsCover }));
+    for (const { holder, video, cover } of found) {
+      const path = video.path;
+      if (!validVideoPath(path)) throw new ApiError("path must be an absolute path to an .mp4, .m4v, .mov or .webm file.");
+      const needsCover = !Object.hasOwn(holder, cover);
+      const key = `${path}\0${needsCover ? video.coverTime ?? "" : ""}`;
+      if (!stored.has(key)) stored.set(key, videoUpload(path, { coverTime: video.coverTime, cover: needsCover }));
       const clip = await stored.get(key);
       for (const field of ["url", "src", "path"]) delete video[field];
-      Object.assign(video, rest, { src: clip.src }, needsCover ? { coverTime: clip.coverTime } : {});
-      if (needsCover) holder.src = clip.coverSrc;
+      Object.assign(video, { src: clip.src }, needsCover ? { coverTime: clip.coverTime } : {});
+      if (needsCover) holder[cover] = clip.coverSrc;
     }
     return { args: copy, videos: found.length };
   }
   const FRAMES = {
     async engine_video_upload(args) {
       const value = await videoUpload(args.path, { name: args.name, coverTime: args.coverTime });
-      return { ...value, next: "Put it on an image: engine_create_deck with the image's src: coverSrc and video: {src}, or engine_update_deck update_element with properties {src: coverSrc, video: {src}}. A slide plays at most 60 seconds." };
+      return { ...value, next: "Use it as a video layer: {type: \"video\", src, poster: coverSrc, x, y, width, height} in engine_create_deck, or add_video {pageId, src, poster: coverSrc, replaces: <a still's id>} in engine_update_deck. A slide plays at most 60 seconds." };
     },
     async engine_frame_upload(args) {
       const name = args.name ?? (args.path ? args.path.split("/").pop().replace(/\.[^.]+$/, "") : "Image");
