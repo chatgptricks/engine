@@ -2,7 +2,7 @@
  * Coloring words in template text whose style is fixed, such as the
  * @chatgptricks cover headline: the deck's highlight colors and No color, the
  * editor's own range formatting on a small DOM, and the same result as the
- * chat's style_words. Bold and the other styles stay fixed. */
+ * chat's style_words. Template headlines also take every other style (Ivan, 2026-11-11). */
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -88,19 +88,14 @@ test("the deck's highlight colors are its accent color roles, Accent green on @c
   ]),[{name:"Highlight",color:"#ff0"},{name:"Accent purple",color:"#a855f7"}],"each visible color once, other roles left out");
 });
 
-test("template text with a fixed style takes word colors and word sizes, while bold and the other styles stay fixed",()=>{
+test("template headline words take every style: colors, sizes, bold, italic, fonts",()=>{
   const {scene,headline}=deck("SMALL DECISIONS BUILD BIG CAREERS");
-  assert.equal(words.takesWordColorsOnly(scene,headline),true);
-  for(const patch of [{color:GREEN},{color:"#00D98A"},{color:"white"},{color:null},{fontSize:20}])assert.equal(words.canFormatWords(scene,headline,patch),true,JSON.stringify(patch));
-  for(const patch of [{fontWeight:700},{italic:true},{underline:true},{strikethrough:true},{font:"inter"},{textureFill:null},{color:GREEN,fontWeight:700},{color:"transparent"},{color:"red; x"},{},
-    paint.paintTextFormattingPatch({type:"solid",color:GREEN}),
-    {fontWeight:400,italic:false,underline:false,strikethrough:false,color:headline.color,font:headline.font,fontSize:headline.fontSize}])
-    assert.equal(words.canFormatWords(scene,headline,patch),false,JSON.stringify(patch));
+  assert.equal(words.takesWordColorsOnly(scene,headline),false);
+  for(const patch of [{color:GREEN},{color:null},{fontSize:20},{fontWeight:700},{italic:true},{underline:true},{strikethrough:true},{font:"inter"}])assert.equal(words.canFormatWords(scene,headline,patch),true,JSON.stringify(patch));
   const dom=installRichDom();
   try {
-    const node=editable(dom,headline),range=select(dom,node,"SMALL DECISIONS"),before=rich.editorRichHtml(node);
-    for(const key of ["fontWeight","italic","underline","strikethrough"])assert.equal(format(dom,scene,headline,node,range,rich.textRangeTogglePatch(node,range,key,headline)),false,`${key} stays blocked`);
-    assert.equal(rich.editorRichHtml(node),before,"the words are untouched");
+    const node=editable(dom,headline),range=select(dom,node,"SMALL DECISIONS");
+    assert.equal(format(dom,scene,headline,node,range,rich.textRangeTogglePatch(node,range,"fontWeight",headline)),true,"bold applies to the selected words");
   } finally {dom.restore();}
   // Text the person styles freely takes every change; locked, protected and brand text takes none.
   const free={...model.createCanvasElement("text",{x:10,y:10,width:200,height:40}),text:"Free text"};
@@ -186,13 +181,13 @@ test("the text toolbar offers each highlight color and No color for the selected
   assert.equal((renderToStaticMarkup(React.createElement(WordColorControls,{colors,onColor(){},disabled:true})).match(/disabled=""/g)||[]).length,3);
 });
 
-test("a template headline's words can be resized, but other styles stay fixed", () => {
+test("a template headline's words can be resized and restyled; other template text cannot", () => {
   const headline = {...model.createCanvasElement("text", {text: "Stocks fell almost 30%"}), templateRole: "media", smartText: {role: "cover", lines: 0, minFontSize: 12, maxFontSize: 48, maxHeight: 110}, protected: ["position", "style", "delete"]};
   const plainTemplate = {...headline, smartText: undefined};
   const scene = {background: "#111111", elements: [headline, plainTemplate]};
   assert.equal(words.isWordSizePatch({fontSize: 30}), true);
   assert.equal(words.isWordSizePatch({fontSize: 30, color: "#fff"}), false);
   assert.equal(words.canFormatWords(scene, headline, {fontSize: 30}), true);
-  assert.equal(words.canFormatWords(scene, headline, {fontWeight: 700}), false);
+  assert.equal(words.canFormatWords(scene, headline, {fontWeight: 700}), true);
   assert.equal(words.canFormatWords(scene, plainTemplate, {fontSize: 30}), false, "only smart text, whose fit keeps word sizes in proportion");
 });

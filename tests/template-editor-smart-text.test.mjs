@@ -95,7 +95,9 @@ test("new ChatGPTricks copies merge imported title runs; source and unrelated te
   assert.equal(headings[0].align, "center");
   assert.equal(headings[0].smartText.lines, 3);
   assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "content"), true);
-  assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "style"), false);
+  // Template text keeps its slot but its look is the person's (Ivan, 2026-11-11).
+  assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "style"), true);
+  assert.equal(commands.canEditElement(design.pages[0].canvas, headings[0], "position"), false);
   const library = {...model.EMPTY_LIBRARY, designs: [design]};
   assert.deepEqual(model.parseLibrary(library).designs[0].pages[0].canvas.elements[0].smartText, headings[0].smartText);
   const other = {...source, name: "Other"}, otherBefore = JSON.stringify(other), prepared = template.prepareSmartTemplate(other);
