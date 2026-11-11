@@ -1,17 +1,15 @@
 "use client";
 
 import type { MouseEvent } from "react";
-import { CopyIcon, TrashIcon } from "@/components/engine/icons";
 import { EditorIcon, type EditorIconName } from "./editor-icons";
 import { TemplateRoleSelect, type InspectorSection } from "./element-inspector";
 import type { CanvasElement, CanvasScene, ShapeElement, TextElement } from "@/lib/template-editor/model";
-import { FONTS, NumberInput } from "./controls";
 import { commonValue, boldState, booleanState } from "@/lib/template-editor/property-utils";
 import { canEditElement, isElementHidden, isElementLocked } from "@/lib/template-editor/commands";
-import { applyElementPaint, commonElementPaint, paintTextFormattingPatch } from "@/lib/template-editor/paint";
+import { applyElementPaint, commonElementPaint } from "@/lib/template-editor/paint";
 import { photoContent, updatePhotoContent } from "@/lib/template-editor/photo-frames";
 import { textRangeTogglePatch, type TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
-import { SmartTextControls } from "./smart-text-controls";
+import { TextFormatBar } from "./text-format-bar";
 import { PaintPicker } from "./paint-picker";
 import { SpanToolbarControls, type SpanControl } from "./span-photo-controls";
 import "./element-inspector.css";
@@ -46,7 +44,7 @@ type Props = {
   span?: SpanControl;
 };
 
-export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, span, onUnlock, onDuplicate, onDelete, outputScale = 3 }: Props) {
+export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, span, onUnlock, outputScale = 3 }: Props) {
   const selected=scene.elements.filter(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element));
   const unlocked=selected.filter(element=>!isElementLocked(scene,element));
   const propertySelection=unlocked.length?unlocked:selected;
@@ -60,17 +58,17 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
   const styleEditable=selected.some(element=>canEditElement(scene,element,"style"));
   const canCrop=selected.length===1&&allPhotos&&canEditElement(scene,selected[0],"content")&&canEditElement(scene,selected[0],"style");
   const label=selected.length>1?`${selected.length} selected`:locked?"Locked":allText?"Text":allPhotos?selected[0].type==="shape"?"Photo frame":"Photo":allShapes?"Shape":"Selection";
-  function update(transform:(element:CanvasElement)=>CanvasElement, property:"style"|"content"="style") {
+  function update(transform:(element:CanvasElement)=>CanvasElement, property:"style"|"content"="style", group="quick-format") {
     if(disabled)return;
     const elements=scene.elements.map(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element)&&canEditElement(scene,element,property)?transform(element):element);
-    if(elements.some((element,index)=>element!==scene.elements[index]))onChange({...scene,elements},"quick-format");
+    if(elements.some((element,index)=>element!==scene.elements[index]))onChange({...scene,elements},group);
   }
   function patchText(patch:Partial<TextElement>) {
     if(disabled||!styleEditable)return;
     if(onFormatText?.(patch))return;
     update(element=>element.type==="text"?{...element,...patch}:element);
   }
-  function toggleText(key:"fontWeight"|"italic") {
+  function toggleText(key:"fontWeight"|"italic"|"underline"|"strikethrough") {
     const selection=window.getSelection();
     const range=selection?.rangeCount?selection.getRangeAt(0):null;
     const ancestor=range?.commonAncestorContainer;
@@ -78,11 +76,10 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
     const id=node?.closest<HTMLElement>("[data-element-id]")?.dataset.elementId;
     const base=texts.find(element=>element.id===id);
     if(node&&range&&!range.collapsed&&base){patchText(textRangeTogglePatch(node,range,key,base));return;}
-    patchText(key==="fontWeight"?{fontWeight:boldState(texts)===true?400:700}:{italic:booleanState(texts,"italic")!==true});
+    patchText(key==="fontWeight"?{fontWeight:boldState(texts)===true?400:700}:{[key]:booleanState(texts,key)!==true});
   }
   const photos=propertySelection.flatMap(element=>{const photo=photoContent(element);return photo?[photo]:[];});
   const disabledStyle=disabled||!styleEditable;
-  const duplicable=selected.filter(element=>!isElementLocked(scene,element));
   const inspectAction = (section: InspectorSection, text: string, icon: EditorIconName, ariaLabel = text) => onInspect && <button type="button" className="te-context-action" aria-label={ariaLabel} aria-pressed={activeSection === section} aria-controls="te-editor-panel" onMouseDown={event=>event.preventDefault()} onClick={()=>onInspect(section)}><EditorIcon name={icon}/>{text}</button>;
   return <div className={`te-quick-toolbar is-compact${selected.length ? " has-selection" : ""}`} role="toolbar" aria-label="Quick formatting" onKeyDown={event=>{if((event.target as HTMLElement).matches("input, select"))event.stopPropagation();}}>
     {!selected.length?<>
@@ -91,24 +88,10 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
       <button type="button" className="te-context-action" disabled={disabled} onClick={onUpload}><EditorIcon name="photo"/>Upload</button>
       {onBackground&&<button type="button" className="te-context-action" aria-label="Edit page background" onClick={onBackground}><EditorIcon name="fill"/>Background</button>}
     </>:<>
-      <span className="te-quick-label">{label}</span>
+      <span className={`te-quick-label${allText?" te-sr-only":""}`}>{label}</span>
       {templateDraftHeight!==undefined&&<TemplateRoleSelect scene={scene} elements={selected} height={templateDraftHeight} disabled={disabled} onChange={onChange} compact/>}
       {onMergeShapes&&selected.every(element=>element.type==="shape")&&selected.length>1&&<button type="button" className="te-context-action" aria-label="Merge shapes" title="Union: combine the selected shapes into one shape" disabled={disabled||selected.length!==selectedIds.length||!selected.every(element=>canEditElement(scene,element,"position")&&canEditElement(scene,element,"delete"))} onClick={onMergeShapes}><EditorIcon name="merge"/>Merge shapes</button>}
-      {allText && texts.every(element=>element.smartText) && <SmartTextControls scene={scene} selectedIds={selectedIds} disabled={disabled} compact outputScale={outputScale} onChange={onChange}/>}
-      {allText&&!texts.every(element=>element.smartText)&&<div className="te-quick-basics">
-        <select aria-label="Quick font" disabled={disabledStyle} value={commonValue(texts,"font")??""} onChange={event=>patchText({font:event.target.value})}>
-          {commonValue(texts,"font")===undefined&&<option value="" disabled>Mixed fonts</option>}
-          {FONTS.map(([id,name])=><option key={id} value={id}>{name}</option>)}
-        </select>
-        <NumberInput key={`text-size:${propertySelection.map(element=>element.id).join(":")}`} aria-label="Quick font size" title="Font size in export pixels" min={outputScale} max={500*outputScale} disabled={disabledStyle} placeholder="Mixed" value={commonValue(texts,"fontSize")===undefined?"":Number((commonValue(texts,"fontSize")!*outputScale).toFixed(2))} onChange={event=>{const size=event.target.valueAsNumber;if(Number.isFinite(size)&&size>=outputScale&&size<=500*outputScale)patchText({fontSize:size/outputScale});}} />
-        <button type="button" className="te-quick-format-button" aria-label="Quick bold" title="Bold" aria-pressed={boldState(texts)} disabled={disabledStyle} onMouseDown={event=>event.preventDefault()} onClick={()=>toggleText("fontWeight")}><b>B</b></button>
-        <button type="button" className="te-quick-format-button" aria-label="Quick italic" title="Italic" aria-pressed={booleanState(texts,"italic")} disabled={disabledStyle} onMouseDown={event=>event.preventDefault()} onClick={()=>toggleText("italic")}><i>I</i></button>
-        <PaintPicker key={`text-paint:${texts.map(element=>element.id).join(":")}`} label="Quick text color" compact value={commonElementPaint(texts)} disabled={disabledStyle} onChange={paint=>{
-          const patch=paintTextFormattingPatch(paint);
-          if(!disabled&&patch&&onFormatText?.(patch))return;
-          update(element=>element.type==="text"?applyElementPaint(element,paint):element);
-        }} />
-      </div>}
+      {allText&&<TextFormatBar scene={scene} selectedIds={selectedIds} texts={texts} disabled={disabled} outputScale={outputScale} onChange={onChange} onFormatText={onFormatText} patchText={patchText} toggleText={toggleText} update={update}/>}
       {allShapes&&<div className="te-quick-basics">
         {!allPhotos&&<><span className="te-quick-control-label">Fill</span><PaintPicker key={`shape-fill:${shapes.map(element=>element.id).join(":")}`} label="Quick shape fill" compact value={commonElementPaint(shapes)} disabled={disabledStyle} onChange={paint=>update(element=>element.type==="shape"?applyElementPaint(element,paint):element)} /></>}
         <span className="te-quick-control-label">Outline</span><PaintPicker key={`border:${shapes.map(element=>element.id).join(":")}`} label="Quick shape border" compact allowGradient={false} value={commonValue(shapes,"stroke")===undefined?undefined:{type:"solid",color:commonValue(shapes,"stroke")!}} disabled={disabledStyle} onChange={paint=>{if(paint.type==="solid")update(element=>element.type==="shape"?{...element,stroke:paint.color,strokeWidth:element.strokeWidth>0?element.strokeWidth:1}:element);}} />
@@ -131,10 +114,6 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
         {inspectAction("effects","Effects","effects")}
         {onGroup&&selected.length>1&&<button type="button" className="te-context-action" aria-label="Group selection" disabled={disabled||!selected.every(element=>canEditElement(scene,element,"position"))} onClick={onGroup}><EditorIcon name="group"/>Group</button>}
         {locked&&onUnlock&&<button type="button" className="te-context-action" title={inheritedLock?"Unlock the parent group in Layers":"Unlock selection"} disabled={disabled||inheritedLock} onClick={onUnlock}><EditorIcon name="unlock"/>Unlock</button>}
-      </div>
-      <div className="te-quick-object-actions">
-        <button type="button" aria-label="Duplicate selection" title="Duplicate selection · ⌘/Ctrl D" disabled={disabled||!duplicable.length||scene.elements.length+duplicable.length>100} onClick={onDuplicate}><CopyIcon/></button>
-        <button type="button" aria-label="Delete selection" title="Delete selection" disabled={disabled||!selected.some(element=>canEditElement(scene,element,"delete"))} onClick={onDelete}><TrashIcon/></button>
       </div>
     </>}
     <button type="button" aria-label="More canvas actions" title="More actions" aria-haspopup="menu" onClick={onMore}><EditorIcon name="more"/></button>

@@ -75,7 +75,8 @@ import {createDocumentHistory,commitHistory,travelHistory,closeHistoryGroup,same
 import { preflightDesign, type PreflightIssue } from "@/lib/template-editor/preflight";
 import { layoutTemplateOf, MAX_LAYOUT_NAME, MAX_LAYOUT_USE_WHEN, withSavedLayout, type SavedLayoutResult } from "@/lib/template-editor/saved-layouts";
 import { ColorField, Modal } from "./controls";
-import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls, type AreaBox } from "./canvas";
+import { selectionActionState } from "@/lib/template-editor/selection-actions";
+import { CanvasEditor, type CanvasHistoryBridge, type CanvasDrawingControls, type AreaBox, type SelectionActions } from "./canvas";
 import { borderColor, frameBackground, frameBackgroundLayer, frameCutLayer, hasFlatBorder, sceneToImage, toHex } from "@/lib/template-editor/frames";
 import type { PageFrame } from "@/lib/template-editor/model";
 import type { TextFormattingPatch, TextFormatter } from "@/lib/template-editor/rich-text-editing";
@@ -399,6 +400,17 @@ export function DesignEditor({
   const previousPage = !continuous && index > 0 ? design.pages[index - 1] : undefined;
   const onionScene = onionSkin && page.canvas && previousPage ? previousPage.canvas ?? sceneForPage(previousPage, design.format) : undefined;
   const selectedPhoto = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && (element.type === "image" || (element.type === "shape" && element.imageFill))) : undefined;
+  const selectionState=selectionActionState(scene,selected);
+  const selectionActions:SelectionActions|undefined=selectionState.selected.length?{
+    locked:selectionState.locked,
+    canLock:selectionState.canLock,
+    canDuplicate:selectionState.canDuplicate,
+    canDelete:selectionState.canDelete,
+    onLock:()=>applyCommand(live=>setSelectionLocked(live,selected,!selectionState.locked)),
+    onDuplicate:()=>applyCommand(live=>duplicateSelection(live,selected,undefined,isolatedGroupId??undefined)),
+    onDelete:()=>applyCommand(live=>removeSelection(live,selected)),
+    onMore:event=>openMenu(event,{label:"Selected elements",items:elementMenu(selected)}),
+  }:undefined;
   const selectedHtml = selected.length === 1 ? scene.elements.find(element => element.id === selected[0] && element.type === "html") : undefined;
   // The canvas reports the part being typed in; it only counts while that layer is the selection.
   const activeHtmlSelection = htmlSelection && selectedHtml?.id === htmlSelection.elementId ? htmlSelection : null;
@@ -2002,6 +2014,7 @@ export function DesignEditor({
                     selectedIds={selected}
                     onSelect={setSelected}
                     onChange={changeScene}
+                    selectionActions={selectionActions}
                     peers={collaboration?.peers}
                     collaborationPageId={collaboration ? collaborationPageId : undefined}
                     onCursorChange={collaboration ? publishCursor : undefined}

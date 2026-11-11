@@ -1,0 +1,41 @@
+/* Canva-style text bar: one row of compact controls with thin separators. */
+.te-quick-toolbar .te-format-bar { display: flex; align-items: center; gap: 2px; flex: none; }
+.te-quick-toolbar .te-format-bar > * { flex: none; }
+.te-quick-toolbar .te-format-bar .te-format-font { width: 132px; height: 32px; padding: 0 8px; border-radius: 8px; font-size: 13px; }
+.te-quick-toolbar .te-format-bar .te-format-sep { width: 1px; height: 20px; margin: 0 6px; background: #ffffff1f; }
+.te-quick-toolbar .te-format-bar .te-format-button {
+  display: inline-grid; place-items: center; min-width: 32px; width: 32px; height: 32px; padding: 0;
+  border: 0; border-radius: 6px; background: transparent; color: #ececf1; font-size: 15px; line-height: 1; cursor: pointer;
+}
+.te-quick-toolbar .te-format-bar .te-format-button:hover:not(:disabled) { background: #ffffff14; }
+.te-quick-toolbar .te-format-bar .te-format-button[aria-pressed="true"] { background: #bda0fc2e; color: #d6c6ff; }
+.te-quick-toolbar .te-format-bar .te-format-button:disabled { opacity: .35; cursor: not-allowed; }
+.te-quick-toolbar .te-format-bar .te-format-case { font-size: 13px; font-weight: 600; }
+.te-quick-toolbar .te-format-bar .te-format-color { display: inline-flex; margin-right: 2px; }
+.te-quick-toolbar .te-format-bar .te-format-lines { height: 32px; margin-left: 4px; padding: 0 6px; border-radius: 8px; font-size: 12px; }
+.te-quick-toolbar .te-format-bar .te-format-warning { display: inline-grid; place-items: center; width: 18px; height: 18px; margin-left: 4px; border-radius: 50%; background: #f5a524; color: #111; font-size: 11px; font-weight: 700; cursor: help; }
+
+/* − size + in one bordered pill, as Canva draws it. */
+.te-quick-toolbar .te-smart-size-control.is-compact { display: inline-flex; align-items: center; gap: 0; height: 32px; margin-left: 6px; border: 1px solid #ffffff26; border-radius: 8px; overflow: hidden; }
+.te-quick-toolbar .te-smart-size-control.is-compact > button { width: 28px; min-width: 28px; height: 30px; padding: 0; border: 0; border-radius: 0; background: transparent; color: #ececf1; font-size: 15px; }
+.te-quick-toolbar .te-smart-size-control.is-compact > button:hover:not(:disabled) { background: #ffffff14; }
+.te-quick-toolbar .te-smart-size-control.is-compact > input { width: 44px; height: 30px; padding: 0; border: 0; border-inline: 1px solid #ffffff26; border-radius: 0; background: transparent; text-align: center; font-size: 13px; -moz-appearance: textfield; }
+.te-quick-toolbar .te-smart-size-control.is-compact > input::-webkit-inner-spin-button,
+.te-quick-toolbar .te-smart-size-control.is-compact > input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.te-quick-toolbar .te-smart-size-control.is-compact > .te-smart-size-auto { width: auto; padding: 0 8px; border-left: 1px solid #ffffff26; font-size: 11px; }
+.te-quick-toolbar .te-smart-size-control.is-compact > .te-smart-size-auto[aria-pressed="true"] { color: #00d98a; }
+
+/* Spacing and transparency panels. */
+.te-format-popover {
+  position: fixed; z-index: 1000; width: 280px; padding: 14px; display: grid; gap: 12px;
+  background: #1f1f25; color: #ececf1; border: 1px solid #ffffff1c; border-radius: 12px; box-shadow: 0 12px 32px #0008;
+  font: 12px/1.3 Inter, system-ui, sans-serif;
+}
+.te-format-range { display: grid; grid-template-columns: 1fr 56px; grid-template-rows: auto auto; gap: 6px 10px; align-items: center; }
+.te-format-range > span { grid-column: 1 / -1; color: #c9c9d1; }
+.te-format-range > input[type="range"] { width: 100%; accent-color: #bda0fc; }
+.te-format-range > input[type="number"] { width: 56px; height: 28px; padding: 0 6px; border: 1px solid #ffffff26; border-radius: 6px; background: #15151a; color: inherit; text-align: center; font-size: 12px; }
+.te-format-anchor { display: flex; align-items: center; gap: 4px; }
+.te-format-anchor > span { flex: 1; color: #c9c9d1; }
+.te-format-anchor > button { height: 26px; padding: 0 8px; border: 1px solid #ffffff26; border-radius: 6px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
+.te-format-anchor > button[aria-pressed="true"] { background: #bda0fc2e; border-color: #bda0fc80; }
