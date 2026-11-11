@@ -21,6 +21,7 @@ export const ALLOWED_FONT_NAMES = Object.freeze([
   "GT-Walsheim-Condensed-Regular-Trial.otf", "GT-Walsheim-Condensed-Medium-Trial.otf", "GT-Walsheim-Condensed-Bold-Trial.otf",
   "PPKyoto-Light.otf", "PPKyoto-Medium.otf", "PPKyoto-Extrabold.otf",
   "Century Gothic.otf", "Century Gothic Bold.otf",
+  "Chirp-Regular.woff2", "Chirp-Bold.woff2",
 ]);
 const allowedNames = new Set(ALLOWED_FONT_NAMES);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

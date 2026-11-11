@@ -1,6 +1,6 @@
 /** Agent authoring uses output pixels; Engine stores editable layers on a 360-wide scene. */
 import {
-  BUILT_IN_TEMPLATES, EMPTY_LIBRARY, MAX_HTML_CHARS, MAX_HTML_CSS_CHARS, MAX_HTML_DESIGN_WIDTH, MAX_HTML_TOKENS, createBlankDesign, createCanvasElement,
+  BUILT_IN_TEMPLATES, COVER_REMARK_DEFAULT, COVER_REMARK_MAX, COVER_REMARK_SLOT, EMPTY_LIBRARY, MAX_HTML_CHARS, MAX_HTML_CSS_CHARS, MAX_HTML_DESIGN_WIDTH, MAX_HTML_TOKENS, createBlankDesign, createCanvasElement,
   createDesign, duplicatePage, formatDimensions, parseCanvasScene, parseLibrary, prepareSmartTemplate, sceneForPage,
   type CanvasElement, type CanvasScene, type DesignDocument, type DesignPage,
   type DesignTemplate, type EditorLibrary, type HtmlElement, type SmartTextRole, type VideoClip,
@@ -9,6 +9,7 @@ import { splitUntrimmedVideos } from "./video-slides";
 import { normalizeVideoLayers } from "./agent-video-layers";
 import { findSpan, hasSpans, isSpanHalf, reconcileSpans, seamOf, setSeam, spanPairs, spanPhoto, syncSpans, unlinkSpan } from "./spanning-photos";
 import { cleanHtmlLayer, cleanHtmlTokens } from "./html-layer";
+import { accentedText, accentProblem, MAX_TEXT_ACCENTS, textAccents, type TextAccent } from "./text-accents";
 import { frameBackground, frameBackgroundLayer, frameCutLayer, sceneToImage, type Box } from "./frames";
 
 type RecordValue = Record<string, unknown>;
@@ -23,7 +24,7 @@ export class AgentDeckValidationError extends Error {
     this.issues = normalized;
   }
 }
-const FONTS = ["serif", "sans", "walsheim", "walsheimcond", "kyoto", "century", "libre", "geist", "sfpro", "playfair", "dmserif", "lora", "cormorant", "crimson", "inter", "space", "montserrat", "bebas", "bebascanva", "plexmono", "caveat"];
+const FONTS = ["serif", "sans", "walsheim", "walsheimcond", "kyoto", "century", "libre", "geist", "sfpro", "chirp", "playfair", "dmserif", "lora", "cormorant", "crimson", "inter", "space", "montserrat", "bebas", "bebascanva", "plexmono", "caveat"];
 const LAYOUTS = ["title", "content", "split", "quote", "blank"];
 const PRESETS = {
   presentation: { width: 1920, height: 1080 },
@@ -45,7 +46,14 @@ const baseProperties = {
   opacity: num(0, 1), hidden: bool, locked: bool, slot: str(200),
   protected: { type: "array", maxItems: 4, uniqueItems: true, items: choice(["content", "position", "style", "delete"]) },
 };
+/** Styled words in one text box (text-accents.ts). */
+const accentsSchema: Schema = {
+  type: "array", maxItems: MAX_TEXT_ACCENTS,
+  items: obj({ start: { type: "integer", minimum: 0, maximum: 20_000 }, end: { type: "integer", minimum: 1, maximum: 20_000 }, style: str(20, { description: "\"accent\" (the brand accent gradient, #00D98A to #32FFBB top to bottom) or a hex color such as #1D9BF0" }) }, ["start", "end", "style"]),
+  description: "Styled words inside this text box: each range runs from start up to (not including) end of text, counted in JavaScript string indexes (a line break is one character), and takes style \"accent\" or a hex color. Ranges don't overlap. Setting accents replaces the box's word colors; [] clears them. Setting text without accents clears them too",
+};
 const textProperties = {
+  accents: accentsSchema,
   text: str(20_000), font: choice(FONTS), fontSize: num(1, 10_000), fontWeight: num(100, 900),
   italic: bool, underline: bool, strikethrough: bool, color, align: choice(["left", "center", "right"]),
   verticalAlign: choice(["top", "middle", "bottom"]), lineHeight: num(.5, 5),
@@ -127,7 +135,7 @@ const slideSchema = obj({
   bullets: { type: "array", maxItems: 40, items: str(2000) }, image: slideImageSchema,
   elements: { type: "array", maxItems: 100, items: elementSchema },
   // Text slots allow 20,000 characters (checked per slot); photo slots take an image URL as long as `image.src`.
-  slots: { type: "object", maxProperties: 100, additionalProperties: str(LIMITS.imageCharacters) },
+  slots: { type: "object", maxProperties: 100, additionalProperties: { anyOf: [str(LIMITS.imageCharacters), obj({ text: str(20_000), accents: accentsSchema }, ["text"], { description: "A text slot with styled words: {text, accents}" })] } },
   templatePage: { type: "integer", minimum: 0, maximum: LIMITS.slides - 1, description: "With templateId: 0-based index of the template page this slide copies. Set it on every slide or none; pages may repeat, reorder or be left out." },
   seam: seamSchema("With templateId, on a page whose photo continues on the next page (pageTypes marks it with pair, such as the @chatgptricks Wide photo pair): the share of the photo on this slide, from 0.1 to 0.9 (default 0.5). Choose it so the cut misses faces and text"),
   photoSize: obj({ width: num(1, 100_000), height: num(1, 100_000) }, ["width", "height"], { description: "With templateId, on that same page: the photo's size in pixels, so the frame takes its proportions instead of the placeholder's 16:9" }),
@@ -203,6 +211,12 @@ function validate(schema: Schema, value: unknown, path: string): AgentDeckIssue[
     if (matching) return validate(matching, value, path);
     return issue("must specify a supported type or operation");
   }
+  if (Array.isArray(schema.anyOf)) {
+    const results = (schema.anyOf as Schema[]).map(variant => validate(variant, value, path));
+    if (results.some(result => !result.length)) return [];
+    const index = (schema.anyOf as Schema[]).findIndex(variant => variant.type === (record(value) ? "object" : Array.isArray(value) ? "array" : typeof value));
+    return index >= 0 ? results[index] : issue("has an unsupported type");
+  }
   if (schema.const !== undefined && value !== schema.const) return issue(`must equal ${JSON.stringify(schema.const)}`);
   if (Array.isArray(schema.enum) && !schema.enum.includes(value)) return issue(`must be one of ${schema.enum.join(", ")}`);
   if (schema.type === "object") {
@@ -260,6 +274,26 @@ function toScene(properties: RecordValue, scale: number): RecordValue {
 function checkNativeElement(element: CanvasElement, path: string): CanvasElement {
   if (!parseCanvasScene({ background: "#ffffff", elements: [{ ...element, groupId: undefined }] })) fail(path, "element contains an unsupported image URL or values outside Engine's editable layer limits");
   return element;
+}
+/** The fixed SWIPE FOR MORE at the foot of a @chatgptricks cover: the cover-remark slot for agents. */
+function isCoverSwipe(element: CanvasElement): boolean {
+  return element.type === "text" && !element.slot && element.templateRole === "brand" && element.name === "Swipe for more";
+}
+/** The swipe line as a cover-remark slot, once a post writes its own line: same look and place, its words editable. */
+function asCoverRemark(element: Extract<CanvasElement, { type: "text" }>): Extract<CanvasElement, { type: "text" }> {
+  const next: Extract<CanvasElement, { type: "text" }> = { ...element, slot: COVER_REMARK_SLOT, layoutRole: "text", protected: ["position", "style", "delete"] };
+  delete next.templateRole;
+  return next;
+}
+/** `element` with `text` drawn with `accents` (text-accents.ts). */
+function withAccents<T extends Extract<CanvasElement, { type: "text" }>>(element: T, text: string, accents: unknown, path: string): T {
+  const problem = accentProblem(text, accents);
+  if (problem) fail(path, problem);
+  const styled = accentedText(text, accents as TextAccent[]);
+  const next = { ...element, text } as T;
+  if (styled.richText === undefined) { delete next.richText; delete next.wordTextures; }
+  else { next.richText = styled.richText; if (styled.wordTextures) next.wordTextures = styled.wordTextures; else delete next.wordTextures; }
+  return next;
 }
 /** An HTML layer with clean markup, CSS and brand tokens; a layer left with nothing to draw is an error. */
 function withHtml(element: HtmlElement, input: { html: string; css?: string; tokens?: unknown }, path: string): HtmlElement {
@@ -323,7 +357,7 @@ export function withHtmlLayerTokens<T>(input: T, tokens: Record<string, string> 
 }
 function makeElement(source: RecordValue, scale: number, theme: Theme, used: Set<string>, path: string): CanvasElement {
   // span and seam ask for a spanning photo once every slide exists (see SpanRequest); they aren't layer properties.
-  const { span, seam, tokens, ...input } = source;
+  const { span, seam, tokens, accents, ...input } = source;
   if (seam !== undefined && span === undefined) fail(`${path}.seam`, "requires span: \"next\"");
   const type = input.type as CanvasElement["type"];
   if (tokens !== undefined && type !== "html") fail(`${path}.tokens`, "is not supported");
@@ -333,6 +367,10 @@ function makeElement(source: RecordValue, scale: number, theme: Theme, used: Set
     : type === "html" ? { designWidth: Number(input.width) } : {};
   let element = { ...createCanvasElement(type), ...defaults, ...toScene(input, scale), id: input.id ?? crypto.randomUUID() } as CanvasElement;
   if (element.type === "html") element = withHtml(element, { html: String(input.html), css: input.css === undefined ? undefined : String(input.css), tokens }, path);
+  if (accents !== undefined) {
+    if (element.type !== "text") fail(`${path}.accents`, "is only supported on text");
+    element = withAccents(element, element.text, accents, `${path}.accents`);
+  }
   if (used.has(element.id)) fail(`${path}.id`, "must be unique across this deck");
   used.add(element.id);
   return checkNativeElement(element, path);
@@ -445,6 +483,7 @@ export function agentTemplateSlots(template: DesignTemplate): AgentTemplateSlot[
   const prepared = prepareSmartTemplate(template);
   return prepared.pages.flatMap((page, pageIndex) => [...(page.canvas ?? sceneForPage(page, template.format)).elements].sort((a, b) => a.y - b.y || a.x - b.x).flatMap((element): AgentTemplateSlot[] => {
     if (element.hidden || !element.slot && !element.templateRole && !(element.type === "text" && element.smartText)) return [];
+    if (isCoverSwipe(element)) return [{ pageId: page.id, pageIndex, ...(page.label ? { pageLabel: page.label } : {}), elementId: element.id, slot: COVER_REMARK_SLOT, fixedStyle: true, type: "text", sample: element.type === "text" ? element.text : "", maxCharacters: COVER_REMARK_MAX }];
     if (element.templateRole === "brand" && !(element.type === "text" && element.smartText)) return [];
     const base = { pageId: page.id, pageIndex, ...(page.label ? { pageLabel: page.label } : {}), elementId: element.id, slot: element.slot ?? element.id, fixedStyle: Boolean(element.protected?.includes("style")) };
     if (element.type === "text") {
@@ -452,7 +491,8 @@ export function agentTemplateSlots(template: DesignTemplate): AgentTemplateSlot[
       const perLine = Math.max(1, (element.width - 2 * (element.padding ?? 0)) / (size * .52));
       // A list's length is its number of items, so it gets no character guide.
       const lines = rule && rule.role !== "list" ? Math.max(1, Math.floor(((rule.guideHeight ?? rule.maxHeight) - 2 * (element.padding ?? 0)) / (size * element.lineHeight))) : undefined;
-      return [{ ...base, type: "text", ...(rule ? { role: rule.role } : {}), sample: element.text.slice(0, 200), ...(lines ? { maxCharacters: Math.max(8, Math.round(perLine * lines * .9)) } : {}) }];
+      const maxCharacters = lines ? Math.max(8, Math.round(perLine * lines * .9)) : undefined;
+      return [{ ...base, type: "text", ...(rule ? { role: rule.role } : {}), sample: element.text.slice(0, 200), ...(maxCharacters ? { maxCharacters } : {}) }];
     }
     if (element.type === "image" || element.type === "shape" && (element.templateRole === "media" || element.imageFill)) return [{ ...base, type: "photo" }];
     return [];
@@ -510,13 +550,21 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
   if (spec.label !== undefined) page.label = String(spec.label);
   if (spec.background !== undefined) canvas.background = String(spec.background);
   const text = canvas.elements.filter(element => element.type === "text");
-  const replacements = new Map<CanvasElement, { value: string; path: string }>();
-  for (const [key, value] of Object.entries((spec.slots ?? {}) as RecordValue)) {
-    const target = canvas.elements.find(element => element.slot === key || element.id === key || element.name === key) ?? listedLayers.get(key);
+  const replacements = new Map<CanvasElement, { value: string; accents?: unknown; path: string }>();
+  for (const [key, slotValue] of Object.entries((spec.slots ?? {}) as RecordValue)) {
+    const value = record(slotValue) ? slotValue.text : slotValue, accents = record(slotValue) ? slotValue.accents : undefined;
+    let target = canvas.elements.find(element => element.slot === key || element.id === key || element.name === key) ?? listedLayers.get(key);
+    // cover-remark (or cover-subline) on a @chatgptricks cover is its SWIPE FOR MORE line: empty keeps it, words replace it.
+    if ((key === COVER_REMARK_SLOT || key === "cover-subline") && (!target || isCoverSwipe(target))) {
+      const swipe = canvas.elements.findIndex(isCoverSwipe), words = record(slotValue) ? String(slotValue.text) : String(slotValue);
+      if (swipe >= 0 && !words.trim()) continue;
+      if (swipe >= 0) target = canvas.elements[swipe] = asCoverRemark(canvas.elements[swipe] as Extract<CanvasElement, { type: "text" }>);
+    }
     if (!target || target.type !== "text" && target.type !== "image" && !(target.type === "shape" && (target.templateRole === "media" || target.imageFill))) fail(`${path}.slots.${key}`, "must identify an existing text, image or photo-frame slot");
     if (isEndHalf(target)) fail(`${path}.slots.${key}`, "is the second half of the previous slide's photo; fill the photo on that slide");
     if (target.type === "text" && String(value).length > LIMITS.textCharacters) fail(`${path}.slots.${key}`, `text slots allow at most ${LIMITS.textCharacters} characters`);
-    replacements.set(target, { value: String(value), path: `${path}.slots.${key}` });
+    if (record(slotValue) && target.type !== "text") fail(`${path}.slots.${key}`, "takes an image source; {text, accents} is for text slots");
+    replacements.set(target, { value: String(value), accents, path: `${path}.slots.${key}` });
   }
   // Template copy slots in reading order; fixed brand text (handles, page furniture) is never a target.
   const copy = text.filter(element => element.type === "text" && element.smartText && !element.hidden).sort((a, b) => a.y - b.y || a.x - b.x);
@@ -526,9 +574,19 @@ function templateSlide(page: DesignPage, spec: RecordValue, document: DesignDocu
     if (!target) fail(`${path}.${key}`, "template does not have a matching editable text slot");
     replacements.set(target, { value: String(spec[key]), path: `${path}.${key}` });
   }
-  for (const [element, { value, path: slotPath }] of replacements) {
+  for (const [element, { value, accents, path: slotPath }] of replacements) {
     ensureEditable(element, canvas, element.type === "text" ? ["text"] : ["src"], slotPath);
-    if (element.type === "text") { element.text = value; delete element.richText; delete element.wordTextures; }
+    if (element.type === "text") {
+      // An empty cover remark keeps its default (SWIPE FOR MORE).
+      const text = element.slot === COVER_REMARK_SLOT && !value.trim() ? COVER_REMARK_DEFAULT : value;
+      if (element.slot === COVER_REMARK_SLOT && text.length > COVER_REMARK_MAX) fail(slotPath, `the cover's bottom line allows at most ${COVER_REMARK_MAX} characters`);
+      element.text = text; delete element.richText; delete element.wordTextures;
+      if (accents !== undefined) {
+        const styled = withAccents(element, text, accents, `${slotPath}.accents`);
+        if (styled.richText !== undefined) element.richText = styled.richText;
+        if (styled.wordTextures !== undefined) element.wordTextures = styled.wordTextures;
+      }
+    }
     else if (element.type === "image") element.src = value;
     else if (element.type === "shape") element.imageFill = { ...(element.imageFill ?? { objectFit: "cover", cropX: 50, cropY: 50 }), src: value };
     checkNativeElement(element, slotPath);
@@ -629,7 +687,7 @@ export function createAgentDeck(input: unknown, templates: DesignTemplate[] = BU
   return validateDocument(document);
 }
 const positionKeys = new Set(["x", "y", "width", "height", "rotation", "designWidth"]);
-const contentKeys = new Set(["text", "src", "publicAlt", "html", "css", "video"]);
+const contentKeys = new Set(["text", "accents", "src", "publicAlt", "html", "css", "video"]);
 function ensureEditable(element: CanvasElement, scene: CanvasScene, properties: string[], path: string, deleting = false) {
   let group = scene.groups?.find(candidate => candidate.id === element.groupId);
   const seen = new Set<string>();
@@ -838,7 +896,12 @@ export function updateAgentDeck(document: DesignDocument, input: unknown, frames
     }
     const elementIndex = canvas.elements.findIndex(element => element.id === operation.elementId);
     if (elementIndex < 0) fail(`${path}.elementId`, "element was not found on this slide");
-    const element = canvas.elements[elementIndex];
+    let element = canvas.elements[elementIndex];
+    // A cover's fixed SWIPE FOR MORE becomes its cover-remark slot when an edit sets its words.
+    if (op === "update_element" && record(operation.properties) && (operation.properties.text !== undefined || operation.properties.accents !== undefined) && isCoverSwipe(element)) {
+      element = asCoverRemark(element as Extract<CanvasElement, { type: "text" }>);
+      canvas.elements[elementIndex] = element;
+    }
     if (op === "remove_element") {
       ensureEditable(element, canvas, [], path, true);
       canvas.elements.splice(elementIndex, 1);
@@ -848,7 +911,8 @@ export function updateAgentDeck(document: DesignDocument, input: unknown, frames
       const allowed = new Set(Object.keys({ ...baseProperties, ...(element.type === "text" ? textProperties : element.type === "image" ? imageProperties : element.type === "html" ? htmlProperties : shapeProperties) }));
       for (const key of Object.keys(properties)) if (!allowed.has(key)) fail(`${path}.properties.${key}`, `is not supported on a ${element.type} element`);
       ensureEditable(element, canvas, Object.keys(properties), `${path}.properties`);
-      let updated = { ...element, ...toScene(properties, scale) } as CanvasElement;
+      const { accents, ...plain } = properties;
+      let updated = { ...element, ...toScene(plain, scale) } as CanvasElement;
       if (updated.type === "image" && record(properties.video)) {
         const patch = properties.video;
         if (patch.remove === true) delete updated.video;
@@ -863,7 +927,10 @@ export function updateAgentDeck(document: DesignDocument, input: unknown, frames
       if (updated.type === "html" && (properties.html !== undefined || properties.css !== undefined)) updated = withHtml(updated, { html: updated.html, css: updated.css, tokens: updated.tokens }, `${path}.properties`);
       if (element.type === "text") {
         const updatedText = updated as Extract<CanvasElement, { type: "text" }>;
-        if (properties.text !== undefined) delete updatedText.richText;
+        if (properties.text !== undefined && accents === undefined) { delete updatedText.richText; delete updatedText.wordTextures; }
+        if (element.slot === COVER_REMARK_SLOT && properties.text !== undefined && !updatedText.text.trim()) updatedText.text = COVER_REMARK_DEFAULT;
+        if (element.slot === COVER_REMARK_SLOT && updatedText.text.length > COVER_REMARK_MAX) fail(`${path}.properties.text`, `the cover's bottom line allows at most ${COVER_REMARK_MAX} characters`);
+        if (accents !== undefined) updated = withAccents(updatedText, updatedText.text, accents, `${path}.properties.accents`);
         if (Object.keys(properties).some(key => ["text", "font", "fontSize", "fontWeight", "width", "height", "padding", "lineHeight", "letterSpacing"].includes(key))) delete updatedText.autoFitFontSize;
       }
       checkNativeElement(updated, `${path}.properties`);
@@ -895,6 +962,7 @@ export function agentDeckView(document: DesignDocument) {
     background: scene.background,
     elements: scene.elements.map(element => ({
       ...videoView(toScene(structuredClone(element) as unknown as RecordValue, scale)),
+      ...(element.type === "text" && element.richText ? { accents: textAccents(element) } : {}),
       ...(element.clipBounds ? { clipBounds: toScene(element.clipBounds, scale) } : {}),
       ...(element.shadow ? { shadow: { ...element.shadow, offsetX: element.shadow.offsetX * scale, offsetY: element.shadow.offsetY * scale, blur: element.shadow.blur * scale, spread: element.shadow.spread * scale } } : {}),
       ...(element.strokeDash ? { strokeDash: element.strokeDash.map(length => length * scale) } : {}),
@@ -941,6 +1009,8 @@ export function agentCapabilities() {
     ] },
     updateExample: { operations: [{ op: "update_slide", pageId: "intro", label: "Opening slide" }, { op: "rename", name: "My editable presentation" }] },
     ...(composable ? { templateExample: { name: "A carousel composed from template pages", templateId: composable.id, slides: [{ templatePage: 0 }, { templatePage: 1 }, { templatePage: 1 }, { templatePage: composable.pages.length - 1 }] } } : {}),
-    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates. Omit slides to copy every page, or pass exactly one slide per template page in order to fill its text/image slots.", "To build a carousel of any length (1–20 slides) from a template's page types, set templatePage (0-based template page index) on every slide; pages may repeat, reorder or be left out. Each slide gets fresh page and layer ids and keeps that page's smart-template rules. Setting templatePage on only some slides is an error. Template pages and their slots are listed per page as pageTypes.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Photo slots and image.src accept the imageSources listed here, up to 2,000,000 characters. Render charts as PNG data URLs; base64 SVG is rejected.", "Engine stores data: PNG, JPEG, WebP and SVG images as media files in the workspace, once each, and the saved deck points to them (/api/template-editor/assets/<sha-256>), so they don't count against the 12 MB library limit. GIF and AVIF stay embedded.", "Videos: a video is its own layer, {type: \"video\", src, poster, x, y, width, height, start, end, loop, muted, fit, cropX, cropY, radius, opacity}, in the stack like an image, so text, shapes and fades go above or below it. src is the clip: an Engine video path (/api/template-editor/videos/<sha-256>) from engine_video_upload or engine_get_deck, or a public https link to an MP4 or MOV that Engine copies; through the Engine MCP, path (an absolute path to an .mp4, .m4v, .mov or .webm file on this computer) instead, which the bridge uploads. Files are up to 200 MB and 3 minutes; POST /api/agent/videos stores one over HTTP. poster is the still that thumbnails, PNG and PDF show: give a frame from the clip (the bridge takes one when you give path and no poster); without one the slide shows a dark frame and engine_check_deck flags it. To replace a still with a clip (a cover photo, or the media inside an X post card), use add_video with replaces: that layer's id; the video takes its box, crop and place in the stack, and the still is hidden. update_element on a video layer changes poster, start, end, loop or muted. engine_get_deck shows video layers as type video, with the clip's facts in video. A template's photo slot, such as the @chatgptricks cover on templatePage 0, also takes image: {video: {src | url | path}}. A slide plays at most 60 seconds: a longer clip given without start or end continues on copies of its slide placed right after it, 60 seconds each; with start or end it stays on one slide and plays 60 seconds from start. The deck stores only the clip's path, so it never counts against the library limit. A video stays on one slide (no span), and a slide plays one video. The editor plays it muted and looping inside its trim; a PNG, JPG or WebP download turns every slide with a video into an MP4 at the deck's size (1080 wide) with every layer and the clip's sound, and PDF and SVG show the poster.", "X posts look like X: a post card's author name, handle and words use font sfpro (SF Pro, the closest match to X's own typeface) at X's sizes and colors, and keep that look. On a Reaction page fill the card's slots (name, handle, text, avatar, media) and leave their style alone; if you build a post card from free layers, use font sfpro for the name (bold), handle and words, never the page's headline font.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace.", "Spanning photos: one photo can start on one slide and continue on the next, split at the seam as people swipe. In a template, use the two pages pageTypes marks with pair together and in order, fill the photo once on the first and give its photoSize and seam (0.1 to 0.9, the share of the photo on that slide, chosen so the cut misses faces and text). In any deck, add an image with span: \"next\" (and seam), or use span_photo on an existing image; span_photo on a photo that already spans moves its seam. update_element on either half updates both, remove_element removes both, unlink_span leaves two ordinary photos, and a slide moved away from its partner unlinks them. engine_get_deck shows each half's span with its partnerPageId and seam."],
+    notes: ["Read the saved deck to obtain generated element IDs before patching.", "Updates are atomic; locked and protected layers cannot be bypassed.", "Use templateId to copy native templates. Omit slides to copy every page, or pass exactly one slide per template page in order to fill its text/image slots.", "To build a carousel of any length (1–20 slides) from a template's page types, set templatePage (0-based template page index) on every slide; pages may repeat, reorder or be left out. Each slide gets fresh page and layer ids and keeps that page's smart-template rules. Setting templatePage on only some slides is an error. Template pages and their slots are listed per page as pageTypes.", "For consistent posts, prefer templateId + slots from engine_list_templates. Text slots keep the template font, colour and position; their size adapts to the copy and nearby content makes room. Stay within each slot's maxCharacters. Photo slots replace the image inside a fixed frame. Fixed brand layers cannot change.", "Photo slots and image.src accept the imageSources listed here, up to 2,000,000 characters. Render charts as PNG data URLs; base64 SVG is rejected.", "Engine stores data: PNG, JPEG, WebP and SVG images as media files in the workspace, once each, and the saved deck points to them (/api/template-editor/assets/<sha-256>), so they don't count against the 12 MB library limit. GIF and AVIF stay embedded.", "Videos: a video is its own layer, {type: \"video\", src, poster, x, y, width, height, start, end, loop, muted, fit, cropX, cropY, radius, opacity}, in the stack like an image, so text, shapes and fades go above or below it. src is the clip: an Engine video path (/api/template-editor/videos/<sha-256>) from engine_video_upload or engine_get_deck, or a public https link to an MP4 or MOV that Engine copies; through the Engine MCP, path (an absolute path to an .mp4, .m4v, .mov or .webm file on this computer) instead, which the bridge uploads. Files are up to 200 MB and 3 minutes; POST /api/agent/videos stores one over HTTP. poster is the still that thumbnails, PNG and PDF show: give a frame from the clip (the bridge takes one when you give path and no poster); without one the slide shows a dark frame and engine_check_deck flags it. To replace a still with a clip (a cover photo, or the media inside an X post card), use add_video with replaces: that layer's id; the video takes its box, crop and place in the stack, and the still is hidden. update_element on a video layer changes poster, start, end, loop or muted. engine_get_deck shows video layers as type video, with the clip's facts in video. A template's photo slot, such as the @chatgptricks cover on templatePage 0, also takes image: {video: {src | url | path}}. A slide plays at most 60 seconds: a longer clip given without start or end continues on copies of its slide placed right after it, 60 seconds each; with start or end it stays on one slide and plays 60 seconds from start. The deck stores only the clip's path, so it never counts against the library limit. A video stays on one slide (no span), and a slide plays one video. The editor plays it muted and looping inside its trim; a PNG, JPG or WebP download turns every slide with a video into an MP4 at the deck's size (1080 wide) with every layer and the clip's sound, and PDF and SVG show the poster.", "X posts look like X: a post card's author name, handle and words use font chirp (Chirp, X's own typeface) at X's sizes and colors, and keep that look. On a Reaction page fill the card's slots (name, handle, text, avatar, media) and leave their style alone; if you build a post card from free layers, use font chirp for the name (weight 700), handle and words, never the page's headline font. Put a post's words in one text box and color its cashtags, @mentions, #hashtags and links #1D9BF0 with accents. Until the Chirp files are installed, text in chirp shows SF Pro and engine_check_deck says the X font is missing.",
+      "Colored words: a text layer takes accents, a list of {start, end, style}: the characters from start up to (not including) end of its text, counted as JavaScript string indexes (a line break is one character), take style \"accent\" (the brand accent gradient, #00D98A to #32FFBB from top to bottom) or a hex color such as #1D9BF0. Ranges don't overlap. Use it instead of splitting a sentence into several layers. It works on add_element, on update_element (accents alone restyles the current text; text without accents clears them; [] clears them), and on template slots, which take {text, accents} in place of a string: slots[\"cover-headline\"] = {text: \"JENSEN HUANG REPORTEDLY HAS NO PRENUP, MEANING A DIVORCE COULD COST HIM $75 BILLION\", accents: [{start: 28, end: 37, style: \"accent\"}, {start: 72, end: 83, style: \"accent\"}]}; content titles (slots.title) take accents the same way. engine_get_deck lists each styled text layer's accents (its richText is the same styling as the editor draws it).",
+      "A cover's bottom line is the slot cover-remark: SWIPE FOR MORE when you leave it out or empty, or a brief line of your own in its style and place, in capitals, at most 40 characters, such as THE MOST EXPENSIVE DIVORCE EVER, or READ THE CAPTION on a single-image post. On a deck that already exists, send update_element with text to its Swipe for more layer.", "Engine JSON imports preserve editable layers. Private uploaded media requires a portable ZIP backup for transfer to another workspace.", "Spanning photos: one photo can start on one slide and continue on the next, split at the seam as people swipe. In a template, use the two pages pageTypes marks with pair together and in order, fill the photo once on the first and give its photoSize and seam (0.1 to 0.9, the share of the photo on that slide, chosen so the cut misses faces and text). In any deck, add an image with span: \"next\" (and seam), or use span_photo on an existing image; span_photo on a photo that already spans moves its seam. update_element on either half updates both, remove_element removes both, unlink_span leaves two ordinary photos, and a slide moved away from its partner unlinks them. engine_get_deck shows each half's span with its partnerPageId and seam."],
   };
 }

@@ -256,6 +256,13 @@ export type DesignComment = { id: string; pageId?: string; elementId?: string; t
 export type DesignVersion = Pick<DocumentResources, "styles" | "components" | "colorRoles" | "parameters"> & { id: string; name: string; createdAt: string; format: DesignFormat; pages: DesignPage[]; continuousCanvas?: CanvasScene; caption: string; masterScene?: CanvasScene; customSize?: { width: number; height: number } };
 export type DocumentResources = { styles?: TextStyle[]; colorRoles?: { id: string; name: string; color: string }[]; components?: ReusableComponent[]; parameters?: TemplateParameter[]; masterScene?: CanvasScene; customSize?: { width: number; height: number }; tags?: string[]; folderId?: string; favorite?: boolean; deletedAt?: string };
 export type FrameRole = "background" | "cutout" | "text";
+/** X's own typeface (Chirp) for a post card's name, handle and words; text in it shows SF Pro until its files are installed. */
+export const X_FONT = "chirp";
+/** A cover's bottom line: a brief remark of its own, or SWIPE FOR MORE when empty. On
+ * @chatgptricks covers it is the fixed SWIPE FOR MORE layer until a post writes its own. */
+export const COVER_REMARK_SLOT = "cover-remark";
+export const COVER_REMARK_DEFAULT = "SWIPE FOR MORE";
+export const COVER_REMARK_MAX = 40;
 export const FRAME_ROLES: readonly FrameRole[] = ["background", "cutout", "text"];
 /** Frames: the image a slide was made from. It never changes, so a cut always
  * takes the original pixels and "Reset to original" can bring them back. */
@@ -1675,6 +1682,7 @@ const FONT_IDS = new Set([
   "libre",
   "geist",
   "sfpro",
+  "chirp",
   "playfair",
   "dmserif",
   "lora",
@@ -3104,15 +3112,15 @@ function chatgptricksTemplate(): DesignTemplate {
         smartFlow: { after, gap: px(gap), bottom: px(X_CARD.bottom), hug: { after: slot("media"), gap: px(X.foot) } } },
       { type: "image", ...at(`${key}-avatar${suffix}`, "Avatar", [left + X.inset, top + X.avatarTop, X.avatar, X.avatar]), src: avatarPlaceholder(Math.round(X.avatar)), fit: "cover", cropX: 50, cropY: 50, radius: px(X.avatar / 2), intrinsicWidth: Math.round(X.avatar), intrinsicHeight: Math.round(X.avatar),
         directive: "The post author's profile photo from X (pbs.twimg.com)", slot: slot("avatar"), templateRole: "media", layoutRole: "media", protected: ["position", "delete"], smartFlow: inside(X.avatarTop) },
-      { type: "text", ...at(`${key}-name${suffix}`, "Author name", [left + X.nameX, nameY, nameWidth, X.name * 1.2]), text: post.name, ...typeset("sfpro", X.name, 700, X_POST_COLORS.text, 1.2, 0), ...textSlot(slot("name")), smartFlow: inside(nameTop), smartText: fit("heading", 0, X.name, X.name * .75, X.name * 1.2, X.name * 1.2) },
+      { type: "text", ...at(`${key}-name${suffix}`, "Author name", [left + X.nameX, nameY, nameWidth, X.name * 1.2]), text: post.name, ...typeset(X_FONT, X.name, 700, X_POST_COLORS.text, 1.2, 0), ...textSlot(slot("name")), smartFlow: inside(nameTop), smartText: fit("heading", 0, X.name, X.name * .75, X.name * 1.2, X.name * 1.2) },
       // Sits after the name's last letter. Recreate recolours it per account (blue, gold for organizations, grey) or hides it.
       { type: "shape", ...at(`${key}-badge${suffix}`, "Verified badge", [left + X.nameX + X.name * .55 * post.name.length + X.badgeGap, nameY + (X.name * 1.2 - X.badge) / 2, X.badge, X.badge]), shape: "path", path: X_BADGES.blue.path, viewBox: "0 0 100 100", fillRule: "evenodd", fill: X_BADGES.blue.fill, stroke: "transparent", strokeWidth: 0, radius: 0,
         slot: slot("badge"), templateRole: "brand", layoutRole: "fixed", protected: ["content", "position"], smartFlow: { after: slot("name"), gap: px(X.badgeGap), bottom: px(1440), direction: "right" } },
-      { type: "text", ...at(`${key}-handle${suffix}`, "Author handle", [left + X.nameX, top + handleTop, X.markX - X.markGap - X.nameX, X.handle * 1.2]), text: post.handle, ...typeset("sfpro", X.handle, 400, X_POST_COLORS.handle, 1.2, 0), ...textSlot(slot("handle")), smartFlow: inside(handleTop), smartText: fit("body", 0, X.handle, X.handle * .75, X.handle * 1.2, X.handle * 1.2) },
+      { type: "text", ...at(`${key}-handle${suffix}`, "Author handle", [left + X.nameX, top + handleTop, X.markX - X.markGap - X.nameX, X.handle * 1.2]), text: post.handle, ...typeset(X_FONT, X.handle, 400, X_POST_COLORS.handle, 1.2, 0), ...textSlot(slot("handle")), smartFlow: inside(handleTop), smartText: fit("body", 0, X.handle, X.handle * .75, X.handle * 1.2, X.handle * 1.2) },
       { type: "shape", ...at(`${key}-x-mark${suffix}`, "X logo", [left + X.markX, top + X.markTop, markWidth, X.mark]), shape: "path", path: xPath, viewBox: "0 0 1200 1227", fill: X_POST_COLORS.text, stroke: "transparent", strokeWidth: 0, radius: 0, ...fixed(), smartFlow: inside(X.markTop) },
       { type: "text", ...at(`${key}-x-com${suffix}`, "X.com", [left + X.markX + markWidth, top + comTop, 120, X.com * 1.2]), text: ".com", ...typeset("sfpro", X.com, 700, X_POST_COLORS.text, 1.2, 0), textMode: "fixed", verticalAlign: "top", ...fixed(), smartFlow: inside(comTop) },
       // The post word for word at the screenshot's size, wrapping like X; only a post too long for its page shrinks.
-      { type: "text", ...at(`${key}-text${suffix}`, "Post text", [left + X.inset, top + textTop, 936 - 2 * X.inset, post.lines * X.textLine]), text: post.text, ...typeset("sfpro", X.text, 400, X_POST_COLORS.text, X.textLine / X.text, 0), ...textSlot(slot("text")),
+      { type: "text", ...at(`${key}-text${suffix}`, "Post text", [left + X.inset, top + textTop, 936 - 2 * X.inset, post.lines * X.textLine]), text: post.text, ...typeset(X_FONT, X.text, 400, X_POST_COLORS.text, X.textLine / X.text, 0), ...textSlot(slot("text")),
         smartFlow: { after: slot("card"), edge: "top", gap: px(textTop), bottom: px(textBottom) }, smartText: fit("body", 0, X.text, X.text * .8, maxLines * X.textLine, post.lines * X.textLine) },
       // The post's own photo under its text, whole and with X's rounded corners. Hidden until Recreate
       // fills it and sizes it to the photo's proportions; while hidden, the card ends under the text.
@@ -3171,6 +3179,7 @@ function chatgptricksTemplate(): DesignTemplate {
         hairline("cover-hairline-right", "Right hairline", 578, white, "#F9FFFE00"),
         // Three balanced lines at 97 px; the box bottom stays 130 px above the page bottom.
         { type: "text", ...at("cover-headline", "Cover headline", [68, 1066.724, 944, 243.276]), text: "SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED WHILE US JOB OPENINGS FELL ALMOST 30%", richText: `SINCE CHATGPT CAME OUT, STOCKS NEARLY DOUBLED WHILE US JOB OPENINGS <span style="color:${green}">FELL ALMOST 30%</span>`, ...typeset("bebas", 97, 400, white, .836, -.02, "center"), ...textSlot("cover-headline"), verticalAlign: "bottom", shadow: glow(), smartText: fit("cover", 3, 97, 54, 4 * 97 * .836, 3 * 97 * .836, 97 * .85, 1310) },
+        // Agents may write their own line here through the cover-remark slot (agent-decks.ts).
         { type: "text", ...at("cover-swipe", "Swipe for more", [0, 1334, 1080, 32]), text: "SWIPE FOR MORE", ...typeset("sfpro", 32, 700, grey, 1, .01, "center"), textMode: "fixed", verticalAlign: "top", ...fixed() },
       ], 68),
       sheet("media", "Text + Media", [
