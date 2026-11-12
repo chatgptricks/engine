@@ -14,6 +14,12 @@ import vm from "node:vm";
 import {createRequire} from "node:module";
 import {fileURLToPath} from "node:url";
 import ts from "typescript";
+// The code under test times out with AbortSignal.timeout, whose timer doesn't keep
+// Node running. A real request holds the process open with its socket; these fakes
+// hang on a bare promise, so Node 22 (CI) would exit and cancel the waiting tests.
+// Hold the process open while this file runs, as a real request would.
+const keepAlive=setInterval(()=>{},60_000);
+after(()=>clearInterval(keepAlive));
 
 const root=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"..");
 const nativeRequire=createRequire(import.meta.url);
