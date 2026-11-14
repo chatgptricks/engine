@@ -226,13 +226,17 @@ export async function exportSlideVideo(
   });
 }
 
+/** What goes under or over the clip: one picture, or one for each output second (captions change it). */
+export type CompositeLayer = HTMLCanvasElement | ((t: number) => HTMLCanvasElement);
+const layerAt = (layer: CompositeLayer, t: number) => typeof layer === "function" ? layer(t) : layer;
+
 /** The shared encoder: draws `under`, the video, then `over` for every frame of
  * the window [startAt, startAt + duration] and returns the file. WebCodecs (H.264
  * MP4, the clip's AAC copied in) first; MediaRecorder in real time otherwise. */
 export async function encodeComposite(args: {
   video: HTMLVideoElement;
-  under: HTMLCanvasElement;
-  over: HTMLCanvasElement;
+  under: CompositeLayer;
+  over: CompositeLayer;
   /** Draws the clip's current frame; `t` is the output's second (for fades). */
   drawVideo: (ctx: CanvasRenderingContext2D, t: number) => void;
   width: number;
@@ -285,8 +289,8 @@ export async function encodeComposite(args: {
  * the speakers). Reliable sound across browsers; wall-clock duration. */
 async function recordRealtime(args: {
   video: HTMLVideoElement;
-  under: HTMLCanvasElement;
-  over: HTMLCanvasElement;
+  under: CompositeLayer;
+  over: CompositeLayer;
   drawVideo: (ctx: CanvasRenderingContext2D, t: number) => void;
   speed?: number;
   gain?: (t: number) => number;
@@ -380,14 +384,14 @@ async function recordRealtime(args: {
       let done = false;
       try {
         const elapsed = (performance.now() - t0) / 1000;
-        ctx.drawImage(under, 0, 0, width, height);
+        ctx.drawImage(layerAt(under, elapsed), 0, 0, width, height);
         if (gainNode && audioCtx && args.gain) gainNode.gain.setTargetAtTime(args.gain(elapsed), audioCtx.currentTime, 0.01);
         try {
           drawVideo(ctx, elapsed);
         } catch {
           /* frame not ready this tick — keep the previous one */
         }
-        ctx.drawImage(over, 0, 0, width, height);
+        ctx.drawImage(layerAt(over, elapsed), 0, 0, width, height);
         args.onProgress?.(Math.min(1, elapsed / duration));
         if (elapsed >= duration || video.ended || args.signal?.aborted) done = true;
       } catch {
@@ -722,8 +726,8 @@ async function reencodeAudio(
  * clip's audio (trimmed to the same window) is muxed in as an AAC track. */
 async function encodeWithWebCodecs(args: {
   video: HTMLVideoElement;
-  under: HTMLCanvasElement;
-  over: HTMLCanvasElement;
+  under: CompositeLayer;
+  over: CompositeLayer;
   drawVideo: (ctx: CanvasRenderingContext2D, t: number) => void;
   speed?: number;
   gain?: (t: number) => number;
@@ -881,9 +885,9 @@ async function encodeWithWebCodecs(args: {
     }
     const t = i / fps;
     await seekTo(startAt + t * speed);
-    ctx.drawImage(under, 0, 0, W, H);
+    ctx.drawImage(layerAt(under, t), 0, 0, W, H);
     drawVideo(ctx, t);
-    ctx.drawImage(over, 0, 0, W, H);
+    ctx.drawImage(layerAt(over, t), 0, 0, W, H);
     const frame = new VideoFrame(canvas, {
       timestamp: Math.round(t * 1_000_000),
       duration: Math.round(1_000_000 / fps),
@@ -921,8 +925,12 @@ async function encodeWithWebCodecs(args: {
           meta?: unknown,
         ) => void;
       };
+      // The muxer wants the track's first frame at 0, but a trim rarely falls on an AAC frame's
+      // edge (~21 ms each): the first frame starts a little before or after it. Shift the track
+      // so it starts at 0, at most one frame off, less than one video frame.
+      const offset = demuxed.chunks[0]?.timestamp ?? 0;
       for (const c of demuxed.chunks) {
-        m.addAudioChunkRaw(c.data, c.type, c.timestamp, c.duration, meta);
+        m.addAudioChunkRaw(c.data, c.type, c.timestamp - offset, c.duration, meta);
       }
     } catch (e) {
       console.error("[gf-export-video] audio mux failed, exporting silent:", e);

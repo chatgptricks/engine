@@ -231,7 +231,7 @@ A video is its own layer, in the stack like an image, so text, shapes and fades 
   { "op": "add_video", "pageId": "s9", "replaces": "s9-l10", "path": "/Users/me/Clips/09-media.mp4" } ] }
 ```
 
-- `update_element` on a video layer changes `poster`, `start`, `end`, `loop`, `muted`, `speed`, `volume`, `fadeIn` or `fadeOut` (see **Editing a clip** below). `engine_get_deck` shows it as `type: "video"` with `src` (the clip), `poster`, and the clip's facts in `video`.
+- `update_element` on a video layer changes `poster`, `start`, `end`, `loop`, `muted`, `speed`, `volume`, `fadeIn`, `fadeOut` or `captions` (see **Editing a clip** and **Captions** below). `engine_get_deck` shows it as `type: "video"` with `src` (the clip), `poster`, and the clip's facts in `video`.
 - Over plain HTTP, upload with `POST /api/agent/videos`: `{action: "start", id: <sha-256>, bytes, mimeType, name}` (a WebM also sends `duration`, `width`, `height`), send the bytes where it says (a signed Storage URL, or 4 MB `PUT` parts in development), then `{action: "finish", …}` returns `src`.
 
 Engine stores a video layer as an image whose `src` is the poster and whose `video` is the clip, so a photo slot can also play one. Add `video` to an image layer or a slide's `image`:
@@ -275,6 +275,22 @@ These follow the clip attributes of [OpenFilm](https://github.com/openfilm/openf
 - `split_video {pageId, elementId, at}` cuts a video slide in two at second `at` of the clip (the file's own time, at least 0.5 s inside the part that plays). The slide keeps the part before `at`; a copy of the slide placed right after it plays the rest, with every other layer copied too. A fade in stays on the first, a fade out moves to the second. Give `poster` for the copy, or through the Engine MCP leave it out and the bridge takes the frame at `at` (needs ffmpeg); otherwise the copy shows the first poster.
 - **`engine_video_look`** (Engine MCP) shows you frames of a clip, each labelled with its second: a deck's video layer (`deckId`, `slideId`, `elementId`; frames from the part that plays), an Engine clip `src`, or a local `path`. Give `times` (up to 12 seconds of the file) or `count` (default 6, spread evenly). Use it to choose `start`, `end`, `coverTime`, fades and split points. Over plain HTTP, `GET /api/agent/videos?id=<sha-256>` returns the stored clip (a redirect to a signed link in production).
 - In the editor's Video tab: a filmstrip of the clip (click a frame to go there; the part outside the trim is darkened), trim handles, speed (with 0.5×, 1×, 1.5× and 2× presets), volume, fade in and fade out, and **Split here**, which cuts at the playhead and takes the new slide's cover from that frame. Each change is one undo step.
+
+#### Captions
+
+After OpenFilm's caption tracks: a clip carries timed captions, and a text layer on its slide shows them.
+
+```json
+{ "type": "video", "src": "/api/template-editor/videos/…", "poster": "…", "x": 0, "y": 0, "width": 1080, "height": 1440,
+  "captions": [ { "start": 0.4, "end": 2.1, "text": "This changes everything" }, { "start": 2.1, "end": 4, "text": "Watch the left side" } ] }
+```
+
+- `captions` is a list of up to 300 cues `{start, end, text}` in **seconds of the clip** (the file's own time, as `start` and `end` are), each at least 0.1 s long and up to 200 characters, or the text of an `.srt` or `.vtt` file, which Engine reads into cues (styling tags are dropped). Through the Engine MCP, `captionsFile` is an absolute path to an `.srt` or `.vtt` file on your computer, which the bridge reads. `[]` removes them. Cues that start after the clip ends are left out.
+- A **caption layer** is a text layer with `captions: true`. Instead of its own text it shows the cue playing, in its own box, font, size, colour, shadow and other effects, and nothing between cues; its `text` is only a sample shown in the editor. When a slide's video has captions and the slide has no caption layer, Engine adds one: white, bold type with a soft shadow, centred near the foot of the slide, in the font of the slide's first text layer. Restyle or move it with `update_element` like any text layer.
+- Because cues are in the clip's own time, trimming, `speed` and `split_video` keep each one on its moment: a slide shows only the cues inside the part it plays.
+- A download as PNG, JPG or WebP burns the captions into each slide's MP4 at their moments. Stills (thumbnails, PNG and PDF of a page, review links) show the cue at the cover, or none.
+- `engine_check_deck` flags a caption layer with nothing to show.
+- In the editor's Video tab: **Captions** lists the cues (the one playing is marked; click its time to go there), with their words, start and end; **Add caption** adds one at the playhead, **Import .srt or .vtt** replaces them with a file's, and **Download .srt** saves them. The first caption also adds the caption layer, in the same undo step; select it to change how captions look. Engine doesn't transcribe speech: bring an `.srt`/`.vtt` (from a transcription tool, say), or have an agent write the cues.
 
 ### HTML layers
 

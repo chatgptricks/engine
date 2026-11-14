@@ -1,7 +1,8 @@
 "use client";
-import {useEffect, useRef, type CSSProperties} from "react";
+import {useEffect, useRef, useState, type CSSProperties} from "react";
 import type {VideoClip} from "@/lib/template-editor/model";
 import {fadeAt, fadesPicture, playWindow, slideTimeAt} from "@/lib/template-editor/clip-timing";
+import {cueAt} from "@/lib/template-editor/captions";
 
 /** Paused clips, by layer id, for this tab only: playback isn't part of the design. */
 const paused = new Set<string>();
@@ -61,4 +62,30 @@ export function VideoPlayer({clip, layerId, poster, className, style}: {clip: Vi
     return () => { window.cancelAnimationFrame(frame); video.style.opacity = ""; video.removeEventListener("loadedmetadata", begin); video.removeEventListener("timeupdate", keepInside); video.removeEventListener("ended", ended); document.removeEventListener("visibilitychange", sync); listeners.delete(sync); };
   }, [layerId, start, end, loop, speed, volume, fadeIn, fadeOut, clip.duration]);
   return <video ref={ref} className={className} style={style} data-video-layer={layerId} src={clip.src} poster={poster} muted={clip.muted !== false} playsInline preload="metadata" disablePictureInPicture aria-hidden="true" />;
+}
+
+const OFF = {text: null, playing: false};
+/** The cue a caption layer shows on the editing canvas, following its clip's playhead: its words,
+ * or null between cues, and whether the clip is playing. Off (null, not playing) unless `live`. */
+export function useLiveCaption(videoLayerId: string | undefined, clip: VideoClip | undefined, live: boolean): {text: string | null; playing: boolean} {
+  const [state, setState] = useState<{text: string | null; playing: boolean}>({text: null, playing: false});
+  const cues = clip?.captions;
+  useEffect(() => {
+    if (!live || !videoLayerId || !cues?.length) return;
+    let frame = 0;
+    const update = () => {
+      const video = videoForLayer(videoLayerId);
+      const text = video ? cueAt(cues, video.currentTime)?.text ?? null : cueAt(cues, clip?.coverTime ?? clip?.start ?? 0)?.text ?? null;
+      const playing = Boolean(video && !video.paused);
+      setState(current => current.text === text && current.playing === playing ? current : {text, playing});
+    };
+    const tick = () => { update(); frame = window.requestAnimationFrame(tick); };
+    // The video's own events too: a tab in the background draws a frame a second or less.
+    const onVideo = (event: Event) => { if (event.target instanceof HTMLVideoElement && event.target.dataset.videoLayer === videoLayerId) update(); };
+    const events = ["timeupdate", "seeked", "play", "pause"];
+    for (const name of events) document.addEventListener(name, onVideo, true);
+    frame = window.requestAnimationFrame(tick);
+    return () => { window.cancelAnimationFrame(frame); for (const name of events) document.removeEventListener(name, onVideo, true); };
+  }, [live, videoLayerId, cues, clip?.coverTime, clip?.start]);
+  return live && videoLayerId && cues?.length ? state : OFF;
 }

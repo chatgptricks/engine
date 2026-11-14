@@ -754,3 +754,158 @@ test("engine_capabilities lists the clip edits and split_video", async t => {
   const text = JSON.stringify(agentCapabilities());
   for (const word of ["\"speed\"", "\"volume\"", "\"fadeIn\"", "\"fadeOut\"", "split_video"]) assert.ok(text.includes(word), word);
 });
+
+// Timed captions after OpenFilm's caption tracks: cues on the clip, in its own seconds, shown by a caption layer.
+const SRT = `1
+00:00:00,500 --> 00:00:02,000
+<i>This changes</i>   everything
+
+2
+00:00:02,000 --> 00:00:04,250
+Watch the
+left side
+`;
+const VTT = `WEBVTT
+
+NOTE made by hand
+
+intro
+00:01.000 --> 00:02.500 align:center line:90%
+<v Ivan>Hello &amp; welcome</v>
+
+00:00:03.000 --> 00:00:05.000
+<c.yellow>Second</c>
+`;
+
+test("captions read from SRT and WebVTT files, and write back as SRT", t => {
+  const f = fixture(t), captions = f.load("lib/template-editor/captions.ts");
+  assert.deepEqual(captions.parseCaptionFile(SRT), [{start: 0.5, end: 2, text: "This changes everything"}, {start: 2, end: 4.25, text: "Watch the\nleft side"}]);
+  assert.deepEqual(captions.parseCaptionFile(VTT), [{start: 1, end: 2.5, text: "Hello & welcome"}, {start: 3, end: 5, text: "Second"}], "cue ids, settings, NOTE blocks and tags are dropped");
+  assert.deepEqual(captions.parseCaptionFile("﻿" + SRT.replace(/\n/g, "\r\n")), captions.parseCaptionFile(SRT), "a BOM and Windows line ends read the same");
+  const srt = captions.formatSrt(captions.parseCaptionFile(SRT));
+  assert.match(srt, /^1\n00:00:00,500 --> 00:00:02,000\nThis changes everything\n/);
+  assert.deepEqual(captions.parseCaptionFile(srt), captions.parseCaptionFile(SRT), "round trip");
+  assert.throws(() => captions.parseCaptionFile("hello"), /no captions/);
+  assert.throws(() => captions.parseCaptionFile("1\nsoon --> later\nHi\n"), /can't read/);
+  assert.throws(() => captions.parseCaptionFile(Array.from({length: 301}, (_, i) => `${i}\n00:00:${String(i % 60).padStart(2, "0")},000 --> 00:00:${String(i % 60).padStart(2, "0")},500\nx\n`).join("\n")), /holds 300/);
+});
+
+test("a clip keeps checked captions in its own seconds; a text layer can be its caption layer", t => {
+  const f = fixture(t), model = f.load("lib/template-editor/model.ts");
+  const cues = [{start: 3, end: 4, text: "  second  "}, {start: 0.5, end: 2, text: "first"}, {start: 20, end: 21, text: "after the clip"}, {start: 5, end: 6, text: "   "}];
+  assert.deepEqual(model.parseVideoClip(clipOf({captions: cues})).captions, [{start: 0.5, end: 2, text: "first"}, {start: 3, end: 4, text: "second"}], "sorted, trimmed; past the end and empty ones left out");
+  assert.equal(model.parseVideoClip(clipOf({captions: []})).captions, undefined);
+  for (const bad of [[{start: 2, end: 2.05, text: "short"}], [{start: -1, end: 1, text: "x"}], [{start: 0, end: 1, text: "x".repeat(201)}], [{start: 0, end: 1, text: "x", extra: 1}], [{start: "0", end: 1, text: "x"}], "1\n00:00:00,000 --> 00:00:01,000\nx"]) assert.equal(model.parseVideoClip(clipOf({captions: bad})), null, JSON.stringify(bad));
+  const library = {...model.EMPTY_LIBRARY, designs: [{...model.createBlankDesign("Captions", "portrait")}]};
+  const layer = {...model.createCanvasElement("text"), id: "caps", captions: true};
+  library.designs[0].pages[0].canvas = scene([imageLayer({video: clipOf({captions: [{start: 1, end: 2, text: "Hi"}]})}), layer]);
+  const parsed = model.parseLibrary(library).designs[0].pages[0].canvas.elements;
+  assert.deepEqual(parsed[0].video.captions, [{start: 1, end: 2, text: "Hi"}]);
+  assert.equal(parsed[1].captions, true, "round-trips through the library");
+});
+
+test("the cue showing at each moment follows the trim and speed, and a split keeps each cue on its moment", t => {
+  const f = fixture(t), model = f.load("lib/template-editor/model.ts"), captions = f.load("lib/template-editor/captions.ts"), slides = f.load("lib/template-editor/video-slides.ts");
+  const cues = [{start: 1, end: 3, text: "one"}, {start: 3, end: 5, text: "two"}, {start: 7, end: 9, text: "three"}];
+  assert.equal(captions.cueAt(cues, 0.9), undefined);
+  assert.equal(captions.cueAt(cues, 3)?.text, "two", "the next cue takes over at its start");
+  assert.equal(captions.cueAt(cues, 6), undefined);
+  // Trimmed to 2–8 s of the file at 2×: the slide plays 3 seconds.
+  const clip = clipOf({start: 2, end: 8, speed: 2, captions: cues});
+  assert.deepEqual(captions.captionSegments(clip), [{from: 0, to: 0.5, text: "one"}, {from: 0.5, to: 1.5, text: "two"}, {from: 1.5, to: 2.5, text: null}, {from: 2.5, to: 3, text: "three"}]);
+  assert.deepEqual(captions.captionSegments(clipOf()), [{from: 0, to: 12, text: null}]);
+  assert.equal(captions.coverCue(clipOf({coverTime: 4, captions: cues})).text, "two");
+  const design = model.createBlankDesign("Split", "portrait");
+  design.pages[0].canvas = scene([imageLayer({video: clipOf({captions: cues})}), {...model.createCanvasElement("text"), id: "caps", captions: true}]);
+  const pages = slides.splitVideoAt(design, design.pages[0].id, "video-1", 4).design.pages;
+  assert.deepEqual(pages.map(page => captions.captionSegments(page.canvas.elements[0].video).filter(item => item.text).map(item => [item.from, item.to, item.text])), [[[1, 3, "one"], [3, 4, "two"]], [[0, 1, "two"], [3, 5, "three"]]]);
+  assert.ok(pages[1].canvas.elements.some(captions.isCaptionLayer), "the copy keeps its caption layer");
+  assert.equal(captions.captionClip(pages[1].canvas, pages[1].canvas.elements[1]).id, pages[1].canvas.elements[0].id);
+});
+
+test("a slide whose clip has captions gets a caption layer near its foot, in the slide's font, once", t => {
+  const f = fixture(t), model = f.load("lib/template-editor/model.ts"), captions = f.load("lib/template-editor/captions.ts");
+  const title = {...model.createCanvasElement("text"), id: "title", font: "inter"};
+  const bare = scene([imageLayer({video: clipOf()}), title]);
+  assert.equal(captions.withCaptionLayer(bare, {x: 0, y: 0, width: 360, height: 480}, () => "caps"), bare, "no cues, no layer");
+  const withCues = scene([imageLayer({video: clipOf({captions: [{start: 0, end: 1, text: "Hi"}]})}), title]);
+  const added = captions.withCaptionLayer(withCues, {x: 0, y: 0, width: 360, height: 480}, () => "caps");
+  const layer = added.elements.at(-1);
+  assert.deepEqual([layer.id, layer.type, layer.captions, layer.font, layer.align, layer.color, layer.fontWeight], ["caps", "text", true, "inter", "center", "#ffffff", 700]);
+  assert.ok(layer.y > 480 * 0.7 && layer.y + layer.height <= 480 && Math.abs(layer.x + layer.width / 2 - 180) < 1e-9, "centred near the foot");
+  assert.equal(captions.withCaptionLayer(added, {x: 0, y: 0, width: 360, height: 480}, () => "again"), added, "a second call adds nothing");
+  assert.ok(model.parseCanvas(added), "the layer is a valid text layer");
+});
+
+test("agents give a video layer captions as cues or an SRT/VTT file's text, and Engine adds the caption layer", async t => {
+  const f = fixture(t, {overrides: {"./review-assets": serving(CLIP)}});
+  const route = f.load("app/api/agent/slides/route.ts");
+  const post = body => route.POST(new Request("https://engine.example/api/agent/slides", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}));
+  const created = await post({action: "create_deck", operationId: randomUUID(), spec: {name: "Captions", format: "portrait", slides: [
+    {id: "s1", layout: "blank", elements: [{id: "title", type: "text", text: "Watch", font: "inter", x: 60, y: 60, width: 960, height: 120}, {id: "clip", type: "video", src: "https://cdn.example/clip.mp4", poster: COVER, x: 0, y: 0, width: 1080, height: 1440, captions: [{start: 0.5, end: 2, text: "This changes everything"}]}]},
+  ]}});
+  assert.equal(created.status, 201, await created.clone().text());
+  const deck = await created.json();
+  const elements = deck.document.pages[0].canvas.elements;
+  assert.deepEqual(elements.find(item => item.id === "clip").video.captions, [{start: 0.5, end: 2, text: "This changes everything"}]);
+  const layer = elements.find(item => item.captions === true);
+  assert.ok(layer, "a caption layer was added");
+  assert.equal(layer.font, "inter");
+  assert.equal(layer.id, "clip-captions");
+  // An SRT file's text replaces the cues; the caption layer stays the one there.
+  const changed = await post({action: "update_deck", deckId: deck.document.id, expectedHash: deck.hash, operationId: randomUUID(), changes: {operations: [{op: "update_element", pageId: "s1", elementId: "clip", properties: {captions: SRT}}, {op: "update_element", pageId: "s1", elementId: layer.id, properties: {color: "#ffd400", fontSize: 64}}]}});
+  assert.equal(changed.status, 200, await changed.clone().text());
+  const after = await changed.json();
+  const now = after.document.pages[0].canvas.elements;
+  assert.deepEqual(now.find(item => item.id === "clip").video.captions.map(cue => cue.text), ["This changes everything", "Watch the\nleft side"]);
+  assert.equal(now.filter(item => item.captions === true).length, 1);
+  assert.equal(now.find(item => item.captions === true).color, "#ffd400");
+  assert.deepEqual(after.view.slides[0].elements.find(item => item.id === "clip").captions?.length ?? after.view.slides[0].elements.find(item => item.id === "clip").video.captions.length, 2);
+  for (const [captionsValue, pattern] of [["not a caption file", /\.captions.*no captions/], [[{start: 1, end: 0.5, text: "x"}], /\.captions.*list of at most 300 cues/]]) {
+    const bad = await post({action: "update_deck", deckId: deck.document.id, expectedHash: after.hash, operationId: randomUUID(), changes: {operations: [{op: "update_element", pageId: "s1", elementId: "clip", properties: {captions: captionsValue}}]}});
+    assert.equal(bad.status, 400);
+    assert.match(await bad.text(), pattern);
+  }
+  const file = await post({action: "update_deck", deckId: deck.document.id, expectedHash: after.hash, operationId: randomUUID(), changes: {operations: [{op: "update_element", pageId: "s1", elementId: "clip", properties: {captionsFile: "/tmp/captions.srt"}}]}});
+  assert.equal(file.status, 400);
+  assert.match(await file.text(), /captionsFile.*Engine MCP bridge/);
+  const cleared = await post({action: "update_deck", deckId: deck.document.id, expectedHash: after.hash, operationId: randomUUID(), changes: {operations: [{op: "update_element", pageId: "s1", elementId: "clip", properties: {captions: []}}]}});
+  assert.equal(cleared.status, 200, await cleared.clone().text());
+  assert.equal((await cleared.json()).document.pages[0].canvas.elements.find(item => item.id === "clip").video.captions, undefined);
+});
+
+test("a caption layer with nothing to show is flagged before export", t => {
+  const f = fixture(t), {preflightDesign} = f.load("lib/template-editor/preflight.ts"), model = f.load("lib/template-editor/model.ts");
+  const design = model.createBlankDesign("Captions", "portrait");
+  const caps = {...model.createCanvasElement("text"), id: "caps", captions: true, text: "Captions show here"};
+  design.pages[0].canvas = scene([imageLayer({video: clipOf()}), caps]);
+  assert.deepEqual(preflightDesign(design).filter(issue => issue.code === "captions-empty").map(issue => issue.elementId), ["caps"]);
+  design.pages[0].canvas = scene([imageLayer({video: clipOf({captions: [{start: 0, end: 1, text: "Hi"}]})}), caps]);
+  assert.deepEqual(preflightDesign(design).filter(issue => issue.code === "captions-empty"), []);
+});
+
+test("engine_capabilities explains captions and caption layers", async t => {
+  const f = fixture(t), {agentCapabilities} = f.load("lib/template-editor/agent-decks.ts");
+  const text = JSON.stringify(agentCapabilities());
+  for (const word of ["\"captions\"", "captionsFile", "caption layer", ".srt"]) assert.ok(text.includes(word), word);
+});
+
+test("export burns captions in: the layers over the clip are captured once per caption, and each second picks its own", async t => {
+  const f = fixture(t), ex = f.load("lib/template-editor/export-video.ts");
+  const text = {innerHTML: "<div class=\"te-canvas-text-line\"><span>Captions show here</span></div>"};
+  const caption = {dataset: {elementId: "caps", captionLayer: "hidden"}, style: {visibility: "hidden"}, querySelector: () => text};
+  const video = {dataset: {elementId: "video-1"}, style: {}, querySelector: () => null};
+  const clip = clipOf({start: 2, end: 8, speed: 2, captions: [{start: 1, end: 3, text: "one"}, {start: 3, end: 5, text: "two & <three>"}, {start: 7, end: 9, text: "four"}]});
+  let unders = 0;
+  const shots = [];
+  const {under, over} = await ex.captureCaptioned([video, caption], clip, new Set(), new Set(["caps"]), async () => ({under: ++unders}), async () => { const shot = {visibility: caption.style.visibility, html: text.innerHTML}; shots.push(shot); return shot; });
+  assert.equal(unders, 1, "nothing under the clip changes, so it's captured once");
+  assert.equal(typeof under, "object");
+  assert.equal(shots.length, 4, "one capture per caption, and one for none");
+  assert.deepEqual([0.2, 1, 2, 2.9].map(time => over(time).visibility === "hidden" ? null : over(time).html.replace(/<[^>]+>/g, "")), ["one", "two &amp; &lt;three&gt;", null, "four"]);
+  assert.deepEqual([caption.style.visibility, text.innerHTML], ["hidden", "<div class=\"te-canvas-text-line\"><span>Captions show here</span></div>"], "the frame is put back");
+  // Without caption layers or cues: one capture each, as before.
+  let plain = 0;
+  const flat = await ex.captureCaptioned([video], clip, new Set(), new Set(), async () => ++plain, async () => ++plain);
+  assert.deepEqual([plain, typeof flat.over], [2, "number"]);
+});

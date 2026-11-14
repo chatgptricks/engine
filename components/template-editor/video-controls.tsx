@@ -5,6 +5,8 @@ import {clipWindow, coverAt, formatSeconds, loadVideo, seekVideo} from "@/lib/te
 import {clipSpeed, playWindow} from "@/lib/template-editor/clip-timing";
 import {canSplitVideoAt} from "@/lib/template-editor/video-slides";
 import {isVideoPaused, setVideoPaused, videoForLayer} from "./video-player";
+import {CaptionControls} from "./caption-controls";
+import type {CaptionCue} from "@/lib/template-editor/captions";
 
 /** The clip on a layer: an image's own, or the photo in a frame. */
 export function layerVideo(element: CanvasElement | undefined): VideoClip | undefined {
@@ -62,7 +64,7 @@ function useFilmstrip(clip: VideoClip) {
 }
 
 /** Play, sound, trim, loop and cover for the one selected layer with a clip. Each change is one undo step. */
-export function VideoControls({element, disabled, onUpdate, onReplace, onSplit}: {element: CanvasElement; disabled: boolean; onUpdate: (group: string, transform: (element: CanvasElement) => CanvasElement) => void; onReplace?: (file: File) => Promise<void>; onSplit?: (at: number) => Promise<void>}) {
+export function VideoControls({element, disabled, onUpdate, onReplace, onSplit, onCaptions, captionLayerId, onSelectLayer}: {element: CanvasElement; disabled: boolean; onUpdate: (group: string, transform: (element: CanvasElement) => CanvasElement) => void; onReplace?: (file: File) => Promise<void>; onSplit?: (at: number) => Promise<void>; onCaptions?: (cues: CaptionCue[], step: string) => void; captionLayerId?: string; onSelectLayer?: (id: string) => void}) {
   const clip = layerVideo(element)!;
   const {start, end} = clipWindow(clip);
   const speed = clipSpeed(clip), played = playWindow(clip).length, most = MAX_SLIDE_VIDEO_SECONDS * speed;
@@ -145,6 +147,7 @@ export function VideoControls({element, disabled, onUpdate, onReplace, onSplit}:
       <label className="te-range"><span>Fade in <output>{formatSeconds(clip.fadeIn ?? 0)}</output></span><input type="range" aria-label="Fade in" min={0} max={Math.min(FADE_MAX, Math.max(0.1, Math.floor(length * 10) / 10))} step={0.1} value={clip.fadeIn ?? 0} onChange={event => { const value = Number(event.target.value); setClip("video-fade-in", {fadeIn: value > 0 ? value : undefined}); }}/></label>
       <label className="te-range"><span>Fade out <output>{formatSeconds(clip.fadeOut ?? 0)}</output></span><input type="range" aria-label="Fade out" min={0} max={Math.min(FADE_MAX, Math.max(0.1, Math.floor(length * 10) / 10))} step={0.1} value={clip.fadeOut ?? 0} onChange={event => { const value = Number(event.target.value); setClip("video-fade-out", {fadeOut: value > 0 ? value : undefined}); }}/></label>
     </fieldset>
+    {onCaptions && <CaptionControls clip={clip} now={now} disabled={disabled} onChange={onCaptions} onSeek={time => seek(time)} captionLayerId={captionLayerId} onSelectLayer={onSelectLayer}/>}
     <div className="te-element-grid te-element-actions">
       {onSplit && <button type="button" disabled={disabled || Boolean(busy) || !canSplitVideoAt(clip, now)} onClick={() => void split()} title="The slide keeps the part before this moment; a copy of the slide right after it plays the rest.">Split here ({formatSeconds(now)})</button>}
       <button type="button" disabled={disabled || Boolean(busy)} onClick={() => void setCover()} title="The cover shows in thumbnails, PNG and PDF exports, and before the video plays.">Use this frame as cover</button>

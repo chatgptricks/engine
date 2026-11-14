@@ -25,7 +25,9 @@ const model = load("lib/template-editor/model.ts");
 const geometry = load("lib/template-editor/canvas-geometry.ts");
 const commands = load("lib/template-editor/commands.ts", { "./model": model });
 const properties = load("lib/template-editor/property-utils.ts");
-const { preflightDesign } = load("lib/template-editor/preflight.ts", { "./model": model, "./canvas-geometry": geometry, "./commands": commands, "./export-scene":load("lib/template-editor/export-scene.ts",{"./canvas-geometry":geometry,"./commands":commands}), "./property-utils": properties, "./export-video": load("lib/template-editor/export-video.ts", { "./model": model, "./clip-timing": load("lib/template-editor/clip-timing.ts", { "./model": model }) }) });
+const clipTiming = load("lib/template-editor/clip-timing.ts", { "./model": model });
+const captionsModule = load("lib/template-editor/captions.ts", { "./model": model, "./clip-timing": clipTiming });
+const { preflightDesign } = load("lib/template-editor/preflight.ts", { "./model": model, "./canvas-geometry": geometry, "./commands": commands, "./export-scene":load("lib/template-editor/export-scene.ts",{"./canvas-geometry":geometry,"./commands":commands}), "./property-utils": properties, "./captions": captionsModule, "./export-video": load("lib/template-editor/export-video.ts", { "./model": model, "./clip-timing": clipTiming, "./captions": captionsModule, "./rich-text-editing": load("lib/template-editor/rich-text-editing.ts", { "./model": model, "./color-utils": load("lib/template-editor/color-utils.ts") }) }) });
 
 test("color parser expands shorthand and preserves alpha without accepting unsafe CSS", () => {
   assert.deepEqual(colors.parseColor("#AbC"), { rgb: "#aabbcc", alpha: 1 });

@@ -1,4 +1,6 @@
+import {captionSegments} from "./captions";
 import {changesSound, fadeAt, fadesPicture, gainAt, playWindow} from "./clip-timing";
+import {splitRichLines} from "./rich-text-editing";
 import {MAX_SLIDE_VIDEO_SECONDS, type CanvasElement, type DesignPage, type VideoClip} from "./model";
 
 /** Instagram's carousel limits, kept on the safe side of what its guides disagree on. */
@@ -76,6 +78,34 @@ export function videoExportWarnings(page: number, video: PageVideo, file?: {byte
   return warnings;
 }
 
+type Picture = HTMLCanvasElement | ((t: number) => HTMLCanvasElement);
+/** The pictures under and over the clip with its captions burned in: `capture` runs once for each
+ * different caption (and once for none), with every caption layer showing those words, and each
+ * output second picks its own. Without caption layers or cues, one capture. The frame is put back
+ * as it was. */
+export async function captureCaptioned(layers: HTMLElement[], clip: VideoClip, below: Set<string>, above: Set<string>, captureUnder: () => Promise<HTMLCanvasElement>, captureOver: () => Promise<HTMLCanvasElement>): Promise<{under: Picture; over: Picture}> {
+  const nodes = layers.filter(node => node.dataset.captionLayer !== undefined && (below.has(node.dataset.elementId!) || above.has(node.dataset.elementId!)));
+  if (!nodes.length || !clip.captions?.length) return {under: await captureUnder(), over: await captureOver()};
+  // Only the side that holds a caption layer changes; the other is captured once.
+  const changesUnder = nodes.some(node => below.has(node.dataset.elementId!)), changesOver = nodes.some(node => above.has(node.dataset.elementId!));
+  const fixedUnder = changesUnder ? undefined : await captureUnder(), fixedOver = changesOver ? undefined : await captureOver();
+  const segments = captionSegments(clip);
+  const saved = nodes.map(node => { const text = node.querySelector<HTMLElement>(".te-canvas-text"); return {node, text, html: text?.innerHTML ?? "", visibility: node.style.visibility}; });
+  const shown = new Map<string | null, {under: HTMLCanvasElement; over: HTMLCanvasElement}>();
+  try {
+    for (const {text} of segments) {
+      if (shown.has(text)) continue;
+      for (const item of saved) {
+        item.node.style.visibility = text === null ? "hidden" : "visible";
+        if (text !== null && item.text) item.text.innerHTML = splitRichLines(undefined, text).map(line => `<div class="te-canvas-text-line"><span>${line || "<br>"}</span></div>`).join("");
+      }
+      shown.set(text, {under: fixedUnder ?? await captureUnder(), over: fixedOver ?? await captureOver()});
+    }
+  } finally { for (const item of saved) { item.node.style.visibility = item.visibility; if (item.text) item.text.innerHTML = item.html; } }
+  const at = (t: number) => { const segment = segments.find(item => t < item.to) ?? segments.at(-1)!; return shown.get(segment.text)!; };
+  return {under: fixedUnder ?? (t => at(t).under), over: fixedOver ?? (t => at(t).over)};
+}
+
 /** Renders one page with its clip playing into a video file. `frame` is the export
  * frame of that page (the same one PNG export captures). */
 export async function exportPageVideo(frame: HTMLElement, video: PageVideo, options: {scale: number; sound?: boolean; signal?: AbortSignal; onProgress?: (fraction: number) => void}) {
@@ -97,8 +127,7 @@ export async function exportPageVideo(frame: HTMLElement, video: PageVideo, opti
   options.signal?.throwIfAborted();
   const source = await loadVideo(video.clip.src);
   try {
-    const under = await capture(below, false);
-    const over = await capture(above, true);
+    const {under, over} = await captureCaptioned(layers, video.clip, below, above, () => capture(below, false), () => capture(above, true));
     // The layer's own shape (corners, mask, frame outline, opacity): itself alone, its
     // photo swapped for a white one of the clip's proportions.
     const layer = layers[at];

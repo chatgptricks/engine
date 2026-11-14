@@ -1,5 +1,6 @@
 "use client";
-import { VideoControls, layerVideo } from "./video-controls";
+import { VideoControls, layerVideo, withLayerVideo } from "./video-controls";
+import { captionLayerFor, withCaptionLayer, type CaptionCue } from "@/lib/template-editor/captions";
 import { changeStyledTextCase } from "@/lib/template-editor/editing-actions";
 
 import { useEffect, useState, type ReactNode } from "react";
@@ -268,6 +269,18 @@ export function ElementInspector({
     const property = ["text", "uppercase", "lowercase", "image-fill", "public-alt"].includes(group) || group.startsWith("video-") ? "content" : ["x", "y", "width", "height", "rotation", "square-shape"].includes(group) ? "position" : "style";
     const next = scene.elements.map((element) => editableIds.has(element.id) && (metadata || canEditElement(scene, element, property)) ? transform(element) : element);
     if (next.some((element, index) => element !== scene.elements[index])) onChange({ ...scene, elements: next }, `${groupPrefix}:${group}`);
+  }
+
+  /** A clip's captions, and with the first ones a caption layer on its slide: one undo step. */
+  function setCaptions(id: string, cues: CaptionCue[], step: string) {
+    const element = scene.elements.find(item => item.id === id), clip = layerVideo(element);
+    if (noEdits || !element || !clip || !canEditElement(scene, element, "content")) return;
+    const video: typeof clip = {...clip, captions: cues};
+    if (!cues.length) delete video.captions;
+    const next = { ...scene, elements: scene.elements.map(item => item.id === id ? withLayerVideo(item, video) : item) };
+    const slide = slideBounds ?? { x: 0, y: 0, width, height };
+    const box = { x: slide.x, y: slide.y, width: slide.width, height: slide.height };
+    onChange(withCaptionLayer(next, box, () => crypto.randomUUID()), `${groupPrefix}:video-captions:${step}`);
   }
 
   function updateText(patch: Partial<TextElement>, group: string) {
@@ -556,7 +569,7 @@ export function ElementInspector({
               <AdvancedProperties {...advancedFor("outline")}/>
             </>}
             {effectiveSection==="photo"&&<>
-              {onlyElement&&layerVideo(onlyElement)&&<VideoControls key={onlyElement.id} element={onlyElement} disabled={photoContentDisabled} onUpdate={update} onReplace={onUploadFramePhoto?file=>onUploadFramePhoto(file,onlyElement.id):undefined} onSplit={onSplitVideo?at=>onSplitVideo(onlyElement.id,at):undefined}/>}
+              {onlyElement&&layerVideo(onlyElement)&&<VideoControls key={onlyElement.id} element={onlyElement} disabled={photoContentDisabled} onUpdate={update} onReplace={onUploadFramePhoto?file=>onUploadFramePhoto(file,onlyElement.id):undefined} onSplit={onSplitVideo?at=>onSplitVideo(onlyElement.id,at):undefined} onCaptions={(cues,step)=>setCaptions(onlyElement.id,cues,step)} captionLayerId={captionLayerFor(scene,onlyElement.id)?.id} onSelectLayer={id=>onSelect([id])}/>}
               <Section title={images.length===elements.length?"Image":`Images · ${images.length}`}>
                 {framePhotoControl}{frameError&&<p className="te-element-hint" role="alert">{frameError}</p>}
                 <fieldset disabled={photoStyleDisabled}><div className="te-element-segments" role="group" aria-label="Image fit"><Toggle label="Fill image frame" active={shared(images,"fit")==="cover"} onClick={()=>updateImage({fit:"cover"},"image-fit")}>Fill frame</Toggle><Toggle label="Fit entire image" active={shared(images,"fit")==="contain"} onClick={()=>updateImage({fit:"contain"},"image-fit")}>Fit image</Toggle></div><div className="te-element-segments" role="group" aria-label="Image orientation"><Toggle label="Flip photo horizontally" active={images.every(image=>image.flipX)} onClick={()=>updateImage({flipX:!images.every(image=>image.flipX)},"image-flip")}>Flip horizontal</Toggle><Toggle label="Flip photo vertically" active={images.every(image=>image.flipY)} onClick={()=>updateImage({flipY:!images.every(image=>image.flipY)},"image-flip")}>Flip vertical</Toggle></div></fieldset>
