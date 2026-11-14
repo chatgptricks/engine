@@ -146,8 +146,12 @@ export async function exportPageVideo(frame: HTMLElement, video: PageVideo, opti
     const ratio = Math.min(1, 64 / Math.max(video.clip.width, video.clip.height));
     white.width = Math.max(1, Math.round(video.clip.width * ratio)); white.height = Math.max(1, Math.round(video.clip.height * ratio));
     const paint = white.getContext("2d")!; paint.fillStyle = "#ffffff"; paint.fillRect(0, 0, white.width, white.height);
-    let mask: HTMLCanvasElement;
-    try { image.src = white.toDataURL("image/png"); await image.decode(); mask = await capture(new Set([id]), true); }
+    let mask: HTMLCanvasElement, edge: HTMLCanvasElement | undefined;
+    try {
+      image.src = white.toDataURL("image/png"); await image.decode(); mask = await capture(new Set([id]), true);
+      // A border sits over the clip: the layer again with an empty picture leaves the border alone.
+      if (video.element.type === "image" && video.element.border) { const empty = document.createElement("canvas"); empty.width = empty.height = 1; image.src = empty.toDataURL("image/png"); await image.decode(); edge = await capture(new Set([id]), true); }
+    }
     finally { image.src = cover; await image.decode().catch(() => undefined); }
     const matrix = videoMatrix(video.element, video.photo, {width: source.videoWidth || video.clip.width, height: source.videoHeight || video.clip.height}, size.width / frameWidth);
     const filter = getComputedStyle(layer).filter;
@@ -162,7 +166,7 @@ export async function exportPageVideo(frame: HTMLElement, video: PageVideo, opti
       layerContext.setTransform(1, 0, 0, 1, 0, 0); layerContext.filter = "none";
       layerContext.globalCompositeOperation = "destination-in"; layerContext.drawImage(mask, 0, 0, size.width, size.height);
       // A fade shows the layers below through the clip, as on the canvas.
-      context.save(); context.globalCompositeOperation = blend; if (fades) context.globalAlpha = fadeAt(clip, t); context.drawImage(scratch, 0, 0); context.restore();
+      context.save(); context.globalCompositeOperation = blend; if (fades) context.globalAlpha = fadeAt(clip, t); context.drawImage(scratch, 0, 0); if (edge) context.drawImage(edge, 0, 0, size.width, size.height); context.restore();
     };
     const {start, length, speed} = videoWindow(clip);
     return await encodeComposite({video: source, under, over, drawVideo, width: size.width, height: size.height, fps: VIDEO_EXPORT_FPS, duration: length, startAt: start, speed, gain: changesSound(clip) ? (t: number) => gainAt(clip, t) : undefined, withAudio: options.sound !== false, bitrate: VIDEO_EXPORT_BITRATE, signal: options.signal, onProgress: options.onProgress});

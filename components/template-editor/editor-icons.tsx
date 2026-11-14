@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency";
+export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency" | "border" | "corners" | "flip" | "ratio" | "trim" | "volume" | "speed" | "copy-style" | "case";
 
 /** One visual language for tools, property shortcuts, and their selected states. */
 export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: EditorIconName }) {
@@ -28,6 +28,15 @@ export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name:
     list: "M9 6h11M9 12h11M9 18h11M4.5 6h.01M4.5 12h.01M4.5 18h.01",
     "list-number": "M10 6h10M10 12h10M10 18h10M4 4h1v4M4 14h2l-2 3h2",
     spacing: "M4 3v18M20 3v18M8 9l-2 3 2 3M16 9l2 3-2 3M9 12h6",
+    border: "M4 5h16M4 10h16M4 15h3m3 0h4m3 0h3M4 20h.01M8 20h.01M12 20h.01M16 20h.01M20 20h.01",
+    corners: "M4 20v-8a8 8 0 0 1 8-8h8",
+    flip: "M12 3v18M9 7 3 17h6ZM15 7l6 10h-6Z",
+    ratio: "M3 6h18v12H3ZM7 10v4m10-4v4",
+    trim: "M6 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm0 12a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM20 4 8.1 15.9M14.5 14.5 20 20M8.1 8.1 12 12",
+    volume: "M11 5 6 9H2v6h4l5 4ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14",
+    speed: "M12 14l4-5M3.3 17a9 9 0 1 1 17.4 0",
+    "copy-style": "M4 3h13v5H4ZM17 5h3v6h-8v3M10 14h4v7h-4Z",
+    case: "M3 18 7 7l4 11M4.5 14h5M14 12a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm3-1v7",
     transparency: "M4 4h16v16H4ZM4 4h4v4H4Zm8 0h4v4h-4ZM8 8h4v4H8Zm8 0h4v4h-4ZM4 12h4v4H4Zm8 0h4v4h-4Zm-4 4h4v4H8Zm8 0h4v4h-4Z",
   };
   return <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...props}><path d={paths[name]} /></svg>;

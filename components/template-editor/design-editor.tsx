@@ -98,6 +98,7 @@ import { useSpanPhotos } from "./span-photo-controls";
 import { SpanPeek } from "./span-peek";
 import { describeSpanChange, spanPairs, syncSpans, withoutSpans } from "@/lib/template-editor/spanning-photos";
 import { useContextMenu, type ContextMenuItem } from "./context-menu";
+import { copyStyle, pasteStyleOnScene, type StyleSnapshot } from "@/lib/template-editor/style-commands";
 import { copySelection, duplicateSelection, pasteSelection, removeSelection, setSelectionLocked, reorderSelection, alignSelection, groupSelection, ungroupSelection, setGroupHidden, setGroupLocked, expandGroupSelection, scopeSelection, constrainSceneToIsolation, canEditElement, isElementHidden, isElementLocked, fillShapeWithImage, type SceneCommandResult } from "@/lib/template-editor/commands";
 import {groupMemberIds} from "@/lib/template-editor/layer-tree";
 import { translateElements } from "@/lib/template-editor/snapping";
@@ -291,6 +292,9 @@ export function DesignEditor({
   const [editingMaster,setEditingMaster]=useState(false);
   const [requestedIsolationGroupId,setIsolatedGroupId]=useState<string|null>(null);
   const [cropImageId,setCropImageId]=useState<string|null>(null);
+  /** Copy style: the copied look and the layer it came from. The next layer selected gets it. */
+  const [styleBrush,setStyleBrush]=useState<{snapshot:StyleSnapshot;sourceId:string}|null>(null);
+  const styleClipboard=useRef<StyleSnapshot|null>(null);
   const [pathTool,setPathTool]=useState(false);
   const [navigationMode,setNavigationMode]=useState<"select"|"hand"|"nodes">("select");
   const [penClosed,setPenClosed]=useState(false);
@@ -670,6 +674,23 @@ export function DesignEditor({
     return result.scene!==live&&!result.limited;
   }
   function applyCommand(command: (live:CanvasScene)=>SceneCommandResult):void { applyCommandChecked(command); }
+  /** Pastes a copied look onto layers, skipping the ones the template fixes, as one undo step. */
+  function pasteCopiedStyle(ids:string[],snapshot:StyleSnapshot){
+    const result=pasteStyleOnScene(scene,ids,snapshot);
+    if(result.changed.length)changeScene(result.scene,"paste-style");
+    if(result.skipped.length)setNotice(result.changed.length?`Style pasted. ${result.skipped.length} locked or template-fixed layer${result.skipped.length>1?"s were":" was"} left as ${result.skipped.length>1?"they were":"it was"}.`:"That layer's style is fixed by the template or locked.");
+  }
+  /** Canvas selection. With Copy style waiting, the layer clicked takes the copied look. */
+  function selectOnCanvas(ids:string[]){
+    if(styleBrush){const targets=ids.filter(id=>id!==styleBrush.sourceId);if(targets.length){pasteCopiedStyle(targets,styleBrush.snapshot);setStyleBrush(null);}}
+    setSelected(ids);
+  }
+  function toggleStyleBrush(){
+    if(styleBrush){setStyleBrush(null);return;}
+    const source=scene.elements.find(element=>element.id===selected[0]);
+    if(!source||selected.length!==1)return;
+    const snapshot=copyStyle(source);styleClipboard.current=snapshot;setStyleBrush({snapshot,sourceId:source.id});
+  }
   const breakingHtml = useRef(false);
   /** Break into layers: draws the HTML layer offscreen and reads its pieces (a moment),
    * then swaps in text, image and shape layers as one undo step. Like an SVG import, it
@@ -1155,6 +1176,13 @@ export function DesignEditor({
         return;
       const mod = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
+      // Copy style ⌥⌘C and paste style ⌥⌘V (event.code: Option changes the typed key on a Mac).
+      if(mod&&event.altKey&&(event.code==="KeyC"||event.code==="KeyV")){
+        event.preventDefault();
+        if(event.code==="KeyC"){const source=scene.elements.find(element=>element.id===selected[0]);if(source&&selected.length===1){styleClipboard.current=copyStyle(source);setNotice("Style copied. Select layers and press ⌥⌘V to paste it.");}return;}
+        if(styleClipboard.current&&selected.length)pasteCopiedStyle(selected,styleClipboard.current);
+        return;
+      }
       const command=resolveEditorCommand(event);
       const historyDirection=historyShortcut(event);
       if (historyDirection) {
@@ -1200,7 +1228,7 @@ export function DesignEditor({
         return;
       }
       if (command === "escape") {
-        setSelected([]);
+        setSelected([]);setStyleBrush(null);
         setCropImageId(null);setIsolatedGroupId(null);setPathTool(false);setImageDropTargetId(null);paletteDrag.current?.();
         return;
       }
@@ -1994,6 +2022,8 @@ export function DesignEditor({
             onUnlock={()=>applyCommand(live=>setSelectionLocked(live,selected,false))}
             onCrop={selectedPhoto&&!disabled&&canEditElement(scene,selectedPhoto,"style")?()=>setCropImageId(cropImageId===selectedPhoto.id?null:selectedPhoto.id):undefined}
             cropping={Boolean(cropImageId)}
+            onCopyStyle={toggleStyleBrush}
+            styleBrush={Boolean(styleBrush)}
             onGroup={selected.length>1?()=>applyCommand(live=>groupSelection(live,selected,"Group",isolatedGroupId??undefined)):undefined}
             onMergeShapes={()=>applyCommand(live=>combineShapes(live,selected,"union"))}
             onDuplicate={() => applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined))}
@@ -2054,7 +2084,7 @@ export function DesignEditor({
                     width={canvasWidth}
                     height={canvasHeight}
                     selectedIds={selected}
-                    onSelect={setSelected}
+                    onSelect={selectOnCanvas}
                     onChange={changeScene}
                     selectionActions={selectionActions}
                     peers={collaboration?.peers}

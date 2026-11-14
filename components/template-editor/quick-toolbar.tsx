@@ -11,6 +11,7 @@ import { photoContent, updatePhotoContent } from "@/lib/template-editor/photo-fr
 import { textRangeTogglePatch, type TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
 import { TextFormatBar } from "./text-format-bar";
 import { PaintPicker } from "./paint-picker";
+import { MediaToolbar } from "./media-toolbar";
 import { SpanToolbarControls, type SpanControl } from "./span-photo-controls";
 import "./element-inspector.css";
 
@@ -42,9 +43,13 @@ type Props = {
   templateDraftHeight?: number;
   /** Span, or the Spans menu and Seam slider, for one selected photo. */
   span?: SpanControl;
+  /** Copy style: takes the selected layer's look; the next layer clicked gets it. */
+  onCopyStyle?: () => void;
+  /** A copied look is waiting to be pasted. */
+  styleBrush?: boolean;
 };
 
-export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, span, onUnlock, outputScale = 3 }: Props) {
+export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, span, onUnlock, outputScale = 3, onCopyStyle, styleBrush = false }: Props) {
   const selected=scene.elements.filter(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element));
   const unlocked=selected.filter(element=>!isElementLocked(scene,element));
   const propertySelection=unlocked.length?unlocked:selected;
@@ -58,7 +63,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
   const styleEditable=selected.some(element=>canEditElement(scene,element,"style"));
   const canCrop=selected.length===1&&allPhotos&&canEditElement(scene,selected[0],"content")&&canEditElement(scene,selected[0],"style");
   const label=selected.length>1?`${selected.length} selected`:locked?"Locked":allText?"Text":allPhotos?selected[0].type==="shape"?"Photo frame":"Photo":allShapes?"Shape":"Selection";
-  function update(transform:(element:CanvasElement)=>CanvasElement, property:"style"|"content"="style", group="quick-format") {
+  function update(transform:(element:CanvasElement)=>CanvasElement, property:"style"|"content"|"position"="style", group="quick-format") {
     if(disabled)return;
     const elements=scene.elements.map(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element)&&canEditElement(scene,element,property)?transform(element):element);
     if(elements.some((element,index)=>element!==scene.elements[index]))onChange({...scene,elements},group);
@@ -99,6 +104,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
       {allPhotos&&<select aria-label="Quick photo fit" disabled={disabledStyle} value={commonValue(photos,"fit")??""} onChange={event=>update(element=>updatePhotoContent(element,{fit:event.target.value as "cover"|"contain"}))}>
         {commonValue(photos,"fit")===undefined&&<option value="" disabled>Mixed fit</option>}<option value="cover">Fill frame</option><option value="contain">Fit photo</option>
       </select>}
+      {allPhotos&&<div className="te-format-bar" role="group" aria-label="Photo and video"><MediaToolbar photos={propertySelection} disabled={disabled} fixed={!disabled&&!styleEditable?"Set by the template":undefined} outputScale={outputScale} update={update} onInspect={onInspect}/></div>}
       <span className="te-quick-spacer" />
       <div className="te-quick-actions">
         {allText&&inspectAction("edit","Text","text","Text properties")}
@@ -112,6 +118,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
         {!onInspect&&onEdit&&<button type="button" aria-label="Edit selection properties" onClick={onEdit}>{allPhotos?"Edit photo":"Edit"}</button>}
         {onInspect?inspectAction("position","Position","position","Position selection"):onPosition&&<button type="button" aria-label="Position selection" onClick={onPosition}>Position</button>}
         {inspectAction("effects","Effects","effects")}
+        {onCopyStyle&&selected.length===1&&<button type="button" className="te-context-action" aria-label={styleBrush?"Cancel copy style":"Copy style"} title={styleBrush?"Click a layer to paste the style · Esc cancels":"Copy style · ⌥⌘C, paste with ⌥⌘V"} aria-pressed={styleBrush} disabled={disabled} onMouseDown={event=>event.preventDefault()} onClick={onCopyStyle}><EditorIcon name="copy-style"/>{styleBrush?"Pick a layer":"Copy style"}</button>}
         {onGroup&&selected.length>1&&<button type="button" className="te-context-action" aria-label="Group selection" disabled={disabled||!selected.every(element=>canEditElement(scene,element,"position"))} onClick={onGroup}><EditorIcon name="group"/>Group</button>}
         {locked&&onUnlock&&<button type="button" className="te-context-action" title={inheritedLock?"Unlock the parent group in Layers":"Unlock selection"} disabled={disabled||inheritedLock} onClick={onUnlock}><EditorIcon name="unlock"/>Unlock</button>}
       </div>

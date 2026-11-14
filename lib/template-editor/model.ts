@@ -241,6 +241,8 @@ export type ImageElement = CanvasElementBase & PhotoMetadata & {
   flipX?: boolean;
   flipY?: boolean;
   mask?: "none" | "ellipse" | "triangle" | "diamond";
+  /** A line drawn inside the photo's edge, following its corners or mask. Absent means no border. */
+  border?: ImageBorder;
   intrinsicWidth?: number;
   intrinsicHeight?: number;
   /** One photo across two neighboring slides: the "start" half on one page and
@@ -249,6 +251,10 @@ export type ImageElement = CanvasElementBase & PhotoMetadata & {
    * them in step; each page frame clips its own half. */
   span?: { id: string; part: "start" | "end" };
 };
+export const IMAGE_BORDER_STYLES = ["solid", "long-dash", "short-dash", "dots"] as const;
+/** `width` is in scene units (360 wide), like every other size in a scene. */
+export type ImageBorder = { style: (typeof IMAGE_BORDER_STYLES)[number]; width: number; color: string };
+export const IMAGE_BORDER_MAX_WIDTH = 100;
 export type ShapeElement = CanvasElementBase & {
   type: "shape";
   shape: "rectangle" | "ellipse" | "triangle" | "diamond" | "polygon" | "star" | "arrow" | "path";
@@ -2553,11 +2559,13 @@ export function parseCanvas(value: unknown): CanvasScene | null {
         return null;
       if (!optional(element, "cropScale", candidate => numberIn(candidate, 0.1, 20)) || !optional(element, "flipX", boolean) || !optional(element, "flipY", boolean) || !optional(element, "mask", choice(["none", "ellipse", "triangle", "diamond"])) || !optional(element, "intrinsicWidth", candidate => numberIn(candidate, 1, 100_000)) || !optional(element, "intrinsicHeight", candidate => numberIn(candidate, 1, 100_000))) return null;
       if (!optional(element, "span", candidate => object(candidate) && identity(candidate.id) && choice(["start", "end"])(candidate.part))) return null;
+      if (!optional(element, "border", candidate => object(candidate) && choice([...IMAGE_BORDER_STYLES])(candidate.style) && numberIn(candidate.width, 0, IMAGE_BORDER_MAX_WIDTH) && color(candidate.color))) return null;
       const imageExtensions: Partial<ImageElement> = {};
       const photoMetadata = parsePhotoMetadata(element);
       if (!photoMetadata) return null;
       for (const key of ["publicAlt", "previewSrc", "cropScale", "flipX", "flipY", "mask", "intrinsicWidth", "intrinsicHeight"] as const) if (element[key] !== undefined) Object.assign(imageExtensions, { [key]: element[key] });
       if (object(element.span)) imageExtensions.span = { id: element.span.id as string, part: element.span.part as "start" | "end" };
+      if (object(element.border) && (element.border.width as number) > 0) imageExtensions.border = { style: element.border.style as ImageBorder["style"], width: element.border.width as number, color: element.border.color as string };
       scene.elements.push({
         ...photoMetadata,
         ...imageExtensions,

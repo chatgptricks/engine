@@ -33,6 +33,7 @@ import type {
   CanvasScene,
   HtmlElement,
   ImageElement,
+  ImageBorder,
   TextElement,
   ShapeElement,
   VideoClip,
@@ -48,6 +49,7 @@ import { EditorIcon } from "./editor-icons";
 import { CopyIcon, TrashIcon } from "@/components/engine/icons";
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
 import { MAX_HTML_DESIGN_WIDTH, richTextToPlain } from "@/lib/template-editor/model";
+import { borderDashArray } from "@/lib/template-editor/style-commands";
 import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-layer";
 import { setHtmlNodeContent, setHtmlNodeText, withHtmlLayerMarkup, type HtmlNodeSelection } from "@/lib/template-editor/html-edit";
 import { HtmlLayerEditor, firstHtmlTextPart, htmlTextPartAt } from "./html-layer-editor";
@@ -356,6 +358,20 @@ function captionDisplay(layer: TextElement, clip: VideoClip | undefined, editing
   return cue ? {text: cue.text, look: "cue"} : {text: sample, look: "hidden"};
 }
 
+/** A photo's border: drawn twice as wide on the frame's edge, so the frame's own
+ * corners or mask clip the outer half and the line sits inside, like Canva's. */
+function ImageBorderOverlay({ element, border }: { element: ImageElement; border: ImageBorder }) {
+  // The stroke is twice as wide and clipped by the frame, so its inner half shows;
+  // dashes follow the width that shows.
+  const stroke = { fill: "none", stroke: border.color, strokeWidth: border.width * 2, strokeDasharray: borderDashArray(border), strokeLinecap: border.style === "dots" ? "round" as const : "butt" as const };
+  const { width, height } = element;
+  const shape = element.mask === "ellipse" ? <ellipse cx={width / 2} cy={height / 2} rx={width / 2} ry={height / 2} {...stroke} />
+    : element.mask === "triangle" ? <polygon points={`${width / 2},0 ${width},${height} 0,${height}`} {...stroke} />
+    : element.mask === "diamond" ? <polygon points={`${width / 2},0 ${width},${height / 2} ${width / 2},${height} 0,${height / 2}`} {...stroke} />
+    : <rect x="0" y="0" width={width} height={height} rx={Math.min(element.radius, width / 2, height / 2)} {...stroke} />;
+  return <svg className="te-canvas-image-border" viewBox={`0 0 ${width} ${height}`} preserveAspectRatio="none" aria-hidden="true" data-border-style={border.style}>{shape}</svg>;
+}
+
 /** `playVideo` is set only on the editing canvas: thumbnails, previews and exports show a clip's cover. */
 function SceneElement({ element: layer, smartLayout: fitted, playVideo = false, caption }: { element: CanvasElement; smartLayout?: SmartTextLayout; playVideo?: boolean; caption?: {id: string; clip: VideoClip} }) {
   const token = useId().replace(/[^a-zA-Z0-9_-]/g, "");
@@ -395,7 +411,7 @@ function SceneElement({ element: layer, smartLayout: fitted, playVideo = false, 
       {playVideo && element.video ? <VideoPlayer clip={element.video} layerId={element.id} poster={proxied(element.src)} className="te-canvas-image te-canvas-video" style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
       // eslint-disable-next-line @next/next/no-img-element
       : <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />}
-    </div></div> : element.type === "html" ? <HtmlLayerContent element={element} /> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
+    </div>{element.border && <ImageBorderOverlay element={element} border={element.border} />}</div> : element.type === "html" ? <HtmlLayerContent element={element} /> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
       <clipPath id={photoClipId} clipPathUnits="userSpaceOnUse">{geometry({fillRule,clipRule:fillRule})}</clipPath>
       {strokeAlign === "outside" && <mask id={outsideMaskId} maskUnits="userSpaceOnUse" x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} style={{maskType:"luminance"}}><rect x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} fill="white" />{geometry({fill:"black",fillRule})}</mask>}
       {gradient && (gradient.type === "radial" ? <radialGradient id={gradientId} cx=".5" cy=".5" r="1" gradientTransform={`translate(.5 .5) scale(${radialRadius/element.width} ${radialRadius/element.height}) translate(-.5 -.5)`}>{gradient.stops.map((stop, index) => <stop key={index} offset={`${stop.position}%`} stopColor={stop.color} />)}</radialGradient> : <linearGradient id={gradientId} x1={`${endpoints.x1}%`} y1={`${endpoints.y1}%`} x2={`${endpoints.x2}%`} y2={`${endpoints.y2}%`}>{gradient.stops.map((stop, index) => <stop key={index} offset={`${stop.position}%`} stopColor={stop.color} />)}</linearGradient>)}

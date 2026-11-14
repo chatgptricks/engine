@@ -2,11 +2,11 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { EditorIcon } from "./editor-icons";
+import { EditorIcon, type EditorIconName } from "./editor-icons";
 import { FONTS, NumberInput } from "./controls";
 import { PaintPicker } from "./paint-picker";
 import { SmartQuickControls } from "./smart-text-controls";
-import { changeTextCase } from "./element-inspector";
+import { TEXT_CASES, changeTextCaseMode, detectTextCase, type TextCase } from "@/lib/template-editor/style-commands";
 import type { CanvasElement, CanvasScene, TextElement } from "@/lib/template-editor/model";
 import { commonValue, boldState, booleanState } from "@/lib/template-editor/property-utils";
 import { canEditElement } from "@/lib/template-editor/commands";
@@ -25,11 +25,12 @@ type Props = {
   /** Apply a style patch to the selected text (selected words while typing). */
   patchText: (patch: Partial<TextElement>) => void;
   toggleText: (key: "fontWeight" | "italic" | "underline" | "strikethrough") => void;
-  update: (transform: (element: CanvasElement) => CanvasElement, property?: "style" | "content", group?: string) => void;
+  update: (transform: (element: CanvasElement) => CanvasElement, property?: "style" | "content" | "position", group?: string) => void;
 };
 
 const ALIGN_NEXT = { left: "center", center: "right", right: "left" } as const;
 const LIST_NEXT = { none: "bullet", bullet: "number", number: "none" } as const;
+const CASE_LABELS: Record<TextCase, string> = { upper: "UPPERCASE", lower: "lowercase", title: "Title Case", sentence: "Sentence case" };
 
 /** Canva's text bar: font, − size +, color, B I U S, aA, alignment, list,
  * spacing and transparency, in that order. Controls the template fixes stay
@@ -42,7 +43,7 @@ export function TextFormatBar({ scene, selectedIds, texts, disabled, outputScale
   const fixed = styleOff && !disabled ? "Set by the template" : undefined;
   const align = commonValue(texts, "align");
   const list = commonValue(texts, "listStyle") ?? (texts.every(element => !element.listStyle) ? "none" : undefined);
-  const upper = texts.length > 0 && texts.every(element => /\p{L}/u.test(element.text) && element.text === element.text.toLocaleUpperCase());
+  const textCase = detectTextCase(texts);
   const size = commonValue(texts, "fontSize");
   const opacity = commonValue(texts, "opacity");
   const lineHeight = commonValue(texts, "lineHeight");
@@ -73,7 +74,11 @@ export function TextFormatBar({ scene, selectedIds, texts, disabled, outputScale
     <button type="button" className="te-format-button" aria-label="Quick italic" title={fixed ?? "Italic · ⌘/Ctrl I"} aria-pressed={pressed(booleanState(texts, "italic"))} disabled={styleOff} onMouseDown={hold} onClick={() => toggleText("italic")}><i>I</i></button>
     <button type="button" className="te-format-button" aria-label="Underline" title={fixed ?? "Underline · ⌘/Ctrl U"} aria-pressed={pressed(booleanState(texts, "underline"))} disabled={styleOff} onMouseDown={hold} onClick={() => toggleText("underline")}><u>U</u></button>
     <button type="button" className="te-format-button" aria-label="Strikethrough" title={fixed ?? "Strikethrough"} aria-pressed={pressed(booleanState(texts, "strikethrough"))} disabled={styleOff} onMouseDown={hold} onClick={() => toggleText("strikethrough")}><s>S</s></button>
-    <button type="button" className="te-format-button te-format-case" aria-label="Uppercase" title="Uppercase" aria-pressed={upper} disabled={disabled || !contentEditable} onMouseDown={hold} onClick={() => update(element => element.type === "text" ? changeTextCase(element, !upper) : element, "content", upper ? "lowercase" : "uppercase")}>aA</button>
+    <ToolbarPopover label="Case" icon="case" disabled={disabled || !contentEditable} title={fixed ?? "Case"} pressed={textCase === "upper"}>
+      <div className="te-format-choices" role="group" aria-label="Case">
+        {TEXT_CASES.map(mode => <button key={mode} type="button" aria-pressed={textCase === mode} onMouseDown={hold} onClick={() => update(element => element.type === "text" ? changeTextCaseMode(element, mode) : element, "content", `case-${mode}`)}>{CASE_LABELS[mode]}</button>)}
+      </div>
+    </ToolbarPopover>
     <span className="te-format-sep" aria-hidden="true" />
     <button type="button" className="te-format-button" aria-label={`Text alignment: ${align ?? "mixed"}`} title={fixed ?? "Alignment"} disabled={styleOff} onMouseDown={hold} onClick={() => patchText({ align: ALIGN_NEXT[align ?? "right"] })}><EditorIcon name={`align-${align ?? "left"}`} /></button>
     <button type="button" className="te-format-button" aria-label={`List: ${list ?? "mixed"}`} title={fixed ?? "List"} aria-pressed={list !== undefined && list !== "none"} disabled={styleOff} onMouseDown={hold} onClick={() => patchText({ listStyle: LIST_NEXT[list ?? "number"] })}><EditorIcon name={list === "number" ? "list-number" : "list"} /></button>
@@ -91,7 +96,7 @@ export function TextFormatBar({ scene, selectedIds, texts, disabled, outputScale
   </div>;
 }
 
-function RangeRow({ label, min, max, step, value, onChange }: { label: string; min: number; max: number; step: number; value: number | undefined; onChange: (value: number) => void }) {
+export function RangeRow({ label, min, max, step, value, onChange }: { label: string; min: number; max: number; step: number; value: number | undefined; onChange: (value: number) => void }) {
   const clamp = (input: number) => Math.max(min, Math.min(max, input));
   return <label className="te-format-range">
     <span>{label}</span>
@@ -103,7 +108,7 @@ function RangeRow({ label, min, max, step, value, onChange }: { label: string; m
 }
 
 /** A toolbar button with a small panel under it, drawn outside the toolbar so a scrolling bar doesn't clip it. */
-export function ToolbarPopover({ label, icon, disabled, title, children }: { label: string; icon: "spacing" | "transparency"; disabled: boolean; title?: string; children: ReactNode }) {
+export function ToolbarPopover({ label, icon, text, disabled, title, pressed, children }: { label: string; icon: EditorIconName; text?: ReactNode; disabled: boolean; title?: string; pressed?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(false);
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -118,7 +123,7 @@ export function ToolbarPopover({ label, icon, disabled, title, children }: { lab
   }, [open]);
   const shown = open && !disabled;
   return <>
-    <button ref={trigger} type="button" className="te-format-button" aria-label={label} title={title ?? label} aria-haspopup="dialog" aria-expanded={shown} aria-pressed={shown} disabled={disabled} onMouseDown={event => event.preventDefault()} onClick={() => { const box = trigger.current?.getBoundingClientRect(); if (box) setPlace({ left: Math.max(8, Math.min(window.innerWidth - 288, box.left + box.width / 2 - 140)), top: box.bottom + 8 }); setOpen(value => !value); }}><EditorIcon name={icon} /></button>
+    <button ref={trigger} type="button" className="te-format-button" aria-label={label} title={title ?? label} aria-haspopup="dialog" aria-expanded={shown} aria-pressed={shown || pressed} disabled={disabled} onMouseDown={event => event.preventDefault()} onClick={() => { const box = trigger.current?.getBoundingClientRect(); if (box) setPlace({ left: Math.max(8, Math.min(window.innerWidth - 288, box.left + box.width / 2 - 140)), top: box.bottom + 8 }); setOpen(value => !value); }}><EditorIcon name={icon} />{text}</button>
     {shown && place && createPortal(<div ref={panel} className="te-root te-format-popover" role="dialog" aria-label={label} style={place} onKeyDown={event => event.stopPropagation()}>{children}</div>, document.body)}
   </>;
 }
