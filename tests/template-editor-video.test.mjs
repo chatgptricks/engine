@@ -635,8 +635,9 @@ test("a page exports its lowest visible clip, at Instagram's width, with its war
   const video = ex.pageVideo(page);
   assert.equal(video.element.id, "first");
   assert.equal(video.others, 1);
-  assert.deepEqual(ex.videoWindow(video.clip), {start: 1, duration: 1.5});
-  assert.deepEqual(ex.videoWindow(clipOf({duration: 200})), {start: 0, duration: 60}, "a slide plays at most a minute");
+  assert.deepEqual(ex.videoWindow(video.clip), {start: 1, duration: 1.5, speed: 1, length: 1.5});
+  assert.deepEqual(ex.videoWindow(clipOf({duration: 200})), {start: 0, duration: 60, speed: 1, length: 60}, "a slide plays at most a minute");
+  assert.deepEqual(ex.videoWindow(clipOf({duration: 200, speed: 2})), {start: 0, duration: 120, speed: 2, length: 60}, "at 2× a minute of slide is two of the clip");
   assert.equal(ex.pageVideo({canvas: scene([imageLayer()])}), undefined);
   assert.deepEqual(ex.videoOutputSize(360, 480, 3), {width: 1080, height: 1440, scale: 3});
   assert.deepEqual(ex.videoOutputSize(360, 480, 6), {width: 1080, height: 1440, scale: 3}, "never wider than 1080");
@@ -646,4 +647,110 @@ test("a page exports its lowest visible clip, at Instagram's width, with its war
   assert.match(warnings.join(" "), /at least 3.*other video.*120 MB.*WEBM/s);
   const codes = preflightDesign(design).filter(issue => issue.code.startsWith("video")).map(issue => `${issue.elementId}:${issue.code}`).sort();
   assert.deepEqual(codes, ["first:video-short", "second:video-extra"]);
+});
+
+// Clip edits after OpenFilm's clip attributes: speed, volume, fades, and splitting a slide.
+test("a clip keeps its speed, volume and fades, within their ranges, and the 60 seconds count played time", t => {
+  const f = fixture(t), model = f.load("lib/template-editor/model.ts");
+  const clip = clipOf({duration: 150, speed: 2, volume: 0.5, fadeIn: 1, fadeOut: 2.5});
+  assert.deepEqual(model.parseVideoClip(clip), {...clip, end: 120}, "at 2× a slide holds two minutes of the file");
+  assert.deepEqual(model.parseVideoClip(clipOf({speed: 1, volume: 1, fadeIn: 0})), clipOf(), "defaults aren't stored");
+  for (const bad of [{speed: 0.1}, {speed: 5}, {volume: -1}, {volume: 3}, {fadeIn: 11}, {fadeOut: -1}, {speed: "2"}]) assert.equal(model.parseVideoClip(clipOf(bad)), null, JSON.stringify(bad));
+  assert.equal(model.parseVideoClip(clipOf({speed: 1.234})).speed, 1.23);
+  const library = {...model.EMPTY_LIBRARY, designs: [{...model.createBlankDesign("Edits", "portrait")}]};
+  library.designs[0].pages[0].canvas = scene([imageLayer({video: clipOf({speed: 0.5, volume: 1.5, fadeOut: 1})})]);
+  assert.deepEqual(model.parseLibrary(library).designs[0].pages[0].canvas.elements[0].video, clipOf({speed: 0.5, volume: 1.5, fadeOut: 1}), "round-trips through the library");
+});
+
+test("clip timing: the file's seconds behind each moment of the slide, and the fades' levels", t => {
+  const f = fixture(t), timing = f.load("lib/template-editor/clip-timing.ts");
+  const clip = clipOf({start: 2, end: 10, speed: 2, volume: 0.8, fadeIn: 1, fadeOut: 2});
+  assert.deepEqual(timing.playWindow(clip), {start: 2, end: 10, speed: 2, length: 4});
+  assert.equal(timing.sourceTimeAt(clip, 1.5), 5);
+  assert.equal(timing.sourceTimeAt(clip, 99), 10, "never past the end");
+  assert.equal(timing.slideTimeAt(clip, 6), 2);
+  assert.equal(timing.fadeAt(clip, 0), 0);
+  assert.equal(timing.fadeAt(clip, 0.5), 0.5);
+  assert.equal(timing.fadeAt(clip, 2), 1);
+  assert.equal(timing.fadeAt(clip, 3), 0.5);
+  assert.equal(timing.fadeAt(clip, 4), 0);
+  assert.ok(Math.abs(timing.gainAt(clip, 0.5) - 0.4) < 1e-9);
+  // Fades longer than the slide shrink together, in proportion.
+  assert.deepEqual(timing.fadeLengths(clipOf({start: 0, end: 3, fadeIn: 3, fadeOut: 3})), {fadeIn: 1.5, fadeOut: 1.5});
+  assert.equal(timing.changesSound(clipOf()), false);
+  assert.equal(timing.changesSound(clipOf({volume: 0})), true);
+  assert.equal(timing.fadesPicture(clipOf({fadeOut: 1})), true);
+});
+
+test("a long clip at 2× splits every two minutes of the file; fades stay on its outer ends", t => {
+  const f = fixture(t), model = f.load("lib/template-editor/model.ts"), slides = f.load("lib/template-editor/video-slides.ts");
+  assert.deepEqual(slides.videoParts({duration: 170, speed: 2}), [{start: 0, end: 120}, {start: 120, end: 170}]);
+  assert.equal(slides.needsVideoSlides(clipOf({duration: 110, speed: 2})), false);
+  const design = model.createBlankDesign("Long", "portrait");
+  design.pages[0].canvas = scene([imageLayer({video: clipOf({duration: 170, speed: 2, fadeIn: 1, fadeOut: 2})})]);
+  const result = slides.splitVideoAcrossSlides(design, design.pages[0].id, "video-1");
+  const clips = result.design.pages.map(page => page.canvas.elements[0].video);
+  assert.deepEqual(clips.map(clip => [clip.start, clip.end, clip.fadeIn, clip.fadeOut, clip.speed]), [[undefined, 120, 1, undefined, 2], [120, undefined, undefined, 2, 2]]);
+});
+
+test("split a video slide at a moment: the slide keeps the part before it, a copy right after plays the rest", t => {
+  const f = fixture(t), model = f.load("lib/template-editor/model.ts"), slides = f.load("lib/template-editor/video-slides.ts");
+  const design = model.createBlankDesign("Split", "portrait");
+  const title = {...model.createCanvasElement("text"), id: "title", text: "Watch"};
+  const after = {...design.pages[0], id: "after", image: {...design.pages[0].image, id: "after-image"}, canvas: scene([])};
+  design.pages = [{...design.pages[0], canvas: scene([title, imageLayer({video: clipOf({start: 1, end: 11, fadeIn: 0.5, fadeOut: 1, volume: 0.7})})])}, after];
+  const cover = {src: COVER.replace(/c+$/, "d".repeat(64))};
+  const result = slides.splitVideoAt(design, design.pages[0].id, "video-1", 4.25, cover);
+  assert.equal(result.pageIds.length, 1);
+  const pages = result.design.pages;
+  assert.deepEqual(pages.map(page => page.id), [design.pages[0].id, result.pageIds[0], "after"]);
+  const [a, b] = pages.slice(0, 2).map(page => page.canvas.elements[1]);
+  assert.deepEqual([a.video.start, a.video.end, a.video.fadeIn, a.video.fadeOut, a.video.volume], [1, 4.25, 0.5, undefined, 0.7]);
+  assert.deepEqual([b.video.start, b.video.end, b.video.fadeIn, b.video.fadeOut, b.video.volume], [4.25, 11, undefined, 1, 0.7]);
+  assert.equal(a.src, COVER); assert.equal(b.src, cover.src); assert.equal(b.video.coverTime, 4.25);
+  assert.notEqual(a.id, b.id, "the copy's layers have ids of their own");
+  assert.equal(pages[1].canvas.elements[0].text, "Watch");
+  assert.ok(model.parseLibrary({...model.EMPTY_LIBRARY, designs: [result.design]}), "the result is a valid deck");
+  assert.throws(() => slides.splitVideoAt(design, design.pages[0].id, "video-1", 1.2), /at least 0.5 seconds inside/);
+  assert.throws(() => slides.splitVideoAt(design, design.pages[0].id, "video-1", 10.8), /at least 0.5 seconds inside/);
+  assert.throws(() => slides.splitVideoAt(design, design.pages[0].id, "title", 3), /no video/);
+  const full = {...design, pages: Array.from({length: 20}, (_, i) => ({...design.pages[0], id: `p${i}`}))};
+  assert.throws(() => slides.splitVideoAt(full, "p0", "video-1", 5), /holds 20/);
+});
+
+test("agents set speed, volume and fades on video layers and split a video slide", async t => {
+  const f = fixture(t, {overrides: {"./review-assets": serving(CLIP)}});
+  const route = f.load("app/api/agent/slides/route.ts");
+  const post = body => route.POST(new Request("https://engine.example/api/agent/slides", {method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(body)}));
+  const created = await post({action: "create_deck", operationId: randomUUID(), spec: {name: "Edits", format: "portrait", slides: [
+    {id: "s1", layout: "blank", elements: [{id: "clip", type: "video", src: "https://cdn.example/clip.mp4", poster: COVER, x: 0, y: 0, width: 1080, height: 1440, speed: 0.5, volume: 1.4, fadeIn: 1, start: 0, end: 4}]},
+  ]}});
+  assert.equal(created.status, 201, await created.clone().text());
+  const deck = await created.json();
+  const stored = deck.document.pages[0].canvas.elements[0].video;
+  assert.deepEqual([stored.speed, stored.volume, stored.fadeIn, stored.end], [0.5, 1.4, 1, 4]);
+  const update = changes => post({action: "update_deck", deckId: deck.document.id, expectedHash: deck.hash, operationId: randomUUID(), changes});
+  const changed = await update({operations: [{op: "update_element", pageId: "s1", elementId: "clip", properties: {speed: 2, fadeOut: 0.5, end: 12}}]});
+  assert.equal(changed.status, 200, await changed.clone().text());
+  const after = await changed.json();
+  const clip = after.document.pages[0].canvas.elements[0].video;
+  assert.deepEqual([clip.speed, clip.volume, clip.fadeIn, clip.fadeOut, clip.end], [2, 1.4, 1, 0.5, undefined]);
+  const view = after.view.slides[0].elements[0];
+  assert.equal(view.type, "video");
+  const split = await post({action: "update_deck", deckId: deck.document.id, expectedHash: after.hash, operationId: randomUUID(), changes: {operations: [{op: "split_video", pageId: "s1", elementId: "clip", at: 5}]}});
+  assert.equal(split.status, 200, await split.clone().text());
+  const splitDeck = await split.json(), pages = splitDeck.document.pages;
+  assert.equal(pages.length, 2);
+  assert.deepEqual(pages.map(page => [page.canvas.elements[0].video.start, page.canvas.elements[0].video.end]), [[undefined, 5], [5, undefined]]);
+  const bad = await post({action: "update_deck", deckId: deck.document.id, expectedHash: splitDeck.hash, operationId: randomUUID(), changes: {operations: [{op: "split_video", pageId: "s1", elementId: "clip", at: 0.2}]}});
+  assert.equal(bad.status, 400);
+  assert.match(await bad.text(), /inside the part that plays/);
+  const tooFast = await post({action: "update_deck", deckId: deck.document.id, expectedHash: splitDeck.hash, operationId: randomUUID(), changes: {operations: [{op: "update_element", pageId: "s1", elementId: "clip", properties: {speed: 8}}]}});
+  assert.equal(tooFast.status, 400);
+});
+
+test("engine_capabilities lists the clip edits and split_video", async t => {
+  const f = fixture(t), {agentCapabilities} = f.load("lib/template-editor/agent-decks.ts");
+  const text = JSON.stringify(agentCapabilities());
+  for (const word of ["\"speed\"", "\"volume\"", "\"fadeIn\"", "\"fadeOut\"", "split_video"]) assert.ok(text.includes(word), word);
 });

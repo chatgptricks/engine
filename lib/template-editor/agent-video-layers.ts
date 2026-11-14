@@ -12,7 +12,7 @@ export const MISSING_VIDEO_POSTER = "data:image/png;base64,iVBORw0KGgoAAAANSUhEU
 
 type RecordValue = Record<string, unknown>;
 const record = (value: unknown): value is RecordValue => typeof value === "object" && value !== null && !Array.isArray(value);
-const CLIP_FIELDS = ["start", "end", "loop", "muted", "coverTime"] as const;
+const CLIP_FIELDS = ["start", "end", "loop", "muted", "coverTime", "speed", "volume", "fadeIn", "fadeOut"] as const;
 const hasPoster = (poster: unknown) => typeof poster === "string" && poster.length > 0;
 
 /** `src` names the clip: an Engine video path, a link to copy, or (MCP bridge) a local file. */

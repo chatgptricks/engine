@@ -1,3 +1,4 @@
+import {changesSound, fadeAt, fadesPicture, gainAt, playWindow} from "./clip-timing";
 import {MAX_SLIDE_VIDEO_SECONDS, type CanvasElement, type DesignPage, type VideoClip} from "./model";
 
 /** Instagram's carousel limits, kept on the safe side of what its guides disagree on. */
@@ -23,11 +24,10 @@ export function pageVideo(page: DesignPage | undefined): PageVideo | undefined {
   return found[0] && {...found[0], others: found.length - 1};
 }
 
-/** The seconds of the clip a slide plays. */
-export function videoWindow(clip: VideoClip): {start: number; duration: number} {
-  const start = Math.max(0, Math.min(clip.start ?? 0, clip.duration - 0.1));
-  const end = Math.min(clip.end ?? clip.duration, clip.duration, start + MAX_SLIDE_VIDEO_SECONDS);
-  return {start, duration: Math.max(0.1, end - start)};
+/** The seconds of the clip a slide plays (`duration`, of the file) and how long the slide plays them (`length`). */
+export function videoWindow(clip: VideoClip): {start: number; duration: number; speed: number; length: number} {
+  const {start, end, speed, length} = playWindow(clip);
+  return {start, duration: end - start, speed, length};
 }
 
 /** A 2D affine matrix [a, b, c, d, e, f], as canvas `setTransform` takes it. */
@@ -64,10 +64,12 @@ export function videoOutputSize(frameWidth: number, frameHeight: number, scale: 
 }
 
 /** Warnings for one exported clip, in the words people see in the download notice. */
-export function videoExportWarnings(page: number, video: PageVideo, file?: {bytes: number; ext: string}): string[] {
+export function videoExportWarnings(page: number, video: PageVideo, file?: {bytes: number; ext: string; sound?: boolean; audioNote?: string}): string[] {
   const warnings: string[] = [];
-  const {duration} = videoWindow(video.clip);
+  const {length: duration} = videoWindow(video.clip);
   if (duration < INSTAGRAM_VIDEO.minSeconds) warnings.push(`Page ${page}: the video plays ${Math.round(duration * 10) / 10} seconds; Instagram wants at least ${INSTAGRAM_VIDEO.minSeconds}.`);
+  if (file?.sound && video.clip.speed && video.clip.speed !== 1 && (video.clip.volume ?? 1) > 0) warnings.push(`Page ${page}: the video plays at ${video.clip.speed}×, so it exports without its sound.`);
+  if (file?.audioNote?.includes("can't change its volume")) warnings.push(`Page ${page}: this browser kept the video's sound as it is, without its volume or fades. Export in Chrome or Edge to apply them.`);
   if (video.others) warnings.push(`Page ${page}: a slide plays one video, so ${video.others === 1 ? "the other video exports" : `${video.others} other videos export`} as ${video.others === 1 ? "its cover" : "their covers"}.`);
   if (file && file.bytes > INSTAGRAM_VIDEO.maxBytes) warnings.push(`Page ${page}: the video file is ${Math.round(file.bytes / 1024 ** 2)} MB; Instagram may refuse files over ${INSTAGRAM_VIDEO.maxBytes / 1024 ** 2} MB.`);
   if (file && file.ext !== "mp4") warnings.push(`Page ${page}: this browser saved the video as ${file.ext.toUpperCase()}; Instagram wants MP4. Export in Chrome or Safari.`);
@@ -114,15 +116,17 @@ export async function exportPageVideo(frame: HTMLElement, video: PageVideo, opti
     const blend = video.element.blendMode && video.element.blendMode !== "normal" ? video.element.blendMode as GlobalCompositeOperation : "source-over";
     const scratch = document.createElement("canvas"); scratch.width = size.width; scratch.height = size.height;
     const layerContext = scratch.getContext("2d")!;
-    const drawVideo = (context: CanvasRenderingContext2D) => {
+    const clip = video.clip, fades = fadesPicture(clip);
+    const drawVideo = (context: CanvasRenderingContext2D, t: number) => {
       layerContext.setTransform(1, 0, 0, 1, 0, 0); layerContext.globalCompositeOperation = "source-over"; layerContext.clearRect(0, 0, size.width, size.height);
       layerContext.filter = filter && filter !== "none" ? filter : "none";
       layerContext.setTransform(...matrix); layerContext.drawImage(source, 0, 0, source.videoWidth, source.videoHeight);
       layerContext.setTransform(1, 0, 0, 1, 0, 0); layerContext.filter = "none";
       layerContext.globalCompositeOperation = "destination-in"; layerContext.drawImage(mask, 0, 0, size.width, size.height);
-      context.save(); context.globalCompositeOperation = blend; context.drawImage(scratch, 0, 0); context.restore();
+      // A fade shows the layers below through the clip, as on the canvas.
+      context.save(); context.globalCompositeOperation = blend; if (fades) context.globalAlpha = fadeAt(clip, t); context.drawImage(scratch, 0, 0); context.restore();
     };
-    const {start, duration} = videoWindow(video.clip);
-    return await encodeComposite({video: source, under, over, drawVideo, width: size.width, height: size.height, fps: VIDEO_EXPORT_FPS, duration, startAt: start, withAudio: options.sound !== false, bitrate: VIDEO_EXPORT_BITRATE, signal: options.signal, onProgress: options.onProgress});
+    const {start, length, speed} = videoWindow(clip);
+    return await encodeComposite({video: source, under, over, drawVideo, width: size.width, height: size.height, fps: VIDEO_EXPORT_FPS, duration: length, startAt: start, speed, gain: changesSound(clip) ? (t: number) => gainAt(clip, t) : undefined, withAudio: options.sound !== false, bitrate: VIDEO_EXPORT_BITRATE, signal: options.signal, onProgress: options.onProgress});
   } finally { source.removeAttribute("src"); source.load(); }
 }

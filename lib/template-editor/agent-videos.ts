@@ -33,7 +33,7 @@ export async function resolveAgentVideos<T>(owner: string, value: T, path = "$")
       if (error instanceof AgentDeckValidationError) throw error;
       throw new AgentDeckValidationError(error instanceof Error ? error.message : "could not be stored", at);
     }
-    const result = clipFromRecord(stored, {start: number(clip.start), end: number(clip.end), coverTime: number(clip.coverTime), loop: typeof clip.loop === "boolean" ? clip.loop : undefined, muted: typeof clip.muted === "boolean" ? clip.muted : undefined});
+    const result = clipFromRecord(stored, {start: number(clip.start), end: number(clip.end), coverTime: number(clip.coverTime), speed: number(clip.speed), volume: number(clip.volume), fadeIn: number(clip.fadeIn), fadeOut: number(clip.fadeOut), loop: typeof clip.loop === "boolean" ? clip.loop : undefined, muted: typeof clip.muted === "boolean" ? clip.muted : undefined});
     if (clip.noPoster === true) result.noPoster = true;
     return result;
   }
