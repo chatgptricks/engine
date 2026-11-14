@@ -65,12 +65,21 @@ export function videoOutputSize(frameWidth: number, frameHeight: number, scale: 
   return {width: even(frameWidth * s), height: even(frameHeight * s), scale: s};
 }
 
+/** Why a slide's MP4 came out without sound, in words people read. */
+function silentReason(note: string, speed: number): string {
+  if (note.includes("no audio track")) return "the video file has no sound, so the MP4 is silent.";
+  if (note.includes("can't change its speed")) return `this browser can't play the sound at ${speed}×, so the MP4 is silent. Export in Chrome or Edge to keep it.`;
+  if (note.includes("can't copy") || note.includes("no audio added")) return "this browser couldn't read the video's sound, so the MP4 is silent. Export in Chrome or Edge, or upload the clip as an MP4.";
+  return `the MP4 is silent: Engine couldn't add the video's sound (${note}).`;
+}
+
 /** Warnings for one exported clip, in the words people see in the download notice. */
 export function videoExportWarnings(page: number, video: PageVideo, file?: {bytes: number; ext: string; sound?: boolean; audioNote?: string}): string[] {
   const warnings: string[] = [];
   const {length: duration} = videoWindow(video.clip);
   if (duration < INSTAGRAM_VIDEO.minSeconds) warnings.push(`Page ${page}: the video plays ${Math.round(duration * 10) / 10} seconds; Instagram wants at least ${INSTAGRAM_VIDEO.minSeconds}.`);
-  if (file?.sound && video.clip.speed && video.clip.speed !== 1 && (video.clip.volume ?? 1) > 0) warnings.push(`Page ${page}: the video plays at ${video.clip.speed}×, so it exports without its sound.`);
+  const silent = file?.sound && (video.clip.volume ?? 1) > 0 && file.audioNote && !file.audioNote.startsWith("sound included") ? file.audioNote : "";
+  if (silent) warnings.push(`Page ${page}: ${silentReason(silent, video.clip.speed ?? 1)}`);
   if (file?.audioNote?.includes("can't change its volume")) warnings.push(`Page ${page}: this browser kept the video's sound as it is, without its volume or fades. Export in Chrome or Edge to apply them.`);
   if (video.others) warnings.push(`Page ${page}: a slide plays one video, so ${video.others === 1 ? "the other video exports" : `${video.others} other videos export`} as ${video.others === 1 ? "its cover" : "their covers"}.`);
   if (file && file.bytes > INSTAGRAM_VIDEO.maxBytes) warnings.push(`Page ${page}: the video file is ${Math.round(file.bytes / 1024 ** 2)} MB; Instagram may refuse files over ${INSTAGRAM_VIDEO.maxBytes / 1024 ** 2} MB.`);

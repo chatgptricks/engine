@@ -1,3 +1,4 @@
+import { stretchAudio } from "./time-stretch";
 import { domToCanvas } from "modern-screenshot";
 
 /**
@@ -245,7 +246,7 @@ export async function encodeComposite(args: {
   /** Seconds of output. At `speed` the clip plays duration × speed seconds of the file. */
   duration: number;
   startAt: number;
-  /** Playback rate (default 1). Sound is left out unless it is 1. */
+  /** Playback rate (default 1). The sound plays at it too, its pitch kept. */
   speed?: number;
   /** The sound's gain at each output second (volume and fades). Without it the sound is copied as it is. */
   gain?: (t: number) => number;
@@ -336,7 +337,7 @@ async function recordRealtime(args: {
       window.AudioContext ||
       (window as unknown as { webkitAudioContext?: typeof AudioContext })
         .webkitAudioContext;
-    if (Ctx && args.withAudio !== false && speed === 1) {
+    if (Ctx && args.withAudio !== false) {
       audioCtx = new Ctx();
       // Safari starts an AudioContext SUSPENDED until resumed — without this the
       // tapped audio (and the element's playback) can stall. Fire-and-forget.
@@ -645,60 +646,38 @@ async function demuxAudioChunks(
 
 interface ReencodedAudio {
   chunks: Array<{ chunk: EncodedAudioChunk; meta?: EncodedAudioChunkMetadata }>;
+  sampleRate: number;
+  numberOfChannels: number;
 }
+/** A window of sound as samples, one array per channel, from the trim on. */
+interface Pcm { sampleRate: number; channels: Float32Array[] }
 
-/** Decodes the copied AAC, scales every sample by `gain` at its second (volume and
- * fades), and encodes AAC again. Null where the browser has no AAC AudioEncoder (Safari
- * before 26, Firefox), so the caller copies the sound as it is. Output starts at 0 and
- * stops at `duration`. */
-async function reencodeAudio(
-  demuxed: DemuxedAudio,
-  gain: (t: number) => number,
-  duration: number,
-): Promise<ReencodedAudio | null> {
-  if (typeof AudioDecoder === "undefined" || typeof AudioEncoder === "undefined") return null;
+const canEncodeAac = async (sampleRate: number, numberOfChannels: number) =>
+  typeof AudioEncoder !== "undefined" &&
+  (await AudioEncoder.isConfigSupported({ codec: "mp4a.40.2", sampleRate, numberOfChannels, bitrate: 160_000 }).catch(() => ({ supported: false }))).supported === true;
+
+/** The copied AAC decoded to samples: `seconds` of the file from the trim. Null where the browser
+ * can't decode it (no AudioDecoder). */
+async function decodeChunks(demuxed: DemuxedAudio, seconds: number): Promise<Pcm | null> {
+  if (typeof AudioDecoder === "undefined") return null;
   const { sampleRate, numberOfChannels } = demuxed.config;
-  const encoderConfig: AudioEncoderConfig = { codec: "mp4a.40.2", sampleRate, numberOfChannels, bitrate: 160_000 };
-  if (!(await AudioEncoder.isConfigSupported(encoderConfig).catch(() => ({ supported: false }))).supported) return null;
   const decoderConfig: AudioDecoderConfig = { codec: demuxed.config.codec, sampleRate, numberOfChannels, description: demuxed.config.description };
   if (!(await AudioDecoder.isConfigSupported(decoderConfig).catch(() => ({ supported: false }))).supported) return null;
-
-  const out: ReencodedAudio["chunks"] = [];
   let failure: unknown = null;
-  const encoder = new AudioEncoder({
-    output: (chunk, meta) => out.push({ chunk, meta }),
-    error: (e) => { failure = e; },
-  });
-  encoder.configure(encoderConfig);
-  const total = Math.round(duration * sampleRate);
+  const length = Math.round(seconds * sampleRate);
+  const channels = Array.from({ length: numberOfChannels }, () => new Float32Array(length));
   const decoder = new AudioDecoder({
     output: (data) => {
       try {
         const frames = data.numberOfFrames;
         const first = Math.round((data.timestamp / 1_000_000) * sampleRate);
-        // Keep only the samples inside [0, duration).
-        const from = Math.max(0, -first), to = Math.min(frames, total - first);
+        const from = Math.max(0, -first), to = Math.min(frames, length - first);
         if (to <= from) return;
-        const count = to - from;
-        const planes = new Float32Array(count * data.numberOfChannels);
-        for (let channel = 0; channel < data.numberOfChannels; channel++) {
-          const plane = new Float32Array(frames);
+        const plane = new Float32Array(frames);
+        for (let channel = 0; channel < Math.min(numberOfChannels, data.numberOfChannels); channel++) {
           data.copyTo(plane, { planeIndex: channel, format: "f32-planar" });
-          for (let i = 0; i < count; i++) {
-            const sample = plane[from + i] * gain((first + from + i) / sampleRate);
-            planes[channel * count + i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
-          }
+          channels[channel].set(plane.subarray(from, to), first + from);
         }
-        const scaled = new AudioData({
-          format: "f32-planar",
-          sampleRate: data.sampleRate,
-          numberOfFrames: count,
-          numberOfChannels: data.numberOfChannels,
-          timestamp: Math.round(((first + from) / sampleRate) * 1_000_000),
-          data: planes,
-        });
-        encoder.encode(scaled);
-        scaled.close();
       } catch (e) {
         failure = e;
       } finally {
@@ -712,11 +691,72 @@ async function reencodeAudio(
     decoder.decode(new EncodedAudioChunk({ type: c.type, timestamp: c.timestamp, duration: c.duration, data: c.data }));
   }
   await decoder.flush();
-  await encoder.flush();
   decoder.close();
+  if (failure) throw failure;
+  return { sampleRate, channels };
+}
+
+/** Any sound the browser can play (Opus in WebM, MP3, AAC the demuxer can't read), decoded
+ * whole by Web Audio, then cut to `seconds` from `startAt`. Null when there's none. */
+async function decodeFileAudio(src: string, startAt: number, seconds: number): Promise<Pcm | null> {
+  const Offline = typeof OfflineAudioContext !== "undefined" ? OfflineAudioContext : null;
+  if (!Offline || !src) return null;
+  try {
+    const response = await fetch(src, { credentials: "same-origin" });
+    if (!response.ok) return null;
+    const bytes = await response.arrayBuffer();
+    if (bytes.byteLength > 400 * 1024 * 1024) return null;
+    const sampleRate = 48_000;
+    const decoded = await new Offline(2, sampleRate, sampleRate).decodeAudioData(bytes);
+    const from = Math.round(startAt * decoded.sampleRate), length = Math.round(seconds * decoded.sampleRate);
+    const channels = Array.from({ length: Math.min(2, decoded.numberOfChannels) }, (_, channel) => {
+      const out = new Float32Array(length);
+      const all = decoded.getChannelData(channel);
+      out.set(all.subarray(Math.min(all.length, from), Math.min(all.length, from + length)));
+      return out;
+    });
+    return channels.length ? { sampleRate: decoded.sampleRate, channels } : null;
+  } catch (e) {
+    console.warn(`${AUDIO_LOG} the browser couldn't decode the clip's sound:`, e);
+    return null;
+  }
+}
+
+/** Samples played at `speed` with their pitch kept, scaled by `gain` at each output second
+ * (volume and fades), and encoded as AAC from 0 to `duration`. Null where the browser has no
+ * AAC AudioEncoder (Safari before 26, Firefox). */
+async function encodePcm(pcm: Pcm, gain: ((t: number) => number) | undefined, duration: number, speed = 1): Promise<ReencodedAudio | null> {
+  const { sampleRate } = pcm;
+  const numberOfChannels = pcm.channels.length;
+  if (!numberOfChannels || !(await canEncodeAac(sampleRate, numberOfChannels))) return null;
+  let failure: unknown = null;
+  const total = Math.round(duration * sampleRate);
+  const played = speed === 1 ? pcm.channels : stretchAudio(pcm.channels, speed, sampleRate);
+  const out: ReencodedAudio["chunks"] = [];
+  const encoder = new AudioEncoder({
+    output: (chunk, meta) => out.push({ chunk, meta }),
+    error: (e) => { failure = e; },
+  });
+  encoder.configure({ codec: "mp4a.40.2", sampleRate, numberOfChannels, bitrate: 160_000 });
+  const block = 4096;
+  for (let at = 0; at < total; at += block) {
+    const count = Math.min(block, total - at);
+    const planes = new Float32Array(count * numberOfChannels);
+    for (let channel = 0; channel < numberOfChannels; channel++) {
+      const samples = played[channel];
+      for (let i = 0; i < count; i++) {
+        const sample = (samples[at + i] ?? 0) * (gain ? gain((at + i) / sampleRate) : 1);
+        planes[channel * count + i] = sample > 1 ? 1 : sample < -1 ? -1 : sample;
+      }
+    }
+    const data = new AudioData({ format: "f32-planar", sampleRate, numberOfFrames: count, numberOfChannels, timestamp: Math.round((at / sampleRate) * 1_000_000), data: planes });
+    encoder.encode(data);
+    data.close();
+  }
+  await encoder.flush();
   encoder.close();
   if (failure) throw failure;
-  return out.length ? { chunks: out } : null;
+  return out.length ? { chunks: out, sampleRate, numberOfChannels } : null;
 }
 
 /** Seek-and-encode: step the clip frame by frame, composite, and feed the
@@ -772,24 +812,34 @@ async function encodeWithWebCodecs(args: {
   // ── Source audio: copy the clip's compressed AAC track (no decode/encode,
   // so it works on Safari and is memory-light), trimmed to the window ──
   const speed = args.speed ?? 1;
+  const src = video.currentSrc || video.src;
+  const sourceSeconds = duration * speed;
   const demuxed =
     args.withAudio === false
       ? ((lastAudioReason = "sound left out"), null)
-      : speed !== 1
-        ? ((lastAudioReason = "sound left out: the clip plays faster or slower"), null)
-        : await demuxAudioChunks(video.currentSrc || video.src, startAt, duration);
-  // Volume and fades: decode, scale and encode the sound again where the browser can.
+      : await demuxAudioChunks(src, startAt, sourceSeconds);
+  // Speed, volume and fades: decode, change and encode the sound again where the browser can.
+  // Sound the demuxer can't copy (not AAC, or not an MP4) is decoded by the browser instead.
   let reencoded: ReencodedAudio | null = null;
-  if (demuxed && demuxed.chunks.length && args.gain) {
-    reencoded = await reencodeAudio(demuxed, args.gain, duration).catch((error) => {
-      console.warn(`${AUDIO_LOG} re-encode failed, copying the sound as it is:`, error);
-      return null;
-    });
+  const reencode = async (pcm: Pcm | null) => (pcm ? encodePcm(pcm, args.gain, duration, speed) : null);
+  try {
+    if (demuxed && demuxed.chunks.length) {
+      if (args.gain || speed !== 1) reencoded = await reencode(await decodeChunks(demuxed, sourceSeconds));
+    } else if (args.withAudio !== false && lastAudioReason !== "source has no audio track") {
+      reencoded = await reencode(await decodeFileAudio(src, startAt, sourceSeconds));
+      if (reencoded) console.log(`${AUDIO_LOG} decoded the clip's sound in the browser (${lastAudioReason})`);
+    }
+  } catch (error) {
+    console.warn(`${AUDIO_LOG} re-encode failed:`, error);
+    reencoded = null;
   }
-  const useAudio = Boolean(demuxed && demuxed.chunks.length);
+  // Sound at another speed can't be copied as it is.
+  const copied = Boolean(demuxed && demuxed.chunks.length) && speed === 1 && !reencoded;
+  const useAudio = Boolean(reencoded) || copied;
+  if (demuxed && !useAudio) lastAudioReason = "sound left out: this browser can't change its speed";
   const audioNote = !useAudio
     ? lastAudioReason
-    : args.gain && !reencoded
+    : copied && args.gain
       ? "sound included, but this browser can't change its volume or fades"
       : "sound included";
   console.log(
@@ -799,12 +849,12 @@ async function encodeWithWebCodecs(args: {
   const muxer = new Muxer({
     target: new ArrayBufferTarget(),
     video: { codec: "avc", width: W, height: H },
-    ...(useAudio && demuxed
+    ...(reencoded || (copied && demuxed)
       ? {
           audio: {
             codec: "aac" as const,
-            numberOfChannels: demuxed.config.numberOfChannels,
-            sampleRate: demuxed.config.sampleRate,
+            numberOfChannels: reencoded?.numberOfChannels ?? demuxed!.config.numberOfChannels,
+            sampleRate: reencoded?.sampleRate ?? demuxed!.config.sampleRate,
           },
         }
       : {}),
@@ -900,13 +950,13 @@ async function encodeWithWebCodecs(args: {
 
   // Mux the copied audio chunks (raw compressed AAC + the source's decoder
   // config). Output timestamps are already 0-based to the trim window.
-  if (useAudio && reencoded) {
+  if (reencoded) {
     try {
       for (const { chunk, meta } of reencoded.chunks) muxer.addAudioChunk(chunk, meta);
     } catch (e) {
       console.error("[gf-export-video] audio mux failed, exporting silent:", e);
     }
-  } else if (useAudio && demuxed) {
+  } else if (copied && demuxed) {
     try {
       const meta = {
         decoderConfig: {

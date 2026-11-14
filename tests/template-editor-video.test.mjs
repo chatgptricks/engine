@@ -909,3 +909,39 @@ test("export burns captions in: the layers over the clip are captured once per c
   const flat = await ex.captureCaptioned([video], clip, new Set(), new Set(), async () => ++plain, async () => ++plain);
   assert.deepEqual([plain, typeof flat.over], [2, "number"]);
 });
+
+// Sound at any speed: the export plays a slide's sound at its speed with the pitch kept.
+test("time-stretched sound lasts length / speed and keeps its pitch", t => {
+  const f = fixture(t), {stretchAudio} = f.load("lib/engine/time-stretch.ts");
+  const rate = 8000, tone = 440, seconds = 2;
+  const wave = Float32Array.from({length: rate * seconds}, (_, i) => Math.sin(2 * Math.PI * tone * i / rate) * 0.5);
+  const pitch = samples => { // zero crossings per second, halved
+    let crossings = 0;
+    for (let i = 1; i < samples.length; i++) if ((samples[i - 1] < 0) !== (samples[i] < 0)) crossings++;
+    return crossings / 2 / (samples.length / rate);
+  };
+  for (const speed of [0.5, 2, 1.5]) {
+    const [out] = stretchAudio([wave], speed, rate);
+    assert.equal(out.length, Math.round(wave.length / speed), `${speed}×: ${seconds / speed} seconds`);
+    const middle = out.subarray(Math.round(out.length * 0.1), Math.round(out.length * 0.9));
+    assert.ok(Math.abs(pitch(middle) - tone) < tone * 0.03, `${speed}×: still ${tone} Hz, got ${pitch(middle)}`);
+    const peak = middle.reduce((max, value) => Math.max(max, Math.abs(value)), 0);
+    assert.ok(peak > 0.4 && peak <= 0.55, `${speed}×: as loud as before, got ${peak}`);
+  }
+  const stereo = stretchAudio([wave, wave.map(value => -value)], 2, rate);
+  assert.equal(stereo.length, 2, "every channel");
+  assert.ok(Math.abs(stereo[0][4000] + stereo[1][4000]) < 1e-6, "channels stay in step");
+  assert.deepEqual([...stretchAudio([wave], 1, rate)[0].subarray(0, 5)], [...wave.subarray(0, 5)], "1× is the sound as it is");
+});
+
+test("a download says why a slide came out silent", t => {
+  const f = fixture(t), ex = f.load("lib/template-editor/export-video.ts");
+  const page = {canvas: {background: "#000", elements: [{...imageLayer(), id: "v", video: clipOf({duration: 8, speed: 2})}]}};
+  const video = ex.pageVideo(page);
+  const say = note => ex.videoExportWarnings(1, video, {bytes: 1, ext: "mp4", sound: true, audioNote: note}).join(" ");
+  assert.doesNotMatch(say("sound included"), /silent|sound/, "no notice when the sound is in");
+  assert.match(say("source has no audio track"), /file has no sound/);
+  assert.match(say("sound left out: this browser can't change its speed"), /can't play the sound at 2×.*Chrome/);
+  assert.match(say("audio is opus, can't copy"), /couldn't read the video's sound/);
+  assert.doesNotMatch(ex.videoExportWarnings(1, video, {bytes: 1, ext: "mp4", sound: false, audioNote: "sound left out"}).join(" "), /silent/, "unticked: no notice");
+});

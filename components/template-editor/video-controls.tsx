@@ -124,7 +124,7 @@ export function VideoControls({element, disabled, onUpdate, onReplace, onSplit, 
     <h3>Video</h3>
     <div className="te-element-segments" role="group" aria-label="Playback">
       <button type="button" aria-pressed={playing} onClick={() => { const next = !playing; setPlaying(next); setVideoPaused(element.id, !next); }}>{playing ? "Pause" : "Play"}</button>
-      <button type="button" aria-pressed={clip.muted === false} disabled={disabled} onClick={() => setClip("video-sound", {muted: clip.muted === false ? undefined : false})} title="Sound while editing. Export has its own setting.">{clip.muted === false ? "Sound on" : "Muted"}</button>
+      <button type="button" aria-pressed={clip.muted !== true} disabled={disabled} onClick={() => setClip("video-sound", {muted: clip.muted === true ? undefined : true})} title="Sound while editing: the video most in view plays its sound. The MP4 keeps it either way; the download has its own setting.">{clip.muted === true ? "Muted" : "Sound on"}</button>
       <button type="button" aria-pressed={clip.loop !== false} disabled={disabled} onClick={() => setClip("video-loop", {loop: clip.loop === false ? undefined : false})}>{clip.loop === false ? "Plays once" : "Loops"}</button>
     </div>
     <div className="te-video-filmstrip" role="group" aria-label="Clip frames: choose a moment">
