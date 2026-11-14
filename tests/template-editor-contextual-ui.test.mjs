@@ -59,7 +59,7 @@ const quickProps = scene => ({ scene, selectedIds: scene.elements.map(item => it
 const inspectorProps = scene => ({ scene, selectedIds: scene.elements.map(item => item.id), width: 360, height: 450, onChange() {}, onSelect() {} });
 
 // The text bar is a plain function component without hooks: walk into what it renders.
-const EXPANDED = new Set(["TextFormatBar"]);
+const EXPANDED = new Set(["TextFormatBar", "MediaToolbar"]);
 function nodes(node, predicate, disabled = false) {
   if (!node || typeof node !== "object") return [];
   if (typeof node.type === "function" && EXPANDED.has(node.type.name)) return nodes(node.type(node.props), predicate, disabled);
@@ -578,4 +578,51 @@ test("a single photo offers Span, and a spanning photo shows its slides, the sea
   // Text and multiple selections never show it.
   assert.doesNotMatch(quickMarkup({ ...quickProps(sceneWith([text()])), span: { kind: "available", onSpan() {} } }), /Span onto/);
   assert.doesNotMatch(quickMarkup({ ...quickProps(sceneWith([image({ ...photo, id: "a" }), image({ ...photo, id: "b" })])), span: { kind: "available", onSpan() {} } }), /Span onto/);
+});
+
+const ownText = node => React.Children.toArray(node.props?.children).filter(child => typeof child === "string" || typeof child === "number").join("").trim();
+const button = (tree, label) => nodes(tree, node => node.type === "button" && ownText(node) === label)[0];
+
+test("the Case menu offers four cases and changes only editable text", () => {
+  const editable = text({ id: "editable", text: "the big news" });
+  const locked = text({ id: "locked", text: "the big news", locked: true });
+  let changed;
+  const tree = QuickToolbar({ ...quickProps(sceneWith([editable, locked])), onChange: next => { changed = next; } });
+  control(tree, "Case");
+  for (const label of ["UPPERCASE", "lowercase", "Title Case", "Sentence case"]) assert.ok(button(tree, label), `Missing case: ${label}`);
+  button(tree, "Title Case").node.props.onClick();
+  assert.equal(changed.elements[0].text, "The Big News");
+  assert.equal(changed.elements[1], locked);
+});
+
+test("photo controls set a border, flip and transparency on the selected photos", () => {
+  const photoLayer = image({ id: "photo", src: "https://images.example/photo.png", width: 200, height: 100 });
+  let changed;
+  const tree = QuickToolbar({ ...quickProps(sceneWith([photoLayer])), onChange: next => { changed = next; } });
+  for (const label of ["Border", "Corner rounding", "Crop shape", "Flip", "Transparency"]) control(tree, label);
+  button(tree, "Dots").node.props.onClick();
+  assert.equal(changed.elements[0].border.style, "dots");
+  button(tree, "Flip horizontal").node.props.onClick();
+  assert.equal(changed.elements[0].flipX, true);
+  assert.equal(nodes(tree, node => node.props?.["aria-label"]?.startsWith?.("Trim")).length, 0, "no video chips on a still photo");
+});
+
+test("a video clip shows its trim, volume and speed on the toolbar", () => {
+  const clip = image({ id: "clip", src: "https://images.example/poster.png", video: { src: "https://images.example/clip.mp4", duration: 10, start: 2, end: 8, speed: 2, width: 1920, height: 1080 } });
+  let changed;
+  const tree = QuickToolbar({ ...quickProps(sceneWith([clip])), onChange: next => { changed = next; } });
+  control(tree, "Trim: plays 3.0 seconds");
+  control(tree, "Volume");
+  control(tree, "Speed");
+  button(tree, "1.5×").node.props.onClick();
+  assert.equal(changed.elements[0].video.speed, 1.5);
+});
+
+test("Copy style is on the toolbar and calls the editor's style brush", () => {
+  let toggled = 0;
+  const tree = QuickToolbar({ ...quickProps(sceneWith([text()])), onCopyStyle: () => { toggled++; } });
+  control(tree, "Copy style").node.props.onClick();
+  assert.equal(toggled, 1);
+  const active = QuickToolbar({ ...quickProps(sceneWith([text()])), onCopyStyle() {}, styleBrush: true });
+  assert.equal(control(active, "Cancel copy style").node.props["aria-pressed"], true);
 });

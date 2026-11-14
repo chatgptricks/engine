@@ -33,6 +33,8 @@ export const EDITOR_COMMANDS:readonly EditorCommand[] = [
   {id:"fit",label:"Fit page",shortcut:"⌘/Ctrl 0",keys:["0"],primary:true},
 ];
 export const EDITOR_GESTURES = [
+  {label:"Copy style",shortcut:"⌥⌘C / Alt Ctrl C"},
+  {label:"Paste style on the selection",shortcut:"⌥⌘V / Alt Ctrl V"},
   {label:"Duplicate while moving",shortcut:"Alt + drag"},
   {label:"Select several layers",shortcut:"Shift + click / drag empty space"},
   {label:"Select another layer underneath",shortcut:"⌘/Ctrl + click"},

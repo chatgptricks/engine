@@ -39,3 +39,14 @@
 .te-format-anchor > span { flex: 1; color: #c9c9d1; }
 .te-format-anchor > button { height: 26px; padding: 0 8px; border: 1px solid #ffffff26; border-radius: 6px; background: transparent; color: inherit; font-size: 11px; cursor: pointer; }
 .te-format-anchor > button[aria-pressed="true"] { background: #bda0fc2e; border-color: #bda0fc80; }
+
+/* Photo, video and case menus: a column of choices, and labelled rows. */
+.te-quick-toolbar .te-format-bar .te-format-button.has-text { width: auto; padding: 0 8px; display: inline-flex; gap: 6px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.te-quick-toolbar .te-format-bar .te-format-button:has(.te-format-chip-text) { width: auto; padding: 0 8px; display: inline-flex; gap: 6px; }
+.te-format-chip-text { font-size: 12px; font-variant-numeric: tabular-nums; }
+.te-format-choices { display: grid; gap: 2px; }
+.te-format-choices > button { display: flex; align-items: center; gap: 10px; min-height: 32px; padding: 0 10px; border: 0; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 13px; text-align: left; cursor: pointer; }
+.te-format-choices > button:hover:not(:disabled) { background: #ffffff14; }
+.te-format-choices > button[aria-pressed="true"] { background: #bda0fc2e; color: #d6c6ff; }
+.te-format-choices > button:disabled { opacity: .4; cursor: not-allowed; }
+.te-format-inline { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #c9c9d1; }
