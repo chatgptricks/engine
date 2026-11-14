@@ -5,7 +5,9 @@
  * 4 MB parts by PUT. The result's `src` is a video layer's src (or an image's `video: {src}`). */
 import {agentResponse as reply, allowedAgentOrigin, readAgentBody, resolveAgentRequest} from "@/lib/template-editor/agent-http";
 import {MAX_VIDEO_BYTES} from "@/lib/template-editor/model";
-import {appendVideoChunk, beginVideoUpload, checkVideoMeta, finishUpload, VideoError, videoSrc, type VideoRecord} from "@/lib/template-editor/video-storage";
+import {createReadStream, promises as fs} from "node:fs";
+import {Readable} from "node:stream";
+import {appendVideoChunk, beginVideoUpload, checkVideoMeta, finishUpload, readVideoRecord, VideoError, videoFile, videoPlayUrl, videoSrc, type VideoRecord} from "@/lib/template-editor/video-storage";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -62,5 +64,25 @@ export async function PUT(request: Request) {
   try {
     const data = Buffer.from(await request.arrayBuffer());
     return reply({received: await appendVideoChunk(access.ownerKey, query.get("id") ?? "", Number(query.get("offset")), data, Number(query.get("total")))});
+  } catch (error) { return failure(error); }
+}
+
+/** `?id=<sha-256>`: a clip of this workspace, for the bridge to look at (engine_video_look) or take a
+ * cover from. Production redirects to a short-lived signed link; development sends the file. */
+export async function GET(request: Request) {
+  const access = await resolveAgentRequest(request);
+  if (!access) return reply({error: "Use an active Engine agent token or sign in."}, 401);
+  if (!allowedAgentOrigin(request)) return reply({error: "This origin is not allowed to access Engine."}, 403);
+  const id = new URL(request.url).searchParams.get("id") ?? "";
+  if (!/^[a-f0-9]{64}$/.test(id)) return reply({error: "id must be a clip's SHA-256, from its src."}, 400);
+  try {
+    const record = await readVideoRecord(access.ownerKey, id);
+    if (!record) return reply({error: "Video not found in this workspace."}, 404);
+    const location = await videoPlayUrl(record);
+    if (location) return new Response(null, {status: 302, headers: {Location: location, "Cache-Control": "private, no-store"}});
+    const file = await videoFile(access.ownerKey, id);
+    if (!file) return reply({error: "Video not found in this workspace."}, 404);
+    const {size} = await fs.stat(file);
+    return new Response(Readable.toWeb(createReadStream(file)) as ReadableStream, {headers: {"Content-Type": record.mimeType, "Content-Length": String(size), "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff"}});
   } catch (error) { return failure(error); }
 }

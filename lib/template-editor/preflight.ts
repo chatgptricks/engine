@@ -47,7 +47,7 @@ export function preflightDesign(design: DesignDocument, options: PreflightOption
         if (element.slot && !src.trim()) add("empty-slot", `${name} has an empty image slot.`, "error");
         const clip = element.type === "image" ? element.video : photo?.video;
         if (clip && scene !== design.masterScene) {
-          const seconds = videoWindow(clip).duration;
+          const seconds = videoWindow(clip).length;
           if (seconds < INSTAGRAM_VIDEO.minSeconds) add("video-short", `${name} plays ${Math.round(seconds * 10) / 10} seconds; Instagram wants a video of at least ${INSTAGRAM_VIDEO.minSeconds}.`);
           if (pageVideo(page)?.element.id !== element.id) add("video-extra", `${name} exports as its cover: a slide plays one video, and this page has another below it.`);
         }

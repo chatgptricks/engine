@@ -15,7 +15,7 @@ import {sameContent} from "@/lib/template-editor/library-sync";
 import {PageAccessibilitySection} from "./page-accessibility";
 import {prepareRasterAsset} from "@/lib/template-editor/client-media";
 import {coverAt,isVideoFile,prepareVideoAsset} from "@/lib/template-editor/client-video";
-import {needsVideoSlides,splitVideoAcrossSlides,videoParts} from "@/lib/template-editor/video-slides";
+import {needsVideoSlides,splitVideoAcrossSlides,splitVideoAt,videoParts} from "@/lib/template-editor/video-slides";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import {
   ArrowLeftIcon,
@@ -674,6 +674,24 @@ export function DesignEditor({
   /** Break into layers: draws the HTML layer offscreen and reads its pieces (a moment),
    * then swaps in text, image and shape layers as one undo step. Like an SVG import, it
    * lands on the slide it started from, and not when the layer changed meanwhile. */
+  /** Splits the selected video's slide in two at `at` (a second of the clip), with a cover for the new slide taken there. */
+  async function splitVideo(id: string, at: number) {
+    if (blocked.current || editingMaster || current.current.continuousCanvas) return;
+    const element = scene.elements.find(item => item.id === id);
+    const clip = element?.type === "image" ? element.video : element?.type === "shape" ? element.imageFill?.video : undefined;
+    if (!element || !clip) return;
+    const targetId = page.id;
+    setNotice("Splitting the video…");
+    const cover = await coverAt(clip, at, element.name).catch(() => undefined);
+    if (!mounted.current) return;
+    let made: string[] = [];
+    const accepted = commit(d => {
+      const result = splitVideoAt(d, targetId, id, at, cover);
+      made = result.pageIds;
+      return result.design;
+    }, "video-split");
+    if (accepted && made.length) setNotice(`Split at ${Math.round(at * 10) / 10} s: the rest plays on the next slide.`);
+  }
   async function breakHtml(id: string) {
     const element = scene.elements.find(item => item.id === id);
     if (blocked.current || breakingHtml.current || element?.type !== "html") return;
@@ -1449,6 +1467,7 @@ export function DesignEditor({
       onSectionChange={contextual ? undefined : setInspectorSection}
       onTextTexture={openTextTexture}
       onUploadFramePhoto={(file:File,id:string)=>upload(file,id)}
+      onSplitVideo={!continuous&&!editingMaster?(id:string,at:number)=>splitVideo(id,at):undefined}
       templateDraft={isTemplateDraft&&!editingMaster&&!continuous}
       htmlSelection={activeHtmlSelection}
       onEditHtmlLayer={id=>setEditingRequest({id,serial:Date.now()})}

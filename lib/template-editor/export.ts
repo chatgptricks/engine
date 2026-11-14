@@ -128,7 +128,7 @@ export async function exportFrames(frames: HTMLElement[], name: string, caption:
       const {exportPageVideo}=await import('./export-video');
       const result=await exportPageVideo(frame,clip,{scale:settings.scale,sound:options.sound,signal:options.signal,onProgress:fraction=>progress(Math.round(((i+fraction)/total)*90))});
       options.signal?.throwIfAborted();
-      warnings.push(...videoExportWarnings(i+1,clip,{bytes:result.blob.size,ext:result.ext}));options.onWarnings?.([...new Set(warnings)]);
+      warnings.push(...videoExportWarnings(i+1,clip,{bytes:result.blob.size,ext:result.ext,sound:options.sound!==false,audioNote:result.audioNote}));options.onWarnings?.([...new Set(warnings)]);
       outputs.push({blob:result.blob,ext:result.ext});
       progress(Math.round(((i + 1) / total) * 90));
       if(options.delivery==='batches'&&outputs.length>=batchSize){await archive();}

@@ -326,8 +326,9 @@ export async function storeVideoFromUrl(owner: string, url: string): Promise<Vid
 }
 
 /** The clip a deck stores for a record, with the trim and playback options given. */
-export function clipFromRecord(record: VideoRecord, options: Partial<Pick<VideoClip, "start" | "end" | "loop" | "muted" | "coverTime">> = {}): VideoClip {
+const CLIP_OPTIONS = ["start", "end", "loop", "muted", "coverTime", "speed", "volume", "fadeIn", "fadeOut"] as const;
+export function clipFromRecord(record: VideoRecord, options: Partial<Pick<VideoClip, (typeof CLIP_OPTIONS)[number]>> = {}): VideoClip {
   const clip: VideoClip = {src: videoSrc(record.id), mimeType: record.mimeType, duration: record.duration, width: record.width, height: record.height, bytes: record.bytes};
-  for (const key of ["start", "end", "loop", "muted", "coverTime"] as const) if (options[key] !== undefined) Object.assign(clip, {[key]: options[key]});
+  for (const key of CLIP_OPTIONS) if (options[key] !== undefined) Object.assign(clip, {[key]: options[key]});
   return clip;
 }

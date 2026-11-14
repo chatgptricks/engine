@@ -434,3 +434,12 @@
 /* A layer's clip plays where its photo would be, under the same crop. */
 .te-canvas-video { pointer-events: none; background: transparent; }
 .te-video-controls .te-video-trim { display: grid; gap: 6px; border: 0; margin: 8px 0 0; padding: 0; }
+.te-video-controls .te-video-filmstrip { position: relative; height: 54px; margin-top: 10px; border-radius: 6px; overflow: hidden; background: var(--te-ui-surface-2, #1f1f1f); }
+.te-video-controls .te-video-filmstrip-frames { display: flex; height: 100%; }
+.te-video-controls .te-video-filmstrip-frame { flex: 1 1 0; min-width: 0; height: 100%; background: center / cover no-repeat; }
+.te-video-controls .te-video-filmstrip-frames > span:only-child { margin: auto; font-size: 12px; color: var(--te-ui-muted, #888); }
+.te-video-controls .te-video-filmstrip-outside { position: absolute; top: 0; bottom: 0; background: rgb(0 0 0 / 0.6); pointer-events: none; }
+.te-video-controls .te-video-filmstrip-playhead { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--te-ui-accent, #fff); pointer-events: none; }
+.te-video-controls .te-video-filmstrip-step { position: absolute; top: 0; bottom: 0; border: 0; padding: 0; background: transparent; cursor: pointer; }
+.te-video-controls .te-video-filmstrip-step:hover, .te-video-controls .te-video-filmstrip-step:focus-visible { background: rgb(255 255 255 / 0.12); outline: none; }
+.te-video-controls .te-video-edits { border-top: 1px solid var(--te-ui-border, rgb(128 128 128 / 0.25)); padding-top: 8px; }

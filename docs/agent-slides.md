@@ -231,7 +231,7 @@ A video is its own layer, in the stack like an image, so text, shapes and fades 
   { "op": "add_video", "pageId": "s9", "replaces": "s9-l10", "path": "/Users/me/Clips/09-media.mp4" } ] }
 ```
 
-- `update_element` on a video layer changes `poster`, `start`, `end`, `loop` or `muted`. `engine_get_deck` shows it as `type: "video"` with `src` (the clip), `poster`, and the clip's facts in `video`.
+- `update_element` on a video layer changes `poster`, `start`, `end`, `loop`, `muted`, `speed`, `volume`, `fadeIn` or `fadeOut` (see **Editing a clip** below). `engine_get_deck` shows it as `type: "video"` with `src` (the clip), `poster`, and the clip's facts in `video`.
 - Over plain HTTP, upload with `POST /api/agent/videos`: `{action: "start", id: <sha-256>, bytes, mimeType, name}` (a WebM also sends `duration`, `width`, `height`), send the bytes where it says (a signed Storage URL, or 4 MB `PUT` parts in development), then `{action: "finish", …}` returns `src`.
 
 Engine stores a video layer as an image whose `src` is the poster and whose `video` is the clip, so a photo slot can also play one. Add `video` to an image layer or a slide's `image`:
@@ -259,7 +259,22 @@ To put a clip on an image that's already there (a deck's cover photo, say), use 
 - `update_element` with `video: {"start": 3, "end": 9}` changes the trim (the clip itself stays); `video: {"url": …}` replaces it; `video: {"remove": true}` keeps only the cover as a still photo.
 - A video stays on one slide: `span` isn't available on it.
 - A download as PNG, JPG or WebP turns every slide with a video into an MP4 (H.264, 1080 wide, 30 fps, with the clip's sound), with every layer drawn over or under the clip as on the canvas. PDF and SVG show the cover.
-- In the editor, a clip longer than 60 seconds is split the same way when it's uploaded, each new slide with a cover from its own part, as one undo step. The clip plays muted on the canvas, and the Video tab trims it, sets its cover from any frame, and switches loop and sound. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
+- In the editor, a clip longer than 60 seconds (of slide time) is split the same way when it's uploaded, each new slide with a cover from its own part, as one undo step. The clip plays muted on the canvas, and the Video tab trims it, sets its cover from any frame, and switches loop and sound. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
+
+#### Editing a clip
+
+These follow the clip attributes of [OpenFilm](https://github.com/openfilm/openfilm) (MIT), on one slide at a time:
+
+```json
+{ "type": "video", "src": "/api/template-editor/videos/…", "poster": "…", "x": 0, "y": 0, "width": 1080, "height": 1440,
+  "start": 4, "end": 16, "speed": 2, "volume": 0.6, "fadeIn": 0.5, "fadeOut": 1 }
+```
+
+- `speed` is the playback rate, from 0.25 (slow motion) to 4. The slide plays `(end − start) / speed` seconds, and the 60-second limit counts those: at 2× a slide holds two minutes of the clip, and a long untrimmed clip splits every two minutes. A slide at any speed but 1 exports **without sound**.
+- `volume` is the sound's level, from 0 (silent) to 2 (twice as loud); default 1. `fadeIn` and `fadeOut` are seconds (up to 10) at the slide's start and end over which the picture and sound rise from nothing and sink back; the layers below the video show through while it fades. Fades longer than the slide shrink together. Chrome and Edge apply volume and fades to the exported sound; other browsers keep the sound as it is and say so.
+- `split_video {pageId, elementId, at}` cuts a video slide in two at second `at` of the clip (the file's own time, at least 0.5 s inside the part that plays). The slide keeps the part before `at`; a copy of the slide placed right after it plays the rest, with every other layer copied too. A fade in stays on the first, a fade out moves to the second. Give `poster` for the copy, or through the Engine MCP leave it out and the bridge takes the frame at `at` (needs ffmpeg); otherwise the copy shows the first poster.
+- **`engine_video_look`** (Engine MCP) shows you frames of a clip, each labelled with its second: a deck's video layer (`deckId`, `slideId`, `elementId`; frames from the part that plays), an Engine clip `src`, or a local `path`. Give `times` (up to 12 seconds of the file) or `count` (default 6, spread evenly). Use it to choose `start`, `end`, `coverTime`, fades and split points. Over plain HTTP, `GET /api/agent/videos?id=<sha-256>` returns the stored clip (a redirect to a signed link in production).
+- In the editor's Video tab: a filmstrip of the clip (click a frame to go there; the part outside the trim is darkened), trim handles, speed (with 0.5×, 1×, 1.5× and 2× presets), volume, fade in and fade out, and **Split here**, which cuts at the playhead and takes the new slide's cover from that frame. Each change is one undo step.
 
 ### HTML layers
 

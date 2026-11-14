@@ -52,6 +52,8 @@ type Props = {
   onTextTexture?: () => void;
   onUploadTextTexture?: (file:File)=>Promise<void>;
   onUploadFramePhoto?: (file:File,shapeId:string)=>Promise<void>;
+  /** Splits a video layer's slide in two at a second of its clip. */
+  onSplitVideo?: (elementId:string,at:number)=>Promise<void>;
   /** Template drafts show how each layer behaves in copies of the template. */
   templateDraft?: boolean;
   /** The part of an HTML layer being edited on the canvas, with any selected words. */
@@ -215,7 +217,7 @@ export function ElementInspector({
   width,
   height,
   disabled = false, outputScale = 3, initialSection = "edit",onSectionChange,
-  slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onTextTexture, onUploadTextTexture, onUploadFramePhoto, templateDraft = false,
+  slideBounds, textStyles, onSaveTextStyle, onDeleteTextStyle, colorRoles, onFormatText, onSaveColorRole, onDeleteColorRole, onTextTexture, onUploadTextTexture, onUploadFramePhoto, onSplitVideo, templateDraft = false,
   htmlSelection, onEditHtmlLayer, onBreakHtmlLayer,
 }: Props) {
   const [section,setSection]=useState<InspectorSection>(initialSection);
@@ -554,7 +556,7 @@ export function ElementInspector({
               <AdvancedProperties {...advancedFor("outline")}/>
             </>}
             {effectiveSection==="photo"&&<>
-              {onlyElement&&layerVideo(onlyElement)&&<VideoControls key={onlyElement.id} element={onlyElement} disabled={photoContentDisabled} onUpdate={update} onReplace={onUploadFramePhoto?file=>onUploadFramePhoto(file,onlyElement.id):undefined}/>}
+              {onlyElement&&layerVideo(onlyElement)&&<VideoControls key={onlyElement.id} element={onlyElement} disabled={photoContentDisabled} onUpdate={update} onReplace={onUploadFramePhoto?file=>onUploadFramePhoto(file,onlyElement.id):undefined} onSplit={onSplitVideo?at=>onSplitVideo(onlyElement.id,at):undefined}/>}
               <Section title={images.length===elements.length?"Image":`Images · ${images.length}`}>
                 {framePhotoControl}{frameError&&<p className="te-element-hint" role="alert">{frameError}</p>}
                 <fieldset disabled={photoStyleDisabled}><div className="te-element-segments" role="group" aria-label="Image fit"><Toggle label="Fill image frame" active={shared(images,"fit")==="cover"} onClick={()=>updateImage({fit:"cover"},"image-fit")}>Fill frame</Toggle><Toggle label="Fit entire image" active={shared(images,"fit")==="contain"} onClick={()=>updateImage({fit:"contain"},"image-fit")}>Fit image</Toggle></div><div className="te-element-segments" role="group" aria-label="Image orientation"><Toggle label="Flip photo horizontally" active={images.every(image=>image.flipX)} onClick={()=>updateImage({flipX:!images.every(image=>image.flipX)},"image-flip")}>Flip horizontal</Toggle><Toggle label="Flip photo vertically" active={images.every(image=>image.flipY)} onClick={()=>updateImage({flipY:!images.every(image=>image.flipY)},"image-flip")}>Flip vertical</Toggle></div></fieldset>

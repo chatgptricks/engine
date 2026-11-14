@@ -161,7 +161,17 @@ export type VideoClip = {
   coverTime?: number;
   /** Set when the clip arrived without a poster: `src` is only a dark stand-in, which engine_check_deck flags. Choosing a cover clears it. */
   noPoster?: boolean;
+  /** Playback rate, 0.25 to 4 (default 1). The slide plays (end − start) / speed seconds. */
+  speed?: number;
+  /** Sound level, 0 to 2 (default 1): 0 is silent, 2 twice as loud. Export and editor playback. */
+  volume?: number;
+  /** Seconds of the played slide over which the picture and sound rise from nothing, and sink back at the end. */
+  fadeIn?: number;
+  fadeOut?: number;
 };
+export const VIDEO_SPEED_RANGE = {min: 0.25, max: 4} as const;
+export const VIDEO_VOLUME_MAX = 2;
+export const VIDEO_FADE_MAX = 10;
 export const VIDEO_MIME_TYPES = ["video/mp4", "video/quicktime", "video/webm"] as const;
 export const MAX_VIDEO_BYTES = 200 * 1024 * 1024;
 export const MAX_VIDEO_SECONDS = 180;
@@ -2336,9 +2346,12 @@ export function parseVideoClip(value: unknown): VideoClip | null {
   if (!object(value) || typeof value.src !== "string" || !VIDEO_SRC_PATTERN.test(value.src)) return null;
   if (!choice([...VIDEO_MIME_TYPES])(value.mimeType) || !numberIn(value.duration, 0.05, MAX_VIDEO_SECONDS + 1) || !numberIn(value.width, 1, 16_384) || !numberIn(value.height, 1, 16_384) || !numberIn(value.bytes, 1, MAX_VIDEO_BYTES)) return null;
   if (!optional(value, "start", candidate => numberIn(candidate, 0, 100_000)) || !optional(value, "end", candidate => numberIn(candidate, 0, 100_000)) || !optional(value, "loop", boolean) || !optional(value, "muted", boolean) || !optional(value, "coverTime", candidate => numberIn(candidate, 0, 100_000))) return null;
+  if (!optional(value, "speed", candidate => numberIn(candidate, VIDEO_SPEED_RANGE.min, VIDEO_SPEED_RANGE.max)) || !optional(value, "volume", candidate => numberIn(candidate, 0, VIDEO_VOLUME_MAX)) || !optional(value, "fadeIn", candidate => numberIn(candidate, 0, VIDEO_FADE_MAX)) || !optional(value, "fadeOut", candidate => numberIn(candidate, 0, VIDEO_FADE_MAX))) return null;
   const clip: VideoClip = { src: value.src, mimeType: value.mimeType as VideoClip["mimeType"], duration: value.duration, width: Math.round(value.width), height: Math.round(value.height), bytes: Math.round(value.bytes) };
+  const speed = typeof value.speed === "number" ? Math.round(value.speed * 100) / 100 : 1;
   const start = Math.min(typeof value.start === "number" ? value.start : 0, clip.duration);
-  const end = Math.min(typeof value.end === "number" ? value.end : clip.duration, clip.duration, start + MAX_SLIDE_VIDEO_SECONDS);
+  // A slide plays at most 60 seconds: at 2× that is two minutes of the clip.
+  const end = Math.min(typeof value.end === "number" ? value.end : clip.duration, clip.duration, start + MAX_SLIDE_VIDEO_SECONDS * speed);
   if (end - start < 0.1) return null;
   if (start > 0) clip.start = start;
   if (end < clip.duration) clip.end = end;
@@ -2346,6 +2359,10 @@ export function parseVideoClip(value: unknown): VideoClip | null {
   if (typeof value.muted === "boolean") clip.muted = value.muted;
   if (typeof value.coverTime === "number") clip.coverTime = Math.min(value.coverTime, clip.duration);
   if (value.noPoster === true) clip.noPoster = true;
+  if (speed !== 1) clip.speed = speed;
+  if (typeof value.volume === "number" && value.volume !== 1) clip.volume = Math.round(value.volume * 100) / 100;
+  if (typeof value.fadeIn === "number" && value.fadeIn > 0) clip.fadeIn = Math.round(value.fadeIn * 100) / 100;
+  if (typeof value.fadeOut === "number" && value.fadeOut > 0) clip.fadeOut = Math.round(value.fadeOut * 100) / 100;
   return clip;
 }
 

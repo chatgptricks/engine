@@ -20,7 +20,7 @@ async function server(t, handler) {
   const instance = http.createServer(async (request, response) => {
     let raw = "";
     for await (const chunk of request) raw += chunk;
-    const entry = { method: request.method, path: request.url, headers: request.headers, body: raw ? JSON.parse(raw) : null };
+    const entry = { method: request.method, path: request.url, headers: request.headers, body: raw ? (() => { try { return JSON.parse(raw); } catch { return raw; } })() : null };
     calls.push(entry);
     await handler(entry, response, calls);
   });
@@ -116,7 +116,7 @@ test("MCP process negotiates, discovers live schemas, and calls all authenticate
   assert.deepEqual(init.result.capabilities, { tools: {} });
   mcp.notify("notifications/initialized");
   const listed = await mcp.request("tools/list");
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_answer_check", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template", "engine_video_upload", "engine_frame_upload", "engine_frame_view", "engine_frame_cut"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_answer_check", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template", "engine_video_upload", "engine_video_look", "engine_frame_upload", "engine_frame_view", "engine_frame_cut"]);
   assert.deepEqual(listed.result.tools[4].inputSchema.properties.spec, schemas.deckSchema);
   assert.deepEqual(listed.result.tools[5].inputSchema.properties.changes, schemas.updateSchema);
   await mcp.call("engine_capabilities");
@@ -206,7 +206,7 @@ test("discovery falls back while unavailable and refreshes live schemas after re
   const mcp = client(t, api.url);
   assert.equal((await mcp.init("future-version")).result.protocolVersion, "2025-11-25");
   const tools = await mcp.request("tools/list");
-  assert.equal(tools.result.tools.length, 27);
+  assert.equal(tools.result.tools.length, 28);
   assert.match(tools.result.tools[4].inputSchema.properties.spec.description, /engine_capabilities/);
   const failure = await mcp.call("engine_capabilities");
   assert.equal(failure.result.isError, true);
@@ -497,5 +497,59 @@ test("a video file on this computer is uploaded once, given a cover, and put on 
   assert.equal(operations[1].element.path, undefined);
   const webmStart = calls.find((call) => call.body?.action === "start" && call.body.mimeType === "video/webm");
   assert.deepEqual({ duration: webmStart.body.duration, width: webmStart.body.width, height: webmStart.body.height, id: webmStart.body.id }, { duration: 6.5, width: 720, height: 1280, id: createHash("sha256").update(webmBytes).digest("hex") });
+  await mcp.close();
+});
+
+test("engine_video_look shows a video layer's frames, and split_video gets its poster from the clip", async (t) => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), "engine-mcp-look-"));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  const bytes = Buffer.concat([Buffer.from([0, 0, 0, 24]), Buffer.from("ftypisom"), Buffer.from(createHash("sha256").update(String(Math.random())).digest())]);
+  const id = createHash("sha256").update(bytes).digest("hex"), src = `/api/template-editor/videos/${id}`;
+  t.after(() => rm(path.join(os.tmpdir(), "engine-agent-videos", `${id}.video`), { force: true }));
+  // ffmpeg stand-in: logs each call's seek time and file, prints a JPEG's first bytes.
+  const ffmpeg = path.join(folder, "ffmpeg");
+  await writeFile(ffmpeg, `#!/bin/sh\nwhile [ "$1" != "-ss" ]; do shift; done\necho "$2 $4" >> "${folder}/ffmpeg-log"\nprintf '\\377\\330\\377\\340frame'\n`);
+  await chmod(ffmpeg, 0o755);
+  const view = { slides: [{ id: "s1", elements: [{ id: "clip", type: "video", name: "Demo", src, video: { duration: 12, start: 2, end: 8, speed: 2 } }, { id: "title", type: "text" }] }] };
+  const api = await server(t, (entry, response) => {
+    if (entry.path.startsWith("/api/agent/videos?id=")) { response.writeHead(302, { location: "/storage/clip.mp4" }); return response.end(); }
+    if (entry.path === "/storage/clip.mp4") { response.writeHead(200, { "content-type": "video/mp4" }); return response.end(bytes); }
+    if (entry.path === "/api/agent/assets") return json(response, { src: "/api/template-editor/assets/split-cover" }, 201);
+    if (entry.body?.action === "get_deck") return json(response, { document: { id: "deck-1" }, hash: "h1", view });
+    if (entry.body?.action === "update_deck") return json(response, { document: { id: "deck-1" }, hash: "h2", view });
+    if (entry.body?.action === "capabilities") return json(response, {});
+    return json(response, { error: "unexpected" }, 500);
+  });
+  const mcp = client(t, api.url, { ENGINE_FFMPEG: ffmpeg, ENGINE_FFPROBE: path.join(folder, "missing-ffprobe") });
+  await mcp.init();
+  assert.equal((await mcp.call("engine_video_look", { src, path: "/tmp/a.mp4" })).error?.code, -32602, "one source only");
+  assert.equal((await mcp.call("engine_video_look", { src: "/api/template-editor/videos/nope" })).error?.code, -32602);
+  assert.equal((await mcp.call("engine_video_look", { deckId: "deck-1", slideId: "s1", elementId: "clip", count: 13 })).error?.code, -32602);
+
+  const looked = await mcp.call("engine_video_look", { deckId: "deck-1", slideId: "s1", elementId: "clip", count: 3 });
+  assert.equal(looked.result.isError, false, JSON.stringify(looked.result));
+  assert.deepEqual(looked.result.structuredContent.times, [3, 5, 7], "spread over the part that plays");
+  assert.deepEqual(looked.result.structuredContent.plays, { start: 2, end: 8, speed: 2 });
+  const images = looked.result.content.filter((item) => item.type === "image");
+  assert.equal(images.length, 3);
+  assert.equal(Buffer.from(images[0].data, "base64").subarray(0, 3).toString("hex"), "ffd8ff");
+  assert.deepEqual(looked.result.content.filter((item) => item.type === "text").slice(1).map((item) => item.text), ["3 s", "5 s", "7 s"]);
+  const download = api.calls.find((call) => call.path.startsWith("/api/agent/videos?id="));
+  assert.equal(download.headers.authorization, `Bearer ${token}`);
+  assert.equal(api.calls.find((call) => call.path === "/storage/clip.mp4").headers.authorization, undefined, "the token never follows the redirect");
+
+  const again = await mcp.call("engine_video_look", { src, times: [1.5] });
+  assert.deepEqual(again.result.structuredContent.times, [1.5]);
+  assert.equal(api.calls.filter((call) => call.path === "/storage/clip.mp4").length, 1, "the clip is downloaded once");
+
+  const split = await mcp.call("engine_update_deck", { deckId: "deck-1", expectedHash: "h1", changes: { operations: [{ op: "split_video", pageId: "s1", elementId: "clip", at: 4.5 }, { op: "split_video", pageId: "s1", elementId: "clip", at: 6, poster: "/api/template-editor/assets/own" }] } });
+  assert.equal(split.result.isError, false, JSON.stringify(split.result));
+  const sent = api.calls.find((call) => call.body?.action === "update_deck").body.changes.operations;
+  assert.equal(sent[0].poster, "/api/template-editor/assets/split-cover", "the bridge took the frame at `at`");
+  assert.equal(sent[1].poster, "/api/template-editor/assets/own", "a given poster is kept");
+  const { readFile } = await import("node:fs/promises");
+  const log = (await readFile(path.join(folder, "ffmpeg-log"), "utf8")).trim().split("\n");
+  assert.deepEqual(log.map((line) => line.split(" ")[0]), ["3", "5", "7", "1.5", "4.5"]);
+  assert.ok(log.every((line) => line.endsWith(`${id}.video`)), "frames come from the downloaded clip");
   await mcp.close();
 });
