@@ -218,7 +218,7 @@ A video is its own layer, in the stack like an image, so text, shapes and fades 
 
 ```json
 { "type": "video", "src": "/api/template-editor/videos/…", "poster": "/api/template-editor/assets/…",
-  "x": 0, "y": 0, "width": 1080, "height": 1000, "start": 0, "end": 12, "loop": true, "muted": true }
+  "x": 0, "y": 0, "width": 1080, "height": 1000, "start": 0, "end": 12, "loop": true }
 ```
 
 - `src` is the clip: an Engine video path from `engine_video_upload` or `engine_get_deck`, or a public https link Engine copies. Through the Engine MCP, `path` (an absolute path to an `.mp4`, `.m4v`, `.mov` or `.webm` file) works instead; the bridge uploads it, and without `poster` takes one from the clip with ffmpeg.
@@ -231,7 +231,7 @@ A video is its own layer, in the stack like an image, so text, shapes and fades 
   { "op": "add_video", "pageId": "s9", "replaces": "s9-l10", "path": "/Users/me/Clips/09-media.mp4" } ] }
 ```
 
-- `update_element` on a video layer changes `poster`, `start`, `end`, `loop`, `muted`, `speed`, `volume`, `fadeIn` or `fadeOut` (see **Editing a clip** below). `engine_get_deck` shows it as `type: "video"` with `src` (the clip), `poster`, and the clip's facts in `video`.
+- `update_element` on a video layer changes `poster`, `start`, `end`, `loop`, `muted`, `speed`, `volume`, `fadeIn`, `fadeOut` or `captions` (see **Editing a clip** and **Captions** below). `engine_get_deck` shows it as `type: "video"` with `src` (the clip), `poster`, and the clip's facts in `video`.
 - Over plain HTTP, upload with `POST /api/agent/videos`: `{action: "start", id: <sha-256>, bytes, mimeType, name}` (a WebM also sends `duration`, `width`, `height`), send the bytes where it says (a signed Storage URL, or 4 MB `PUT` parts in development), then `{action: "finish", …}` returns `src`.
 
 Engine stores a video layer as an image whose `src` is the poster and whose `video` is the clip, so a photo slot can also play one. Add `video` to an image layer or a slide's `image`:
@@ -254,12 +254,12 @@ To put a clip on an image that's already there (a deck's cover photo, say), use 
 - `url` is a public https link to an MP4 or MOV file (H.264), up to 200 MB and 3 minutes. Engine copies it into the workspace's storage once (the same file is reused), and the saved deck points to it as `/api/template-editor/videos/<sha-256>`. A clip never sits inside the deck, so it doesn't count against the 12 MB library limit. Private and local hosts are refused.
 - `src` stays the layer's image and is the video's **cover**: thumbnails, PNG and PDF exports and review links show it, so use a frame from the clip.
 - `start` and `end` trim the clip, in seconds. A slide plays at most **60 seconds** (Instagram's limit for a carousel video).
-- A clip longer than 60 seconds **without** `start` or `end` continues on new slides placed right after its own: each is a copy of that slide playing the next 60 seconds (0–60, 60–120, 120–180), and the last plays what's left. The copies show the first cover until someone sets theirs in the editor. With `start` or `end` set, the clip stays on one slide and plays at most 60 seconds from `start`. The deck still holds at most 20 slides; a video that would need more is refused. `loop` (default true) plays it again from `start`; `muted` (default true) is how it plays while editing.
+- A clip longer than 60 seconds **without** `start` or `end` continues on new slides placed right after its own: each is a copy of that slide playing the next 60 seconds (0–60, 60–120, 120–180), and the last plays what's left. The copies show the first cover until someone sets theirs in the editor. With `start` or `end` set, the clip stays on one slide and plays at most 60 seconds from `start`. The deck still holds at most 20 slides; a video that would need more is refused. `loop` (default true) plays it again from `start`; `muted` (default false) silences it while editing; the editor plays the clip most in view with its sound, and the MP4 keeps the sound either way.
 - `engine_get_deck` returns the stored clip with its `src`, `duration`, `width`, `height` and `bytes`. Pass `video: {"src": "/api/template-editor/videos/…"}` to reuse it on another layer.
 - `update_element` with `video: {"start": 3, "end": 9}` changes the trim (the clip itself stays); `video: {"url": …}` replaces it; `video: {"remove": true}` keeps only the cover as a still photo.
 - A video stays on one slide: `span` isn't available on it.
 - A download as PNG, JPG or WebP turns every slide with a video into an MP4 (H.264, 1080 wide, 30 fps, with the clip's sound), with every layer drawn over or under the clip as on the canvas. PDF and SVG show the cover.
-- In the editor, a clip longer than 60 seconds (of slide time) is split the same way when it's uploaded, each new slide with a cover from its own part, as one undo step. The clip plays muted on the canvas, and the Video tab trims it, sets its cover from any frame, and switches loop and sound. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
+- In the editor, a clip longer than 60 seconds (of slide time) is split the same way when it's uploaded, each new slide with a cover from its own part, as one undo step. The clip plays with its sound on the canvas (one at a time: the one most in view), and the Video tab trims it, sets its cover from any frame, and switches loop and sound. An agent should keep headlines, labels, tables, and diagram shapes as individual native elements if people need to edit them. A screenshot or rendered slide added as one image remains one image layer.
 
 #### Editing a clip
 
@@ -270,11 +270,27 @@ These follow the clip attributes of [OpenFilm](https://github.com/openfilm/openf
   "start": 4, "end": 16, "speed": 2, "volume": 0.6, "fadeIn": 0.5, "fadeOut": 1 }
 ```
 
-- `speed` is the playback rate, from 0.25 (slow motion) to 4. The slide plays `(end − start) / speed` seconds, and the 60-second limit counts those: at 2× a slide holds two minutes of the clip, and a long untrimmed clip splits every two minutes. A slide at any speed but 1 exports **without sound**.
+- `speed` is the playback rate, from 0.25 (slow motion) to 4. The slide plays `(end − start) / speed` seconds, and the 60-second limit counts those: at 2× a slide holds two minutes of the clip, and a long untrimmed clip splits every two minutes. The sound plays at that speed too, its pitch kept, in the editor and in the MP4.
 - `volume` is the sound's level, from 0 (silent) to 2 (twice as loud); default 1. `fadeIn` and `fadeOut` are seconds (up to 10) at the slide's start and end over which the picture and sound rise from nothing and sink back; the layers below the video show through while it fades. Fades longer than the slide shrink together. Chrome and Edge apply volume and fades to the exported sound; other browsers keep the sound as it is and say so.
 - `split_video {pageId, elementId, at}` cuts a video slide in two at second `at` of the clip (the file's own time, at least 0.5 s inside the part that plays). The slide keeps the part before `at`; a copy of the slide placed right after it plays the rest, with every other layer copied too. A fade in stays on the first, a fade out moves to the second. Give `poster` for the copy, or through the Engine MCP leave it out and the bridge takes the frame at `at` (needs ffmpeg); otherwise the copy shows the first poster.
 - **`engine_video_look`** (Engine MCP) shows you frames of a clip, each labelled with its second: a deck's video layer (`deckId`, `slideId`, `elementId`; frames from the part that plays), an Engine clip `src`, or a local `path`. Give `times` (up to 12 seconds of the file) or `count` (default 6, spread evenly). Use it to choose `start`, `end`, `coverTime`, fades and split points. Over plain HTTP, `GET /api/agent/videos?id=<sha-256>` returns the stored clip (a redirect to a signed link in production).
 - In the editor's Video tab: a filmstrip of the clip (click a frame to go there; the part outside the trim is darkened), trim handles, speed (with 0.5×, 1×, 1.5× and 2× presets), volume, fade in and fade out, and **Split here**, which cuts at the playhead and takes the new slide's cover from that frame. Each change is one undo step.
+
+#### Captions
+
+After OpenFilm's caption tracks: a clip carries timed captions, and a text layer on its slide shows them.
+
+```json
+{ "type": "video", "src": "/api/template-editor/videos/…", "poster": "…", "x": 0, "y": 0, "width": 1080, "height": 1440,
+  "captions": [ { "start": 0.4, "end": 2.1, "text": "This changes everything" }, { "start": 2.1, "end": 4, "text": "Watch the left side" } ] }
+```
+
+- `captions` is a list of up to 300 cues `{start, end, text}` in **seconds of the clip** (the file's own time, as `start` and `end` are), each at least 0.1 s long and up to 200 characters, or the text of an `.srt` or `.vtt` file, which Engine reads into cues (styling tags are dropped). Through the Engine MCP, `captionsFile` is an absolute path to an `.srt` or `.vtt` file on your computer, which the bridge reads. `[]` removes them. Cues that start after the clip ends are left out.
+- A **caption layer** is a text layer with `captions: true`. Instead of its own text it shows the cue playing, in its own box, font, size, colour, shadow and other effects, and nothing between cues; its `text` is only a sample shown in the editor. When a slide's video has captions and the slide has no caption layer, Engine adds one: white, bold type with a soft shadow, centred near the foot of the slide, in the font of the slide's first text layer. Restyle or move it with `update_element` like any text layer.
+- Because cues are in the clip's own time, trimming, `speed` and `split_video` keep each one on its moment: a slide shows only the cues inside the part it plays.
+- A download as PNG, JPG or WebP burns the captions into each slide's MP4 at their moments. Stills (thumbnails, PNG and PDF of a page, review links) show the cue at the cover, or none.
+- `engine_check_deck` flags a caption layer with nothing to show.
+- In the editor's Video tab: **Captions** lists the cues (the one playing is marked; click its time to go there), with their words, start and end; **Add caption** adds one at the playhead, **Import .srt or .vtt** replaces them with a file's, and **Download .srt** saves them. The first caption also adds the caption layer, in the same undo step; select it to change how captions look. Engine doesn't transcribe speech: bring an `.srt`/`.vtt` (from a transcription tool, say), or have an agent write the cues.
 
 ### HTML layers
 

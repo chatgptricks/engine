@@ -125,6 +125,8 @@ export type TextElement = CanvasElementBase & {
   /** A wrapped list item continues under its own text instead of under its marker. */
   hangingIndent?: boolean;
   textStyleId?: string;
+  /** A caption layer: shows the slide video's cue that is playing, in this layer's look, and nothing between cues. */
+  captions?: boolean;
   textureFill?: ShapeImageFill;
   wordTextures?: (ShapeImageFill & { id: string })[];
 };
@@ -168,7 +170,40 @@ export type VideoClip = {
   /** Seconds of the played slide over which the picture and sound rise from nothing, and sink back at the end. */
   fadeIn?: number;
   fadeOut?: number;
+  /** Timed captions, by seconds of the file: a caption layer (a text layer with `captions`) on the slide shows them. */
+  captions?: CaptionCue[];
 };
+/** A caption on a clip (captions.ts): words shown from `start` to `end`, seconds of the file. */
+export type CaptionCue = {start: number; end: number; text: string};
+export const MAX_CAPTION_CUES = 300;
+export const MAX_CAPTION_TEXT = 200;
+/** A cue shorter than this can't be read; files with shorter ones are rounded up to it. */
+export const MIN_CAPTION_SECONDS = 0.1;
+
+const roundCueTime = (value: number) => Math.round(value * 1000) / 1000;
+const cleanCueText = (text: string) => text.replace(/\r\n?/g, "\n").split("\n").map(line => line.replace(/\s+/g, " ").trim()).filter(Boolean).join("\n");
+
+/** Cues checked and sorted by start: times from 0, ending inside `duration` (when known), end after start, words
+ * trimmed, at most two lines' worth of characters. Null when anything is wrong, as the model's
+ * parsers are. Empty texts are dropped. */
+export function parseCaptionCues(value: unknown, duration = Infinity): CaptionCue[] | null {
+  if (!Array.isArray(value) || value.length > MAX_CAPTION_CUES) return null;
+  const cues: CaptionCue[] = [];
+  for (const cue of value) {
+    if (typeof cue !== "object" || cue === null || Array.isArray(cue)) return null;
+    const {start, end, text} = cue as Record<string, unknown>;
+    if (Object.keys(cue).some(key => !["start", "end", "text"].includes(key))) return null;
+    if (typeof start !== "number" || typeof end !== "number" || !Number.isFinite(start) || !Number.isFinite(end) || typeof text !== "string") return null;
+    if (start < 0 || end - start < MIN_CAPTION_SECONDS - 1e-9) return null;
+    // A cue after the clip ends (a transcript of a longer take) is left out.
+    if (start >= duration) continue;
+    const words = cleanCueText(text);
+    if (words.length > MAX_CAPTION_TEXT) return null;
+    if (words) cues.push({start: roundCueTime(start), end: roundCueTime(Math.min(end, duration)), text: words});
+  }
+  return cues.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
 export const VIDEO_SPEED_RANGE = {min: 0.25, max: 4} as const;
 export const VIDEO_VOLUME_MAX = 2;
 export const VIDEO_FADE_MAX = 10;
@@ -2080,13 +2115,14 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
 
 function parseTextExtensions(value: Record<string, unknown>): Partial<TextElement> | null {
   if (!["autoFitMinFontSize","autoFitMaxFontSize","autoFitFontSize"].every(key=>optional(value,key,candidate=>numberIn(candidate,1,500))) || value.autoFitMinFontSize!==undefined && value.autoFitMaxFontSize!==undefined && Number(value.autoFitMinFontSize)>Number(value.autoFitMaxFontSize)) return null;
-  if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "hangingIndent", boolean) || !optional(value, "textStyleId", identity)) return null;
+  if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "hangingIndent", boolean) || !optional(value, "textStyleId", identity) || !optional(value, "captions", boolean)) return null;
   const result: Partial<TextElement> = {};
   if (value.smartText !== undefined) {
     const smart = value.smartText;
     if (!object(smart) || !choice(["cover", "heading", "body", "list"])(smart.role) || ![0, 2, 3, 4].includes(Number(smart.lines)) || typeof smart.lines !== "number" || !numberIn(smart.minFontSize, 1, 500) || !numberIn(smart.maxFontSize, smart.minFontSize as number, 500) || !numberIn(smart.maxHeight, 1, 10000) || !optional(smart, "baseHeight", candidate => numberIn(candidate, 1, 10000)) || !optional(smart, "softMinFontSize", candidate => numberIn(candidate, 1, 500)) || !optional(smart, "anchorBottom", candidate => numberIn(candidate, -10000, 10000)) || !optional(smart, "anchorTop", candidate => numberIn(candidate, -10000, 10000)) || !optional(smart, "group", candidate => typeof candidate === "string" && /^[\w-]{1,40}$/.test(candidate)) || !optional(smart, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(smart, "maxParagraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(smart, "guideHeight", candidate => numberIn(candidate, 1, 10000))) return null;
     result.smartText = { role: smart.role as SmartTextRole, lines: smart.lines as 0 | 2 | 3 | 4, ...(numberIn(smart.fontSize, 1, 500) ? { fontSize: smart.fontSize as number } : {}), minFontSize: smart.minFontSize, maxFontSize: smart.maxFontSize, maxHeight: smart.maxHeight, ...(smart.baseHeight !== undefined ? { baseHeight: smart.baseHeight as number } : {}), ...(smart.softMinFontSize !== undefined ? { softMinFontSize: smart.softMinFontSize as number } : {}), ...(smart.anchorBottom !== undefined ? { anchorBottom: smart.anchorBottom as number } : {}), ...(smart.anchorTop !== undefined ? { anchorTop: smart.anchorTop as number } : {}), ...(smart.group !== undefined ? { group: smart.group as string } : {}), ...(smart.paragraphSpacing !== undefined ? { paragraphSpacing: smart.paragraphSpacing as number } : {}), ...(smart.maxParagraphSpacing !== undefined ? { maxParagraphSpacing: smart.maxParagraphSpacing as number } : {}), ...(smart.guideHeight !== undefined ? { guideHeight: smart.guideHeight as number } : {}) };
   }
+  if (value.captions === true) result.captions = true;
   for (const key of ["textMode", "verticalAlign", "listStyle", "hangingIndent", "padding", "paragraphSpacing", "strikethrough", "textStyleId", "autoFitMinFontSize", "autoFitMaxFontSize", "autoFitFontSize"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
   if (value.richText !== undefined) {
     const sanitized = sanitizeRichText(value.richText);
@@ -2363,6 +2399,11 @@ export function parseVideoClip(value: unknown): VideoClip | null {
   if (typeof value.volume === "number" && value.volume !== 1) clip.volume = Math.round(value.volume * 100) / 100;
   if (typeof value.fadeIn === "number" && value.fadeIn > 0) clip.fadeIn = Math.round(value.fadeIn * 100) / 100;
   if (typeof value.fadeOut === "number" && value.fadeOut > 0) clip.fadeOut = Math.round(value.fadeOut * 100) / 100;
+  if (value.captions !== undefined) {
+    const captions = parseCaptionCues(value.captions, clip.duration);
+    if (!captions) return null;
+    if (captions.length) clip.captions = captions;
+  }
   return clip;
 }
 

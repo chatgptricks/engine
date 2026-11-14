@@ -1,4 +1,6 @@
+import {captionSegments} from "./captions";
 import {changesSound, fadeAt, fadesPicture, gainAt, playWindow} from "./clip-timing";
+import {splitRichLines} from "./rich-text-editing";
 import {MAX_SLIDE_VIDEO_SECONDS, type CanvasElement, type DesignPage, type VideoClip} from "./model";
 
 /** Instagram's carousel limits, kept on the safe side of what its guides disagree on. */
@@ -63,17 +65,54 @@ export function videoOutputSize(frameWidth: number, frameHeight: number, scale: 
   return {width: even(frameWidth * s), height: even(frameHeight * s), scale: s};
 }
 
+/** Why a slide's MP4 came out without sound, in words people read. */
+function silentReason(note: string, speed: number): string {
+  if (note.includes("no audio track")) return "the video file has no sound, so the MP4 is silent.";
+  if (note.includes("can't change its speed")) return `this browser can't play the sound at ${speed}×, so the MP4 is silent. Export in Chrome or Edge to keep it.`;
+  if (note.includes("can't copy") || note.includes("no audio added")) return "this browser couldn't read the video's sound, so the MP4 is silent. Export in Chrome or Edge, or upload the clip as an MP4.";
+  return `the MP4 is silent: Engine couldn't add the video's sound (${note}).`;
+}
+
 /** Warnings for one exported clip, in the words people see in the download notice. */
 export function videoExportWarnings(page: number, video: PageVideo, file?: {bytes: number; ext: string; sound?: boolean; audioNote?: string}): string[] {
   const warnings: string[] = [];
   const {length: duration} = videoWindow(video.clip);
   if (duration < INSTAGRAM_VIDEO.minSeconds) warnings.push(`Page ${page}: the video plays ${Math.round(duration * 10) / 10} seconds; Instagram wants at least ${INSTAGRAM_VIDEO.minSeconds}.`);
-  if (file?.sound && video.clip.speed && video.clip.speed !== 1 && (video.clip.volume ?? 1) > 0) warnings.push(`Page ${page}: the video plays at ${video.clip.speed}×, so it exports without its sound.`);
+  const silent = file?.sound && (video.clip.volume ?? 1) > 0 && file.audioNote && !file.audioNote.startsWith("sound included") ? file.audioNote : "";
+  if (silent) warnings.push(`Page ${page}: ${silentReason(silent, video.clip.speed ?? 1)}`);
   if (file?.audioNote?.includes("can't change its volume")) warnings.push(`Page ${page}: this browser kept the video's sound as it is, without its volume or fades. Export in Chrome or Edge to apply them.`);
   if (video.others) warnings.push(`Page ${page}: a slide plays one video, so ${video.others === 1 ? "the other video exports" : `${video.others} other videos export`} as ${video.others === 1 ? "its cover" : "their covers"}.`);
   if (file && file.bytes > INSTAGRAM_VIDEO.maxBytes) warnings.push(`Page ${page}: the video file is ${Math.round(file.bytes / 1024 ** 2)} MB; Instagram may refuse files over ${INSTAGRAM_VIDEO.maxBytes / 1024 ** 2} MB.`);
   if (file && file.ext !== "mp4") warnings.push(`Page ${page}: this browser saved the video as ${file.ext.toUpperCase()}; Instagram wants MP4. Export in Chrome or Safari.`);
   return warnings;
+}
+
+type Picture = HTMLCanvasElement | ((t: number) => HTMLCanvasElement);
+/** The pictures under and over the clip with its captions burned in: `capture` runs once for each
+ * different caption (and once for none), with every caption layer showing those words, and each
+ * output second picks its own. Without caption layers or cues, one capture. The frame is put back
+ * as it was. */
+export async function captureCaptioned(layers: HTMLElement[], clip: VideoClip, below: Set<string>, above: Set<string>, captureUnder: () => Promise<HTMLCanvasElement>, captureOver: () => Promise<HTMLCanvasElement>): Promise<{under: Picture; over: Picture}> {
+  const nodes = layers.filter(node => node.dataset.captionLayer !== undefined && (below.has(node.dataset.elementId!) || above.has(node.dataset.elementId!)));
+  if (!nodes.length || !clip.captions?.length) return {under: await captureUnder(), over: await captureOver()};
+  // Only the side that holds a caption layer changes; the other is captured once.
+  const changesUnder = nodes.some(node => below.has(node.dataset.elementId!)), changesOver = nodes.some(node => above.has(node.dataset.elementId!));
+  const fixedUnder = changesUnder ? undefined : await captureUnder(), fixedOver = changesOver ? undefined : await captureOver();
+  const segments = captionSegments(clip);
+  const saved = nodes.map(node => { const text = node.querySelector<HTMLElement>(".te-canvas-text"); return {node, text, html: text?.innerHTML ?? "", visibility: node.style.visibility}; });
+  const shown = new Map<string | null, {under: HTMLCanvasElement; over: HTMLCanvasElement}>();
+  try {
+    for (const {text} of segments) {
+      if (shown.has(text)) continue;
+      for (const item of saved) {
+        item.node.style.visibility = text === null ? "hidden" : "visible";
+        if (text !== null && item.text) item.text.innerHTML = splitRichLines(undefined, text).map(line => `<div class="te-canvas-text-line"><span>${line || "<br>"}</span></div>`).join("");
+      }
+      shown.set(text, {under: fixedUnder ?? await captureUnder(), over: fixedOver ?? await captureOver()});
+    }
+  } finally { for (const item of saved) { item.node.style.visibility = item.visibility; if (item.text) item.text.innerHTML = item.html; } }
+  const at = (t: number) => { const segment = segments.find(item => t < item.to) ?? segments.at(-1)!; return shown.get(segment.text)!; };
+  return {under: fixedUnder ?? (t => at(t).under), over: fixedOver ?? (t => at(t).over)};
 }
 
 /** Renders one page with its clip playing into a video file. `frame` is the export
@@ -97,8 +136,7 @@ export async function exportPageVideo(frame: HTMLElement, video: PageVideo, opti
   options.signal?.throwIfAborted();
   const source = await loadVideo(video.clip.src);
   try {
-    const under = await capture(below, false);
-    const over = await capture(above, true);
+    const {under, over} = await captureCaptioned(layers, video.clip, below, above, () => capture(below, false), () => capture(above, true));
     // The layer's own shape (corners, mask, frame outline, opacity): itself alone, its
     // photo swapped for a white one of the clip's proportions.
     const layer = layers[at];

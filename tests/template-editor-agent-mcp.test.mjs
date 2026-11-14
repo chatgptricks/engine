@@ -553,3 +553,30 @@ test("engine_video_look shows a video layer's frames, and split_video gets its p
   assert.ok(log.every((line) => line.endsWith(`${id}.video`)), "frames come from the downloaded clip");
   await mcp.close();
 });
+
+test("captionsFile: the bridge reads an .srt or .vtt file on this computer into captions", async (t) => {
+  const folder = await mkdtemp(path.join(os.tmpdir(), "engine-mcp-captions-"));
+  t.after(() => rm(folder, { recursive: true, force: true }));
+  const srt = "1\n00:00:00,500 --> 00:00:02,000\nHello\n";
+  await writeFile(path.join(folder, "talk.srt"), srt);
+  await writeFile(path.join(folder, "talk.txt"), srt);
+  const api = await server(t, (entry, response) => {
+    if (entry.body?.action === "update_deck") return json(response, { document: { id: "deck-1" }, hash: "h2" });
+    if (entry.body?.action === "capabilities") return json(response, {});
+    return json(response, { error: "unexpected" }, 500);
+  });
+  const mcp = client(t, api.url);
+  await mcp.init();
+  const operations = [{ op: "update_element", pageId: "s1", elementId: "clip", properties: { captionsFile: path.join(folder, "talk.srt") } }];
+  const done = await mcp.call("engine_update_deck", { deckId: "deck-1", expectedHash: "h1", changes: { operations } });
+  assert.equal(done.result.isError, false, JSON.stringify(done.result));
+  const sent = api.calls.find((call) => call.body?.action === "update_deck").body.changes.operations[0].properties;
+  assert.deepEqual(sent, { captions: srt }, "the file's text goes as captions; the path stays on this computer");
+  for (const file of ["talk.txt", "missing.srt"]) {
+    const refused = await mcp.call("engine_update_deck", { deckId: "deck-1", expectedHash: "h1", changes: { operations: [{ ...operations[0], properties: { captionsFile: path.join(folder, file) } }] } });
+    assert.equal(refused.result.isError, true);
+    assert.match(refused.result.content[0].text, /captionsFile/);
+  }
+  assert.equal(api.calls.filter((call) => call.body?.action === "update_deck").length, 1, "refused files never reach Engine");
+  await mcp.close();
+});

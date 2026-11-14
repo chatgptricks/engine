@@ -3,10 +3,11 @@ import { elementVisualBounds } from "./canvas-geometry";
 import {contributesToFrame} from "./export-scene";
 import { imageResolution } from "./property-utils";
 import { INSTAGRAM_VIDEO, pageVideo, videoWindow } from "./export-video";
+import { captionClip } from "./captions";
 
 export type PreflightIssue = {
   id: string;
-  code: "image-resolution" | "image-unavailable" | "font-unavailable" | "text-overflow" | "safe-area" | "empty-slot" | "unresolved-placeholder" | "video-short" | "video-extra";
+  code: "image-resolution" | "image-unavailable" | "font-unavailable" | "text-overflow" | "safe-area" | "empty-slot" | "unresolved-placeholder" | "video-short" | "video-extra" | "captions-empty";
   severity: "warning" | "error";
   pageId: string;
   elementId: string;
@@ -62,6 +63,12 @@ export function preflightDesign(design: DesignDocument, options: PreflightOption
           if (options.imageAvailable?.(fill.src,element) === false) add("image-unavailable",`${name}'s texture could not be loaded. Replace it before exporting.`,"error",id);
         }
         if (options.fontAvailable?.(element.font) === false) add("font-unavailable", `${name}'s typeface is unavailable; the exported text will use a fallback.`);
+        // A caption layer's words are the cue playing, so its own text is never measured.
+        if (element.captions) {
+          const video = captionClip(scene, element);
+          if (!video?.clip.captions?.length) add("captions-empty", `${name} is a caption layer, but ${video ? "this slide's video has no captions" : "this slide has no video"}, so it shows nothing.`);
+          continue;
+        }
         const measurement = options.measureText?.(element, page.id);
         if (measurement && [measurement.width, measurement.height].every(Number.isFinite) && (measurement.width > element.width + .5 || measurement.height > element.height + .5)) add("text-overflow", `${name} does not fit inside its text box.`);
         if (element.slot && !element.text.trim()) add("empty-slot", `${name} has an empty text slot.`, "error");

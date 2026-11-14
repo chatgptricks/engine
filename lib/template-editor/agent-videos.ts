@@ -1,11 +1,27 @@
 import {AgentDeckValidationError} from "./agent-decks";
 import {normalizeVideoLayers} from "./agent-video-layers";
-import {VIDEO_SRC_PATTERN} from "./model";
+import {VIDEO_SRC_PATTERN, type VideoClip} from "./model";
+import {CaptionFileError, MAX_CAPTION_CUES, MAX_CAPTION_TEXT, parseCaptionCues, parseCaptionFile} from "./captions";
 import {clipFromRecord, readVideoRecord, storeVideoFromUrl, VideoError, type VideoRecord} from "./video-storage";
 
 const MAX_VIDEOS_PER_REQUEST = 20;
 const record = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null && !Array.isArray(value);
 const number = (value: unknown) => typeof value === "number" && Number.isFinite(value) ? value : undefined;
+
+/** `captions` as cues: the text of an .srt or .vtt file is read into cues, and a list is checked
+ * here so a mistake names the field. */
+export function withCues(clip: Record<string, unknown>, at: string): Record<string, unknown> {
+  if (clip.captionsFile !== undefined) throw new AgentDeckValidationError("is read by the Engine MCP bridge, which sends the file's text as captions. Over HTTP, send captions (cues, or the text of an .srt or .vtt file)", `${at}.captionsFile`);
+  if (clip.captions === undefined) return clip;
+  let cues: unknown = clip.captions;
+  if (typeof cues === "string") {
+    try { cues = parseCaptionFile(cues); }
+    catch (error) { throw new AgentDeckValidationError(error instanceof CaptionFileError ? error.message : "could not be read as an .srt or .vtt file", `${at}.captions`); }
+  }
+  const checked = parseCaptionCues(cues, typeof clip.duration === "number" ? clip.duration : Infinity);
+  if (!checked) throw new AgentDeckValidationError(`must be a list of at most ${MAX_CAPTION_CUES} cues {start, end, text} (seconds of the clip, end at least 0.1 s after start, text up to ${MAX_CAPTION_TEXT} characters), or the text of an .srt or .vtt file`, `${at}.captions`);
+  return {...clip, captions: checked};
+}
 
 /** An agent's deck or changes with every `video: {url}` or `video: {src}` turned into a
  * stored clip (`video: {path}` is the MCP bridge's to replace with src first): a link is copied into the workspace's storage first (public MP4/MOV only),
@@ -33,14 +49,14 @@ export async function resolveAgentVideos<T>(owner: string, value: T, path = "$")
       if (error instanceof AgentDeckValidationError) throw error;
       throw new AgentDeckValidationError(error instanceof Error ? error.message : "could not be stored", at);
     }
-    const result = clipFromRecord(stored, {start: number(clip.start), end: number(clip.end), coverTime: number(clip.coverTime), speed: number(clip.speed), volume: number(clip.volume), fadeIn: number(clip.fadeIn), fadeOut: number(clip.fadeOut), loop: typeof clip.loop === "boolean" ? clip.loop : undefined, muted: typeof clip.muted === "boolean" ? clip.muted : undefined});
+    const result = clipFromRecord(stored, {start: number(clip.start), end: number(clip.end), coverTime: number(clip.coverTime), speed: number(clip.speed), volume: number(clip.volume), fadeIn: number(clip.fadeIn), fadeOut: number(clip.fadeOut), captions: Array.isArray(clip.captions) ? clip.captions as VideoClip["captions"] : undefined, loop: typeof clip.loop === "boolean" ? clip.loop : undefined, muted: typeof clip.muted === "boolean" ? clip.muted : undefined});
     if (clip.noPoster === true) result.noPoster = true;
     return result;
   }
   async function walk(node: unknown, at: string): Promise<unknown> {
     if (Array.isArray(node)) return Promise.all(node.map((item, index) => walk(item, `${at}[${index}]`)));
     if (!record(node)) return node;
-    const entries = await Promise.all(Object.entries(node).map(async ([key, child]) => [key, key === "video" && record(child) ? await resolve(child, `${at}.video`) : await walk(child, `${at}.${key}`)] as const));
+    const entries = await Promise.all(Object.entries(node).map(async ([key, child]) => [key, key === "video" && record(child) ? await resolve(withCues(child, `${at}.video`), `${at}.video`) : await walk(child, `${at}.${key}`)] as const));
     return Object.fromEntries(entries);
   }
   return await walk(normalizeVideoLayers(value), path) as T;

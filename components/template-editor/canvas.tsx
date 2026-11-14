@@ -6,7 +6,8 @@ import { keyboardTransform } from "@/lib/template-editor/editing-actions";
 import { viewGestureDelta,type ViewPoint } from "@/lib/template-editor/view-gestures";
 import {elementEffectiveOpacity} from "@/lib/template-editor/group-opacity";
 import { SceneLayers } from "./scene-layers";
-import { VideoPlayer } from "./video-player";
+import { VideoPlayer, useLiveCaption } from "./video-player";
+import { CAPTION_SAMPLE, captionClip, coverCue, isCaptionLayer } from "@/lib/template-editor/captions";
 import { CollaborationOverlay } from "./collaboration-overlay";
 import type { CollaborationPeer } from "./collaboration-bar";
 import { cropAfterDrag } from "@/lib/template-editor/photo-crop-geometry";
@@ -34,6 +35,7 @@ import type {
   ImageElement,
   TextElement,
   ShapeElement,
+  VideoClip,
 } from "@/lib/template-editor/model";
 import { elementIntersectsCanvas, elementIntersectsRect, shapeStrokeOutset } from "@/lib/template-editor/canvas-geometry";
 import { snapMove, snapPoint, translateElements, type SnapGuide } from "@/lib/template-editor/snapping";
@@ -343,9 +345,26 @@ function TextFrame({ element, lines }: { element: TextElement; lines: string[] }
   </div>;
 }
 
+/** What a caption layer shows. Editing: the cue playing; between cues a faint sample while the
+ * clip is paused (so the layer can be found and styled) and nothing while it plays; with no cues
+ * yet, the sample. Stills (thumbnails, PNG, PDF, export frames): the cue at the cover, else nothing. */
+function captionDisplay(layer: TextElement, clip: VideoClip | undefined, editing: boolean, live: {text: string | null; playing: boolean}): {text: string; look: "cue" | "sample" | "dim" | "hidden"} {
+  const sample = layer.text.trim() || CAPTION_SAMPLE;
+  if (!clip?.captions?.length) return {text: sample, look: editing ? "sample" : "hidden"};
+  if (editing) return live.text ? {text: live.text, look: "cue"} : {text: sample, look: live.playing ? "hidden" : "dim"};
+  const cue = coverCue(clip);
+  return cue ? {text: cue.text, look: "cue"} : {text: sample, look: "hidden"};
+}
+
 /** `playVideo` is set only on the editing canvas: thumbnails, previews and exports show a clip's cover. */
-function SceneElement({ element, smartLayout, playVideo = false }: { element: CanvasElement; smartLayout?: SmartTextLayout; playVideo?: boolean }) {
+function SceneElement({ element: layer, smartLayout: fitted, playVideo = false, caption }: { element: CanvasElement; smartLayout?: SmartTextLayout; playVideo?: boolean; caption?: {id: string; clip: VideoClip} }) {
   const token = useId().replace(/[^a-zA-Z0-9_-]/g, "");
+  // A caption layer shows its video's cue in its own look (captions.ts).
+  const isCaption = isCaptionLayer(layer);
+  const live = useLiveCaption(caption?.id, caption?.clip, playVideo && isCaption);
+  const captionView = isCaption ? captionDisplay(layer, caption?.clip, playVideo, live) : undefined;
+  const element: CanvasElement = captionView && layer.type === "text" ? {...layer, text: captionView.text, richText: undefined, smartText: undefined} : layer;
+  const smartLayout = captionView ? undefined : fitted;
   const filterId = `effect-${token}`, gradientId = `gradient-${token}`;
   const shadow = element.shadow;
   const padding = shadow ? Math.abs(shadow.spread) + shadow.blur * 3 + Math.max(Math.abs(shadow.offsetX), Math.abs(shadow.offsetY)) + 10 : 0;
@@ -362,7 +381,7 @@ function SceneElement({ element, smartLayout, playVideo = false }: { element: Ca
   const view = shape ? shapeViewBox(shape) : {x:0,y:0,width:100,height:100};
   const geometry = (props: SVGAttributes<SVGElement>) => !shape ? null : shape.shape === "rectangle" ? <rect x="0" y="0" width={shape.width} height={shape.height} rx={shape.radius} {...props} /> : shape.shape === "ellipse" ? <ellipse cx={shape.width / 2} cy={shape.height / 2} rx={shape.width / 2} ry={shape.height / 2} {...props} /> : <path d={shapePath(shape)} transform={`scale(${shape.width/view.width} ${shape.height/view.height}) translate(${-view.x} ${-view.y})`} {...props} />;
   const fillRule = shape?.fillRule ?? "nonzero";
-  return <WorldClip bounds={element.clipBounds}><div className={`te-canvas-element te-canvas-element-${element.type}`} style={{ ...boxStyle(element), opacity: element.opacity, mixBlendMode: element.blendMode as CSSProperties["mixBlendMode"], filter,...(element.type==="text"?textTextureVariables(element):{}) }} data-element-id={element.id}>
+  return <WorldClip bounds={element.clipBounds}><div className={`te-canvas-element te-canvas-element-${element.type}`} style={{ ...boxStyle(element), opacity: element.opacity * (captionView?.look === "dim" ? .35 : 1), visibility: captionView?.look === "hidden" ? "hidden" : undefined, mixBlendMode: element.blendMode as CSSProperties["mixBlendMode"], filter,...(element.type==="text"?textTextureVariables(element):{}) }} data-element-id={element.id} data-caption-layer={captionView ? captionView.look : undefined}>
     {element.type==="text"&&<TextureResources element={element} />}
     {shadow && <svg width="0" height="0" className="te-canvas-effect-defs" aria-hidden="true"><defs><filter id={filterId} filterUnits="userSpaceOnUse" x={-padding} y={-padding} width={element.width + padding * 2} height={element.height + padding * 2} colorInterpolationFilters="sRGB">
       <feMorphology in="SourceAlpha" operator={shadow.spread < 0 ? "erode" : "dilate"} radius={Math.abs(shadow.spread)} result="spread" />
@@ -397,7 +416,7 @@ export function SceneRenderer({ scene, isolate = true }: { scene: CanvasScene; i
   const fitted = useSmartScene(scene);
   return (
     <div className="te-canvas-scene" style={{ background: scene.background, ...(!isolate ? {isolation:"auto" as const} : {}) }}>
-      {<SceneLayers scene={fitted.scene} render={element => <SceneElement element={element} smartLayout={fitted.texts.get(element.id)} />} />}
+      {<SceneLayers scene={fitted.scene} render={element => <SceneElement element={element} smartLayout={fitted.texts.get(element.id)} caption={isCaptionLayer(element) ? captionClip(fitted.scene, element) : undefined} />} />}
     </div>
   );
 }
@@ -1449,7 +1468,7 @@ export function CanvasEditor({
         {masterScene&&Array.from({length:slideCount||1},(_,index)=>masterPageVisibility?.[index]!==false&&<div className="te-canvas-master-page" key={index} data-master-slide={index} style={{left:index*(slideWidth??width),width:slideWidth??width,height}}><SceneRenderer scene={sceneWithPreviewAssets({...masterScene,background:"transparent"})} isolate={false}/></div>)}
         {<SceneLayers scene={displayScene} render={(element) => (
           <div key={element.id} className={`te-canvas-page-layer${clippedIds.has(element.id) ? " is-clipped" : ""}${!inScope(element)?" is-outside-isolation":""}`}>
-            <SceneElement element={elementWithPreviewAsset(element)} smartLayout={smartView.texts.get(element.id)} playVideo />
+            <SceneElement element={elementWithPreviewAsset(element)} smartLayout={smartView.texts.get(element.id)} playVideo caption={isCaptionLayer(element) ? captionClip(displayScene, element) : undefined} />
           </div>
         )} />}
       </div>
