@@ -95,3 +95,20 @@
 .te-media-looks .te-text-effect-controls { display: grid; gap: 12px; }
 .te-look-reset { justify-self: start; height: 28px; padding: 0 10px; border: 1px solid #ffffff26; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 11px; cursor: pointer; }
 .te-look-reset:disabled { opacity: .4; cursor: default; }
+
+/* Animate */
+.te-animate-bar { display: inline-flex; }
+.te-animate { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.te-animate-presets { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.te-animate-presets > button { display: grid; gap: 6px; justify-items: center; min-width: 0; padding: 6px 4px; border: 1px solid #ffffff1c; border-radius: 9px; background: #15151a; color: #c9c9d1; font: inherit; font-size: 11px; cursor: pointer; }
+.te-animate-presets > button:hover:not(:disabled) { background: #ffffff14; color: #ececf1; }
+.te-animate-presets > button[aria-pressed="true"] { border-color: #bda0fc; background: #bda0fc22; color: #ececf1; }
+.te-animate-presets > button:focus-visible { outline: 2px solid #bda0fc; outline-offset: 2px; }
+.te-animate-tile { display: grid; place-items: center; width: 100%; height: 34px; overflow: hidden; border-radius: 6px; background: #2a2a31; }
+.te-animate-sample { display: block; width: 28px; height: 20px; border-radius: 4px; background: #00d98a; }
+.te-animate-presets > button[aria-label="No animation"] .te-animate-sample { background: transparent; border: 1px dashed #ffffff40; }
+.te-animate-controls { display: grid; gap: 10px; }
+.te-animate-segment { display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 4px; }
+.te-animate-segment > button { height: 28px; border: 1px solid #ffffff1c; border-radius: 6px; background: transparent; color: #c9c9d1; font: inherit; font-size: 11px; cursor: pointer; }
+.te-animate-segment > button[aria-pressed="true"] { border-color: #bda0fc; background: #bda0fc22; color: #ececf1; }
+.te-animate-actions { display: flex; flex-wrap: wrap; gap: 8px; }

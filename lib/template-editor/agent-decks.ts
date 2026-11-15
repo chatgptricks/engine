@@ -8,6 +8,7 @@ import {
 import { splitUntrimmedVideos, splitVideoAt } from "./video-slides";
 import { agentTextEffect, setTextEffect } from "./text-effects";
 import { agentMediaLook, mediaLook, setMediaLook } from "./media-looks";
+import { agentAnimation, setElementAnimation } from "./animations";
 import { ELEMENT_COMMANDS, changeTextCaseMode, copyStyle, cropToAspect, pasteStyleOnScene, setImageBorder, type CropAspect, type TextCase } from "./style-commands";
 import { withCaptionLayer } from "./captions";
 import { normalizeVideoLayers } from "./agent-video-layers";
@@ -44,10 +45,22 @@ const obj = (properties: Record<string, Schema>, required: string[] = [], extra:
 const id = str(120, { minLength: 1, pattern: "^[a-zA-Z0-9][a-zA-Z0-9_-]*$" });
 const color = str(20, { pattern: "^(?:#(?:[a-fA-F0-9]{3}|[a-fA-F0-9]{4}|[a-fA-F0-9]{6}|[a-fA-F0-9]{8})|black|white|transparent)$" });
 const bool: Schema = { type: "boolean" };
+const ANIMATION_KIND_NAMES = ["fade", "rise", "pan", "pop", "wipe", "blur", "drift", "tumble", "stomp", "baseline"];
+const animationSchema: Schema = { anyOf: [
+  choice(ANIMATION_KIND_NAMES),
+  obj({
+    kind: { anyOf: [choice(ANIMATION_KIND_NAMES), { type: "null" }], description: "The motion; null removes the animation" },
+    mode: { ...choice(["both", "enter", "exit"]), description: "Play it as the layer enters, as it leaves at the end of the slide, or both (default)" },
+    speed: { ...num(0.2, 3), description: "Seconds one entrance or exit takes: 1.2 slow, 0.7 medium (default; drift 1.2), 0.4 fast" },
+    direction: { ...choice(["up", "down", "left", "right"]), description: "rise, pan, wipe, drift and baseline only: the way it moves (defaults: rise, drift and baseline up, pan left, wipe right)" },
+    delay: { ...num(0, 30), description: "Seconds after the slide starts before it enters; stagger layers with it so they come in one after another" },
+  }, []),
+  { type: "null" },
+], description: "Animate, as the toolbar's Animate: the layer moves in, out, or both. A kind alone, or {kind, mode, speed, direction, delay}; an object changes only what it names. null or none removes it. A slide whose layers move downloads as an MP4 (5 seconds for a still slide, longer if delays need it; a video slide keeps its clip's length); PNG and PDF show every layer at rest" };
 const baseProperties = {
   id, name: str(200), x: num(-100_000, 100_000), y: num(-100_000, 100_000),
   width: num(1, 100_000), height: num(1, 100_000), rotation: num(-3600, 3600),
-  opacity: num(0, 1), hidden: bool, locked: bool, slot: str(200),
+  opacity: num(0, 1), hidden: bool, locked: bool, slot: str(200), animation: animationSchema,
   protected: { type: "array", maxItems: 4, uniqueItems: true, items: choice(["content", "position", "style", "delete"]) },
 };
 /** Styled words in one text box (text-accents.ts). */
@@ -215,7 +228,7 @@ export const AGENT_UPDATE_SCHEMA: Schema = {
     }, ["pageId", "html"]), description: "Add an HTML layer: part of a slide, or the whole slide, drawn from HTML and CSS. Use it for charts, tables, logo grids, comparisons, memes and X post cards. The box (x, y, width, height in output pixels) defaults to the whole slide, or with replaces to the replaced layer's box." },
     { ...operation("replace_html", { pageId: id, elementId: id, html: htmlProperties.html, css: htmlProperties.css, tokens: htmlTokensSchema }, ["pageId", "elementId", "html"]), description: "Replace an HTML layer's HTML, keeping its box. css replaces its CSS too; without css (and without <style> blocks in the HTML) the CSS stays." },
     { ...operation("add_video", {
-      pageId: id, id, name: str(200), ...videoLayerProperties, opacity: baseProperties.opacity,
+      pageId: id, id, name: str(200), ...videoLayerProperties, opacity: baseProperties.opacity, animation: animationSchema,
       x: num(-100_000, 100_000), y: num(-100_000, 100_000), width: num(1, 100_000), height: num(1, 100_000), rotation: baseProperties.rotation,
       index: { type: "integer", minimum: 0, maximum: 100, description: "Where the layer goes in the stack: 0 is the bottom. Default: the top, or just above the layer it replaces" },
       replaces: { ...id, description: "Id of a layer on this slide, such as a photo holding a still from the clip, that the video takes the place of: it gets that layer's box, crop and place in the stack, and that layer is hidden" },
@@ -319,7 +332,7 @@ function toScene(properties: RecordValue, scale: number): RecordValue {
   return Object.fromEntries(Object.entries(properties).map(([key, value]) => [key, pixelProperties.has(key) && typeof value === "number" ? value * scale : value]));
 }
 /** Fields that run a toolbar command instead of being stored as they are (style-commands.ts). */
-const COMMAND_FIELDS = ["border", "cropAspect", "textCase", "textEffect", "look"] as const;
+const COMMAND_FIELDS = ["border", "cropAspect", "textCase", "textEffect", "look", "animation"] as const;
 function withoutCommandFields(properties: RecordValue): RecordValue {
   const rest = { ...properties };
   for (const key of COMMAND_FIELDS) delete rest[key];
@@ -347,6 +360,11 @@ function applyCommandFields(element: CanvasElement, properties: RecordValue, sca
     const look = agentMediaLook(properties.look, mediaLook(next));
     if (look === undefined) fail(`${path}.look`, "must be a filter name, null, or {filter, intensity, shadow, highlight, brightness, contrast, saturation, temperature, tint} in range");
     next = setMediaLook(next, look ?? null);
+  }
+  if (properties.animation !== undefined) {
+    const animation = agentAnimation(properties.animation, next.animation);
+    if (animation === undefined) fail(`${path}.animation`, "must be an animation name, null, or {kind, mode, speed, direction, delay} in range");
+    next = setElementAnimation(next, animation ?? null);
   }
   if (properties.cropAspect !== undefined) {
     if (next.type !== "image") fail(`${path}.cropAspect`, "is only supported on photos and videos");

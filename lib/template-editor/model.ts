@@ -44,6 +44,8 @@ export type CanvasElementBase = {
   shadow?: CanvasShadow;
   blur?: number;
   blendMode?: BlendMode;
+  /** Enter and exit motion in MP4 exports and the editor's preview; PNG and PDF show the layer at rest. */
+  animation?: ElementAnimation;
   strokeDash?: number[];
   anchors?: { horizontal: "left" | "center" | "right" | "stretch"; vertical: "top" | "middle" | "bottom" | "stretch" };
   slot?: string;
@@ -281,6 +283,17 @@ export const MEDIA_ADJUSTMENTS = ["brightness", "contrast", "saturation", "tempe
 export type MediaAdjustment = (typeof MEDIA_ADJUSTMENTS)[number];
 /** Adjustments run −100..100 (0 changes nothing); a filter's intensity 0..100 (100 when absent).
  * Duotone maps the picture's darks to `shadow` and its lights to `highlight`. */
+/** Animate, after Canva's: one motion per layer, played as it enters, as it leaves, or both. */
+export const ANIMATION_KINDS = ["fade", "rise", "pan", "pop", "wipe", "blur", "drift", "tumble", "stomp", "baseline"] as const;
+export type AnimationKind = (typeof ANIMATION_KINDS)[number];
+export const ANIMATION_MODES = ["both", "enter", "exit"] as const;
+export type AnimationMode = (typeof ANIMATION_MODES)[number];
+export const ANIMATION_DIRECTIONS = ["up", "down", "left", "right"] as const;
+export type AnimationDirection = (typeof ANIMATION_DIRECTIONS)[number];
+/** Seconds one entrance (or exit) takes, and the most a layer may wait before it enters. */
+export const ANIMATION_SPEED_RANGE = { min: 0.2, max: 3 } as const;
+export const ANIMATION_MAX_DELAY = 30;
+export type ElementAnimation = { kind: AnimationKind; mode?: AnimationMode; speed?: number; direction?: AnimationDirection; delay?: number };
 export type MediaLook = Partial<Record<MediaAdjustment, number>> & { filter?: MediaFilter; intensity?: number; shadow?: string; highlight?: string };
 export const IMAGE_BORDER_STYLES = ["solid", "long-dash", "short-dash", "dots"] as const;
 /** `width` is in scene units (360 wide), like every other size in a scene. */
@@ -2147,7 +2160,25 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
     if (!object(shadow) || !color(shadow.color) || !numberIn(shadow.offsetX, -1000, 1000) || !numberIn(shadow.offsetY, -1000, 1000) || !numberIn(shadow.blur, 0, 1000) || !numberIn(shadow.spread, -1000, 1000)) return null;
     result.shadow = { color: shadow.color, offsetX: shadow.offsetX, offsetY: shadow.offsetY, blur: shadow.blur, spread: shadow.spread };
   }
+  if (value.animation !== undefined) {
+    const animation = parseElementAnimation(value.animation);
+    if (!animation) return null;
+    result.animation = animation;
+  }
   return result;
+}
+
+/** A layer's animation, checked; null when it isn't one. */
+export function parseElementAnimation(value: unknown): ElementAnimation | null {
+  if (!object(value) || !choice([...ANIMATION_KINDS])(value.kind)) return null;
+  if (!optional(value, "mode", choice([...ANIMATION_MODES])) || !optional(value, "direction", choice([...ANIMATION_DIRECTIONS]))) return null;
+  if (!optional(value, "speed", candidate => numberIn(candidate, ANIMATION_SPEED_RANGE.min, ANIMATION_SPEED_RANGE.max)) || !optional(value, "delay", candidate => numberIn(candidate, 0, ANIMATION_MAX_DELAY))) return null;
+  const animation: ElementAnimation = { kind: value.kind as AnimationKind };
+  if (value.mode !== undefined && value.mode !== "both") animation.mode = value.mode as AnimationMode;
+  if (value.speed !== undefined) animation.speed = value.speed as number;
+  if (value.direction !== undefined) animation.direction = value.direction as AnimationDirection;
+  if (value.delay) animation.delay = value.delay as number;
+  return animation;
 }
 
 /** A look with nothing in it (or only zeros): saved files may carry one; it means no look. */
