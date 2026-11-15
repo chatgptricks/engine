@@ -44,6 +44,7 @@ Tokens belong to the workspace that created them. They grant the agent the API's
 | `engine_get_deck` | Read a native document, output-pixel `view`, stable page/layer IDs, current `hash`, and editor link |
 | `engine_create_deck` | Save an editable deck from `spec`; optional UUID `operationId` |
 | `engine_update_deck` | Apply `changes` using `deckId`, `expectedHash`, and an optional UUID `operationId` |
+| `engine_text_ai` | AI on one text layer, as the editor's AI button: alternatives, punchier, shorten, expand, simplify, rephrase, tone, fit, brand, translate, highlight, fix or a custom instruction. Returns `options` (text, accent phrases, brand-guide copy issues); `apply: true` with `expectedHash` writes the first one and returns the new `hash` |
 | `engine_export_deck` | Return `{filename, package, editorUrl}` for an editable `.engine.json` file |
 | `engine_list_page_profiles` | List the pages Engine recreates posts for: language, template, voice, house rules, Follow line |
 | `engine_playbook` | Read the Recreate team's playbook: the carousel shape, the house rules, and one role card per stage with its output schema |

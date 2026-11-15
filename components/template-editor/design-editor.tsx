@@ -2024,6 +2024,7 @@ export function DesignEditor({
             cropping={Boolean(cropImageId)}
             onCopyStyle={toggleStyleBrush}
             styleBrush={Boolean(styleBrush)}
+            aiDeck={continuous?undefined:{format:design.format,customSize:design.customSize,templateId:design.templateId}}
             onGroup={selected.length>1?()=>applyCommand(live=>groupSelection(live,selected,"Group",isolatedGroupId??undefined)):undefined}
             onMergeShapes={()=>applyCommand(live=>combineShapes(live,selected,"union"))}
             onDuplicate={() => applyCommand((live) => duplicateSelection(live, selected,undefined,isolatedGroupId??undefined))}

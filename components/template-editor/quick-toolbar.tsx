@@ -10,6 +10,7 @@ import { applyElementPaint, commonElementPaint } from "@/lib/template-editor/pai
 import { photoContent, updatePhotoContent } from "@/lib/template-editor/photo-frames";
 import { textRangeTogglePatch, type TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
 import { TextFormatBar } from "./text-format-bar";
+import type { TextAiDeck } from "./text-ai-menu";
 import { PaintPicker } from "./paint-picker";
 import { MediaToolbar } from "./media-toolbar";
 import { SpanToolbarControls, type SpanControl } from "./span-photo-controls";
@@ -47,9 +48,11 @@ type Props = {
   onCopyStyle?: () => void;
   /** A copied look is waiting to be pasted. */
   styleBrush?: boolean;
+  /** The deck, for the text bar's AI button. */
+  aiDeck?: TextAiDeck;
 };
 
-export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, span, onUnlock, outputScale = 3, onCopyStyle, styleBrush = false }: Props) {
+export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, onAddText, onUpload, onFormatText, onEdit, onTextTexture, onBackground, onPosition, onCrop, cropping = false, onGroup, onMergeShapes, onInspect, activeSection, onReplacePhoto, templateDraftHeight, span, onUnlock, outputScale = 3, onCopyStyle, styleBrush = false, aiDeck }: Props) {
   const selected=scene.elements.filter(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element));
   const unlocked=selected.filter(element=>!isElementLocked(scene,element));
   const propertySelection=unlocked.length?unlocked:selected;
@@ -96,7 +99,7 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
       <span className={`te-quick-label${allText?" te-sr-only":""}`}>{label}</span>
       {templateDraftHeight!==undefined&&<TemplateRoleSelect scene={scene} elements={selected} height={templateDraftHeight} disabled={disabled} onChange={onChange} compact/>}
       {onMergeShapes&&selected.every(element=>element.type==="shape")&&selected.length>1&&<button type="button" className="te-context-action" aria-label="Merge shapes" title="Union: combine the selected shapes into one shape" disabled={disabled||selected.length!==selectedIds.length||!selected.every(element=>canEditElement(scene,element,"position")&&canEditElement(scene,element,"delete"))} onClick={onMergeShapes}><EditorIcon name="merge"/>Merge shapes</button>}
-      {allText&&<TextFormatBar scene={scene} selectedIds={selectedIds} texts={texts} disabled={disabled} outputScale={outputScale} onChange={onChange} onFormatText={onFormatText} patchText={patchText} toggleText={toggleText} update={update}/>}
+      {allText&&<TextFormatBar scene={scene} selectedIds={selectedIds} texts={texts} disabled={disabled} outputScale={outputScale} onChange={onChange} onFormatText={onFormatText} patchText={patchText} toggleText={toggleText} update={update} aiDeck={aiDeck}/>}
       {allShapes&&<div className="te-quick-basics">
         {!allPhotos&&<><span className="te-quick-control-label">Fill</span><PaintPicker key={`shape-fill:${shapes.map(element=>element.id).join(":")}`} label="Quick shape fill" compact value={commonElementPaint(shapes)} disabled={disabledStyle} onChange={paint=>update(element=>element.type==="shape"?applyElementPaint(element,paint):element)} /></>}
         <span className="te-quick-control-label">Outline</span><PaintPicker key={`border:${shapes.map(element=>element.id).join(":")}`} label="Quick shape border" compact allowGradient={false} value={commonValue(shapes,"stroke")===undefined?undefined:{type:"solid",color:commonValue(shapes,"stroke")!}} disabled={disabledStyle} onChange={paint=>{if(paint.type==="solid")update(element=>element.type==="shape"?{...element,stroke:paint.color,strokeWidth:element.strokeWidth>0?element.strokeWidth:1}:element);}} />

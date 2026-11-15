@@ -1,6 +1,8 @@
 import {randomUUID} from "node:crypto";
 import {agentResponse as reply, allowedAgentOrigin, readAgentBody, resolveAgentRequest} from "@/lib/template-editor/agent-http";
 import {htmlTokensForTemplate} from "@/lib/engine/brand-actions";
+import {runTextAi} from "@/lib/engine/text-ai";
+import {TextAiError, applyTextAiOption, parseTextAiRequest, textAiContextFor} from "@/lib/template-editor/text-ai";
 import {addsHtmlLayers, agentCapabilities, agentDeckSummary, agentTemplatePages, agentTemplateSlots, agentDeckView, createAgentDeck, updateAgentDeck, editableDeckPackage, withHtmlLayerTokens, AgentDeckValidationError} from "@/lib/template-editor/agent-decks";
 import {contentHash} from "@/lib/template-editor/library-sync";
 import {getEditorLibrary, saveEditorLibrary, LibraryConflictError} from "@/lib/template-editor/persistence";
@@ -85,9 +87,48 @@ async function frameView(ownerKey: string, document: DesignDocument, input: Reco
     return reply({image: {base64: view.base64, mimeType: view.mimeType}, shown: {width: view.width, height: view.height}, imageBox: view.box, original: {width: page.frame.width, height: page.frame.height}, slide: size, imageOnSlide: slideBox, note: "Boxes for frame_cut are slide output pixels. The image covers imageOnSlide; a pixel (px, py) of the original is at imageOnSlide.x + px * imageOnSlide.width / original.width, and the same for y."});
   } catch (error) {if (error instanceof FrameError) throw new RequestError(error.message); throw error;}
 }
+/** engine_text_ai: the editor's AI menu on one text layer (its action is textAction). Returns options; with
+ * apply it also writes the first one (accents kept) and returns the new hash. */
+async function textAi(ownerKey: string, input: Record<string, unknown>) {
+  if (input.apply !== undefined && typeof input.apply !== "boolean") throw new RequestError("apply must be true or false.");
+  if (input.apply && (typeof input.expectedHash !== "string" || !/^[a-f0-9]{64}$/.test(input.expectedHash))) throw new RequestError("Supply expectedHash from get_deck to apply an option.");
+  const {library} = await getEditorLibrary(ownerKey);
+  const document = checkedDocument(input.deckId, library.designs);
+  const found = textLayer(document, input);
+  const ask = parseTextAiRequest({...input, action: input.textAction, text: found.element.text});
+  const result = await runTextAi(ownerKey, ask, textAiContextFor(found.scene, found.element), {
+    scene: found.scene, element: found.element, format: document.format, customSize: document.customSize,
+    templateId: document.templateId,
+  });
+  if (!input.apply) return reply({...result, hash: await contentHash(document), editorUrl: editorUrl(document)});
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const stored = await getEditorLibrary(ownerKey), before = checkedDocument(input.deckId, stored.library.designs);
+    if (await contentHash(before) !== input.expectedHash) throw new RequestError("This deck changed. Call get_deck and run engine_text_ai again on its latest hash.", 409);
+    const {element} = textLayer(before, input), applied = applyTextAiOption(element, result.options[0]);
+    const document = {...before, updatedAt: new Date().toISOString(), pages: before.pages.map(page => page.id !== input.pageId || !page.canvas ? page : {...page, canvas: {...page.canvas, elements: page.canvas.elements.map(item => item.id === element.id ? applied : item)}})};
+    const next = parseLibrary({...stored.library, designs: stored.library.designs.map(item => item.id === document.id ? document : item)});
+    if (!next) throw new RequestError("The new text exceeds Engine's document limits.");
+    const budget = checkLibrarySaveBudget(next);
+    if (!budget.ok) throw new RequestError(budget.error, 413);
+    try {
+      const saved = checkedDocument(document.id, (await saveEditorLibrary(ownerKey, next, stored.revision, randomUUID())).library.designs);
+      return reply({...result, applied: result.options[0].text, hash: await contentHash(saved), editorUrl: editorUrl(saved)});
+    } catch (error) {if (!(error instanceof LibraryConflictError) || attempt === 3) throw error;}
+  }
+  throw new RequestError("The workspace is busy. Retry in a moment.", 409);
+}
+function textLayer(document: DesignDocument, input: Record<string, unknown>) {
+  const page = document.pages.find(item => item.id === input.pageId);
+  if (!page) throw new RequestError("pageId must be a slide of this deck (from get_deck).");
+  if (!page.canvas) throw new RequestError(document.continuousCanvas ? "AI on text works on decks with separate slides." : "This slide has no editable layers yet. Open it in Engine first.");
+  const element = page.canvas.elements.find(item => item.id === input.elementId);
+  if (element?.type !== "text") throw new RequestError("elementId must be a text layer on this slide.");
+  return {scene: page.canvas, element};
+}
 async function dispatch(ownerKey: string, input: Record<string, unknown>) {
   const action = input.action;
   if (action === "capabilities") return reply(agentCapabilities());
+  if (action === "text_ai") return await textAi(ownerKey, input);
   if (!["list_templates", "list_decks", "get_deck", "create_deck", "update_deck", "export_deck", "frame_view"].includes(String(action))) throw new RequestError("Unknown action. Call capabilities for the supported tools.");
   if (action === "create_deck" || action === "update_deck") {
     if (!validOperation(input.operationId)) throw new RequestError("Supply a UUID operationId and reuse it only when retrying the same request.");
@@ -158,7 +199,7 @@ async function dispatch(ownerKey: string, input: Record<string, unknown>) {
 }
 function failure(error: unknown) {
   if (error instanceof AgentDeckValidationError) return reply({error: error.message, issues: error.issues}, 400);
-  if (error instanceof RequestError) return reply({error: error.message}, error.status);
+  if (error instanceof RequestError || error instanceof TextAiError) return reply({error: error.message}, error.status);
   if (error instanceof LibraryConflictError) return reply({error: "This workspace changed. Fetch the latest deck before retrying."}, 409);
   return reply({error: "Engine could not complete this request. Retry with the same operationId."}, 503);
 }

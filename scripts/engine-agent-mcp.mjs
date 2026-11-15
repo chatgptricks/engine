@@ -12,6 +12,8 @@ const MAX_INPUT_BYTES = 16 * 1024 * 1024;
 const MAX_HTTP_BYTES = 32 * 1024 * 1024;
 const MAX_OUTPUT_BYTES = 72 * 1024 * 1024;
 const HTTP_TIMEOUT_MS = 30_000;
+// engine_text_ai waits on a model: cover alternatives from the headline model take up to 90 seconds.
+const AI_TIMEOUT_MS = 120_000;
 // Frames: the only files the bridge reads are pictures an agent names, and only these.
 const MAX_FRAME_BYTES = 15 * 1024 * 1024;
 const FRAME_TYPES = { ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp" };
@@ -114,6 +116,19 @@ function toolDefinitions(capabilities) {
     { name: "engine_get_deck", description: "Read a complete native editable deck, an output-pixel view for inspection and authoring, its current concurrency hash, stable page/layer IDs, and editor URL. Use view coordinates for edits; the raw document uses 360-wide scene units. Each half of a photo that spans two slides shows span with its partnerPageId and seam. Read immediately before an update.", inputSchema: schema({ deckId }, ["deckId"]), annotations: read },
     { name: "engine_create_deck", description: "Create and save a deck of independent editable text, image, shape, and HTML layers. Read engine_capabilities first. Returns the native document, concurrency hash, editor URL, and operationId. Keep headlines as text layers and photos as image layers. Video: add a layer {type: \"video\", path | src, poster, x, y, width, height, start, end, loop, muted, speed, volume, fadeIn, fadeOut}, where path is an absolute path to an .mp4, .m4v, .mov or .webm file on this computer (the bridge uploads it and, without poster, takes one from the clip), or src is an Engine video path from engine_video_upload or a public link. Text, shapes and fades go above or below it like an image. A template's photo slot (such as the @chatgptricks cover, templatePage 0) takes image: {video: {path}} the same way. A slide plays at most 60 seconds; a longer untrimmed clip continues on extra slides. Captions: give the video layer captions (cues [{start, end, text}] in seconds of the clip, or an .srt/.vtt file's text) or captionsFile (a path to an .srt or .vtt file the bridge reads); a caption layer (text with captions: true, added for you when missing) shows them in its own look. Slides with video export as MP4, captions burned in. An HTML layer (type html) draws part of a slide, or a whole slide, from HTML and CSS in the brand's colors and fonts: use it for charts, tables, comparisons, logo grids, memes, and X post cards (engine_capabilities htmlLayers says how). With templateId, either omit slides, pass one slide per template page, or set templatePage (0-based template page index) on every slide to build 1–20 slides that repeat, reorder or skip template pages. For a photo across two slides, use a pair of page types in order with photoSize and seam on the first, or give an image span: \"next\" and a seam (0.1 to 0.9, chosen so the cut misses faces and text).", inputSchema: schema({ spec: deckSchema, operationId }, ["spec"]), annotations: write },
     { name: "engine_update_deck", description: "Update an existing native editable deck using stable IDs and expectedHash from engine_get_deck. A stale hash returns a conflict: read again and reconcile before retrying. Read engine_capabilities for supported changes. add_html adds an HTML layer (its box defaults to the whole slide; with replaces it takes a template frame's place, and the frame is hidden) and replace_html replaces its HTML and CSS. span_photo makes an image continue on the next slide (or moves its seam), unlink_span splits it into two photos, and edits to either half of a spanning photo update both. To replace a still with a video (a cover photo, or the media in an X post card), use add_video with replaces: the layer's id and path (a local file the bridge uploads and takes a poster from) or src: the video takes that layer's box, crop and place in the stack, and the still is hidden. update_element on a video layer changes poster, start, end, loop, muted, speed (0.25–4), volume (0–2), fadeIn/fadeOut (seconds) or captions (cues in seconds of the clip, an .srt/.vtt file's text, or captionsFile; [] removes them). split_video {pageId, elementId, at} cuts a video slide in two at a second of its clip: the rest plays on a copy of the slide placed right after it, and the bridge takes that copy's poster at `at` (needs ffmpeg). Look at a clip first with engine_video_look. The selection toolbar's commands work here too (engine_capabilities toolbar lists them): update_element takes textCase (upper, lower, title, sentence) on text, and border {style, width, color} or null and cropAspect (original, 1:1, 4:5, 3:4, 16:9, 9:16) on photos and videos; copy_style {pageId, from, to} gives layers another layer's look. Returns the updated document, hash, editor URL, and operationId.", inputSchema: schema({ deckId, expectedHash: { type: "string", minLength: 1 }, changes: updateSchema, operationId }, ["deckId", "expectedHash", "changes"]), annotations: { ...write, destructiveHint: true } },
+    { name: "engine_text_ai", description: "AI on one text layer, as the editor's AI button does it: alternatives (up to 5 options; on a cover, from Engine's headline model when it's set up), punchier, shorten, expand, simplify, rephrase, tone (with tone), fit (to the box's lines), brand (follow the deck's brand guide), translate (with language), highlight (picks the key phrase for the accent gradient, text unchanged), fix (spelling and grammar) or custom (with instruction). The AI is told the slide's other text and the brand guide and never adds facts: what it can't know goes in [brackets]. Each option has its text, the phrases in the accent gradient, and the brand-guide copy checks it breaks. Nothing is saved unless apply is true: then the first option replaces the layer's text (accents kept) and the new hash comes back. Use engine_update_deck to place a different option.", inputSchema: schema({
+      deckId,
+      pageId: { type: "string", minLength: 1, maxLength: 200, description: "The slide's id from engine_get_deck." },
+      elementId: { type: "string", minLength: 1, maxLength: 200, description: "The text layer's id." },
+      action: { type: "string", enum: ["alternatives", "punchier", "shorten", "expand", "simplify", "rephrase", "tone", "fit", "brand", "translate", "highlight", "fix", "custom"] },
+      tone: { type: "string", enum: ["direct", "curious", "playful", "formal"], description: "For action tone." },
+      language: { type: "string", enum: ["Spanish", "English", "Portuguese", "French", "German", "Italian"], description: "For action translate." },
+      instruction: { type: "string", minLength: 1, maxLength: 500, description: "For action custom, or extra direction for any action." },
+      selection: schema({ start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 } }, ["start", "end"]),
+      count: { type: "integer", minimum: 1, maximum: 5, description: "How many options. Default 5 for alternatives, else 1." },
+      apply: { type: "boolean", description: "Write the first option to the deck. Needs expectedHash." },
+      expectedHash: { type: "string", minLength: 1 },
+    }, ["deckId", "pageId", "elementId", "action"]), annotations: { ...write, openWorldHint: true } },
     { name: "engine_export_deck", description: "Return an editable .engine.json package and suggested filename for a deck, plus its editor URL. This preserves native text, images, shapes, pages, and layers for reimport; it is not a flattened slide image or PowerPoint export.", inputSchema: schema({ deckId }, ["deckId"]), annotations: read },
     { name: "engine_list_page_profiles", description: "List the pages Engine recreates posts for: id, name, handle, language (en/es), templateId, voice, house rules and Follow line. Use a profile id with engine_recreate_post.", inputSchema: schema(), annotations: read },
     { name: "engine_playbook", description: "Read the Recreate team's playbook: the carousel shape, the house rules, and one role card per stage (job, rules, quality bar, output schema). Read it before handing in a stage with engine_recreate_submit_stage, so your work meets the same bar as Engine's own agents.", inputSchema: schema(), annotations: read },
@@ -177,6 +192,7 @@ const ACTIONS = {
   engine_create_deck: "create_deck",
   engine_update_deck: "update_deck",
   engine_export_deck: "export_deck",
+  engine_text_ai: "text_ai",
 };
 // Recreate tools live outside the slides endpoint.
 const recreateAction = (action) => (config, args) => ({ url: config.recreate, method: "POST", body: { action, ...args } });
@@ -250,7 +266,7 @@ function validatedArguments(name, args) {
   }
   if (Object.hasOwn(args, "guide") && (!object(args.guide) || typeof args.guide.id !== "string")) throw new RpcError(-32602, "guide must be an object with the guide's id. Read engine_get_brand for its shape.");
   if (name === "engine_save_brand" && Object.hasOwn(args, "note") && (typeof args.note !== "string" || args.note.length > 200)) throw new RpcError(-32602, "note must be text of at most 200 characters.");
-  if (Object.hasOwn(args, "language") && args.language !== "en" && args.language !== "es") throw new RpcError(-32602, "language must be en or es.");
+  if (name !== "engine_text_ai" && Object.hasOwn(args, "language") && args.language !== "en" && args.language !== "es") throw new RpcError(-32602, "language must be en or es.");
   for (const key of ["templateId", "baseTemplateId"]) {
     if (Object.hasOwn(args, key) && (typeof args[key] !== "string" || !args[key].trim() || args[key].length > 200)) throw new RpcError(-32602, `${key} must be a template id of at most 200 characters.`);
   }
@@ -282,6 +298,20 @@ function validatedArguments(name, args) {
   }
   if (name === "engine_recreate_post" && !Object.hasOwn(args, "url") && !Object.hasOwn(args, "uploads")) {
     throw new RpcError(-32602, "Pass an Instagram url or slide uploads.");
+  }
+  if (name === "engine_text_ai") {
+    const definition = toolDefinitions().find((tool) => tool.name === name).inputSchema.properties;
+    for (const key of ["action", "tone", "language"]) {
+      if (Object.hasOwn(args, key) && !definition[key].enum.includes(args[key])) throw new RpcError(-32602, `${key} must be one of: ${definition[key].enum.join(", ")}.`);
+    }
+    for (const key of ["pageId", "elementId"]) {
+      if (typeof args[key] !== "string" || !/^[A-Za-z0-9._:-]{1,200}$/.test(args[key])) throw new RpcError(-32602, `${key} must be an id from engine_get_deck.`);
+    }
+    if (Object.hasOwn(args, "instruction") && (typeof args.instruction !== "string" || !args.instruction.trim() || args.instruction.length > 500)) throw new RpcError(-32602, "instruction must be text of at most 500 characters.");
+    if (Object.hasOwn(args, "count") && (!Number.isSafeInteger(args.count) || args.count < 1 || args.count > 5)) throw new RpcError(-32602, "count must be an integer from 1 through 5.");
+    if (Object.hasOwn(args, "apply") && typeof args.apply !== "boolean") throw new RpcError(-32602, "apply must be true or false.");
+    if (args.apply && !Object.hasOwn(args, "expectedHash")) throw new RpcError(-32602, "apply needs expectedHash from engine_get_deck.");
+    if (Object.hasOwn(args, "selection") && (!object(args.selection) || !Number.isSafeInteger(args.selection.start) || !Number.isSafeInteger(args.selection.end) || Object.keys(args.selection).some((key) => key !== "start" && key !== "end"))) throw new RpcError(-32602, "selection must be {start, end} character offsets.");
   }
   for (const key of ["spec", "changes"]) {
     if (Object.hasOwn(args, key) && !object(args[key])) throw new RpcError(-32602, `${key} must be an object. Read engine_capabilities for its schema.`);
@@ -325,6 +355,11 @@ function validatedArguments(name, args) {
     result.limit ??= 20;
   }
   if (name === "engine_create_deck" || name === "engine_update_deck" || name === "engine_frame_upload" || name === "engine_frame_cut") result.operationId ??= randomUUID();
+  // The endpoint's own action is text_ai; the tool's action travels as textAction.
+  if (name === "engine_text_ai") {
+    result.textAction = result.action;
+    delete result.action;
+  }
   return result;
 }
 
@@ -375,7 +410,7 @@ function bridge(config) {
   }
   async function send(route, action) {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), HTTP_TIMEOUT_MS);
+    const timer = setTimeout(() => controller.abort(), action === "text_ai" ? AI_TIMEOUT_MS : HTTP_TIMEOUT_MS);
     try {
       const response = await fetch(route.url, {
         method: route.method,

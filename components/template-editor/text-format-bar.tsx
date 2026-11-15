@@ -12,6 +12,7 @@ import { commonValue, boldState, booleanState } from "@/lib/template-editor/prop
 import { canEditElement } from "@/lib/template-editor/commands";
 import { applyElementPaint, commonElementPaint, paintTextFormattingPatch } from "@/lib/template-editor/paint";
 import type { TextFormattingPatch } from "@/lib/template-editor/rich-text-editing";
+import { TextAiMenu, type TextAiDeck } from "./text-ai-menu";
 import "./text-format-bar.css";
 
 type Props = {
@@ -26,6 +27,8 @@ type Props = {
   patchText: (patch: Partial<TextElement>) => void;
   toggleText: (key: "fontWeight" | "italic" | "underline" | "strikethrough") => void;
   update: (transform: (element: CanvasElement) => CanvasElement, property?: "style" | "content" | "position", group?: string) => void;
+  /** The deck, for the AI button; without it the bar has no AI. */
+  aiDeck?: TextAiDeck;
 };
 
 const ALIGN_NEXT = { left: "center", center: "right", right: "left" } as const;
@@ -35,7 +38,7 @@ const CASE_LABELS: Record<TextCase, string> = { upper: "UPPERCASE", lower: "lowe
 /** Canva's text bar: font, − size +, color, B I U S, aA, alignment, list,
  * spacing and transparency, in that order. Controls the template fixes stay
  * visible but disabled, with a reason on hover. */
-export function TextFormatBar({ scene, selectedIds, texts, disabled, outputScale, onChange, onFormatText, patchText, toggleText, update }: Props) {
+export function TextFormatBar({ scene, selectedIds, texts, disabled, outputScale, onChange, onFormatText, patchText, toggleText, update, aiDeck }: Props) {
   const smart = texts.every(element => element.smartText);
   const styleEditable = texts.some(element => canEditElement(scene, element, "style"));
   const contentEditable = texts.some(element => canEditElement(scene, element, "content"));
@@ -50,7 +53,14 @@ export function TextFormatBar({ scene, selectedIds, texts, disabled, outputScale
   const tracking = texts.length && texts.every(element => Math.abs(element.letterSpacing / element.fontSize - texts[0].letterSpacing / texts[0].fontSize) < 1e-4) ? Math.round(texts[0].letterSpacing / texts[0].fontSize * 1000) : undefined;
   const hold = (event: { preventDefault: () => void }) => event.preventDefault();
   const pressed = (state: boolean | "mixed") => state === "mixed" ? "mixed" : state;
+  const aiText = texts.length === 1 && canEditElement(scene, texts[0], "content") ? texts[0] : undefined;
   return <div className="te-format-bar" role="group" aria-label="Text formatting">
+    {aiDeck && <>
+      <ToolbarPopover label="AI" icon="ai" text={<span className="te-format-ai-label">AI</span>} wide disabled={disabled || !aiText} title={aiText ? "AI: rewrite, shorten, translate…" : texts.length > 1 ? "Select one text box" : "Set by the template"}>
+        {close => aiText && <TextAiMenu scene={scene} element={aiText} deck={aiDeck} close={close} update={update} onChange={onChange} />}
+      </ToolbarPopover>
+      <span className="te-format-sep" aria-hidden="true" />
+    </>}
     <select className="te-format-font" aria-label="Quick font" title={fixed ?? "Font"} disabled={styleOff} value={commonValue(texts, "font") ?? ""} onChange={event => patchText({ font: event.target.value })}>
       {commonValue(texts, "font") === undefined && <option value="" disabled>Mixed fonts</option>}
       {FONTS.map(([id, name]) => <option key={id} value={id}>{name}</option>)}
@@ -108,7 +118,7 @@ export function RangeRow({ label, min, max, step, value, onChange }: { label: st
 }
 
 /** A toolbar button with a small panel under it, drawn outside the toolbar so a scrolling bar doesn't clip it. */
-export function ToolbarPopover({ label, icon, text, disabled, title, pressed, children }: { label: string; icon: EditorIconName; text?: ReactNode; disabled: boolean; title?: string; pressed?: boolean; children: ReactNode }) {
+export function ToolbarPopover({ label, icon, text, disabled, title, pressed, wide, children }: { label: string; icon: EditorIconName; text?: ReactNode; disabled: boolean; title?: string; pressed?: boolean; wide?: boolean; children: ReactNode | ((close: () => void) => ReactNode) }) {
   const [open, setOpen] = useState(false);
   const [place, setPlace] = useState<{ left: number; top: number } | null>(null);
   const trigger = useRef<HTMLButtonElement>(null);
@@ -122,8 +132,9 @@ export function ToolbarPopover({ label, icon, text, disabled, title, pressed, ch
     return () => { document.removeEventListener("pointerdown", close, true); document.removeEventListener("keydown", escape); };
   }, [open]);
   const shown = open && !disabled;
+  const close = () => setOpen(false);
   return <>
-    <button ref={trigger} type="button" className="te-format-button" aria-label={label} title={title ?? label} aria-haspopup="dialog" aria-expanded={shown} aria-pressed={shown || pressed} disabled={disabled} onMouseDown={event => event.preventDefault()} onClick={() => { const box = trigger.current?.getBoundingClientRect(); if (box) setPlace({ left: Math.max(8, Math.min(window.innerWidth - 288, box.left + box.width / 2 - 140)), top: box.bottom + 8 }); setOpen(value => !value); }}><EditorIcon name={icon} />{text}</button>
-    {shown && place && createPortal(<div ref={panel} className="te-root te-format-popover" role="dialog" aria-label={label} style={place} onKeyDown={event => event.stopPropagation()}>{children}</div>, document.body)}
+    <button ref={trigger} type="button" className="te-format-button" aria-label={label} title={title ?? label} aria-haspopup="dialog" aria-expanded={shown} aria-pressed={shown || pressed} disabled={disabled} onMouseDown={event => event.preventDefault()} onClick={() => { const box = trigger.current?.getBoundingClientRect(); if (box) { const width = wide ? 360 : 280; setPlace({ left: Math.max(8, Math.min(window.innerWidth - width - 8, box.left + box.width / 2 - width / 2)), top: box.bottom + 8 }); } setOpen(value => !value); }}><EditorIcon name={icon} />{text}</button>
+    {shown && place && createPortal(<div ref={panel} className={`te-root te-format-popover${wide ? " is-wide" : ""}`} role="dialog" aria-label={label} style={place} onKeyDown={event => event.stopPropagation()}>{typeof children === "function" ? children(close) : children}</div>, document.body)}
   </>;
 }
