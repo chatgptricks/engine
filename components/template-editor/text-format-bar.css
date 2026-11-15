@@ -50,3 +50,35 @@
 .te-format-choices > button[aria-pressed="true"] { background: #bda0fc2e; color: #d6c6ff; }
 .te-format-choices > button:disabled { opacity: .4; cursor: not-allowed; }
 .te-format-inline { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: #c9c9d1; }
+
+/* The AI button and its menu (text-ai-menu.tsx). */
+.te-quick-toolbar .te-format-bar .te-format-button:has(.te-format-ai-label) { width: auto; gap: 4px; padding: 0 8px; grid-auto-flow: column; color: #d6c6ff; }
+.te-format-ai-label { font-size: 12px; font-weight: 600; }
+.te-format-popover.is-wide { width: 360px; max-height: min(560px, calc(100vh - 120px)); overflow-y: auto; }
+.te-ai-menu { display: grid; gap: 10px; }
+.te-ai-ask { display: flex; gap: 6px; }
+.te-ai-ask input { flex: 1; min-width: 0; height: 32px; padding: 0 10px; border: 1px solid #ffffff26; border-radius: 8px; background: #15151a; color: inherit; font: inherit; }
+.te-ai-ask input:focus { outline: 2px solid #bda0fc; outline-offset: -1px; }
+.te-ai-menu button { height: 30px; padding: 0 10px; border: 1px solid #ffffff1f; border-radius: 7px; background: #ffffff0d; color: inherit; font: inherit; cursor: pointer; }
+.te-ai-menu button:hover:not(:disabled) { background: #ffffff1a; }
+.te-ai-menu button:disabled { opacity: .4; cursor: not-allowed; }
+.te-ai-actions { display: grid; gap: 1px; margin: 0 -6px; }
+.te-ai-actions button { display: flex; align-items: center; gap: 8px; height: 30px; border: 0; background: transparent; text-align: left; }
+.te-ai-actions button span { flex: 1; }
+.te-ai-actions button small { color: #9a9aa6; font-size: 11px; }
+.te-ai-note, .te-ai-meta { margin: 0; color: #9a9aa6; font-size: 11px; }
+.te-ai-options { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.te-ai-option { display: grid; gap: 8px; padding: 10px; border: 1px solid #ffffff1a; border-radius: 9px; background: #ffffff08; }
+.te-ai-option-text { font-size: 13px; line-height: 1.4; white-space: pre-wrap; }
+.te-ai-option-text mark { background: none; color: #c9a8ff; font-weight: 600; }
+.te-ai-issues { margin: 0; padding-left: 16px; color: #f5c46b; font-size: 11px; }
+.te-ai-option-actions, .te-ai-footer { display: flex; align-items: center; gap: 6px; }
+.te-ai-footer .te-ai-meta { flex: 1; text-align: center; }
+.te-ai-menu .te-ai-primary { border-color: transparent; background: #8b5cf6; color: #fff; }
+.te-ai-menu .te-ai-primary:hover:not(:disabled) { background: #7c4ef0; }
+.te-ai-menu .te-ai-link, .te-ai-menu .te-ai-back { border: 0; background: transparent; color: #c9c9d1; padding: 0 4px; }
+.te-ai-back { justify-self: start; }
+.te-ai-status { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+.te-ai-spinner { width: 14px; height: 14px; border: 2px solid #ffffff33; border-top-color: #bda0fc; border-radius: 50%; animation: te-ai-spin .8s linear infinite; }
+@keyframes te-ai-spin { to { transform: rotate(360deg); } }
+.te-ai-error { margin: 0; color: #ff9b9b; }

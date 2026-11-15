@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency" | "border" | "corners" | "flip" | "ratio" | "trim" | "volume" | "speed" | "copy-style" | "case";
+export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency" | "border" | "corners" | "flip" | "ratio" | "trim" | "volume" | "speed" | "copy-style" | "case" | "ai";
 
 /** One visual language for tools, property shortcuts, and their selected states. */
 export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: EditorIconName }) {
@@ -36,6 +36,7 @@ export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name:
     volume: "M11 5 6 9H2v6h4l5 4ZM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14",
     speed: "M12 14l4-5M3.3 17a9 9 0 1 1 17.4 0",
     "copy-style": "M4 3h13v5H4ZM17 5h3v6h-8v3M10 14h4v7h-4Z",
+    ai: "M10 3l1.8 5.2L17 10l-5.2 1.8L10 17l-1.8-5.2L3 10l5.2-1.8ZM18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9Z",
     case: "M3 18 7 7l4 11M4.5 14h5M14 12a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm3-1v7",
     transparency: "M4 4h16v16H4ZM4 4h4v4H4Zm8 0h4v4h-4ZM8 8h4v4H8Zm8 0h4v4h-4ZM4 12h4v4H4Zm8 0h4v4h-4Zm-4 4h4v4H8Zm8 0h4v4h-4Z",
   };

@@ -14,6 +14,7 @@ export const ELEMENT_COMMANDS = [
   { id: "video.trim", label: "Trim", applies: ["video"], agent: "update_element {start, end}" },
   { id: "video.volume", label: "Volume", applies: ["video"], agent: "update_element {volume, muted, fadeIn, fadeOut}" },
   { id: "video.speed", label: "Speed", applies: ["video"], agent: "update_element {speed}" },
+  { id: "text.ai", label: "AI", applies: ["text"], agent: "engine_text_ai {deckId, pageId, elementId, action, tone?, language?, instruction?, count?, apply?}" },
   { id: "style.copy", label: "Copy style", applies: ["text", "image", "video", "shape", "html"], agent: "copy_style {pageId, from, to: [ids]}" },
 ] as const;
 export type ElementCommandId = (typeof ELEMENT_COMMANDS)[number]["id"];

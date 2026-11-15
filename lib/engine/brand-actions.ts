@@ -51,6 +51,21 @@ export async function htmlTokensForTemplate(ownerKey: string, template: DesignTe
   }
 }
 
+/** The guide a deck made from this template follows (undefined when none applies), and the template's language. */
+export async function guideForTemplateId(ownerKey: string, templateId: string | undefined): Promise<{guide?: BrandGuide; language: GuideLanguage}> {
+  if (!templateId) return {language: "en"};
+  const {library} = await getEditorLibrary(ownerKey);
+  const template = libraryTemplates(library).find(item => item.id === templateId);
+  if (!template) return {language: "en"};
+  const language: GuideLanguage = template.tags?.includes("language:es") ? "es" : "en";
+  try {
+    return {guide: await guideFor(ownerKey, undefined, template), language};
+  } catch (error) {
+    if (error instanceof BrandGuideError) return {language};
+    throw error;
+  }
+}
+
 /** htmlTokensForTemplate for a deck made from the template with this id. */
 export async function htmlTokensForDeck(ownerKey: string, templateId: string | undefined): Promise<Record<string, string> | undefined> {
   if (!templateId) return undefined;

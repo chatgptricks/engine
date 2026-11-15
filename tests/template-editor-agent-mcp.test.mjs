@@ -116,7 +116,7 @@ test("MCP process negotiates, discovers live schemas, and calls all authenticate
   assert.deepEqual(init.result.capabilities, { tools: {} });
   mcp.notify("notifications/initialized");
   const listed = await mcp.request("tools/list");
-  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_answer_check", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template", "engine_video_upload", "engine_video_look", "engine_frame_upload", "engine_frame_view", "engine_frame_cut"]);
+  assert.deepEqual(listed.result.tools.map((tool) => tool.name), ["engine_capabilities", "engine_list_templates", "engine_list_decks", "engine_get_deck", "engine_create_deck", "engine_update_deck", "engine_text_ai", "engine_export_deck", "engine_list_page_profiles", "engine_playbook", "engine_recreate_post", "engine_recreate_status", "engine_recreate_answer_check", "engine_recreate_approve", "engine_recreate_add_posts", "engine_recreate_rerun_stage", "engine_recreate_submit_stage", "engine_recreate_resume", "engine_list_brands", "engine_get_brand", "engine_save_brand", "engine_restore_brand", "engine_check_deck", "engine_design_template", "engine_video_upload", "engine_video_look", "engine_frame_upload", "engine_frame_view", "engine_frame_cut"]);
   assert.deepEqual(listed.result.tools[4].inputSchema.properties.spec, schemas.deckSchema);
   assert.deepEqual(listed.result.tools[5].inputSchema.properties.changes, schemas.updateSchema);
   await mcp.call("engine_capabilities");
@@ -206,7 +206,7 @@ test("discovery falls back while unavailable and refreshes live schemas after re
   const mcp = client(t, api.url);
   assert.equal((await mcp.init("future-version")).result.protocolVersion, "2025-11-25");
   const tools = await mcp.request("tools/list");
-  assert.equal(tools.result.tools.length, 28);
+  assert.equal(tools.result.tools.length, 29);
   assert.match(tools.result.tools[4].inputSchema.properties.spec.description, /engine_capabilities/);
   const failure = await mcp.call("engine_capabilities");
   assert.equal(failure.result.isError, true);
@@ -579,4 +579,21 @@ test("captionsFile: the bridge reads an .srt or .vtt file on this computer into 
   }
   assert.equal(api.calls.filter((call) => call.body?.action === "update_deck").length, 1, "refused files never reach Engine");
   await mcp.close();
+});
+
+test("engine_text_ai sends the tool's action as textAction and checks its choices", async (t) => {
+  const api = await server(t, (entry, response) => {
+    if (entry.body.action === "capabilities") return json(response, {});
+    return json(response, { options: [{ text: "Shorter", accents: [], brandIssues: [] }], model: "chat", hash: "h" });
+  });
+  const mcp = client(t, api.url);
+  await mcp.init();
+  const done = await mcp.call("engine_text_ai", { deckId: "deck-1", pageId: "page-1", elementId: "title", action: "translate", language: "Spanish" });
+  assert.equal(done.result.structuredContent.options[0].text, "Shorter");
+  const sent = api.calls.find((call) => call.body.action === "text_ai").body;
+  assert.deepEqual(sent, { action: "text_ai", deckId: "deck-1", pageId: "page-1", elementId: "title", textAction: "translate", language: "Spanish" });
+  assert.equal((await mcp.call("engine_text_ai", { deckId: "d", pageId: "p", elementId: "e", action: "nope" })).error.code, -32602);
+  assert.equal((await mcp.call("engine_text_ai", { deckId: "d", pageId: "p", elementId: "e", action: "tone", tone: "angry" })).error.code, -32602);
+  assert.equal((await mcp.call("engine_text_ai", { deckId: "d", pageId: "p", elementId: "e", action: "shorten", apply: true })).error.code, -32602);
+  assert.equal((await mcp.call("engine_text_ai", { deckId: "d", pageId: "p", elementId: "e", action: "shorten", count: 9 })).error.code, -32602);
 });
