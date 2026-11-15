@@ -28,6 +28,7 @@ import type { HtmlNodeSelection } from "@/lib/template-editor/html-edit";
 import "./element-inspector.css";
 import { HtmlStylePanel } from "./html-style-panel";
 import { TextEffectsPanel } from "./text-effects-panel";
+import { MediaLooksPanel } from "./media-looks-panel";
 
 export type InspectorSection = "html"|"edit"|"outline"|"photo"|"position"|"effects"|"advanced";
 
@@ -576,6 +577,7 @@ export function ElementInspector({
                 <fieldset disabled={photoStyleDisabled}><div className="te-element-segments" role="group" aria-label="Image fit"><Toggle label="Fill image frame" active={shared(images,"fit")==="cover"} onClick={()=>updateImage({fit:"cover"},"image-fit")}>Fill frame</Toggle><Toggle label="Fit entire image" active={shared(images,"fit")==="contain"} onClick={()=>updateImage({fit:"contain"},"image-fit")}>Fit image</Toggle></div><div className="te-element-segments" role="group" aria-label="Image orientation"><Toggle label="Flip photo horizontally" active={images.every(image=>image.flipX)} onClick={()=>updateImage({flipX:!images.every(image=>image.flipX)},"image-flip")}>Flip horizontal</Toggle><Toggle label="Flip photo vertically" active={images.every(image=>image.flipY)} onClick={()=>updateImage({flipY:!images.every(image=>image.flipY)},"image-flip")}>Flip vertical</Toggle></div></fieldset>
                 <p className="te-element-hint">Choose Crop above to reposition the photo on the canvas.</p>
               </Section>
+              <Section title="Filters & adjust"><MediaLooksPanel photos={displayed.filter(element=>element.type==="image"||element.type==="shape"&&Boolean(element.imageFill))} disabled={photoStyleDisabled} update={update}/></Section>
               <AdvancedProperties {...advancedFor("photo")} photoFitControls={false}/>
               {standaloneImages.length>0&&<Section title="Image corners"><fieldset disabled={photoStyleDisabled}><NumberField label="Corner radius" unit="px" min={0} max={1080} value={px(shared(standaloneImages,"radius"))} onChange={value=>updateImage({radius:value/OUTPUT_SCALE},"image-radius")}/></fieldset></Section>}
             </>}

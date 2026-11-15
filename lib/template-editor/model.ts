@@ -246,6 +246,8 @@ export type ShapeImageFill = PhotoMetadata & {
   flipY?: boolean;
   intrinsicWidth?: number;
   intrinsicHeight?: number;
+  /** A filter and picture adjustments, as on a photo layer. */
+  look?: MediaLook;
 };
 export type ImageElement = CanvasElementBase & PhotoMetadata & {
   type: "image";
@@ -263,6 +265,8 @@ export type ImageElement = CanvasElementBase & PhotoMetadata & {
   mask?: "none" | "ellipse" | "triangle" | "diamond";
   /** A line drawn inside the photo's edge, following its corners or mask. Absent means no border. */
   border?: ImageBorder;
+  /** Filters and Adjust, after Canva's photo editor: drawn on the picture (photo or video), not its frame. */
+  look?: MediaLook;
   intrinsicWidth?: number;
   intrinsicHeight?: number;
   /** One photo across two neighboring slides: the "start" half on one page and
@@ -271,6 +275,13 @@ export type ImageElement = CanvasElementBase & PhotoMetadata & {
    * them in step; each page frame clips its own half. */
   span?: { id: string; part: "start" | "end" };
 };
+export const MEDIA_FILTERS = ["mono", "noir", "vintage", "vivid", "warm", "cool", "fade", "duotone"] as const;
+export type MediaFilter = (typeof MEDIA_FILTERS)[number];
+export const MEDIA_ADJUSTMENTS = ["brightness", "contrast", "saturation", "temperature", "tint"] as const;
+export type MediaAdjustment = (typeof MEDIA_ADJUSTMENTS)[number];
+/** Adjustments run −100..100 (0 changes nothing); a filter's intensity 0..100 (100 when absent).
+ * Duotone maps the picture's darks to `shadow` and its lights to `highlight`. */
+export type MediaLook = Partial<Record<MediaAdjustment, number>> & { filter?: MediaFilter; intensity?: number; shadow?: string; highlight?: string };
 export const IMAGE_BORDER_STYLES = ["solid", "long-dash", "short-dash", "dots"] as const;
 /** `width` is in scene units (360 wide), like every other size in a scene. */
 export type ImageBorder = { style: (typeof IMAGE_BORDER_STYLES)[number]; width: number; color: string };
@@ -2139,6 +2150,30 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
   return result;
 }
 
+/** A look with nothing in it (or only zeros): saved files may carry one; it means no look. */
+function isEmptyLook(value: unknown) {
+  return object(value) && Object.entries(value).every(([key, item]) => (MEDIA_ADJUSTMENTS as readonly string[]).includes(key) ? item === 0 : key === "intensity" ? numberIn(item, 0, 100) : false);
+}
+
+/** A photo look, checked; null when it isn't one. An empty look parses as null too. */
+export function parseMediaLook(value: unknown): MediaLook | null {
+  if (!object(value)) return null;
+  const look: MediaLook = {};
+  if (value.filter !== undefined) { if (!choice([...MEDIA_FILTERS])(value.filter)) return null; look.filter = value.filter as MediaFilter; }
+  if (value.intensity !== undefined) { if (!numberIn(value.intensity, 0, 100)) return null; look.intensity = value.intensity as number; }
+  for (const key of ["shadow", "highlight"] as const) {
+    if (value[key] === undefined) continue;
+    if (!color(value[key])) return null;
+    look[key] = value[key] as string;
+  }
+  for (const key of MEDIA_ADJUSTMENTS) {
+    if (value[key] === undefined) continue;
+    if (!numberIn(value[key], -100, 100)) return null;
+    if (value[key] !== 0) look[key] = value[key] as number;
+  }
+  return look.filter || MEDIA_ADJUSTMENTS.some(key => look[key]) ? look : null;
+}
+
 /** A text effect, checked; null when it isn't one. */
 export function parseTextEffect(value: unknown): TextEffect | null {
   if (!object(value) || !choice([...TEXT_EFFECT_KINDS])(value.kind)) return null;
@@ -2488,6 +2523,7 @@ export function parseShapeImageFill(value: unknown): ShapeImageFill | null {
   if (!metadata) return null;
   const result: ShapeImageFill = { ...metadata, src: value.src, objectFit: value.objectFit as ShapeImageFill["objectFit"], cropX: value.cropX, cropY: value.cropY };
   for (const key of ["alt", "publicAlt", "previewSrc", "cropScale", "flipX", "flipY", "intrinsicWidth", "intrinsicHeight"] as const) if (value[key] !== undefined) Object.assign(result, { [key]: value[key] });
+  if (value.look !== undefined) { const look = parseMediaLook(value.look); if (look) result.look = look; else if (!isEmptyLook(value.look)) return null; }
   return result;
 }
 
@@ -2608,6 +2644,7 @@ export function parseCanvas(value: unknown): CanvasScene | null {
       if (!photoMetadata) return null;
       for (const key of ["publicAlt", "previewSrc", "cropScale", "flipX", "flipY", "mask", "intrinsicWidth", "intrinsicHeight"] as const) if (element[key] !== undefined) Object.assign(imageExtensions, { [key]: element[key] });
       if (object(element.span)) imageExtensions.span = { id: element.span.id as string, part: element.span.part as "start" | "end" };
+      if (element.look !== undefined) { const look = parseMediaLook(element.look); if (look) imageExtensions.look = look; else if (!isEmptyLook(element.look)) return null; }
       if (object(element.border) && (element.border.width as number) > 0) imageExtensions.border = { style: element.border.style as ImageBorder["style"], width: element.border.width as number, color: element.border.color as string };
       scene.elements.push({
         ...photoMetadata,

@@ -1,4 +1,4 @@
-import { IMAGE_BORDER_MAX_WIDTH, IMAGE_BORDER_STYLES, richTextToPlain, sanitizeRichText, type CanvasElement, type CanvasScene, type ImageBorder, type ImageElement, type ShapeElement, type TextElement } from "./model";
+import { IMAGE_BORDER_MAX_WIDTH, IMAGE_BORDER_STYLES, richTextToPlain, sanitizeRichText, type CanvasElement, type CanvasScene, type ImageBorder, type ImageElement, type MediaLook, type ShapeElement, type TextElement } from "./model";
 import { canEditElement, isElementHidden } from "./commands";
 
 /** The selection toolbar's actions as named commands. The toolbar, keyboard
@@ -14,6 +14,8 @@ export const ELEMENT_COMMANDS = [
   { id: "video.trim", label: "Trim", applies: ["video"], agent: "update_element {start, end}" },
   { id: "video.volume", label: "Volume", applies: ["video"], agent: "update_element {volume, muted, fadeIn, fadeOut}" },
   { id: "video.speed", label: "Speed", applies: ["video"], agent: "update_element {speed}" },
+  { id: "media.filter", label: "Filters", applies: ["image", "video"], agent: "update_element {look: mono | noir | vintage | vivid | warm | cool | fade | duotone | {filter, intensity, shadow, highlight} | null} (also on a shape's photo fill)" },
+  { id: "media.adjust", label: "Adjust", applies: ["image", "video"], agent: "update_element {look: {brightness, contrast, saturation, temperature, tint}} (each -100..100; a partial look keeps the rest)" },
   { id: "text.effect", label: "Text effects", applies: ["text"], agent: "update_element {textEffect: drop | glow | outline | hollow | neon | echo | splice | glitch | highlight | {kind, ...settings} | null}" },
   { id: "text.ai", label: "AI", applies: ["text"], agent: "engine_text_ai {deckId, pageId, elementId, action, tone?, language?, instruction?, count?, apply?}" },
   { id: "style.copy", label: "Copy style", applies: ["text", "image", "video", "shape", "html"], agent: "copy_style {pageId, from, to: [ids]}" },
@@ -139,8 +141,16 @@ const TEXT_KEYS = ["font", "fontSize", "fontWeight", "italic", "underline", "str
 const IMAGE_KEYS = ["radius", "mask", "border"] as const;
 const SHAPE_KEYS = ["fill", "gradient", "stroke", "strokeWidth", "strokeDash", "strokeAlign", "radius"] as const;
 
-/** A layer's look, without its content, place or size. */
-export type StyleSnapshot = { kind: "text" | "image" | "shape" | "html"; values: Record<string, unknown> };
+/** A layer's look, without its content, place or size. `picture` is the photo or video's own
+ * look (Filters and Adjust), when the layer has a picture: a photo layer or a shape's photo fill. */
+export type StyleSnapshot = { kind: "text" | "image" | "shape" | "html"; values: Record<string, unknown>; picture?: { look?: MediaLook } };
+
+const pictureLook = (element: CanvasElement): { look?: MediaLook } | undefined => element.type === "image" ? { look: element.look } : element.type === "shape" && element.imageFill ? { look: element.imageFill.look } : undefined;
+function withPictureLook(element: CanvasElement, look: MediaLook | undefined): CanvasElement {
+  if (element.type === "image") { const next = { ...element }; if (look) next.look = structuredClone(look); else delete next.look; return next; }
+  if (element.type === "shape" && element.imageFill) { const fill = { ...element.imageFill }; if (look) fill.look = structuredClone(look); else delete fill.look; return { ...element, imageFill: fill }; }
+  return element;
+}
 
 const styleKeys = (kind: StyleSnapshot["kind"]): readonly string[] => [...COMMON_KEYS, ...(kind === "text" ? TEXT_KEYS : kind === "image" ? IMAGE_KEYS : kind === "shape" ? SHAPE_KEYS : [])];
 
@@ -148,7 +158,8 @@ export function copyStyle(element: CanvasElement): StyleSnapshot {
   const values: Record<string, unknown> = {};
   const source = element as unknown as Record<string, unknown>;
   for (const key of styleKeys(element.type)) values[key] = structuredClone(source[key]);
-  return { kind: element.type, values };
+  const picture = pictureLook(element);
+  return { kind: element.type, values, ...(picture ? { picture: structuredClone(picture) } : {}) };
 }
 
 /** Pastes a copied look. The same kind of layer takes all of it; another kind
@@ -163,7 +174,8 @@ export function pasteStyle(element: CanvasElement, snapshot: StyleSnapshot): Can
   }
   // Required fields always keep a value.
   if (next.opacity === undefined) next.opacity = 1;
-  return next as unknown as CanvasElement;
+  // A picture's look goes onto any picture: photo to photo, photo to a shape's photo fill.
+  return snapshot.picture ? withPictureLook(next as unknown as CanvasElement, snapshot.picture.look) : next as unknown as CanvasElement;
 }
 
 /** Pastes onto every listed layer the person may restyle; others (locked, template-fixed, hidden) are skipped. */

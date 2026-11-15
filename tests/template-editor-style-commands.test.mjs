@@ -26,6 +26,7 @@ const agent = loadModule("lib/template-editor/agent-decks.ts", {
   "./model": model,
   "./style-commands": style,
   "./text-effects": loadModule("lib/template-editor/text-effects.ts", { "./model": model, "./color-utils": loadModule("lib/template-editor/color-utils.ts") }),
+  "./media-looks": loadModule("lib/template-editor/media-looks.ts", { "./model": model, "./color-utils": loadModule("lib/template-editor/color-utils.ts") }),
   "./text-accents": loadModule("lib/template-editor/text-accents.ts", { "./model": model, "./brand-guide": loadModule("lib/template-editor/brand-guide.ts", { "./model": model }), "./color-utils": loadModule("lib/template-editor/color-utils.ts") }),
   "./agent-video-layers": loadModule("lib/template-editor/agent-video-layers.ts", { "./model": model }),
   "./spanning-photos": spans,
