@@ -18,6 +18,7 @@ export const ELEMENT_COMMANDS = [
   { id: "media.adjust", label: "Adjust", applies: ["image", "video"], agent: "update_element {look: {brightness, contrast, saturation, temperature, tint}} (each -100..100; a partial look keeps the rest)" },
   { id: "text.effect", label: "Text effects", applies: ["text"], agent: "update_element {textEffect: drop | glow | outline | hollow | neon | echo | splice | glitch | highlight | {kind, ...settings} | null}" },
   { id: "text.ai", label: "AI", applies: ["text"], agent: "engine_text_ai {deckId, pageId, elementId, action, tone?, language?, instruction?, count?, apply?}" },
+  { id: "element.animate", label: "Animate", applies: ["text", "image", "video", "shape", "html"], agent: "update_element {animation: fade | rise | pan | pop | wipe | blur | drift | tumble | stomp | baseline | {kind, mode, speed, direction, delay} | null}; the slide then downloads as an MP4" },
   { id: "style.copy", label: "Copy style", applies: ["text", "image", "video", "shape", "html"], agent: "copy_style {pageId, from, to: [ids]}" },
 ] as const;
 export type ElementCommandId = (typeof ELEMENT_COMMANDS)[number]["id"];

@@ -14,6 +14,11 @@ import type { TextAiDeck } from "./text-ai-menu";
 import { PaintPicker } from "./paint-picker";
 import { MediaToolbar } from "./media-toolbar";
 import { SpanToolbarControls, type SpanControl } from "./span-photo-controls";
+import { ToolbarPopover } from "./text-format-bar";
+import { AnimatePanel } from "./animate-panel";
+import { setElementAnimation } from "@/lib/template-editor/animations";
+import { pageLength } from "@/lib/template-editor/export-video";
+import type { ElementAnimation } from "@/lib/template-editor/model";
 import "./element-inspector.css";
 
 type Props = {
@@ -71,6 +76,13 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
     const elements=scene.elements.map(element=>selectedIds.includes(element.id)&&!isElementHidden(scene,element)&&canEditElement(scene,element,property)?transform(element):element);
     if(elements.some((element,index)=>element!==scene.elements[index]))onChange({...scene,elements},group);
   }
+  /** Canva's page animation: every layer gets the motion, one after another in reading order. */
+  function animatePage(animation:ElementAnimation) {
+    if(disabled)return;
+    const order=scene.elements.filter(element=>!isElementHidden(scene,element)&&canEditElement(scene,element,"style")).sort((a,b)=>a.y-b.y||a.x-b.x).map(element=>element.id);
+    const elements=scene.elements.map(element=>{const at=order.indexOf(element.id);return at<0?element:setElementAnimation(element,{...animation,delay:Math.round(((animation.delay??0)+at*.2)*100)/100});});
+    onChange({...scene,elements},"animation-page");
+  }
   function patchText(patch:Partial<TextElement>) {
     if(disabled||!styleEditable)return;
     if(onFormatText?.(patch))return;
@@ -121,6 +133,9 @@ export function QuickToolbar({ scene, selectedIds, disabled, onChange, onMore, o
         {!onInspect&&onEdit&&<button type="button" aria-label="Edit selection properties" onClick={onEdit}>{allPhotos?"Edit photo":"Edit"}</button>}
         {onInspect?inspectAction("position","Position","position","Position selection"):onPosition&&<button type="button" aria-label="Position selection" onClick={onPosition}>Position</button>}
         {inspectAction("effects","Effects","effects")}
+        <div className="te-format-bar te-animate-bar"><ToolbarPopover label="Animate" icon="animate" text={<span className="te-format-chip-text">Animate</span>} disabled={disabledStyle} title={!disabled&&!styleEditable?"Set by the template":"Animate"} pressed={selected.some(element=>element.animation)} wide>
+          <AnimatePanel elements={propertySelection} disabled={disabledStyle} update={(group,transform)=>update(transform,"style",group)} onApplyToPage={animatePage} pageLength={()=>({elements:scene.elements,length:pageLength(scene.elements)})}/>
+        </ToolbarPopover></div>
         {onCopyStyle&&selected.length===1&&<button type="button" className="te-context-action" aria-label={styleBrush?"Cancel copy style":"Copy style"} title={styleBrush?"Click a layer to paste the style · Esc cancels":"Copy style · ⌥⌘C, paste with ⌥⌘V"} aria-pressed={styleBrush} disabled={disabled} onMouseDown={event=>event.preventDefault()} onClick={onCopyStyle}><EditorIcon name="copy-style"/>{styleBrush?"Pick a layer":"Copy style"}</button>}
         {onGroup&&selected.length>1&&<button type="button" className="te-context-action" aria-label="Group selection" disabled={disabled||!selected.every(element=>canEditElement(scene,element,"position"))} onClick={onGroup}><EditorIcon name="group"/>Group</button>}
         {locked&&onUnlock&&<button type="button" className="te-context-action" title={inheritedLock?"Unlock the parent group in Layers":"Unlock selection"} disabled={disabled||inheritedLock} onClick={onUnlock}><EditorIcon name="unlock"/>Unlock</button>}

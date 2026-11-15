@@ -2,6 +2,7 @@ import {imageResolution} from "./property-utils";
 import type {DesignDocument} from './model';
 import type {PdfOptions} from './pdf-options';
 import {pageVideo, videoExportWarnings} from './export-video';
+import {pageMotion} from './animations';
 
 /** Export rendered snapshots, with preflight and cancellable downloads. */
 export function saveBlob(blob: Blob, name: string) {
@@ -129,6 +130,15 @@ export async function exportFrames(frames: HTMLElement[], name: string, caption:
       const result=await exportPageVideo(frame,clip,{scale:settings.scale,sound:options.sound,signal:options.signal,onProgress:fraction=>progress(Math.round(((i+fraction)/total)*90))});
       options.signal?.throwIfAborted();
       warnings.push(...videoExportWarnings(i+1,clip,{bytes:result.blob.size,ext:result.ext,sound:options.sound!==false,audioNote:result.audioNote}));options.onWarnings?.([...new Set(warnings)]);
+      outputs.push({blob:result.blob,ext:result.ext});
+      progress(Math.round(((i + 1) / total) * 90));
+      if(options.delivery==='batches'&&outputs.length>=batchSize){await archive();}
+      continue;
+    }
+    if(page&&options.video!==false&&settings.format!=='pdf'&&settings.format!=='svg'&&pageMotion(page)){
+      const {exportPageMotion}=await import('./export-video');
+      const result=await exportPageMotion(frame,page,{scale:settings.scale,signal:options.signal,onProgress:fraction=>progress(Math.round(((i+fraction)/total)*90))});
+      options.signal?.throwIfAborted();
       outputs.push({blob:result.blob,ext:result.ext});
       progress(Math.round(((i + 1) / total) * 90));
       if(options.delivery==='batches'&&outputs.length>=batchSize){await archive();}

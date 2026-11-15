@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency" | "border" | "corners" | "flip" | "ratio" | "trim" | "volume" | "speed" | "copy-style" | "case" | "ai" | "filters" | "adjust";
+export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency" | "border" | "corners" | "flip" | "ratio" | "trim" | "volume" | "speed" | "copy-style" | "case" | "ai" | "filters" | "adjust" | "animate";
 
 /** One visual language for tools, property shortcuts, and their selected states. */
 export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: EditorIconName }) {
@@ -38,6 +38,7 @@ export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name:
     "copy-style": "M4 3h13v5H4ZM17 5h3v6h-8v3M10 14h4v7h-4Z",
     filters: "M9 4.5a5 5 0 1 0 0 10 5 5 0 1 0 0-10ZM15 4.5a5 5 0 1 0 0 10 5 5 0 1 0 0-10ZM12 10a5 5 0 1 0 0 10 5 5 0 1 0 0-10Z",
     adjust: "M4 6h9m4 0h3M4 12h3m4 0h9M4 18h11m4 0h1M15 4v4M9 10v4M17 16v4",
+    animate: "M10 12a5 5 0 1 0 10 0a5 5 0 1 0-10 0ZM3 8h5M2 12h5M3 16h5",
     ai: "M10 3l1.8 5.2L17 10l-5.2 1.8L10 17l-1.8-5.2L3 10l5.2-1.8ZM18 14l.9 2.1L21 17l-2.1.9L18 20l-.9-2.1L15 17l2.1-.9Z",
     case: "M3 18 7 7l4 11M4.5 14h5M14 12a3 3 0 1 1 0 6 3 3 0 0 1 0-6Zm3-1v7",
     transparency: "M4 4h16v16H4ZM4 4h4v4H4Zm8 0h4v4h-4ZM8 8h4v4H8Zm8 0h4v4h-4ZM4 12h4v4H4Zm8 0h4v4h-4Zm-4 4h4v4H8Zm8 0h4v4h-4Z",
