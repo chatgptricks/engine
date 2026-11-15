@@ -4,9 +4,11 @@ import { EditorIcon } from "./editor-icons";
 import { PaintPicker } from "./paint-picker";
 import { RangeRow, ToolbarPopover } from "./text-format-bar";
 import type { InspectorSection } from "./element-inspector";
-import { IMAGE_BORDER_STYLES, VIDEO_FADE_MAX, VIDEO_SPEED_RANGE, VIDEO_VOLUME_MAX, type CanvasElement, type ImageBorder, type ImageElement, type VideoClip } from "@/lib/template-editor/model";
+import { IMAGE_BORDER_STYLES, MEDIA_ADJUSTMENTS, VIDEO_FADE_MAX, VIDEO_SPEED_RANGE, VIDEO_VOLUME_MAX, type CanvasElement, type ImageBorder, type ImageElement, type VideoClip } from "@/lib/template-editor/model";
 import { CROP_ASPECTS, cropToAspect, flipElement, setImageBorder, type CropAspect } from "@/lib/template-editor/style-commands";
 import { photoContent } from "@/lib/template-editor/photo-frames";
+import { mediaLook } from "@/lib/template-editor/media-looks";
+import { MediaLooksPanel } from "./media-looks-panel";
 
 type Update = (transform: (element: CanvasElement) => CanvasElement, property?: "style" | "content" | "position", group?: string) => void;
 
@@ -33,7 +35,7 @@ export function playedSeconds(clip: VideoClip) {
   return Math.max(0, ((clip.end ?? clip.duration) - (clip.start ?? 0)) / (clip.speed ?? 1));
 }
 
-/** Photo and video controls on the selection toolbar, after Canva's: border,
+/** Photo and video controls on the selection toolbar, after Canva's: filters, adjust, border,
  * corners, flip, transparency and crop shape, plus trim, volume and speed for a
  * clip. Each runs a named command from style-commands.ts or sets a field the
  * agent API also sets. */
@@ -58,7 +60,15 @@ export function MediaToolbar({ photos, disabled, fixed, outputScale, update, onI
     if (element.type !== "image" || !photo?.video) return element;
     return { ...element, video: { ...element.video!, ...patch } };
   }, "content", group);
+  const looks = photos.map(element => mediaLook(element));
+  const lookUpdate = (group: string, transform: (element: CanvasElement) => CanvasElement) => update(transform, "style", group);
   return <>
+    <ToolbarPopover label="Filters" icon="filters" disabled={off} title={fixed ?? "Filters"} pressed={looks.some(look => look?.filter)} wide>
+      <MediaLooksPanel photos={photos} disabled={off} update={lookUpdate} part="filters" />
+    </ToolbarPopover>
+    <ToolbarPopover label="Adjust" icon="adjust" disabled={off} title={fixed ?? "Adjust"} pressed={looks.some(look => MEDIA_ADJUSTMENTS.some(key => look?.[key]))}>
+      <MediaLooksPanel photos={photos} disabled={off} update={lookUpdate} part="adjust" />
+    </ToolbarPopover>
     {images.length > 0 && <ToolbarPopover label="Border" icon="border" disabled={off} title={fixed ?? "Border"} pressed={Boolean(border)}>
       <div className="te-format-choices" role="group" aria-label="Border style">
         {(["none", ...IMAGE_BORDER_STYLES] as const).map(style => <button key={style} type="button" aria-pressed={borderStyle === style} onClick={() => style === "none" ? update(element => setImageBorder(element, null), "style", "image-border") : patchBorder({ style })}>

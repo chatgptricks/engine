@@ -154,7 +154,8 @@ export async function exportPageVideo(frame: HTMLElement, video: PageVideo, opti
     }
     finally { image.src = cover; await image.decode().catch(() => undefined); }
     const matrix = videoMatrix(video.element, video.photo, {width: source.videoWidth || video.clip.width, height: source.videoHeight || video.clip.height}, size.width / frameWidth);
-    const filter = getComputedStyle(layer).filter;
+    // The picture's look (an SVG colour matrix in the page) first, then the layer's own filter.
+    const filter = [getComputedStyle(image).filter, getComputedStyle(layer).filter].filter(value => value && value !== "none").join(" ");
     const blend = video.element.blendMode && video.element.blendMode !== "normal" ? video.element.blendMode as GlobalCompositeOperation : "source-over";
     const scratch = document.createElement("canvas"); scratch.width = size.width; scratch.height = size.height;
     const layerContext = scratch.getContext("2d")!;

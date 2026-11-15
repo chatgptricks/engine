@@ -82,3 +82,16 @@
 .te-ai-spinner { width: 14px; height: 14px; border: 2px solid #ffffff33; border-top-color: #bda0fc; border-radius: 50%; animation: te-ai-spin .8s linear infinite; }
 @keyframes te-ai-spin { to { transform: rotate(360deg); } }
 .te-ai-error { margin: 0; color: #ff9b9b; }
+
+/* Filters and Adjust (media-looks-panel.tsx): tiles of the picture itself, then sliders. Same in the toolbar and the inspector. */
+.te-media-looks { display: grid; gap: 12px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.te-media-looks .te-look-presets { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 0; }
+.te-media-looks .te-look-presets > button { display: grid; gap: 6px; justify-items: center; min-width: 0; padding: 4px 4px 6px; border: 1px solid #ffffff1c; border-radius: 9px; background: #15151a; color: #c9c9d1; font: inherit; font-size: 11px; cursor: pointer; }
+.te-media-looks .te-look-presets > button:hover:not(:disabled) { background: #ffffff14; color: #ececf1; }
+.te-media-looks .te-look-presets > button[aria-pressed="true"] { border-color: #bda0fc; background: #bda0fc22; color: #ececf1; }
+.te-media-looks .te-look-presets > button:focus-visible { outline: 2px solid #bda0fc; outline-offset: 2px; }
+.te-look-tile { display: block; width: 100%; aspect-ratio: 1; overflow: hidden; border-radius: 6px; background: #2a2a31; }
+.te-look-tile > img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.te-media-looks .te-text-effect-controls { display: grid; gap: 12px; }
+.te-look-reset { justify-self: start; height: 28px; padding: 0 10px; border: 1px solid #ffffff26; border-radius: 6px; background: transparent; color: inherit; font: inherit; font-size: 11px; cursor: pointer; }
+.te-look-reset:disabled { opacity: .4; cursor: default; }

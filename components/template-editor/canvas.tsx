@@ -50,6 +50,8 @@ import { CopyIcon, TrashIcon } from "@/components/engine/icons";
 import { groupMemberIds } from "@/lib/template-editor/layer-tree";
 import { MAX_HTML_DESIGN_WIDTH, richTextToPlain } from "@/lib/template-editor/model";
 import { borderDashArray } from "@/lib/template-editor/style-commands";
+import { lookMatrix, mediaLook } from "@/lib/template-editor/media-looks";
+import { LookFilter } from "./look-filter";
 import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-layer";
 import { setHtmlNodeContent, setHtmlNodeText, withHtmlLayerMarkup, type HtmlNodeSelection } from "@/lib/template-editor/html-edit";
 import { HtmlLayerEditor, firstHtmlTextPart, htmlTextPartAt } from "./html-layer-editor";
@@ -422,8 +424,10 @@ function SceneElement({ element: layer, smartLayout: fitted, playVideo = false, 
   const view = shape ? shapeViewBox(shape) : {x:0,y:0,width:100,height:100};
   const geometry = (props: SVGAttributes<SVGElement>) => !shape ? null : shape.shape === "rectangle" ? <rect x="0" y="0" width={shape.width} height={shape.height} rx={shape.radius} {...props} /> : shape.shape === "ellipse" ? <ellipse cx={shape.width / 2} cy={shape.height / 2} rx={shape.width / 2} ry={shape.height / 2} {...props} /> : <path d={shapePath(shape)} transform={`scale(${shape.width/view.width} ${shape.height/view.height}) translate(${-view.x} ${-view.y})`} {...props} />;
   const fillRule = shape?.fillRule ?? "nonzero";
+  const look = lookMatrix(mediaLook(element)), lookId = `look-${token}`, lookFilter = look ? `url(#${lookId})` : undefined;
   return <WorldClip bounds={element.clipBounds}><div className={`te-canvas-element te-canvas-element-${element.type}`} style={{ ...boxStyle(element), opacity: element.opacity * (captionView?.look === "dim" ? .35 : 1), visibility: captionView?.look === "hidden" ? "hidden" : undefined, mixBlendMode: element.blendMode as CSSProperties["mixBlendMode"], filter,...(element.type==="text"?textTextureVariables(element):{}) }} data-element-id={element.id} data-caption-layer={captionView ? captionView.look : undefined}>
     {element.type==="text"&&<TextureResources element={element} />}
+    {look && <LookFilter id={lookId} matrix={look} />}
     {shadow && <svg width="0" height="0" className="te-canvas-effect-defs" aria-hidden="true"><defs><filter id={filterId} filterUnits="userSpaceOnUse" x={-padding} y={-padding} width={element.width + padding * 2} height={element.height + padding * 2} colorInterpolationFilters="sRGB">
       <feMorphology in="SourceAlpha" operator={shadow.spread < 0 ? "erode" : "dilate"} radius={Math.abs(shadow.spread)} result="spread" />
       <feGaussianBlur in="spread" stdDeviation={shadow.blur / 2} result="soft" />
@@ -433,9 +437,9 @@ function SceneElement({ element: layer, smartLayout: fitted, playVideo = false, 
       <feMerge><feMergeNode in="shadow" /><feMergeNode in="SourceGraphic" /></feMerge>
     </filter></defs></svg>}
     {element.type === "text" ? <TextFrame element={element} lines={lines} /> : element.type === "image" ? <div className="te-canvas-image-frame" style={{ borderRadius: element.radius, clipPath: maskCss(element.mask) }}><div className="te-canvas-image-zoom" style={{ width: "100%", height: "100%", transform: `scale(${element.cropScale ?? 1})`, transformOrigin: `${element.cropX}% ${element.cropY}%` }}>
-      {playVideo && element.video ? <VideoPlayer clip={element.video} layerId={element.id} poster={proxied(element.src)} className="te-canvas-image te-canvas-video" style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />
+      {playVideo && element.video ? <VideoPlayer clip={element.video} layerId={element.id} poster={proxied(element.src)} className="te-canvas-image te-canvas-video" style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center", filter: lookFilter }} />
       // eslint-disable-next-line @next/next/no-img-element
-      : <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center" }} />}
+      : <img className="te-canvas-image" src={proxied(element.src)} alt={element.publicAlt??""} draggable={false} referrerPolicy="no-referrer" data-media-shape={element.smartFlow?.media ? "true" : undefined} data-media-look={look ? "true" : undefined} style={{ objectFit: element.fit, objectPosition: `${element.cropX}% ${element.cropY}%`, transform: `scale(${element.flipX ? -1 : 1}, ${element.flipY ? -1 : 1})`, transformOrigin: "center", filter: lookFilter }} />}
     </div>{element.border && <ImageBorderOverlay element={element} border={element.border} />}</div> : element.type === "html" ? <HtmlLayerContent element={element} /> : shape && <svg className="te-canvas-vector" viewBox={`0 0 ${shape.width} ${shape.height}`} preserveAspectRatio="none" aria-hidden="true"><defs>
       <clipPath id={photoClipId} clipPathUnits="userSpaceOnUse">{geometry({fillRule,clipRule:fillRule})}</clipPath>
       {strokeAlign === "outside" && <mask id={outsideMaskId} maskUnits="userSpaceOnUse" x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} style={{maskType:"luminance"}}><rect x={-shape.strokeWidth*2} y={-shape.strokeWidth*2} width={shape.width+shape.strokeWidth*4} height={shape.height+shape.strokeWidth*4} fill="white" />{geometry({fill:"black",fillRule})}</mask>}
@@ -443,9 +447,9 @@ function SceneElement({ element: layer, smartLayout: fitted, playVideo = false, 
     </defs>
     {geometry({fill:gradient?`url(#${gradientId})`:shape.fill,fillRule})}
     {photo && <foreignObject x="0" y="0" width={shape.width} height={shape.height} clipPath={`url(#${photoClipId})`}><div className="te-canvas-shape-photo"><div className="te-canvas-image-zoom" style={{width:"100%",height:"100%",transform:`scale(${photo.cropScale??1})`,transformOrigin:`${photo.cropX}% ${photo.cropY}%`}}>
-      {playVideo && photo.video ? <VideoPlayer clip={photo.video} layerId={shape.id} poster={proxied(photo.src)} className="te-canvas-image te-canvas-video" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center"}} />
+      {playVideo && photo.video ? <VideoPlayer clip={photo.video} layerId={shape.id} poster={proxied(photo.src)} className="te-canvas-image te-canvas-video" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center",filter:lookFilter}} />
       // eslint-disable-next-line @next/next/no-img-element
-      : <img className="te-canvas-image" data-shape-photo-id={shape.id} src={proxied(photo.src)} alt={photo.publicAlt??""} draggable={false} referrerPolicy="no-referrer" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center"}} />}
+      : <img className="te-canvas-image" data-shape-photo-id={shape.id} data-media-look={look ? "true" : undefined} src={proxied(photo.src)} alt={photo.publicAlt??""} draggable={false} referrerPolicy="no-referrer" style={{objectFit:photo.objectFit,objectPosition:`${photo.cropX}% ${photo.cropY}%`,transform:`scale(${photo.flipX?-1:1}, ${photo.flipY?-1:1})`,transformOrigin:"center",filter:lookFilter}} />}
     </div></div></foreignObject>}
     {shape.strokeWidth>0 && <g {...(strokeAlign==="inside"?{clipPath:`url(#${photoClipId})`}:strokeAlign==="outside"?{mask:`url(#${outsideMaskId})`}:{})}>{geometry({fill:"none",stroke:shape.stroke,strokeWidth:shape.strokeWidth*(strokeAlign==="center"?1:2),strokeDasharray:shape.strokeDash?.join(" "),strokeLinejoin:"round",strokeLinecap:"round",vectorEffect:"non-scaling-stroke",fillRule})}</g>}
     </svg>}

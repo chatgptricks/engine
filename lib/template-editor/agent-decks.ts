@@ -7,6 +7,7 @@ import {
 } from "./model";
 import { splitUntrimmedVideos, splitVideoAt } from "./video-slides";
 import { agentTextEffect, setTextEffect } from "./text-effects";
+import { agentMediaLook, mediaLook, setMediaLook } from "./media-looks";
 import { ELEMENT_COMMANDS, changeTextCaseMode, copyStyle, cropToAspect, pasteStyleOnScene, setImageBorder, type CropAspect, type TextCase } from "./style-commands";
 import { withCaptionLayer } from "./captions";
 import { normalizeVideoLayers } from "./agent-video-layers";
@@ -100,13 +101,24 @@ const borderSchema: Schema = { anyOf: [obj({
   color,
 }, ["style", "width", "color"]), { type: "null" }], description: "A line inside the photo's edge that follows its corners or mask, as the toolbar's Border control draws it. null removes it" };
 const cropAspectSchema: Schema = { ...choice(["original", "1:1", "4:5", "3:4", "16:9", "9:16"]), description: "Reshapes the photo's frame to this ratio around its center, keeping about the same area, and fills it (fit cover, centered crop). original uses the picture's own shape. Applied after x, y, width and height in the same patch" };
+const lookSchema: Schema = { anyOf: [
+  choice(["original", "mono", "noir", "vintage", "vivid", "warm", "cool", "fade", "duotone"]),
+  obj({
+    filter: { anyOf: [choice(["original", "mono", "noir", "vintage", "vivid", "warm", "cool", "fade", "duotone"]), { type: "null" }], description: "One filter, or original; null or original removes it" },
+    intensity: { ...num(0, 100), description: "How strong the filter is; 100 when absent" },
+    shadow: { ...color, description: "Duotone only: the colour the darks become (default #0B1014)" },
+    highlight: { ...color, description: "Duotone only: the colour the lights become (default the brand green #00D98A)" },
+    ...Object.fromEntries(["brightness", "contrast", "saturation", "temperature", "tint"].map(key => [key, { ...num(-100, 100), description: `Adjust: ${key}, -100..100; 0 leaves it` }])),
+  }, []),
+  { type: "null" },
+], description: "Filters and Adjust on the picture (photo or video), as the photo toolbar's Filters and Adjust: a filter name alone, or {filter, intensity, brightness, contrast, saturation, temperature, tint}. An object changes only what it names (brightness keeps the filter). null or original removes the look. Shows on the canvas and in PNG, PDF and MP4" };
 const imageProperties = {
   src: str(LIMITS.imageCharacters, { minLength: 1 }), publicAlt: str(2000), fit: choice(["cover", "contain"]),
   cropX: num(0, 100), cropY: num(0, 100), cropScale: num(.1, 20), radius: num(0, 100_000),
   flipX: bool, flipY: bool, mask: choice(["none", "ellipse", "triangle", "diamond"]),
   // The photo's own size in pixels: a spanning photo's frame takes its proportions.
   intrinsicWidth: num(1, 100_000), intrinsicHeight: num(1, 100_000),
-  border: borderSchema, cropAspect: cropAspectSchema,
+  border: borderSchema, cropAspect: cropAspectSchema, look: lookSchema,
   video: videoSchema,
 };
 const seamSchema = (description: string): Schema => ({ ...num(.1, .9), description });
@@ -115,6 +127,7 @@ const shapeProperties = {
   fill: color, stroke: color, strokeWidth: num(0, 10_000), radius: num(0, 100_000),
   sides: { type: "integer", minimum: 3, maximum: 30 }, starPoints: { type: "integer", minimum: 3, maximum: 30 },
   innerRadius: num(.05, .95), strokeAlign: choice(["inside", "center", "outside"]),
+  look: { ...lookSchema, description: "A photo frame (a shape with a photo fill) only: the look on its photo, as on a photo layer" },
 };
 /** HTML layers (html-layer.ts): markup designed at the box's own pixel size. */
 const htmlProperties = {
@@ -145,7 +158,7 @@ const clipFields = {
   poster: str(LIMITS.imageCharacters, { description: "The still that thumbnails, PNG and PDF show: an image src, best a frame from the clip. Without one the slide shows a dark still and engine_check_deck flags it (with path, the bridge takes one from the clip)" }),
   ...Object.fromEntries(CLIP_KEYS.map(key => [key, (videoSchema.properties as Record<string, Schema>)[key]])) as Record<(typeof CLIP_KEYS)[number], Schema>,
 };
-const videoLayerProperties = { ...clipFields, publicAlt: str(2000), fit: choice(["cover", "contain"]), cropX: num(0, 100), cropY: num(0, 100), cropScale: num(.1, 20), radius: num(0, 100_000), flipX: bool, flipY: bool, mask: choice(["none", "ellipse", "triangle", "diamond"]), border: borderSchema, cropAspect: cropAspectSchema };
+const videoLayerProperties = { ...clipFields, publicAlt: str(2000), fit: choice(["cover", "contain"]), cropX: num(0, 100), cropY: num(0, 100), cropScale: num(.1, 20), radius: num(0, 100_000), flipX: bool, flipY: bool, mask: choice(["none", "ellipse", "triangle", "diamond"]), border: borderSchema, cropAspect: cropAspectSchema, look: lookSchema };
 const elementSchema: Schema = { oneOf: [
   obj({ ...baseProperties, type: { const: "text" }, ...textProperties }, ["type", "text", "x", "y", "width", "height"]),
   obj({ ...baseProperties, type: { const: "image" }, ...imageProperties,
@@ -213,7 +226,7 @@ export const AGENT_UPDATE_SCHEMA: Schema = {
       at: { ...num(0, 100_000), description: "The second of the clip (the file's own time, as start and end are) to cut at; at least 0.5 s inside the part that plays" },
       poster: str(LIMITS.imageCharacters, { description: "The second slide's poster. Through the Engine MCP the bridge takes the frame at `at` when you leave it out (needs ffmpeg); otherwise the copy shows the first slide's poster" }),
     }, ["pageId", "elementId", "at"]), description: "Split a video slide in two at a moment of its clip: the slide keeps the part before `at`, and a copy of the slide placed right after it plays the rest. A fade in stays on the first, a fade out moves to the second. Use it to make a carousel of a clip's moments, or to cut a long clip where it makes sense rather than every 60 seconds" },
-    { ...operation("copy_style", { pageId: id, from: id, to: { type: "array", minItems: 1, maxItems: 100, items: id, description: "Layers on the same slide that take the look" } }, ["pageId", "from", "to"]), description: "Copy style, as the toolbar's paint roller does: the layers in to take the look of from (font, size, weight, colours, spacing and effects for text; corners, mask and border for photos; fill and outline for shapes). A layer of another kind takes only what they share: transparency, shadow, blur and blend. Content, place and size don't change, and coloured accent words keep their colour" },
+    { ...operation("copy_style", { pageId: id, from: id, to: { type: "array", minItems: 1, maxItems: 100, items: id, description: "Layers on the same slide that take the look" } }, ["pageId", "from", "to"]), description: "Copy style, as the toolbar's paint roller does: the layers in to take the look of from (font, size, weight, colours, spacing and effects for text; corners, mask, border and the picture's filters and adjustments for photos; fill and outline for shapes). A layer of another kind takes only what they share: transparency, shadow, blur and blend. Content, place and size don't change, and coloured accent words keep their colour" },
     operation("remove_element", { pageId: id, elementId: id }, ["pageId", "elementId"]),
     operation("add_slide", { slide: slideSchema, index: { type: "integer", minimum: 0, maximum: 20 } }, ["slide"]),
     operation("remove_slide", { pageId: id }, ["pageId"]),
@@ -306,7 +319,7 @@ function toScene(properties: RecordValue, scale: number): RecordValue {
   return Object.fromEntries(Object.entries(properties).map(([key, value]) => [key, pixelProperties.has(key) && typeof value === "number" ? value * scale : value]));
 }
 /** Fields that run a toolbar command instead of being stored as they are (style-commands.ts). */
-const COMMAND_FIELDS = ["border", "cropAspect", "textCase", "textEffect"] as const;
+const COMMAND_FIELDS = ["border", "cropAspect", "textCase", "textEffect", "look"] as const;
 function withoutCommandFields(properties: RecordValue): RecordValue {
   const rest = { ...properties };
   for (const key of COMMAND_FIELDS) delete rest[key];
@@ -328,6 +341,12 @@ function applyCommandFields(element: CanvasElement, properties: RecordValue, sca
     if (next.type !== "image") fail(`${path}.border`, "is only supported on photos and videos");
     const border = properties.border as RecordValue | null;
     next = setImageBorder(next, border ? { style: border.style as ImageBorder["style"], width: Number(border.width) * scale, color: String(border.color) } : null);
+  }
+  if (properties.look !== undefined) {
+    if (next.type !== "image" && !(next.type === "shape" && next.imageFill)) fail(`${path}.look`, "is only supported on photos, videos and photo frames");
+    const look = agentMediaLook(properties.look, mediaLook(next));
+    if (look === undefined) fail(`${path}.look`, "must be a filter name, null, or {filter, intensity, shadow, highlight, brightness, contrast, saturation, temperature, tint} in range");
+    next = setMediaLook(next, look ?? null);
   }
   if (properties.cropAspect !== undefined) {
     if (next.type !== "image") fail(`${path}.cropAspect`, "is only supported on photos and videos");
