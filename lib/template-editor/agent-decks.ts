@@ -6,6 +6,7 @@ import {
   type DesignTemplate, type EditorLibrary, type HtmlElement, type ImageBorder, type SmartTextRole, type VideoClip,
 } from "./model";
 import { splitUntrimmedVideos, splitVideoAt } from "./video-slides";
+import { agentTextEffect, setTextEffect } from "./text-effects";
 import { ELEMENT_COMMANDS, changeTextCaseMode, copyStyle, cropToAspect, pasteStyleOnScene, setImageBorder, type CropAspect, type TextCase } from "./style-commands";
 import { withCaptionLayer } from "./captions";
 import { normalizeVideoLayers } from "./agent-video-layers";
@@ -62,6 +63,11 @@ const textProperties = {
   letterSpacing: num(-1000, 1000), padding: num(0, 10_000), paragraphSpacing: num(0, 10_000),
   textMode: choice(["fixed", "auto-height", "auto-fit"]), listStyle: choice(["none", "bullet", "number"]),
   textCase: { ...choice(["upper", "lower", "title", "sentence"]), description: "Changes the case of the text as the toolbar's Case menu does: UPPERCASE, lowercase, Title Case or Sentence case. Coloured accent words keep their colour" },
+  textEffect: { anyOf: [{ ...choice(["none", "drop", "glow", "outline", "hollow", "neon", "echo", "splice", "glitch", "highlight"]) }, obj({
+    kind: choice(["drop", "glow", "outline", "hollow", "neon", "echo", "splice", "glitch", "highlight"]),
+    color, color2: color, direction: num(-180, 180), offset: num(0, 100), blur: num(0, 100), transparency: num(0, 100),
+    intensity: num(0, 100), thickness: num(0, 200), roundness: num(0, 100), spread: num(0, 100),
+  }, ["kind"]), { type: "null" }], description: "One text effect, as the Effects panel draws it: drop (direction, offset, blur, transparency, color), glow (intensity, color), outline (thickness up to 200, color), hollow (thickness), neon (intensity, color), echo (direction, offset, color), splice (thickness, offset, direction, color), glitch (direction, offset, color, color2) or highlight (a box behind each line: roundness, spread, transparency, color). Directions are degrees (−45 is up and right); the rest 0–100 and scale with the font size. A name alone uses Canva's defaults; color left out follows the text. none or null removes it" },
   captions: { ...bool, description: "A caption layer: instead of its text it shows the slide video's caption that is playing (the clip's captions), in this layer's look, and nothing between captions. Its text is only a sample for the editor. One per slide is enough" },
 };
 /** A clip on a photo. Agents send url (copied into storage) or src (a clip already in the
@@ -300,7 +306,7 @@ function toScene(properties: RecordValue, scale: number): RecordValue {
   return Object.fromEntries(Object.entries(properties).map(([key, value]) => [key, pixelProperties.has(key) && typeof value === "number" ? value * scale : value]));
 }
 /** Fields that run a toolbar command instead of being stored as they are (style-commands.ts). */
-const COMMAND_FIELDS = ["border", "cropAspect", "textCase"] as const;
+const COMMAND_FIELDS = ["border", "cropAspect", "textCase", "textEffect"] as const;
 function withoutCommandFields(properties: RecordValue): RecordValue {
   const rest = { ...properties };
   for (const key of COMMAND_FIELDS) delete rest[key];
@@ -311,6 +317,12 @@ function applyCommandFields(element: CanvasElement, properties: RecordValue, sca
   if (properties.textCase !== undefined) {
     if (next.type !== "text") fail(`${path}.textCase`, "is only supported on text");
     next = changeTextCaseMode(next, properties.textCase as TextCase);
+  }
+  if (properties.textEffect !== undefined) {
+    if (next.type !== "text") fail(`${path}.textEffect`, "is only supported on text");
+    const effect = agentTextEffect(properties.textEffect);
+    if (effect === undefined) fail(`${path}.textEffect`, "must be an effect name, null, or {kind, ...settings} in range");
+    next = setTextEffect(next, effect ?? null);
   }
   if (properties.border !== undefined) {
     if (next.type !== "image") fail(`${path}.border`, "is only supported on photos and videos");

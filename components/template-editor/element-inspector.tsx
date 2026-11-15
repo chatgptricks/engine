@@ -27,6 +27,7 @@ import { alignSelectionTo, distributeSelection, matchSelectionSize, copyAppearan
 import type { HtmlNodeSelection } from "@/lib/template-editor/html-edit";
 import "./element-inspector.css";
 import { HtmlStylePanel } from "./html-style-panel";
+import { TextEffectsPanel } from "./text-effects-panel";
 
 export type InspectorSection = "html"|"edit"|"outline"|"photo"|"position"|"effects"|"advanced";
 
@@ -587,6 +588,7 @@ export function ElementInspector({
               <div className="te-element-grid te-element-actions"><button type="button" disabled={!canDuplicate} title={canDuplicate?"Duplicate selection":"A page can contain up to 100 elements"} onClick={duplicate}><CopyIcon/> Duplicate</button><button type="button" disabled={editable.every(element=>!canEditElement(scene,element,"delete"))} className="te-element-delete" onClick={remove}><TrashIcon/> Delete</button></div></Section>
             </>}
             {effectiveSection==="effects"&&<>
+              {displayed.length>0&&displayed.every(element=>element.type==="text")&&<Section title="Text effects"><TextEffectsPanel texts={displayed as TextElement[]} disabled={styleDisabled} update={update}/></Section>}
               <Section title="Opacity"><fieldset disabled={styleDisabled}><NumberField label="Opacity" unit="%" min={0} max={100} value={shared(displayed,"opacity")===undefined?undefined:shared(displayed,"opacity")!*100} onChange={value=>update("opacity",element=>({...element,opacity:value/100}))}/></fieldset></Section>
               <AdvancedProperties {...advancedFor("effects")}/>
             </>}

@@ -51,6 +51,10 @@
 .te-guided-editor .te-effect-preview.is-soft { text-shadow: 0 3px 8px #000; }
 .te-guided-editor .te-effect-preview.is-lift { text-shadow: 0 5px 2px #000; }
 .te-guided-editor .te-effect-preview.is-glow { text-shadow: 0 0 8px #fff; }
+.te-guided-editor .te-text-effects { display: grid; gap: 10px; min-width: 0; margin: 0; padding: 0; border: 0; }
+.te-guided-editor .te-text-effects .te-effect-presets { margin-bottom: 0; }
+.te-guided-editor .te-text-effect-sample[data-text-effect=highlight] > span { background: var(--te-highlight); padding: var(--te-highlight-y) var(--te-highlight-x); border-radius: var(--te-highlight-radius); color: #111; }
+.te-guided-editor .te-text-effect-controls { display: grid; gap: 12px; }
 @media (max-width: 760px) {
   .te-guided-editor .te-inspector-tabs { margin-bottom: 0; }
   .te-guided-editor details.te-advanced-section > summary { min-height: 44px; }

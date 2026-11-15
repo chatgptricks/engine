@@ -14,6 +14,7 @@ export const ELEMENT_COMMANDS = [
   { id: "video.trim", label: "Trim", applies: ["video"], agent: "update_element {start, end}" },
   { id: "video.volume", label: "Volume", applies: ["video"], agent: "update_element {volume, muted, fadeIn, fadeOut}" },
   { id: "video.speed", label: "Speed", applies: ["video"], agent: "update_element {speed}" },
+  { id: "text.effect", label: "Text effects", applies: ["text"], agent: "update_element {textEffect: drop | glow | outline | hollow | neon | echo | splice | glitch | highlight | {kind, ...settings} | null}" },
   { id: "text.ai", label: "AI", applies: ["text"], agent: "engine_text_ai {deckId, pageId, elementId, action, tone?, language?, instruction?, count?, apply?}" },
   { id: "style.copy", label: "Copy style", applies: ["text", "image", "video", "shape", "html"], agent: "copy_style {pageId, from, to: [ids]}" },
 ] as const;
@@ -134,7 +135,7 @@ export function cropToAspect(element: CanvasElement, aspect: CropAspect): Canvas
 // ---------- Copy style ----------
 
 const COMMON_KEYS = ["opacity", "shadow", "blur", "blendMode"] as const;
-const TEXT_KEYS = ["font", "fontSize", "fontWeight", "italic", "underline", "strikethrough", "color", "gradient", "align", "lineHeight", "letterSpacing", "paragraphSpacing", "verticalAlign", "textureFill"] as const;
+const TEXT_KEYS = ["font", "fontSize", "fontWeight", "italic", "underline", "strikethrough", "color", "gradient", "align", "lineHeight", "letterSpacing", "paragraphSpacing", "verticalAlign", "textureFill", "textEffect"] as const;
 const IMAGE_KEYS = ["radius", "mask", "border"] as const;
 const SHAPE_KEYS = ["fill", "gradient", "stroke", "strokeWidth", "strokeDash", "strokeAlign", "radius"] as const;
 
