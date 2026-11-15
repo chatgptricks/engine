@@ -54,6 +54,7 @@ import { prepareHtmlLayer, scopeHtmlLayer } from "@/lib/template-editor/html-lay
 import { setHtmlNodeContent, setHtmlNodeText, withHtmlLayerMarkup, type HtmlNodeSelection } from "@/lib/template-editor/html-edit";
 import { HtmlLayerEditor, firstHtmlTextPart, htmlTextPartAt } from "./html-layer-editor";
 import { parseColor } from "@/lib/template-editor/color-utils";
+import { textEffectStyle, type TextRingFilter } from "@/lib/template-editor/text-effects";
 import { photoContent, updatePhotoContent, shapeViewBox, findPhotoFrameAtPoint } from "@/lib/template-editor/photo-frames";
 import { textureBackgroundStyle, activeTextTextures, textTextureVariables, textTextureCss } from "@/lib/template-editor/text-textures";
 import { fillShapeWithImage } from "@/lib/template-editor/commands";
@@ -266,7 +267,7 @@ function boxStyle(element: Box): CSSProperties {
   };
 }
 
-function textStyle(element: TextElement): CSSProperties {
+function textStyle(element: TextElement, filterId?: string): CSSProperties {
   return {
     fontSize: textDisplayFontSize(element),
     fontWeight: element.fontWeight,
@@ -280,6 +281,7 @@ function textStyle(element: TextElement): CSSProperties {
     boxSizing: "border-box",
     ...(element.gradient ? {backgroundImage:gradientCss(element.gradient),backgroundClip:"text",color:"transparent"} : {}),
     ...(element.textureFill ? textureBackgroundStyle(element.textureFill) : {}),
+    ...(element.textEffect ? textEffectStyle(element.textEffect, element.color, textDisplayFontSize(element), filterId).style : {}),
   };
 }
 
@@ -330,6 +332,7 @@ function WorldClip({ bounds, children }: { bounds?: CanvasElement["clipBounds"];
  * While the text overflows the box, the frame is marked data-overflow and the box cuts it exactly. */
 function TextFrame({ element, lines }: { element: TextElement; lines: string[] }) {
   const frame = useRef<HTMLDivElement>(null);
+  const ringToken = useId().replace(/[^a-zA-Z0-9_-]/g, "");
   const fixed = (element.textMode ?? "fixed") !== "auto-height";
   useLayoutEffect(() => {
     const box = frame.current, text = box?.firstElementChild;
@@ -342,9 +345,31 @@ function TextFrame({ element, lines }: { element: TextElement; lines: string[] }
   }, [fixed]);
   const runSizes = lines.flatMap(line => Array.from(line.matchAll(/font-size\s*:\s*(\d+(?:\.\d+)?)px/gi), match => Number(match[1])));
   const overhang = glyphOverhang(Math.max(textDisplayFontSize(element), ...runSizes), element.lineHeight);
-  return <div ref={frame} className={`te-canvas-text-frame${fixed ? " is-fixed" : ""}`} style={{ justifyContent: element.verticalAlign === "middle" ? "center" : element.verticalAlign === "bottom" ? "flex-end" : "flex-start", "--te-paragraph-spacing": `${element.paragraphSpacing ?? 0}px`, "--te-glyph-overhang": `${overhang}px` } as CSSProperties}>
-    <div className={`te-canvas-text gf-font-${element.font}${element.hangingIndent ? " is-hanging" : ""}`} style={textStyle(element)}>{lines.map((line, index) => <div className="te-canvas-text-line" key={index}>{element.listStyle && element.listStyle !== "none" && <span className="te-canvas-list-prefix" aria-hidden="true">{element.listStyle === "number" ? `${index + 1}. ` : "• "}</span>}<span dangerouslySetInnerHTML={{ __html: line || "<br>" }} /></div>)}</div>
+  // A text effect reaches past the glyphs; a fixed box's clip lets it.
+  const effect = element.textEffect ? textEffectStyle(element.textEffect, element.color, Math.max(textDisplayFontSize(element), ...runSizes), `text-ring-${ringToken}`) : undefined;
+  const reach = Math.ceil(effect?.reach ?? 0);
+  return <div ref={frame} className={`te-canvas-text-frame${fixed ? " is-fixed" : ""}`} style={{ justifyContent: element.verticalAlign === "middle" ? "center" : element.verticalAlign === "bottom" ? "flex-end" : "flex-start", "--te-paragraph-spacing": `${element.paragraphSpacing ?? 0}px`, "--te-glyph-overhang": `${Math.max(overhang, reach)}px`, "--te-effect-reach": `${reach}px` } as CSSProperties}>
+    <div className={`te-canvas-text gf-font-${element.font}${element.hangingIndent ? " is-hanging" : ""}`} data-text-effect={element.textEffect?.kind} style={textStyle(element, effect?.ring?.id)}>{lines.map((line, index) => <div className="te-canvas-text-line" key={index}>{element.listStyle && element.listStyle !== "none" && <span className="te-canvas-list-prefix" aria-hidden="true">{element.listStyle === "number" ? `${index + 1}. ` : "• "}</span>}<span dangerouslySetInnerHTML={{ __html: line || "<br>" }} /></div>)}</div>
+    {effect?.ring && <TextRing ring={effect.ring} />}
   </div>;
+}
+
+/** Hollow and splice: a ring around the glyphs' shape (their alpha grown by the width, less
+ * the glyphs), and for splice a solid copy behind it, offset. */
+function TextRing({ ring }: { ring: TextRingFilter }) {
+  const color = parseColor(ring.color), copy = ring.copy && parseColor(ring.copy.color);
+  return <svg width="0" height="0" className="te-canvas-effect-defs" aria-hidden="true"><defs><filter id={ring.id} x="-50%" y="-50%" width="200%" height="200%" colorInterpolationFilters="sRGB">
+    <feMorphology in="SourceAlpha" operator="dilate" radius={ring.width} result="grown" />
+    <feComposite in="grown" in2="SourceAlpha" operator="out" result="ring" />
+    <feFlood floodColor={color?.rgb ?? ring.color} floodOpacity={color?.alpha ?? 1} result="ink" />
+    <feComposite in="ink" in2="ring" operator="in" result="outline" />
+    {ring.copy ? <>
+      <feOffset in="SourceAlpha" dx={ring.copy.x} dy={ring.copy.y} result="moved" />
+      <feFlood floodColor={copy?.rgb ?? ring.copy.color} floodOpacity={copy?.alpha ?? 1} result="copyInk" />
+      <feComposite in="copyInk" in2="moved" operator="in" result="copy" />
+      <feMerge><feMergeNode in="copy" /><feMergeNode in="outline" /></feMerge>
+    </> : null}
+  </filter></defs></svg>;
 }
 
 /** What a caption layer shows. Editing: the cue playing; between cues a faint sample while the

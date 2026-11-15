@@ -129,6 +129,26 @@ export type TextElement = CanvasElementBase & {
   captions?: boolean;
   textureFill?: ShapeImageFill;
   wordTextures?: (ShapeImageFill & { id: string })[];
+  /** One text effect at a time, as Canva's Effects panel (text-effects.ts draws it). */
+  textEffect?: TextEffect;
+};
+export const TEXT_EFFECT_KINDS = ["drop", "glow", "outline", "hollow", "neon", "echo", "splice", "glitch", "highlight"] as const;
+export type TextEffectKind = (typeof TEXT_EFFECT_KINDS)[number];
+/** A text effect's settings, on Canva's scales: direction in degrees (−180 to 180),
+ * the rest 0 to 100 (outline thickness to 200). What a kind doesn't set takes its default. */
+export type TextEffect = {
+  kind: TextEffectKind;
+  color?: string;
+  /** Glitch's second color. */
+  color2?: string;
+  direction?: number;
+  offset?: number;
+  blur?: number;
+  transparency?: number;
+  intensity?: number;
+  thickness?: number;
+  roundness?: number;
+  spread?: number;
 };
 export type PhotoMetadata = {
   /** Intentionally public description; internal directives never become alt text. */
@@ -2119,6 +2139,24 @@ function parseBaseExtensions(value: Record<string, unknown>): Partial<CanvasElem
   return result;
 }
 
+/** A text effect, checked; null when it isn't one. */
+export function parseTextEffect(value: unknown): TextEffect | null {
+  if (!object(value) || !choice([...TEXT_EFFECT_KINDS])(value.kind)) return null;
+  const effect: TextEffect = { kind: value.kind as TextEffectKind };
+  for (const key of ["color", "color2"] as const) {
+    if (value[key] === undefined) continue;
+    if (!color(value[key])) return null;
+    effect[key] = value[key] as string;
+  }
+  for (const key of ["direction", "offset", "blur", "transparency", "intensity", "thickness", "roundness", "spread"] as const) {
+    if (value[key] === undefined) continue;
+    const [min, max] = key === "direction" ? [-180, 180] : key === "thickness" ? [0, 200] : [0, 100];
+    if (!numberIn(value[key], min, max)) return null;
+    effect[key] = value[key] as number;
+  }
+  return effect;
+}
+
 function parseTextExtensions(value: Record<string, unknown>): Partial<TextElement> | null {
   if (!["autoFitMinFontSize","autoFitMaxFontSize","autoFitFontSize"].every(key=>optional(value,key,candidate=>numberIn(candidate,1,500))) || value.autoFitMinFontSize!==undefined && value.autoFitMaxFontSize!==undefined && Number(value.autoFitMinFontSize)>Number(value.autoFitMaxFontSize)) return null;
   if (!optional(value, "textMode", choice(["fixed", "auto-height", "auto-fit"])) || !optional(value, "verticalAlign", choice(["top", "middle", "bottom"])) || !optional(value, "listStyle", choice(["none", "bullet", "number"])) || !optional(value, "padding", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "paragraphSpacing", candidate => numberIn(candidate, 0, 1000)) || !optional(value, "strikethrough", boolean) || !optional(value, "hangingIndent", boolean) || !optional(value, "textStyleId", identity) || !optional(value, "captions", boolean)) return null;
@@ -2150,6 +2188,11 @@ function parseTextExtensions(value: Record<string, unknown>): Partial<TextElemen
     }
     if (!uniqueIds(textures)) return null;
     result.wordTextures = textures;
+  }
+  if (value.textEffect !== undefined) {
+    const effect = parseTextEffect(value.textEffect);
+    if (!effect) return null;
+    result.textEffect = effect;
   }
   const textureIds = new Set(result.wordTextures?.map(texture => texture.id));
   for (const reference of result.richText?.matchAll(/<span\b[^>]*\bdata-texture-id="([a-zA-Z0-9_-]+)"/g) ?? []) if (!textureIds.has(reference[1])) return null;

@@ -188,8 +188,8 @@ test("fixed text boxes keep the accents and descenders of their lines and still 
     assert.ok(fit.glyphOverhang(100, lineHeight) >= 100 * (reach - lineHeight / 2) - .01, `reach ${reach} at line height ${lineHeight}`);
   }
   assert.equal(fit.glyphOverhang(40, 1.4), 0, "loose lines keep their ink inside the box");
-  // The clip reaches past the box by that room; once the text overflows, the box cuts it exactly.
-  assert.match(cssRule(".te-canvas-text-frame.is-fixed"), /clip-path:\s*inset\(calc\(-1 \* var\(--te-glyph-overhang,\s*0px\)\) 0\)/);
+  // The clip reaches past the box by that room (and sideways by a text effect's reach); once the text overflows, the box cuts it exactly.
+  assert.match(cssRule(".te-canvas-text-frame.is-fixed"), /clip-path:\s*inset\(calc\(-1 \* var\(--te-glyph-overhang,\s*0px\)\) calc\(-1 \* var\(--te-effect-reach,\s*0px\)\)\)/);
   assert.doesNotMatch(cssRule(".te-canvas-text-frame.is-fixed"), /overflow/);
   assert.match(cssRule(".te-canvas-text-frame.is-fixed[data-overflow]"), /clip-path:\s*none;\s*overflow:\s*hidden/);
   // No other stylesheet may cut the box again.
