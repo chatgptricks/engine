@@ -641,3 +641,21 @@ test("videos start stopped in the editor; Play, Pause and Stop drive them", () =
   player.stopVideo("clip-a");
   assert.equal(player.isVideoPlaying("clip-a"), false);
 });
+
+test("downloading a project with photos and videos picks each page's kind on its own", () => {
+  const { createBlankDesign } = load("lib/template-editor/model.ts");
+  const { ExportDialog, mixedSummary } = load("components/template-editor/export-dialog.tsx");
+  const base = createBlankDesign("Mixed", "portrait");
+  const photoPage = base.pages[0];
+  const videoLayer = image({ src: "https://images.example/poster.png", video: { src: "https://images.example/clip.mp4", duration: 10, width: 1080, height: 1350 } });
+  const videoPage = { ...photoPage, id: "video-page", canvas: { ...photoPage.canvas, elements: [videoLayer] } };
+  const design = { ...base, pages: [photoPage, videoPage, { ...photoPage, id: "photo-2" }] };
+  const html = renderToStaticMarkup(React.createElement(ExportDialog, { design, pageId: photoPage.id, disabled: false, onClose() {}, onExport() {} }));
+  assert.match(html, /<option value="auto" selected="">Automatic · photos as PNG, videos as MP4<\/option>/, "Automatic is the default when a page has a video");
+  assert.match(html, /2 images \+ 1 video · ZIP/);
+  assert.match(html, /Page 2 has a video and downloads as MP4; the other pages download as PNG images/);
+  const still = renderToStaticMarkup(React.createElement(ExportDialog, { design: { ...base, pages: [photoPage] }, pageId: photoPage.id, disabled: false, onClose() {}, onExport() {} }));
+  assert.doesNotMatch(still, /value="auto"/, "a project of photos only has no Automatic choice");
+  assert.equal(mixedSummary(0, 1), "1 video");
+  assert.equal(mixedSummary(3, 0), "3 images · ZIP");
+});
