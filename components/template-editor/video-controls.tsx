@@ -4,7 +4,7 @@ import {MAX_SLIDE_VIDEO_SECONDS, VIDEO_SPEED_RANGE, VIDEO_VOLUME_MAX, type Canva
 import {clipWindow, coverAt, formatSeconds, loadVideo, seekVideo} from "@/lib/template-editor/client-video";
 import {clipSpeed, playWindow} from "@/lib/template-editor/clip-timing";
 import {canSplitVideoAt} from "@/lib/template-editor/video-slides";
-import {isVideoPaused, setVideoPaused, videoForLayer} from "./video-player";
+import {setVideoPlaying, stopVideo, useVideoPlaying, videoForLayer} from "./video-player";
 import {CaptionControls} from "./caption-controls";
 import type {CaptionCue} from "@/lib/template-editor/captions";
 
@@ -69,7 +69,7 @@ export function VideoControls({element, disabled, onUpdate, onReplace, onSplit, 
   const {start, end} = clipWindow(clip);
   const speed = clipSpeed(clip), played = playWindow(clip).length, most = MAX_SLIDE_VIDEO_SECONDS * speed;
   const frames = useFilmstrip(clip);
-  const [playing, setPlaying] = useState(!isVideoPaused(element.id));
+  const playing = useVideoPlaying(element.id);
   const [busy, setBusy] = useState(""), [error, setError] = useState("");
   const [now, setNow] = useState(start);
   useEffect(() => {
@@ -123,7 +123,8 @@ export function VideoControls({element, disabled, onUpdate, onReplace, onSplit, 
   return <section className="te-element-section te-video-controls">
     <h3>Video</h3>
     <div className="te-element-segments" role="group" aria-label="Playback">
-      <button type="button" aria-pressed={playing} onClick={() => { const next = !playing; setPlaying(next); setVideoPaused(element.id, !next); }}>{playing ? "Pause" : "Play"}</button>
+      <button type="button" aria-pressed={playing} onClick={() => setVideoPlaying(element.id, !playing)}>{playing ? "Pause" : "Play"}</button>
+      <button type="button" onClick={() => stopVideo(element.id)} title="Stop and go back to the start">Stop</button>
       <button type="button" aria-pressed={clip.muted !== true} disabled={disabled} onClick={() => setClip("video-sound", {muted: clip.muted === true ? undefined : true})} title="Sound while editing: the video most in view plays its sound. The MP4 keeps it either way; the download has its own setting.">{clip.muted === true ? "Muted" : "Sound on"}</button>
       <button type="button" aria-pressed={clip.loop !== false} disabled={disabled} onClick={() => setClip("video-loop", {loop: clip.loop === false ? undefined : false})}>{clip.loop === false ? "Plays once" : "Loops"}</button>
     </div>
