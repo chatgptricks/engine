@@ -611,6 +611,8 @@ test("a video clip shows its trim, volume and speed on the toolbar", () => {
   const clip = image({ id: "clip", src: "https://images.example/poster.png", video: { src: "https://images.example/clip.mp4", duration: 10, start: 2, end: 8, speed: 2, width: 1920, height: 1080 } });
   let changed;
   const tree = QuickToolbar({ ...quickProps(sceneWith([clip])), onChange: next => { changed = next; } });
+  const playback = nodes(tree, node => node.type?.name === "VideoPlayback")[0];
+  assert.equal(playback?.node.props.layerId, clip.id, "Play and Stop sit on the toolbar for the selected clip");
   control(tree, "Trim: plays 3.0 seconds");
   control(tree, "Volume");
   control(tree, "Speed");
@@ -625,4 +627,17 @@ test("Copy style is on the toolbar and calls the editor's style brush", () => {
   assert.equal(toggled, 1);
   const active = QuickToolbar({ ...quickProps(sceneWith([text()])), onCopyStyle() {}, styleBrush: true });
   assert.equal(control(active, "Cancel copy style").node.props["aria-pressed"], true);
+});
+
+test("videos start stopped in the editor; Play, Pause and Stop drive them", () => {
+  const player = load("components/template-editor/video-player.tsx");
+  const { VideoPlayback } = load("components/template-editor/media-toolbar.tsx");
+  assert.equal(player.isVideoPlaying("clip-a"), false, "nothing plays when the editor opens");
+  const html = renderToStaticMarkup(React.createElement(VideoPlayback, { layerId: "clip-a" }));
+  assert.match(html, /aria-label="Play"/);
+  assert.match(html, /aria-label="Stop"/);
+  player.setVideoPlaying("clip-a", true);
+  assert.equal(player.isVideoPlaying("clip-a"), true);
+  player.stopVideo("clip-a");
+  assert.equal(player.isVideoPlaying("clip-a"), false);
 });

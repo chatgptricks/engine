@@ -1,18 +1,30 @@
 "use client";
-import {useEffect, useRef, useState, type CSSProperties} from "react";
+import {useEffect, useRef, useState, useSyncExternalStore, type CSSProperties} from "react";
 import type {VideoClip} from "@/lib/template-editor/model";
 import {fadeAt, fadesPicture, playWindow, slideTimeAt} from "@/lib/template-editor/clip-timing";
 import {cueAt} from "@/lib/template-editor/captions";
 
-/** Paused clips, by layer id, for this tab only: playback isn't part of the design. */
-const paused = new Set<string>();
+/** Playing clips, by layer id, for this tab only: playback isn't part of the design.
+ * Every clip starts stopped on its cover when the editor opens, and plays once someone presses Play. */
+const playing = new Set<string>();
 const listeners = new Set<() => void>();
-export const isVideoPaused = (id: string) => paused.has(id);
-export function setVideoPaused(id: string, value: boolean) {
-  if (value) paused.add(id); else paused.delete(id);
-  for (const listener of listeners) listener();
+/** Each clip on the canvas, by layer id: takes it back to its start and shows its cover. */
+const rewinders = new Map<string, () => void>();
+export const isVideoPlaying = (id: string) => playing.has(id);
+export function setVideoPlaying(id: string, value: boolean) {
+  if (value === playing.has(id)) return;
+  if (value) playing.add(id); else playing.delete(id);
+  for (const listener of [...listeners]) listener();
   refreshSound();
 }
+/** Stop: pause the clip and go back to its start, showing its cover again. */
+export function stopVideo(id: string) {
+  setVideoPlaying(id, false);
+  rewinders.get(id)?.();
+}
+const subscribe = (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; };
+/** Whether a layer's clip is playing, kept current for buttons. */
+export const useVideoPlaying = (id: string | undefined) => useSyncExternalStore(subscribe, () => Boolean(id && playing.has(id)), () => false);
 
 /** Clips on the canvas, by layer id: whether each has sound and how much of it is in view.
  * One plays its sound at a time, the one most in view, so video slides side by side don't
@@ -22,7 +34,7 @@ const players = new Map<string, {video: HTMLVideoElement; sound: boolean; seen: 
 let unlocked = typeof navigator !== "undefined" && Boolean((navigator as Navigator & {userActivation?: {hasBeenActive: boolean}}).userActivation?.hasBeenActive);
 function refreshSound() {
   let loudest: string | undefined, most = 0.2;
-  for (const [id, player] of players) if (player.sound && !paused.has(id) && player.seen > most) { most = player.seen; loudest = id; }
+  for (const [id, player] of players) if (player.sound && playing.has(id) && player.seen > most) { most = player.seen; loudest = id; }
   for (const [id, player] of players) { const on = unlocked && id === loudest; if (player.video.muted === on) player.video.muted = !on; }
 }
 if (typeof document !== "undefined" && !unlocked) {
@@ -35,8 +47,8 @@ export const videoForLayer = (id: string) => document.querySelector<HTMLVideoEle
 
 /** A layer's clip on the canvas: with its sound unless the clip is muted, playing only
  * its trim at its speed, from `start` again at `end` (or stopping there without loop),
- * with its fades on the picture and sound. It plays only while the tab is visible and
- * the layer isn't paused; the cover shows first. */
+ * with its fades on the picture and sound. It plays only after Play is pressed and while
+ * the tab is visible; until then it shows its cover. */
 export function VideoPlayer({clip, layerId, poster, className, style}: {clip: VideoClip; layerId: string; poster: string; className?: string; style?: CSSProperties}) {
   const ref = useRef<HTMLVideoElement>(null);
   const {start, end, speed} = playWindow(clip);
@@ -46,16 +58,18 @@ export function VideoPlayer({clip, layerId, poster, className, style}: {clip: Vi
     if (!video) return;
     const timing = {duration: clip.duration, start, end, speed, volume, fadeIn, fadeOut};
     const sync = () => {
-      const play = !paused.has(layerId) && document.visibilityState === "visible";
+      const play = playing.has(layerId) && document.visibilityState === "visible";
+      // Play again from the start after a clip that plays once has finished.
+      if (play && video.paused && video.currentTime >= end - 0.05) video.currentTime = start;
       // A browser that won't play it with sound yet plays it silent.
-      if (play && video.paused && !(video.ended && !loop)) void video.play().catch(() => { if (!video.muted) { video.muted = true; void video.play().catch(() => undefined); } });
+      if (play && video.paused) void video.play().catch(() => { if (!video.muted) { video.muted = true; void video.play().catch(() => undefined); } });
       if (!play && !video.paused) video.pause();
     };
     const keepInside = () => {
       if (video.currentTime < start - 0.05) video.currentTime = start;
       else if (video.currentTime >= end - 0.03) {
         if (loop) video.currentTime = start;
-        else { video.pause(); video.currentTime = end; }
+        else { video.pause(); video.currentTime = end; setVideoPlaying(layerId, false); }
       }
     };
     // Fades and level follow the playhead every frame it shows.
@@ -72,13 +86,16 @@ export function VideoPlayer({clip, layerId, poster, className, style}: {clip: Vi
     video.playbackRate = speed;
     video.addEventListener("loadedmetadata", begin);
     video.addEventListener("timeupdate", keepInside);
-    const ended = () => { if (loop) { video.currentTime = start; sync(); } };
+    const ended = () => { if (loop) { video.currentTime = start; sync(); } else setVideoPlaying(layerId, false); };
     video.addEventListener("ended", ended);
     document.addEventListener("visibilitychange", sync);
     listeners.add(sync);
+    // Reloading shows the cover again; begin then moves to the trim's start.
+    const rewind = () => { video.pause(); video.load(); };
+    rewinders.set(layerId, rewind);
     if (video.readyState >= 1) begin();
     frame = window.requestAnimationFrame(level);
-    return () => { window.cancelAnimationFrame(frame); video.style.opacity = ""; video.removeEventListener("loadedmetadata", begin); video.removeEventListener("timeupdate", keepInside); video.removeEventListener("ended", ended); document.removeEventListener("visibilitychange", sync); listeners.delete(sync); };
+    return () => { window.cancelAnimationFrame(frame); video.style.opacity = ""; video.removeEventListener("loadedmetadata", begin); video.removeEventListener("timeupdate", keepInside); video.removeEventListener("ended", ended); document.removeEventListener("visibilitychange", sync); listeners.delete(sync); if (rewinders.get(layerId) === rewind) rewinders.delete(layerId); };
   }, [layerId, start, end, loop, speed, volume, fadeIn, fadeOut, clip.duration]);
   const sound = clip.muted !== true;
   useEffect(() => {

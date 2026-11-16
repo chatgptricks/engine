@@ -9,6 +9,7 @@ import { CROP_ASPECTS, cropToAspect, flipElement, setImageBorder, type CropAspec
 import { photoContent } from "@/lib/template-editor/photo-frames";
 import { mediaLook } from "@/lib/template-editor/media-looks";
 import { MediaLooksPanel } from "./media-looks-panel";
+import { setVideoPlaying, stopVideo, useVideoPlaying } from "./video-player";
 
 type Update = (transform: (element: CanvasElement) => CanvasElement, property?: "style" | "content" | "position", group?: string) => void;
 
@@ -33,6 +34,17 @@ const round = (value: number, places = 2) => Number(value.toFixed(places));
 /** The played length of a clip: its trim at its speed. */
 export function playedSeconds(clip: VideoClip) {
   return Math.max(0, ((clip.end ?? clip.duration) - (clip.start ?? 0)) / (clip.speed ?? 1));
+}
+
+/** Play or pause, and Stop, for one clip on the canvas. Every clip starts stopped when the
+ * editor opens; playback is this tab's only, not part of the design. */
+export function VideoPlayback({ layerId }: { layerId: string }) {
+  const playing = useVideoPlaying(layerId);
+  const hold = (event: { preventDefault: () => void }) => event.preventDefault();
+  return <>
+    <button type="button" className="te-format-button" aria-label={playing ? "Pause" : "Play"} title={playing ? "Pause" : "Play"} aria-pressed={playing} onMouseDown={hold} onClick={() => setVideoPlaying(layerId, !playing)}><EditorIcon name={playing ? "pause" : "play"} /></button>
+    <button type="button" className="te-format-button" aria-label="Stop" title="Stop and go back to the start" onMouseDown={hold} onClick={() => stopVideo(layerId)}><EditorIcon name="stop" /></button>
+  </>;
 }
 
 /** Photo and video controls on the selection toolbar, after Canva's: filters, adjust, border,
@@ -60,9 +72,12 @@ export function MediaToolbar({ photos, disabled, fixed, outputScale, update, onI
     if (element.type !== "image" || !photo?.video) return element;
     return { ...element, video: { ...element.video!, ...patch } };
   }, "content", group);
+  // Play and Stop for one selected clip (a video layer or a shape filled with one).
+  const videoLayer = photos.length === 1 && photoContent(photos[0])?.video ? photos[0].id : undefined;
   const looks = photos.map(element => mediaLook(element));
   const lookUpdate = (group: string, transform: (element: CanvasElement) => CanvasElement) => update(transform, "style", group);
   return <>
+    {videoLayer && <><VideoPlayback layerId={videoLayer} /><span className="te-format-sep" aria-hidden="true" /></>}
     <ToolbarPopover label="Filters" icon="filters" disabled={off} title={fixed ?? "Filters"} pressed={looks.some(look => look?.filter)} wide>
       <MediaLooksPanel photos={photos} disabled={off} update={lookUpdate} part="filters" />
     </ToolbarPopover>

@@ -1,6 +1,6 @@
 import type { SVGProps } from "react";
 
-export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency" | "border" | "corners" | "flip" | "ratio" | "trim" | "volume" | "speed" | "copy-style" | "case" | "ai" | "filters" | "adjust" | "animate";
+export type EditorIconName = "select" | "hand" | "pen" | "nodes" | "text" | "fill" | "outline" | "photo" | "crop" | "position" | "effects" | "merge" | "group" | "unlock" | "span" | "more" | "lock" | "align-left" | "align-center" | "align-right" | "list" | "list-number" | "spacing" | "transparency" | "border" | "corners" | "flip" | "ratio" | "trim" | "volume" | "speed" | "copy-style" | "case" | "ai" | "filters" | "adjust" | "animate" | "play" | "pause" | "stop";
 
 /** One visual language for tools, property shortcuts, and their selected states. */
 export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name: EditorIconName }) {
@@ -10,6 +10,9 @@ export function EditorIcon({ name, ...props }: SVGProps<SVGSVGElement> & { name:
     pen: "m4 20 3-12 9-5 5 5-5 9-12 3Zm0 0 8-8m-2-8 10 10",
     nodes: "M5 5h14v14H5Zm-2-2h4v4H3Zm14 0h4v4h-4Zm0 14h4v4h-4ZM3 17h4v4H3Z",
     text: "M4 6V4h16v2M12 4v16m-4 0h8",
+    play: "M7 4.5v15L19.5 12Z",
+    pause: "M7 5h3v14H7ZM14 5h3v14h-3Z",
+    stop: "M6 6h12v12H6Z",
     fill: "m4 11 7-7 9 9-7 7-9-9Zm3-9 7 7M4 12h15m1 6 2 3h-4Z",
     outline: "M4 4h16v16H4Zm4 4h8v8H8Z",
     photo: "M3 4h18v16H3Zm0 12 5-5 5 5 3-3 5 5M16 8h.01",
