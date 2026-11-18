@@ -12,6 +12,7 @@ export const FONTS = [
   ["poppins", "Poppins"],
   ["neuemontreal", "Neue Montreal"],
   ["supermolot", "TT Supermolot"],
+  ["clashdisplay", "Clash Display"],
   ["helvetica", "Helvetica"],
   ["arial", "Arial"],
   ["georgia", "Georgia"],

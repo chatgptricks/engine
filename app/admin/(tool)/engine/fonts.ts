@@ -159,6 +159,7 @@ export const ENGINE_FONTS: Array<{ id: string; label: string }> = [
   { id: "poppins", label: "Poppins" },
   { id: "neuemontreal", label: "Neue Montreal" },
   { id: "supermolot", label: "TT Supermolot" },
+  { id: "clashdisplay", label: "Clash Display" },
   { id: "helvetica", label: "Helvetica" },
   { id: "arial", label: "Arial" },
   { id: "georgia", label: "Georgia" },

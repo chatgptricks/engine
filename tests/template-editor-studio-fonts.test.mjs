@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { ALLOWED_FONT_NAMES, REQUIRED_FONT_NAMES } from "../scripts/prepare-licensed-fonts.mjs";
 
 // Studio's fonts, as Engine font ids. Every place that lists fonts must know each one.
-const STUDIO = ["poppins", "neuemontreal", "supermolot", "helvetica", "arial", "georgia"];
+const STUDIO = ["poppins", "neuemontreal", "supermolot", "clashdisplay", "helvetica", "arial", "georgia"];
 const read = file => readFileSync(new URL(`../${file}`, import.meta.url), "utf8");
 
 test("every Studio font is in the editor, the connector, brand guides, templates and the HTML stacks", () => {
@@ -24,12 +24,13 @@ test("every Studio font is in the editor, the connector, brand guides, templates
 
 test("paid Studio fonts load from the licensed folder and ride in the deploy bundle; Poppins ships in the repo", () => {
   const licensed = read("app/admin/(tool)/engine/licensed-fonts.css");
-  for (const file of ["NeueMontreal-Regular.otf", "NeueMontreal-Medium.otf", "NeueMontreal-Bold.otf", "TTSupermolot-Regular.otf", "TTSupermolot-Bold.otf"]) {
+  for (const file of ["NeueMontreal-Regular.otf", "NeueMontreal-Medium.otf", "NeueMontreal-Bold.otf", "TTSupermolot-Regular.otf", "TTSupermolot-Bold.otf", "ClashDisplay-Regular.otf", "ClashDisplay-Medium.otf", "ClashDisplay-Semibold.otf", "ClashDisplay-Bold.otf"]) {
     assert.ok(licensed.includes(`/fonts/licensed/${file}`), `licensed-fonts.css loads ${file}`);
     assert.ok(ALLOWED_FONT_NAMES.includes(file) && !REQUIRED_FONT_NAMES.includes(file), `${file} is an optional bundle font`);
   }
   assert.match(licensed, /--gf-f-neuemontreal: "GF Neue Montreal";/);
   assert.match(licensed, /--gf-f-supermolot: "GF TT Supermolot";/);
+  assert.match(licensed, /--gf-f-clashdisplay: "GF Clash Display";/);
   const fonts = read("app/admin/(tool)/engine/fonts.ts");
   for (const weight of ["regular", "500", "600", "700"]) assert.ok(fonts.includes(`./typefaces/google/poppins-latin-${weight}.ttf`), `Poppins ${weight} is self-hosted`);
 });
@@ -39,6 +40,7 @@ test("PDF export draws each Studio font: its own files, or the PDF's standard fa
   assert.match(pdf, /poppins:'poppins'/);
   assert.match(pdf, /font==='neuemontreal'.*NeueMontreal-/);
   assert.match(pdf, /font==='supermolot'.*TTSupermolot-/);
+  assert.match(pdf, /font==='clashdisplay'.*ClashDisplay-/);
   assert.match(pdf, /helvetica:\['Helvetica'/);
   assert.match(pdf, /arial:\['Helvetica'/);
   assert.match(pdf, /georgia:\['Times-Roman'/);

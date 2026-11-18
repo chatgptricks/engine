@@ -530,6 +530,7 @@ const FONT_IDS = new Set([
   "poppins",
   "neuemontreal",
   "supermolot",
+  "clashdisplay",
   "helvetica",
   "arial",
   "georgia",

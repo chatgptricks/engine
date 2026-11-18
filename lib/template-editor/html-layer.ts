@@ -47,6 +47,7 @@ export const HTML_FONT_STACKS: Readonly<Record<string, string>> = {
   poppins: 'var(--gf-f-poppins), system-ui, sans-serif',
   neuemontreal: 'var(--gf-f-neuemontreal), "Neue Montreal", system-ui, sans-serif',
   supermolot: 'var(--gf-f-supermolot), "TT Supermolot", system-ui, sans-serif',
+  clashdisplay: 'var(--gf-f-clashdisplay), "Clash Display", system-ui, sans-serif',
   helvetica: '"Helvetica Neue", Helvetica, Arial, "Liberation Sans", sans-serif',
   arial: 'Arial, "Helvetica Neue", Helvetica, "Liberation Sans", sans-serif',
   georgia: 'Georgia, "Times New Roman", serif',
@@ -64,7 +65,7 @@ const FONT_ALIASES: Readonly<Record<string, string>> = {
   "bebas neue": "bebas", "bebas neue bold": "bebascanva", "gf bebas neue canva": "bebascanva",
   "geist sans": "geist", "playfair display": "playfair", "dm serif display": "dmserif",
   "cormorant garamond": "cormorant", "crimson pro": "crimson", "crimson text": "crimson",
-  "space grotesk": "space", "poppins": "poppins", "gf poppins": "poppins", "neue montreal": "neuemontreal", "gf neue montreal": "neuemontreal", "neuemontreal": "neuemontreal", "tt supermolot": "supermolot", "ttsupermolot": "supermolot", "supermolot": "supermolot", "gf tt supermolot": "supermolot", "helvetica": "helvetica", "helvetica neue": "helvetica", "arial": "arial", "georgia": "georgia", "ibm plex mono": "plexmono", "gt walsheim": "walsheim",
+  "space grotesk": "space", "poppins": "poppins", "gf poppins": "poppins", "neue montreal": "neuemontreal", "gf neue montreal": "neuemontreal", "neuemontreal": "neuemontreal", "tt supermolot": "supermolot", "ttsupermolot": "supermolot", "supermolot": "supermolot", "gf tt supermolot": "supermolot", "clash display": "clashdisplay", "gf clash display": "clashdisplay", "helvetica": "helvetica", "helvetica neue": "helvetica", "arial": "arial", "georgia": "georgia", "ibm plex mono": "plexmono", "gt walsheim": "walsheim",
   "gt walsheim condensed": "walsheimcond", "pp kyoto": "kyoto", "century gothic": "century",
 };
 const FONT_VARIABLE_USE: Readonly<Record<string, string[]>> = {

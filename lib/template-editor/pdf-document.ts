@@ -27,6 +27,7 @@ async function fontBytes(font:string,weight:number,italic:boolean):Promise<Buffe
  else if(font==='chirp')filename=path.join(process.cwd(),'public/fonts/licensed',`Chirp-${bold?'Bold':'Regular'}.woff2`);
  else if(font==='neuemontreal')filename=path.join(process.cwd(),'public/fonts/licensed',`NeueMontreal-${weight>=700?'Bold':weight>=500?'Medium':'Regular'}.otf`);
  else if(font==='supermolot')filename=path.join(process.cwd(),'public/fonts/licensed',`TTSupermolot-${bold?'Bold':'Regular'}.otf`);
+ else if(font==='clashdisplay')filename=path.join(process.cwd(),'public/fonts/licensed',`ClashDisplay-${weight>=700?'Bold':weight>=600?'Semibold':weight>=500?'Medium':'Regular'}.otf`);
  else if(font==='sfprocanva')filename=path.join(process.cwd(),'public/fonts/licensed',`SF-Pro-Display-Canva-${bold?'Bold':'Regular'}.ttf`);
  else if(font==='bebascanva')filename=path.join(process.cwd(),'public/fonts/licensed','BebasNeueBold-Canva.woff2');
  else if(google[font])filename=path.join(process.cwd(),'assets/pdf-fonts',`${google[font]}-latin-${bold&&font!=='dmserif'&&font!=='bebas'?(font==='plexmono'?'600':'700'):'regular'}.ttf`);
