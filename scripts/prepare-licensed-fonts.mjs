@@ -24,6 +24,7 @@ export const ALLOWED_FONT_NAMES = Object.freeze([
   "Chirp-Regular.woff2", "Chirp-Bold.woff2",
   "NeueMontreal-Regular.otf", "NeueMontreal-Medium.otf", "NeueMontreal-Bold.otf",
   "TTSupermolot-Regular.otf", "TTSupermolot-Bold.otf",
+  "ClashDisplay-Regular.otf", "ClashDisplay-Medium.otf", "ClashDisplay-Semibold.otf", "ClashDisplay-Bold.otf",
 ]);
 const allowedNames = new Set(ALLOWED_FONT_NAMES);
 const repositoryRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");

@@ -235,6 +235,7 @@ test("fonts map to Engine's font ids, inverting the HTML font stacks", () => {
   assert.equal(engineFontId({ fontFamily: "Poppins, sans-serif" }), "poppins");
   assert.equal(engineFontId({ fontFamily: "\"Neue Montreal\", sans-serif" }), "neuemontreal");
   assert.equal(engineFontId({ fontFamily: "\"TT Supermolot\", sans-serif" }), "supermolot");
+  assert.equal(engineFontId({ fontFamily: "\"Clash Display\", sans-serif" }), "clashdisplay");
   assert.equal(engineFontId({ fontFamily: "\"Helvetica Neue\", Arial" }), "helvetica");
   assert.equal(engineFontId({ fontFamily: "monospace" }), "plexmono");
   assert.equal(engineFontId({ fontFamily: '"Comic Sans MS"' }), "geist");
